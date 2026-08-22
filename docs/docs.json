@@ -89,6 +89,7 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/workers-to-compose",
                   "next/upgrading/from-0-22-x",
                   "next/upgrading/from-0-21-x"
                 ]

@@ -1,10 +1,15 @@
-workers:
-  - name: iii-worker-manager
-    config:
+namespace: default
+engine:
+  url: ws://127.0.0.1:49199
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./data/config-test-configuration
+    iii-worker-manager:
       port: 49199
-
-  - name: iii-worker-manager
-    config:
+    "iii-worker-manager#rbac":
       host: 0.0.0.0
       port: 49135
       middleware_function_id: test::rbac-worker::middleware
@@ -18,9 +23,7 @@ workers:
           - match("engine::functions::list")
           - metadata:
               ew_public: true
-
-  - name: iii-stream
-    config:
+    iii-stream:
       port: ${STREAMS_PORT:3112}
       host: 0.0.0.0
       adapter:
@@ -28,56 +31,52 @@ workers:
         config:
           store_method: file_based
           file_path: ./data/stream_store
-
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          store_method: file_based
-          file_path: ./data/state_store.db
-
-  - name: iii-http
-    config:
-      host: 0.0.0.0
-      port: 3199
-      default_timeout: 30000
-
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
-
-  - name: iii-observability
-    config:
-      enabled: ${OTEL_ENABLED:true}
-      service_name: ${OTEL_SERVICE_NAME:iii-test}
-      service_version: ${SERVICE_VERSION:0.2.0}
-      exporter: ${OTEL_EXPORTER_TYPE:memory}
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
-      sampling_ratio: 1.0
-      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
-      metrics_enabled: true
-      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}
-      metrics_retention_seconds: 3600
-      metrics_max_count: 10000
-      logs_enabled: ${OTEL_LOGS_ENABLED:true}
-      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}
-      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
-      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
-      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}
-      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:false}
-
-  - name: iii-http-functions
-    config:
+    iii-http-functions:
       security:
         url_allowlist:
           - localhost
           - 127.0.0.1
         block_private_ips: false
         require_https: false
-
-  - name: iii-cron
-    config:
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "0.22.2"
+    config_name: state
+    config_override:
       adapter:
         name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+  http:
+    worker: package://api.workers.iii.dev/http
+    version: "0.21.3"
+    config_name: http
+    config_override:
+      host: 0.0.0.0
+      port: 3199
+      default_timeout: 30000
+  pubsub:
+    worker: package://api.workers.iii.dev/pubsub
+    version: "0.21.2"
+    config_name: pubsub
+    config_override:
+      adapter:
+        name: local
+  cron:
+    worker: package://api.workers.iii.dev/cron
+    version: "0.21.9"
+    config_name: cron
+    config_override:
+      adapter:
+        name: local
+  queue:
+    worker: package://api.workers.iii.dev/queue
+    version: "0.21.5"
+    config_name: queue
+    config_override:
+      adapter:
+        name: builtin
+        config:
+          store_method: in_memory

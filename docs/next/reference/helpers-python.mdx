@@ -958,11 +958,12 @@ context is forwarded to the middleware.
 | --- | --- | --- | --- |
 | `allow_function_registration` | `bool` | No | Whether the worker may register new functions. Defaults to ``True`` if omitted. |
 | `allow_trigger_type_registration` | `bool` | No | Whether the worker may register new trigger types. |
-| `allowed_functions` | `list[str]` | No | Additional function IDs to allow beyond ``expose_functions``. |
+| `allowed_functions` | `list[str]` | No | Additional function IDs to allow beyond ``expose_functions``, in the ``default`` namespace only. Put per-namespace grants in ``namespaces``. |
 | `allowed_trigger_types` | `list[str] \| None` | No | Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed. |
 | `context` | `dict[str, Any]` | No | Arbitrary context forwarded to the middleware function on every invocation. |
 | `forbidden_functions` | `list[str]` | No | Function IDs to deny even if they match ``expose_functions``. |
 | `function_registration_prefix` | `str \| None` | No | Optional prefix applied to all function IDs registered by this worker. |
+| `namespaces` | `dict[str, list[str]]` | No | Grants scoped to one namespace each, e.g. ``\{"orders": ["svc::*"]\}``. The keys are also the namespaces the session may declare on ``engine::workers::register``. Leave empty to add no namespace-scoped grants. The session may declare any namespace, and only ``allowed_functions`` and ``expose_functions`` apply. |
 
 ---
 
@@ -979,6 +980,7 @@ fields, or raise an exception to deny the registration.
 | `description` | `str \| None` | No | Human-readable description of the function. |
 | `function_id` | `str` | Yes | ID of the function being registered. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
+| `namespace` | `str` | No | Namespace the function registers in. It is the explicit registration value, or ``default`` when the registration omitted it. |
 
 ---
 
@@ -1008,6 +1010,7 @@ fields, or raise an exception to deny the registration.
 | `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
 | `function_id` | `str` | Yes | ID of the function this trigger is bound to. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
+| `namespace` | `str` | No | Namespace the trigger target resolves in. It is the explicit registration value, or ``default`` when the registration omitted it. |
 | `trigger_id` | `str` | Yes | ID of the trigger being registered. |
 | `trigger_type` | `str` | Yes | Trigger type identifier. |
 

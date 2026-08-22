@@ -11,7 +11,6 @@
 //! copy runs:
 //!
 //! - the CLI dispatcher (`cli::platform::find_existing_binary`, bin crate),
-//! - the engine's registry-worker spawner (`workers::registry_worker`),
 //! - the engine's known-external spawner (`workers::external`).
 //!
 //! Resolution is **PATH-first**: a dev / override build earlier on `$PATH`

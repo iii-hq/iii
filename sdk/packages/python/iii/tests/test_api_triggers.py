@@ -15,6 +15,9 @@ from iii.types import StreamRequest, StreamResponse
 
 TEST_ASSETS_DIR = Path(__file__).parent.parent.parent.parent.parent / "test-assets"
 TEST_FILE = TEST_ASSETS_DIR / "handbook.pdf"
+# The standalone HTTP worker accepts request bodies up to 16 MiB. Keep upload
+# fixtures below that limit, including multipart framing overhead.
+UPLOAD_FIXTURE_BYTES = 8 * 1024 * 1024
 
 
 @pytest.mark.asyncio
@@ -384,7 +387,7 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
     if not TEST_FILE.exists():
         pytest.skip("handbook.pdf not found in tests/files")
 
-    original_pdf = TEST_FILE.read_bytes()
+    original_pdf = TEST_FILE.read_bytes()[:UPLOAD_FIXTURE_BYTES]
 
     received_data = bytearray()
 
@@ -579,7 +582,7 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
     if not TEST_FILE.exists():
         pytest.skip("handbook.pdf not found in tests/files")
 
-    original_pdf = TEST_FILE.read_bytes()
+    original_pdf = TEST_FILE.read_bytes()[:UPLOAD_FIXTURE_BYTES]
 
     @http
     async def handler(req: StreamRequest, response: StreamResponse):

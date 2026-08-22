@@ -324,8 +324,9 @@ pub struct RegisterTriggerInput {
     /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// Namespace the trigger's target function resolves in. `None` means the
-    /// engine's default namespace, independent of this connection's namespace.
+    /// Namespace the trigger's target function resolves in. `None` inherits
+    /// this worker's namespace; name another namespace, including `default`,
+    /// to bind the trigger elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     /// Namespace to find the trigger type's provider in. `None` asks the

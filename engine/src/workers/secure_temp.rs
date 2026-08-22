@@ -7,7 +7,7 @@
 //! Shared helpers for serializing worker config blocks to a temp YAML file
 //! consumed by spawned workers via `--config <path>`. Used by both the
 //! in-process spawn path (`external.rs`) and the via-iii-worker path
-//! (`registry_worker.rs`).
+//! (`external.rs`).
 
 use std::path::PathBuf;
 

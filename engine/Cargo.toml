@@ -41,18 +41,6 @@ name = "control_plane_churn_bench"
 harness = false
 
 [[bench]]
-name = "http_single_route_loopback_bench"
-harness = false
-
-[[bench]]
-name = "http_many_routes_loopback_bench"
-harness = false
-
-[[bench]]
-name = "http_concurrency_loopback_bench"
-harness = false
-
-[[bench]]
 name = "protocol_serde_bench"
 harness = false
 
@@ -77,20 +65,14 @@ name = "queue_enqueue_bench"
 harness = false
 
 [[bench]]
-name = "state_adapter_bench"
-harness = false
-
-[[bench]]
 name = "worker_invocation_tracking_bench"
 harness = false
 
 [features]
 default = ["rabbitmq"]
 rabbitmq = ["lapin"]
-# Registers an in-process `memory` pub/sub adapter (a `local` clone under a
-# second name) so `tests/pubsub_configuration_e2e.rs` can hot-swap between two
-# dependency-free backends. Enabled only for this crate's own test targets via
-# the self dev-dependency below; never in a normal `cargo build`.
+# Registers an in-process `memory` queue adapter for this crate's own tests.
+# Enabled only through the self dev-dependency below; never in a normal build.
 test-adapters = []
 
 [dependencies]
@@ -136,7 +118,6 @@ lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
-cron = "0.15"
 once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
 clap-help = "1"
@@ -162,7 +143,6 @@ iana-time-zone = "0.1"
 ring = "0.17.14"
 glob = "0.3.3"
 base64 = "0.22.1"
-toml = "1.0.7"
 indicatif = "0.17"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
@@ -170,7 +150,7 @@ tar = "0.4"
 zip = "2"
 thiserror = "2"
 tokio-tungstenite = "0.28"
-# Used by workers::external::resolve_external_module_in to locate
+# Used by workers::external::resolve_external_module to locate
 # iii-worker on $PATH for the iii-sandbox well-known name.
 which = "7"
 
@@ -189,7 +169,3 @@ wiremock = "0.6"
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
 libc = "0.2"
-# Pulled in by engine/tests/worker_trigger_e2e.rs to spawn the
-# `iii-worker-ops` daemon in-process so the test can assert on the
-# `worker` custom trigger type without subprocess overhead.
-iii-worker = { path = "../crates/iii-worker" }

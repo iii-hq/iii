@@ -26,18 +26,6 @@ pub struct AddArgs {
     #[arg(long)]
     pub reset_config: bool,
 
-    /// Install through a RUNNING iii engine instead of editing the config
-    /// file in the current directory: connects to HOST[:PORT] (ex.
-    /// `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are
-    /// also accepted and used as-is) and invokes its worker::add. The
-    /// engine applies the add in ITS project directory, so this works from
-    /// any folder and with engines on non-default ports. Local worker PATHs
-    /// resolve on the engine host. When omitted and the current directory
-    /// has no config file, falls back to `--host localhost` (the running
-    /// local engine) instead of creating an orphan config file here.
-    #[arg(long, value_name = "HOST[:PORT]")]
-    pub host: Option<String>,
-
     /// Proceed without prompting when the resolved dependency graph contains
     /// more than 32 workers. Required for large-graph installs in CI or other
     /// non-interactive environments.
@@ -249,11 +237,6 @@ pub enum Commands {
     #[command(name = "sandbox-daemon", hide = true)]
     SandboxDaemon(SandboxDaemonArgs),
 
-    /// Run the host-side worker-manager daemon. Connects to the engine,
-    /// registers `worker::*` SDK triggers, and serves them until SIGINT.
-    #[command(name = "worker-manager-daemon", hide = true)]
-    WorkerManagerDaemon(WorkerManagerDaemonArgs),
-
     /// Internal: boot a libkrun VM (crash-isolated subprocess)
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
@@ -342,20 +325,6 @@ pub struct WatchSourceArgs {
     /// live-mount (legacy/bundle), where the fast restart is valid.
     #[arg(long)]
     pub overlay: bool,
-}
-
-/// Arguments for the `worker-manager-daemon` subcommand. Started by
-/// the iii engine as a child process when iii-worker-manager is listed
-/// in the project's worker config; rarely invoked directly.
-#[derive(Args, Debug)]
-pub struct WorkerManagerDaemonArgs {
-    /// Engine WebSocket URL to connect back to.
-    #[arg(long, env = "III_ENGINE_URL", default_value = "ws://127.0.0.1:49134")]
-    pub engine: String,
-
-    /// Project root the daemon mutates. Defaults to CWD at start.
-    #[arg(long)]
-    pub project_root: Option<std::path::PathBuf>,
 }
 
 /// Arguments for the `sandbox-daemon` subcommand. Started by the iii
@@ -615,15 +584,8 @@ mod daemon_engine_arg_tests {
         }
     }
 
-    fn worker_manager_engine(argv: &[&str]) -> String {
-        match Cli::try_parse_from(argv).expect("should parse").command {
-            Commands::WorkerManagerDaemon(args) => args.engine,
-            _ => panic!("expected WorkerManagerDaemon variant"),
-        }
-    }
-
-    /// The engine exports III_ENGINE_URL when spawning builtin daemons
-    /// (engine/src/workers/external.rs); both daemons must honor it so
+    /// The engine exports III_ENGINE_URL when spawning the sandbox daemon
+    /// (engine/src/workers/external.rs); it must honor it so
     /// they connect back to the spawning engine's actual worker-listener
     /// port, not the hardcoded default (MOT-3970). Explicit --engine
     /// still wins (clap precedence: flag > env > default).
@@ -637,7 +599,6 @@ mod daemon_engine_arg_tests {
         // Capture first, assert after cleanup: a failing assert must not
         // leak the var into later env-reading tests in this process.
         let sandbox_env = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
-        let manager_env = worker_manager_engine(&["iii-worker", "worker-manager-daemon"]);
         let sandbox_flag =
             sandbox_engine(&["iii-worker", "sandbox-daemon", "--engine", "ws://flag:1"]);
         // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
@@ -647,7 +608,6 @@ mod daemon_engine_arg_tests {
         let default = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
 
         assert_eq!(sandbox_env, "ws://127.0.0.1:55555");
-        assert_eq!(manager_env, "ws://127.0.0.1:55555");
         assert_eq!(
             sandbox_flag, "ws://flag:1",
             "explicit --engine must beat env"

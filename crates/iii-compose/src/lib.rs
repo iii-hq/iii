@@ -41,10 +41,39 @@ pub mod report;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand, ComposeSub, EngineOwnership};
-pub use config::{ComposeFile, Container, WorkerSource};
+pub use cli::{ComposeCli, ComposeCommand, ComposeSub};
+pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineMode {
+    Managed { url: String },
+    External { url: String },
+}
+
+/// Resolves engine ownership only after the initial compose file has been
+/// parsed. The file is authoritative for managed mode; an explicit CLI URL is
+/// contradictory there, while a process-wide environment URL is ignored. In
+/// external mode the CLI wins over the environment.
+pub fn resolve_engine_mode(
+    file: Option<&ComposeFile>,
+    explicit_engine_url: Option<String>,
+    environment_engine_url: Option<String>,
+) -> Result<EngineMode> {
+    match file.and_then(|file| file.engine.as_ref()) {
+        Some(_) if explicit_engine_url.is_some() => {
+            Err(ComposeError::EngineUrlConflictsWithManaged)
+        }
+        Some(engine) => Ok(EngineMode::Managed {
+            url: engine.url.clone(),
+        }),
+        None => explicit_engine_url
+            .or(environment_engine_url)
+            .map(|url| EngineMode::External { url })
+            .ok_or(ComposeError::EngineUrlRequired),
+    }
+}
 
 /// Validates a compose project offline: schema, dependency graph, worker
 /// directories, manifests and start commands. Also reports the namespace the
@@ -61,20 +90,6 @@ pub fn validate_project(
 /// Entry point behind `iii compose`. Returns the process exit code, matching
 /// the other `iii` subcommands.
 pub async fn run(cli: ComposeCli) -> i32 {
-    run_with_config(
-        cli,
-        std::path::PathBuf::from(managed_engine::DEFAULT_ENGINE_CONFIG),
-    )
-    .await
-}
-
-/// Runs compose with the engine config selected by the root `iii` CLI.
-///
-/// The compose crate deliberately does not parse or create this file. A
-/// managed engine receives the path and follows the same startup behavior as
-/// a manually launched `iii`, including creating the starter file when it is
-/// absent and stdin is not interactive.
-pub async fn run_with_config(cli: ComposeCli, engine_config: std::path::PathBuf) -> i32 {
     let command = match cli.plan() {
         Ok(command) => command,
         Err(err) => return report_error(&err),
@@ -82,19 +97,10 @@ pub async fn run_with_config(cli: ComposeCli, engine_config: std::path::PathBuf)
 
     match command {
         ComposeCommand::Serve {
-            engine_url,
+            explicit_engine_url,
             daemon_namespace,
-            engine_ownership,
             start,
-        } => match serve(
-            engine_url,
-            daemon_namespace,
-            engine_ownership,
-            engine_config,
-            start,
-        )
-        .await
-        {
+        } => match serve(explicit_engine_url, daemon_namespace, start).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -108,20 +114,46 @@ pub async fn run_with_config(cli: ComposeCli, engine_config: std::path::PathBuf)
 /// `compose::up file=…` is what teaches it — which is what lets one daemon hold
 /// several projects without being restarted for each.
 async fn serve(
-    engine_url: String,
+    explicit_engine_url: Option<String>,
     daemon_namespace: String,
-    engine_ownership: EngineOwnership,
-    engine_config: std::path::PathBuf,
     start: Option<std::path::PathBuf>,
 ) -> Result<()> {
     use colored::Colorize;
 
-    let managed_engine = match engine_ownership {
-        EngineOwnership::Managed => {
-            let engine =
-                managed_engine::ManagedEngine::start(engine_config, &daemon_namespace).await?;
+    // Ownership is a property of the file, so load it before spawning the
+    // engine. Invalid YAML and missing external URLs must fail with no child
+    // process left behind.
+    let initial_file = start.as_ref().map(ComposeFile::load).transpose()?;
+    let environment_engine_url = std::env::var("III_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty());
+    let engine_mode = resolve_engine_mode(
+        initial_file.as_ref(),
+        explicit_engine_url,
+        environment_engine_url,
+    )?;
+    let engine_url = match &engine_mode {
+        EngineMode::Managed { url } | EngineMode::External { url } => url.clone(),
+    };
+
+    let managed_engine = match engine_mode {
+        EngineMode::Managed { .. } => {
+            let spec = initial_file
+                .as_ref()
+                .and_then(|file| file.engine.as_ref())
+                .expect("managed mode requires an engine section");
+            let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
             println!("engine {}", "started".green());
             println!("  {} {}", "pid:".dimmed(), engine.pid());
+            println!(
+                "  {} {}",
+                "owner:".dimmed(),
+                initial_file
+                    .as_ref()
+                    .expect("managed mode requires an owner file")
+                    .path
+                    .display()
+            );
             println!(
                 "  {} {}",
                 "config:".dimmed(),
@@ -132,10 +164,22 @@ async fn serve(
             println!();
             Some(engine)
         }
-        EngineOwnership::External => None,
+        EngineMode::External { .. } => None,
     };
 
-    let result = serve_daemon(engine_url, daemon_namespace, start, managed_engine.as_ref()).await;
+    let engine_policy = initial_file
+        .as_ref()
+        .and_then(daemon::EnginePolicy::managed)
+        .unwrap_or(daemon::EnginePolicy::External);
+
+    let result = serve_daemon(
+        engine_url,
+        daemon_namespace,
+        start,
+        managed_engine.as_ref(),
+        engine_policy,
+    )
+    .await;
 
     if let Some(engine) = &managed_engine {
         println!("{}", "stopping engine...".dimmed());
@@ -150,10 +194,11 @@ async fn serve_daemon(
     daemon_namespace: String,
     start: Option<std::path::PathBuf>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
+    engine_policy: daemon::EnginePolicy,
 ) -> Result<()> {
     use colored::Colorize;
 
-    let daemon = daemon::Daemon::start(engine_url, daemon_namespace);
+    let daemon = daemon::Daemon::start(engine_url, daemon_namespace, engine_policy);
     remote::register(&daemon);
 
     // Announce only once the engine has accepted this daemon. A rejection

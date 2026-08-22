@@ -27,6 +27,56 @@ pub enum ComposeError {
     #[error("containers must declare at least one worker")]
     EmptyContainers,
 
+    #[error(
+        "engine worker '{worker}' is not configurable inside worker-compose.yaml. Move project \
+         workers under containers; engine.workers accepts configuration, iii-worker-manager, \
+         iii-http-functions, iii-stream, and iii-sandbox"
+    )]
+    UnsupportedEngineWorker { worker: String },
+
+    #[error(
+        "engine worker '{worker}' is injected automatically and must not be declared under \
+         engine.workers"
+    )]
+    EngineWorkerIsInjected { worker: String },
+
+    #[error("engine.workers.{worker} must be a YAML mapping. Use {{}} to keep the worker defaults")]
+    InvalidEngineWorkerConfig { worker: String },
+
+    #[error("engine.url must not be blank when it is set")]
+    InvalidManagedEngineUrl,
+
+    #[error(
+        "worker-compose.yaml has no engine section. Pass --engine <ws-url> or set III_URL to \
+         connect this Compose invocation to an existing engine"
+    )]
+    EngineUrlRequired,
+
+    #[error(
+        "--engine cannot be combined with the engine section in worker-compose.yaml. \
+         Remove --engine or remove engine: to use an existing engine"
+    )]
+    EngineUrlConflictsWithManaged,
+
+    #[error(
+        "{path} declares engine:, but this Compose daemon is connected to an external engine. \
+         Start the file in a separate `iii compose up` invocation without --engine"
+    )]
+    EngineSectionRequiresManagedStart { path: PathBuf },
+
+    #[error(
+        "the engine section in {path} changed. Restart this Compose invocation to apply the new \
+         managed-engine configuration"
+    )]
+    EngineRestartRequired { path: PathBuf },
+
+    #[error(
+        "{path} declares engine:, but this daemon's engine is already owned by {owner}. Start the \
+         second file in a separate Compose invocation, or remove its engine section and pass the \
+         first engine's URL"
+    )]
+    EngineAlreadyOwned { owner: PathBuf, path: PathBuf },
+
     #[error("container '{container}' depends on '{dependency}', which is not declared")]
     UnknownDependency {
         container: String,
@@ -116,6 +166,16 @@ pub enum ComposeError {
         container: String,
         name: String,
         kind: String,
+    },
+
+    #[error(
+        "container '{container}': '{name}' is supplied by the engine and must not be declared \
+         under containers. {guidance}"
+    )]
+    EngineWorkerIsBuiltin {
+        container: String,
+        name: String,
+        guidance: String,
     },
 
     /// `compose::add` would turn a declaration into a different kind of thing.
@@ -429,6 +489,17 @@ impl ComposeError {
             Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
+            Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
+            Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
+            Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
+            Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
+            Self::EngineUrlRequired => "ENGINE_URL_REQUIRED",
+            Self::EngineUrlConflictsWithManaged => "ENGINE_URL_CONFLICTS_WITH_MANAGED",
+            Self::EngineSectionRequiresManagedStart { .. } => {
+                "ENGINE_SECTION_REQUIRES_MANAGED_START"
+            }
+            Self::EngineRestartRequired { .. } => "ENGINE_RESTART_REQUIRED",
+            Self::EngineAlreadyOwned { .. } => "ENGINE_ALREADY_OWNED",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
@@ -445,6 +516,7 @@ impl ComposeError {
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::RegistryNameRefused { .. } => "REGISTRY_NAME_REFUSED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
+            Self::EngineWorkerIsBuiltin { .. } => "ENGINE_WORKER_IS_BUILTIN",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
             Self::UndefinedVariable { .. } => "UNDEFINED_VARIABLE",

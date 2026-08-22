@@ -41,8 +41,8 @@ fn spawn_and_wait_for_config(dir: &std::path::Path, args: &[&str], file_name: &s
 #[test]
 fn test_use_default_config_flag_is_rejected() {
     // `--use-default-config` was removed: `iii` now creates config.yaml when
-    // it's missing instead of offering a file-less mode that broke the
-    // config.yaml setup (worker add, reload watcher).
+    // it's missing instead of offering a file-less mode that bypassed the
+    // config reload watcher.
     let output = iii_bin()
         .args(["--use-default-config", "--version"])
         .output()
@@ -74,8 +74,7 @@ fn test_missing_default_config_is_created_headless() {
         "created config should declare an empty workers list, got: {}",
         content
     );
-    // Deliberately empty: no workers are pre-listed; users opt in via
-    // `iii worker add <name>`.
+    // Deliberately empty: project workers belong in worker-compose.yaml.
     assert!(
         !content.contains("- name:"),
         "created config must not pre-list any workers, got: {}",

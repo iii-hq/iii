@@ -25,6 +25,9 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
         config: Trigger-specific configuration.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered
             handler function on every invocation.
+        namespace: Resolved namespace the target function uses. Current SDKs
+            fill an omitted registration value from the registering worker's
+            namespace; ``None`` is the legacy/default case.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -33,9 +36,8 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
     function_id: str
     config: Any  # TConfig
     metadata: dict[str, Any] | None = None
-    # Namespace the trigger's target resolves in. A provider that stores this
-    # config and later calls trigger() must pass this namespace, or it fires in
-    # `default`. None means the engine's default namespace.
+    # A provider that stores this config and later calls trigger() must pass the
+    # resolved namespace through.
     namespace: str | None = None
 
 

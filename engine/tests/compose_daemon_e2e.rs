@@ -141,6 +141,7 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
     let daemon = Daemon::start(
         format!("ws://127.0.0.1:{port}"),
         daemon_namespace.to_string(),
+        iii_compose::daemon::EnginePolicy::External,
     );
     remote::register(&daemon);
     // The SDK flushes registrations after the namespace announce; give the
@@ -298,21 +299,27 @@ async fn schema_introspection_is_callable_and_matches_engine_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_scoped_call_names_the_argument_it_wanted() {
+async fn a_project_scoped_call_uses_the_daemons_default_file() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
 
-    // The daemon runs from the test harness's directory, which holds no
-    // compose file, so there is nothing to fall back to and nothing to guess.
+    // Engine integration tests run from `engine/`, whose canonical Compose
+    // fixture now owns an engine. A bare project-scoped call must find that
+    // default file. Because this particular daemon is attached to an external
+    // engine, the ownership guard then rejects the managed file.
     let error = call(port, "compose::down", json!({}))
         .await
-        .expect_err("down without a file cannot mean anything");
+        .expect_err("an external daemon must not load a managed engine file");
 
-    assert!(error.contains("NO_COMPOSE_FILE"), "unexpected: {error}");
-    // The message is the invocation that would have worked, not a description
-    // of the one that did not.
-    assert!(error.contains("file="), "the way out is named: {error}");
+    assert!(
+        error.contains("ENGINE_SECTION_REQUIRES_MANAGED_START"),
+        "unexpected: {error}"
+    );
+    assert!(
+        error.contains("worker-compose.yaml") && error.contains("without --engine"),
+        "the way out is named: {error}"
+    );
 
     daemon.shutdown().await;
 }

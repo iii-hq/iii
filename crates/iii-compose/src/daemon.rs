@@ -27,7 +27,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
-    config::ComposeFile,
+    config::{ComposeFile, EngineSpec},
     engine::EngineClient,
     error::{ComposeError, Result},
     lifecycle::OpResult,
@@ -39,6 +39,49 @@ use crate::{
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
+#[derive(Debug, Clone)]
+pub enum EnginePolicy {
+    Managed { owner: PathBuf, spec: EngineSpec },
+    External,
+}
+
+impl EnginePolicy {
+    pub fn managed(file: &ComposeFile) -> Option<Self> {
+        file.engine.as_ref().map(|spec| Self::Managed {
+            owner: file.path.clone(),
+            spec: spec.clone(),
+        })
+    }
+
+    fn validate_project(&self, file: &ComposeFile) -> Result<()> {
+        self.validate_engine_section(&file.path, file.engine.as_ref())
+    }
+
+    fn validate_engine_section(&self, path: &Path, engine: Option<&EngineSpec>) -> Result<()> {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        match self {
+            Self::External if engine.is_some() => {
+                Err(ComposeError::EngineSectionRequiresManagedStart { path })
+            }
+            Self::External => Ok(()),
+            Self::Managed { owner, spec } if &path == owner => {
+                if engine == Some(spec) {
+                    Ok(())
+                } else {
+                    Err(ComposeError::EngineRestartRequired { path })
+                }
+            }
+            Self::Managed { owner, .. } if engine.is_some() => {
+                Err(ComposeError::EngineAlreadyOwned {
+                    owner: owner.clone(),
+                    path,
+                })
+            }
+            Self::Managed { .. } => Ok(()),
+        }
+    }
+}
+
 pub struct Daemon {
     /// What this daemon registered as. Fixed, and the same on every machine:
     /// what tells two daemons apart is the namespace, not the name.
@@ -48,6 +91,7 @@ pub struct Daemon {
     pub daemon_namespace: String,
     pub engine_url: String,
     engine: Arc<EngineClient>,
+    engine_policy: EnginePolicy,
     /// Every project this daemon has been asked about, keyed by the canonical
     /// path of its compose file. Nothing else identifies a project: a name
     /// someone chose would be a second identity, and a second identity can be
@@ -72,7 +116,18 @@ impl Daemon {
     ///
     /// No project is loaded here: a daemon starts knowing nothing and learns
     /// about a project the first time a call names one.
-    pub fn start(engine_url: String, daemon_namespace: String) -> Arc<Self> {
+    pub fn start(
+        requested_engine_url: String,
+        daemon_namespace: String,
+        engine_policy: EnginePolicy,
+    ) -> Arc<Self> {
+        // A managed file is the sole engine source. Public callers receive the
+        // same guarantee as the CLI: workers and policy checks cannot point at
+        // different engines even if a stale URL was passed separately.
+        let engine_url = match &engine_policy {
+            EnginePolicy::Managed { spec, .. } => spec.url.clone(),
+            EnginePolicy::External => requested_engine_url,
+        };
         // The name stays fixed and the *namespace* carries the identity, so
         // the lease is `(daemon_namespace, compose)`: two machines coexist, and two
         // daemons claiming to be the same machine cannot.
@@ -87,6 +142,7 @@ impl Daemon {
             daemon_namespace,
             engine_url,
             engine,
+            engine_policy,
             projects: Mutex::new(BTreeMap::new()),
             mutations: Mutex::new(BTreeMap::new()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
@@ -129,6 +185,7 @@ impl Daemon {
 
         cell.get_or_try_init(|| async {
             let compose = ComposeFile::load(file)?;
+            self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
             let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
@@ -188,7 +245,10 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let project = self.project(self.resolve_file(file)?).await?;
+        let file = self.resolve_file(file)?;
+        let current = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&current)?;
+        let project = self.project(file).await?;
         Ok(project.up(container, operation_id).await)
     }
 
@@ -218,6 +278,7 @@ impl Daemon {
         };
 
         let path = self.resolve_file(file)?;
+        self.validate_engine_policy_file(path)?;
         let asked = crate::edit::parse_worker(worker)?;
         // A worker is not useful alone: its manifest names what it calls, and
         // the registry answers with that whole graph already pinned to versions
@@ -234,6 +295,7 @@ impl Daemon {
             path: path.to_path_buf(),
             source,
         })?;
+        self.validate_engine_policy_text(path, &text)?;
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -307,66 +369,7 @@ impl Daemon {
 
         let range = version.clone().unwrap_or_else(|| "*".to_string());
         let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
-        let host = reference
-            .rsplit_once('/')
-            .map(|(host, _)| host)
-            .unwrap_or("");
-
-        // Only what compose can run becomes a container, and only those can be
-        // depended on: an `engine` worker is already serving before compose
-        // starts, so an edge to one names nothing this file declares.
-        let declarable: std::collections::BTreeSet<&str> = graph
-            .nodes
-            .iter()
-            .filter(|node| node.kind != "engine")
-            .map(|node| node.name.as_str())
-            .collect();
-
-        let needs = |name: &str| -> Vec<String> {
-            let mut needed: Vec<String> = graph
-                .edges
-                .iter()
-                .filter(|(from, to)| from == name && to != name && declarable.contains(to.as_str()))
-                .map(|(_, to)| to.clone())
-                .collect();
-            needed.sort();
-            needed.dedup();
-            needed
-        };
-
-        let container = |node: &crate::registry::Node| crate::edit::NewContainer {
-            key: node.name.clone(),
-            source: crate::edit::Source::Package {
-                reference: if host.is_empty() {
-                    node.name.clone()
-                } else {
-                    format!("{host}/{}", node.name)
-                },
-                version: Some(node.version.clone()),
-            },
-            depends_on: needs(&node.name),
-        };
-
-        let mut wanted: Vec<crate::edit::NewContainer> = graph
-            .nodes
-            .iter()
-            .filter(|node| node.kind != "engine")
-            .filter(|node| node.name != asked.key)
-            .map(container)
-            .collect();
-
-        // The worker itself last, pinned to what the graph resolved and
-        // depending on everything it calls.
-        let mut root = asked.clone();
-        root.depends_on = needs(&asked.key);
-        if let Some(node) = graph.nodes.iter().find(|node| node.name == asked.key) {
-            root.source = crate::edit::Source::Package {
-                reference: reference.clone(),
-                version: Some(node.version.clone()),
-            };
-        }
-        wanted.push(root);
-        Ok(wanted)
+        expand_graph(asked, reference, graph)
     }
 
     /// Moves one declared container to another version of the same package.
@@ -408,6 +411,7 @@ impl Daemon {
             source,
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
+        self.engine_policy.validate_project(&compose)?;
         let Some(container) = compose.containers.get(&asked.key) else {
             return Err(ComposeError::UnknownContainer {
                 container: asked.key.clone(),
@@ -507,6 +511,7 @@ impl Daemon {
             path: path.to_path_buf(),
             source,
         })?;
+        self.validate_engine_policy_text(path, &text)?;
         let Some(edited) = crate::edit::remove_container(&text, worker)? else {
             return Err(ComposeError::UnknownContainer {
                 container: worker.to_string(),
@@ -546,8 +551,10 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<Value> {
+        let path = self.resolve_file(file)?;
+        self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
-            let project = self.project(self.resolve_file(file)?).await?;
+            let project = self.project(path).await?;
             let result = project.restart_one(key, operation_id).await;
             return Ok(serde_json::json!({
                 "status": result.status,
@@ -621,7 +628,9 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let project = self.project(self.resolve_file(file)?).await?;
+        let path = self.resolve_file(file)?;
+        self.validate_engine_policy_file(path)?;
+        let project = self.project(path).await?;
         Ok(project.down(container, operation_id).await)
     }
 
@@ -649,12 +658,35 @@ impl Daemon {
             });
         }
         let compose = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&compose)?;
         let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
         crate::manifest::validate_offline(&compose, &namespace)
     }
 
     pub async fn status(&self, file: Option<&Path>) -> Result<Arc<Project>> {
-        self.project(self.resolve_file(file)?).await
+        let path = self.resolve_file(file)?;
+        self.validate_engine_policy_file(path)?;
+        self.project(path).await
+    }
+
+    fn validate_engine_policy_file(&self, path: &Path) -> Result<()> {
+        if path.is_relative() && !path.exists() {
+            return Err(ComposeError::RelativeFileMissing {
+                path: path.to_path_buf(),
+                cwd: std::env::current_dir().unwrap_or_default(),
+            });
+        }
+        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        self.validate_engine_policy_text(path, &text)
+    }
+
+    fn validate_engine_policy_text(&self, path: &Path, text: &str) -> Result<()> {
+        let engine = crate::config::parse_engine_section(text, path)?;
+        self.engine_policy
+            .validate_engine_section(path, engine.as_ref())
     }
 
     /// Asks the daemon to shut down, and reports what it is about to stop.
@@ -765,6 +797,11 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
         let _ = std::fs::remove_file(&temp);
         return Err(ComposeError::Io { path: temp, source });
     }
+    if let Err(source) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(ComposeError::Io { path: temp, source });
+    }
     drop(file);
     std::fs::rename(&temp, path).map_err(|source| {
         let _ = std::fs::remove_file(&temp);
@@ -787,9 +824,318 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Turns one registry answer into the declarations Compose can own.
+///
+/// Engine-kind dependencies are omitted because the engine already provides
+/// them. An engine-kind root is different: silently omitting the exact worker
+/// the caller requested would make `compose::add` report success without
+/// changing the project, so reject it with migration guidance instead.
+fn expand_graph(
+    asked: &crate::edit::NewContainer,
+    reference: &str,
+    graph: crate::registry::Graph,
+) -> Result<Vec<crate::edit::NewContainer>> {
+    if let Some(root) = graph.nodes.iter().find(|node| node.name == asked.key)
+        && root.kind == "engine"
+    {
+        let guidance = if crate::config::CONFIGURABLE_ENGINE_WORKERS.contains(&root.name.as_str()) {
+            format!("Configure it under engine.workers.{} instead.", root.name)
+        } else {
+            "It is injected automatically and must not be declared.".to_string()
+        };
+        return Err(ComposeError::EngineWorkerIsBuiltin {
+            container: asked.key.clone(),
+            name: root.name.clone(),
+            guidance,
+        });
+    }
+
+    let host = reference
+        .rsplit_once('/')
+        .map(|(host, _)| host)
+        .unwrap_or("");
+
+    let mut declarable: std::collections::BTreeSet<String> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind != "engine")
+        .map(|node| node.name.clone())
+        .collect();
+    declarable.insert(asked.key.clone());
+
+    let needs = |name: &str| -> Vec<String> {
+        let mut needed: Vec<String> = graph
+            .edges
+            .iter()
+            .filter(|(from, to)| from == name && to != name && declarable.contains(to))
+            .map(|(_, to)| to.clone())
+            .collect();
+        needed.sort();
+        needed.dedup();
+        needed
+    };
+
+    let container = |node: &crate::registry::Node| crate::edit::NewContainer {
+        key: node.name.clone(),
+        source: crate::edit::Source::Package {
+            reference: if host.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{host}/{}", node.name)
+            },
+            version: Some(node.version.clone()),
+        },
+        depends_on: needs(&node.name),
+    };
+
+    // Registry nodes are a set, not an ordered plan. Derive a deterministic
+    // dependency-first order from the edges, preferring the requested root
+    // only after other ready nodes so independent registry entries cannot put
+    // it before a dependency that becomes ready in the same wave.
+    let mut pending: BTreeMap<String, usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for name in &declarable {
+        let dependencies = needs(name);
+        pending.insert(name.clone(), dependencies.len());
+        for dependency in dependencies {
+            dependents.entry(dependency).or_default().push(name.clone());
+        }
+    }
+    for entries in dependents.values_mut() {
+        entries.sort();
+        entries.dedup();
+    }
+
+    let mut ready: std::collections::BTreeSet<String> = pending
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let mut order = Vec::with_capacity(declarable.len());
+    while !ready.is_empty() {
+        let next = ready
+            .iter()
+            .find(|name| name.as_str() != asked.key)
+            .or_else(|| ready.iter().next())
+            .cloned()
+            .expect("ready is known to be non-empty");
+        ready.remove(&next);
+        order.push(next.clone());
+
+        for dependent in dependents.get(&next).cloned().unwrap_or_default() {
+            if let Some(count) = pending.get_mut(&dependent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+    }
+    if order.len() != declarable.len() {
+        return Err(ComposeError::DependencyCycle {
+            path: "unresolved registry dependencies".to_string(),
+        });
+    }
+
+    let nodes: BTreeMap<&str, &crate::registry::Node> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind != "engine")
+        .map(|node| (node.name.as_str(), node))
+        .collect();
+    order
+        .into_iter()
+        .map(|name| {
+            if name == asked.key {
+                let mut root = asked.clone();
+                root.depends_on = needs(&asked.key);
+                if let Some(node) = nodes.get(asked.key.as_str()) {
+                    root.source = crate::edit::Source::Package {
+                        reference: reference.to_string(),
+                        version: Some(node.version.clone()),
+                    };
+                }
+                Ok(root)
+            } else {
+                nodes.get(name.as_str()).map(|node| container(node)).ok_or(
+                    ComposeError::UnknownDependency {
+                        container: asked.key.clone(),
+                        dependency: name,
+                    },
+                )
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn package(name: &str) -> crate::edit::NewContainer {
+        crate::edit::NewContainer {
+            key: name.to_string(),
+            source: crate::edit::Source::Package {
+                reference: name.to_string(),
+                version: None,
+            },
+            depends_on: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn configurable_engine_root_points_to_engine_workers() {
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "configuration".to_string(),
+                version: "0.23.0".to_string(),
+                kind: "engine".to_string(),
+            }],
+            edges: Vec::new(),
+        };
+
+        let error = expand_graph(&package("configuration"), "configuration", graph)
+            .expect_err("engine-owned roots must not become compose containers");
+        assert_eq!(error.code(), "ENGINE_WORKER_IS_BUILTIN");
+        let message = error.to_string();
+        assert!(message.contains("supplied by the engine"), "{message}");
+        assert!(
+            message.contains("engine.workers.configuration"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn injected_engine_root_says_no_declaration_is_needed() {
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "iii-engine-functions".to_string(),
+                version: "0.23.0".to_string(),
+                kind: "engine".to_string(),
+            }],
+            edges: Vec::new(),
+        };
+
+        let error = expand_graph(
+            &package("iii-engine-functions"),
+            "iii-engine-functions",
+            graph,
+        )
+        .expect_err("injected engine roots must not become compose containers");
+        let message = error.to_string();
+        assert!(message.contains("injected automatically"), "{message}");
+        assert!(message.contains("must not be declared"), "{message}");
+    }
+
+    #[test]
+    fn engine_dependencies_are_filtered_from_expanded_graphs() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "api".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+                crate::registry::Node {
+                    name: "configuration".to_string(),
+                    version: "0.23.0".to_string(),
+                    kind: "engine".to_string(),
+                },
+                crate::registry::Node {
+                    name: "state".to_string(),
+                    version: "2.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+            ],
+            edges: vec![
+                ("api".to_string(), "configuration".to_string()),
+                ("api".to_string(), "state".to_string()),
+            ],
+        };
+
+        let expanded = expand_graph(&package("api"), "api", graph).expect("expand graph");
+        let names: Vec<&str> = expanded.iter().map(|entry| entry.key.as_str()).collect();
+        assert_eq!(names, vec!["state", "api"]);
+        assert_eq!(expanded[1].depends_on, vec!["state"]);
+    }
+
+    #[test]
+    fn expanded_graph_is_dependency_first_even_when_registry_nodes_are_not() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "state".to_string(),
+                    version: "2.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+                crate::registry::Node {
+                    name: "db".to_string(),
+                    version: "3.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+                crate::registry::Node {
+                    name: "api".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+            ],
+            edges: vec![
+                ("api".to_string(), "state".to_string()),
+                ("state".to_string(), "db".to_string()),
+            ],
+        };
+
+        let expanded = expand_graph(&package("api"), "api", graph).expect("expand graph");
+        let names: Vec<&str> = expanded.iter().map(|entry| entry.key.as_str()).collect();
+        assert_eq!(names, vec!["db", "state", "api"]);
+    }
+
+    #[test]
+    fn expanded_graph_rejects_registry_dependency_cycles() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "api".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+                crate::registry::Node {
+                    name: "state".to_string(),
+                    version: "2.0.0".to_string(),
+                    kind: "binary".to_string(),
+                },
+            ],
+            edges: vec![
+                ("api".to_string(), "state".to_string()),
+                ("state".to_string(), "api".to_string()),
+            ],
+        };
+
+        let error = expand_graph(&package("api"), "api", graph)
+            .expect_err("registry dependency cycles must be rejected");
+        assert_eq!(error.code(), "DEPENDENCY_CYCLE");
+    }
+
+    #[tokio::test]
+    async fn managed_daemon_uses_the_policy_engine_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "engine: { url: 'ws://127.0.0.1:2/ws', workers: {} }\ncontainers: {}\n",
+        )
+        .unwrap();
+        let compose = ComposeFile::load(&path).unwrap();
+        let policy = EnginePolicy::managed(&compose).unwrap();
+
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "managed-url-test".to_string(),
+            policy,
+        );
+
+        assert_eq!(daemon.engine_url, "ws://127.0.0.1:2/ws");
+    }
 
     #[cfg(unix)]
     #[test]

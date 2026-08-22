@@ -10,7 +10,8 @@ exposes the `compose::*` functions there, so every project operation is a normal
 [trigger](./triggers), addressed to one daemon with `--namespace`.
 
 `iii compose` is intentionally a verbless top-level daemon command, analogous to `iii console`.
-The `up` subcommand is the convenience path that also starts a project and, by default, its engine.
+The `up` subcommand loads a project; the file's optional `engine:` section decides whether Compose
+owns an engine or connects to an external one.
 
 ## The daemon
 
@@ -21,7 +22,7 @@ iii compose [OPTIONS]
 | Option           | Description                                                                            |
 | ---------------- | -------------------------------------------------------------------------------------- |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
-| `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`.        |
+| `--engine <URL>` | Existing engine WebSocket address. Falls back to `III_URL` in external mode.           |
 
 A daemon holds any number of projects, and any number of daemons share one engine. What tells them
 apart is the namespace: the worker name is always `compose`, so the engine leases `(namespace,
@@ -34,7 +35,7 @@ namespace exists to prevent. A generated name never reuses one that already hold
 machine, and the engine refuses a second daemon claiming a namespace that is already served.
 
 ```text
-$ iii compose
+$ iii compose --engine ws://127.0.0.1:49134
 compose serving
   engine: ws://127.0.0.1:49134
   namespace: cobalt-meadow
@@ -52,28 +53,28 @@ engine process is stopped.
 
 ### Starting a project with the daemon
 
-`iii compose up` starts an engine in the background, waits for it to be ready, and then serves and
-brings one project up without waiting for a call to name it. The compose daemon stays in the
-foreground so it can supervise both the project and the engine.
+`iii compose up` validates the initial file, selects engine ownership, and brings the project up
+without waiting for a call to name it. The daemon stays in the foreground to supervise its
+containers and, in managed mode, the engine process.
 
 ```text
-iii compose up [-f, --file <PATH>] [--no-engine]
+iii compose up [-f, --file <PATH>]
 ```
 
 `--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
 names no file. The daemon then stays in the foreground and serves, so every other operation is a
 `compose::*` call as usual.
 
-The managed engine uses `./config.yaml`, or the path selected before the subcommand with
-`iii --config <PATH> compose up`. If the file does not exist, the engine creates its standard
-minimal `workers: []` config. This is the same startup contract as running `iii` manually, so config
-reload and `iii worker add` continue to operate on a real project file.
+When the file contains `engine:`, Compose materializes an engine-only config under
+`~/.iii/compose/<daemon-namespace>/engine-config.yaml`, starts the engine, and removes the generated
+file after a clean shutdown. The Compose file is the source of truth; explicit `--engine` is an
+error, and a process-wide `III_URL` is ignored.
 
 ```text
 $ iii compose up -n orders
 engine started
   pid: 42042
-  config: config.yaml
+  config: /home/me/.iii/compose/orders/engine-config.yaml
   logs: /home/me/.iii/compose/orders/engine.log
   follow logs: tail -f '/home/me/.iii/compose/orders/engine.log'
 
@@ -94,11 +95,11 @@ the engine output.
 A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
 stopped whatever came up, so there is nothing left to supervise.
 
-Use `--no-engine` when the engine is already running. In that mode compose only connects to
-`--engine`, `III_URL`, or the default address, and never stops that external process.
+Without `engine:`, Compose never starts or stops an engine. Supply the external URL explicitly or
+through `III_URL`; there is no default external endpoint.
 
 ```bash
-iii compose up --no-engine --engine ws://127.0.0.1:49134
+iii compose up --engine ws://127.0.0.1:49134
 ```
 
 ### Running it in the background
@@ -111,7 +112,7 @@ that already does both.
 For a quick session, a shell redirect is enough:
 
 ```bash
-iii compose --namespace dev >> ~/iii-compose.log 2>&1 &
+iii compose --namespace dev --engine ws://127.0.0.1:49134 >> ~/iii-compose.log 2>&1 &
 ```
 
 On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
@@ -124,7 +125,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/iii compose --namespace prod
+ExecStart=/usr/local/bin/iii compose --namespace prod --engine ws://127.0.0.1:49134
 Restart=always
 
 [Install]
@@ -205,11 +206,11 @@ other, so those are declared too, as containers with their own `depends_on`.
 Nothing starts behind the file: what runs is still what the file says, and an
 operator can read it, pin it differently, or take a container out.
 
-Two rules shape the expansion. Workers compiled into the engine are skipped,
-because they are already serving and have no artefact to install; an edge to
-one is dropped rather than written, since `depends_on` may only name a
-container the file declares. And a worker two others need is declared once,
-named by both.
+Two rules shape the expansion. Requesting a root package whose registry kind is `engine` fails with
+`ENGINE_WORKER_IS_BUILTIN`, because the engine already supplies it. Engine-kind dependencies of a
+normal project worker are filtered from the graph; an edge to one is dropped rather than written,
+since `depends_on` may only name a container the file declares. And a worker two others need is
+declared once, named by both.
 
 The file is edited, not rewritten: comments, blank lines and quoting survive,
 entries are appended, and the result is parsed before it is written, so a bad
@@ -347,6 +348,17 @@ start.
 namespace: shop
 startup_timeout: 60s
 stop_timeout: 10s
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+    iii-worker-manager:
+      host: 127.0.0.1
+      port: 49134
 containers:
   database:
     worker: path://./workers/database
@@ -376,12 +388,30 @@ containers:
 | `namespace`       | string | absent  | Namespace the project's containers register in. A project that declares none lands in `default`. |
 | `startup_timeout` | string | `60s`   | Readiness budget for every container. A container may override it.                         |
 | `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                         |
-| `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                            |
+| `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                       |
+| `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                              |
 
 The namespace must already be `[a-z0-9_-]`. A value outside that set is refused with
 `INVALID_NAMESPACE` rather than rewritten to fit, so what the file declares is what an operator
 types into `--namespace`. Nothing about the file's path enters it, so two copies of one project
 collide instead of running side by side.
+
+### Engine fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `url` | string | `ws://127.0.0.1:49134` | Managed engine endpoint used by Compose and its containers. |
+| `registration_namespace_grace_ms` | integer | engine default | Namespace-registration grace passed to the engine. |
+| `workers` | map | empty | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
+
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
+and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
+`iii-worker-manager#rbac`. Internal `iii-engine-functions`, `iii-telemetry`, and
+`iii-observability` are injected and must not be declared.
+
+The engine section belongs to the file that started the managed daemon. A runtime change returns
+`ENGINE_RESTART_REQUIRED`; restart the Compose invocation to apply it. A different file cannot
+merge another section into that daemon and fails with `ENGINE_ALREADY_OWNED`.
 
 ### Container fields
 

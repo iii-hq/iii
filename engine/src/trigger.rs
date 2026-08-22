@@ -14,10 +14,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub const KNOWN_TRIGGER_TYPE_PROVIDERS: &[(&str, &str)] = &[
-    ("http", "iii-http"),
-    ("cron", "iii-cron"),
-    ("subscribe", "iii-pubsub"),
-    ("state", "iii-state"),
+    ("http", "http"),
+    ("cron", "cron"),
+    ("subscribe", "pubsub"),
+    ("state", "state"),
     ("durable:subscriber", "queue"),
     ("stream", "iii-stream"),
     ("stream:join", "iii-stream"),
@@ -25,13 +25,6 @@ pub const KNOWN_TRIGGER_TYPE_PROVIDERS: &[(&str, &str)] = &[
     ("log", "iii-observability"),
     ("trace", "iii-observability"),
     ("configuration", "configuration"),
-];
-
-const DEPRECATED_PROVIDER_REPLACEMENTS: &[(&str, &str)] = &[
-    ("iii-http", "http"),
-    ("iii-cron", "cron"),
-    ("iii-state", "state"),
-    ("iii-pubsub", "pubsub"),
 ];
 
 /// Maps a known trigger type to the worker package that provides it. Connected
@@ -43,13 +36,6 @@ pub fn known_trigger_type_provider(trigger_type_id: &str) -> Option<&'static str
         .iter()
         .find(|(id, _)| *id == trigger_type_id)
         .map(|(_, worker)| *worker)
-}
-
-fn preferred_install_name(provider: &'static str) -> &'static str {
-    DEPRECATED_PROVIDER_REPLACEMENTS
-        .iter()
-        .find_map(|(deprecated, replacement)| (*deprecated == provider).then_some(*replacement))
-        .unwrap_or(provider)
 }
 
 /// Outcome of [`TriggerRegistry::register_trigger`].
@@ -762,15 +748,17 @@ impl TriggerRegistry {
             trigger.trigger_type.purple().bold(),
         );
         match known_trigger_type_provider(&trigger.trigger_type) {
-            Some(worker_name) => {
-                let install_name = preferred_install_name(worker_name);
+            Some(worker_name) => format!(
+                "{} If this persists, the {} worker is missing — run: {}",
+                base,
+                worker_name.cyan().bold(),
                 format!(
-                    "{} If this persists, the {} worker is missing — run: {}",
-                    base,
-                    install_name.cyan().bold(),
-                    format!("iii worker add {}", install_name).green().bold()
+                    "iii trigger -n <compose-daemon-namespace> compose::add worker={}",
+                    worker_name
                 )
-            }
+                .green()
+                .bold()
+            ),
             None => format!(
                 "{} If this persists, search for a worker that provides this trigger type at {}",
                 base,
@@ -1716,24 +1704,31 @@ mod tests {
     }
 
     #[test]
-    fn pending_warning_uses_new_install_names_without_changing_legacy_owners() {
+    fn pending_warning_points_to_compose_workers() {
         let cases = [
-            ("http", "iii-http", "http"),
-            ("cron", "iii-cron", "cron"),
-            ("subscribe", "iii-pubsub", "pubsub"),
-            ("state", "iii-state", "state"),
-            ("durable:subscriber", "queue", "queue"),
+            ("http", "http"),
+            ("cron", "cron"),
+            ("subscribe", "pubsub"),
+            ("state", "state"),
+            ("durable:subscriber", "queue"),
         ];
 
-        for (trigger_type, owner, install_name) in cases {
-            assert_eq!(known_trigger_type_provider(trigger_type), Some(owner));
+        for (trigger_type, worker_name) in cases {
+            assert_eq!(known_trigger_type_provider(trigger_type), Some(worker_name));
 
             let msg = TriggerRegistry::pending_trigger_warning(&make_trigger("t1", trigger_type));
-            let expected_hint = format!("iii worker add {install_name}");
+            let expected_hint = format!(
+                "iii trigger -n <compose-daemon-namespace> compose::add worker={worker_name}"
+            );
             assert!(
                 msg.contains(&expected_hint),
                 "Expected hint with '{expected_hint}', got: {msg}"
             );
+            assert!(
+                !msg.contains("iii trigger -n default"),
+                "worker namespace must not be presented as the Compose daemon namespace: {msg}"
+            );
+            assert!(!msg.contains("iii worker"), "legacy command leaked: {msg}");
         }
     }
 

@@ -2,7 +2,9 @@
 
 Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
 
-> **Implementation:** `crates/iii-worker/src/sandbox_daemon/`. Ships inside the `iii-worker` binary; the engine starts the daemon as `iii-worker sandbox-daemon` when `iii-sandbox` appears in `config.yaml`.
+> **Implementation:** `crates/iii-worker/src/sandbox_daemon/`. Ships inside the `iii-worker`
+> support binary; the engine starts it when `iii-sandbox` appears under `engine.workers` (or a
+> directly supervised engine's allowed `config.yaml`).
 
 **Use it for:** running untrusted code, AI-agent tool calls, one-shot scripts, per-request isolation.
 
@@ -105,27 +107,29 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
 ## Sample Configuration
 
 ```yaml
-- name: iii-sandbox
-  config:
-    auto_install: true
-    image_allowlist:
-      - python
-      - node
-    default_idle_timeout_secs: 300
-    max_concurrent_sandboxes: 32
-    max_concurrent_exec_per_sandbox: 4
-    max_exec_timeout_ms: 300000
-    default_cpus: 1
-    default_memory_mb: 512
+engine:
+  workers:
+    iii-sandbox:
+      auto_install: true
+      image_allowlist:
+        - python
+        - node
+      default_idle_timeout_secs: 300
+      max_concurrent_sandboxes: 32
+      max_concurrent_exec_per_sandbox: 4
+      max_exec_timeout_ms: 300000
+      default_cpus: 1
+      default_memory_mb: 512
 ```
 
-`iii worker add iii-sandbox` appends this block to your `config.yaml`. Trim or extend `image_allowlist` and `custom_images` to control what callers can boot.
+Trim or extend `image_allowlist` and `custom_images` to control what callers can boot. Restart the
+managed Compose invocation after changing `engine:`.
 
 ## Configuration
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `auto_install` | boolean | `true` | Pull the image from its OCI ref on first use when the rootfs isn't cached. Set `false` in air-gapped or pre-provisioned deployments — callers get `S101` and operators pre-pull with `iii worker add iiidev/<image>`. |
+| `auto_install` | boolean | `true` | Pull the image from its OCI ref on first use when the rootfs is not cached. Set `false` only for air-gapped or pre-provisioned deployments; a missing cache returns `S101`. |
 | `image_allowlist` | string[] | `[]` | **Fail-closed** list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
 | `default_idle_timeout_secs` | number | `300` | Reap a sandbox when **no activity of any kind** — exec (`last_exec_at`, also bumped by fs::* ops) or relayed network payload — has occurred for this long. A busy sandbox is exempt until `idle_timeout + max_exec_timeout_ms + 60s`, after which it is reclaimed anyway (a slot that outlives every possible deadline is leaked). Size capacity on the exempt case, not the bare timeout. Network liveness is **payload-level**: relayed TCP data, UDP datagrams, and DNS queries count; TCP keepalive probes and bare ACKs do not, so an idle-but-connected client can't pin its VM. The reaper runs every 10 s and reads network liveness at ~1 s granularity. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
 | `max_concurrent_exec_per_sandbox` | number | `4` | Execs admitted simultaneously in one sandbox. Above this, `sandbox::exec` returns `S003`. **Every concurrent exec is a full interpreter in the same guest**, so the safe value is bounded by `default_memory_mb`, not by taste: 4 concurrent `pip install`/`npm install` in a 512 MB guest will OOM-kill each other, and an OOM is a worse failure than the `S003` it replaced. Raise it and `default_memory_mb` together; lower it to 1 to restore strict serialization. `0` is treated as `1`, not as unlimited. |
@@ -468,13 +472,13 @@ The sandbox was reaped or explicitly stopped. Create a new one.
 <a id="S100"></a>
 #### S100 — image not in catalog
 The `image` value isn't a built-in preset (`python`, `node`) and isn't a key in
-`sandbox.custom_images` of `iii.config.yaml`. Either pick a known preset or add
+`engine.workers.iii-sandbox.custom_images`. Either pick a known preset or add
 a custom_images entry.
 
 <a id="S101"></a>
 #### S101 — rootfs missing
-The image is in the catalog but the rootfs isn't on disk. Operator action:
-run `iii worker add <image-ref>` on the host.
+The image is in the catalog but the rootfs is not on disk. Enable `auto_install`, or pre-provision
+the sandbox image cache through the deployment's image preparation process.
 
 <a id="S102"></a>
 #### S102 — auto-install failed (transient)

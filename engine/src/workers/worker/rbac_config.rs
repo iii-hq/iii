@@ -356,9 +356,8 @@ impl<'de> Deserialize<'de> for FunctionFilter {
 //                       ▼
 //                     DENY (FORBIDDEN)
 //
-// The RBAC carve-out keys on this exact slice via
-// [`is_infrastructure_function`]: only these specific builtin ids are always
-// allowed regardless of `expose_functions`.
+// The RBAC carve-out keys on this exact slice: only these specific builtin ids
+// are always allowed regardless of `expose_functions`.
 //
 // The middleware bypass (see engine/src/engine/mod.rs) keys on a different,
 // broader predicate — `Engine::is_engine_owned_builtin` — which lets ALL
@@ -387,13 +386,6 @@ const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
     "engine::baggage::set",
     "engine::baggage::get_all",
 ];
-
-/// Whether `function_id` is one of the privileged builtin infrastructure ids.
-/// Both the RBAC carve-out and the middleware bypass key on this exact list, so
-/// a worker-registered `engine::foo` is neither auto-allowed nor middleware-exempt.
-pub(crate) fn is_infrastructure_function(function_id: &str) -> bool {
-    INFRASTRUCTURE_FUNCTIONS.contains(&function_id)
-}
 
 /// Whether one scoped grant covers `function_id`.
 ///

@@ -4,14 +4,10 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! External worker support: spawns installed binaries from `iii_workers/` as child processes.
-//!
-//! When the engine encounters a worker class that isn't registered in the built-in
-//! registry, it checks `iii.toml` for installed workers and spawns the corresponding
-//! binary, passing its config via a temporary YAML file.
+//! Support for the small set of engine-owned workers implemented by sibling
+//! binaries. Project workers are started by Compose and never resolved here.
 
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -19,8 +15,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-
-use serde::Deserialize;
 
 use serde_json::Value;
 use tokio::{
@@ -30,20 +24,6 @@ use tokio::{
 };
 
 use crate::{engine::Engine, workers::traits::Worker};
-
-/// Resolves an external worker class to a binary path.
-///
-/// Convention: `workers::image_resize::ImageResizeModule`
-///   -> extract middle segment `image_resize`
-///   -> convert underscores to hyphens: `image-resize`
-///   -> binary at `iii_workers/image-resize`
-///
-/// Also checks `iii.toml` to verify the worker is actually installed.
-
-#[derive(Deserialize)]
-struct ManifestFile {
-    workers: Option<BTreeMap<String, String>>,
-}
 
 /// A built-in external worker: a worker name that resolves to a binary
 /// on $PATH plus extra args, instead of the conventional
@@ -59,96 +39,23 @@ struct KnownExternal {
 }
 
 /// Workers shipped as subcommands of a single binary on $PATH, not as
-/// standalone binaries in iii_workers/. Resolved in
-/// `resolve_external_module_in` before the iii.toml lookup.
-const KNOWN_EXTERNAL: &[KnownExternal] = &[
-    KnownExternal {
-        name: "iii-sandbox",
-        binary: "iii-worker",
-        args: &["sandbox-daemon"],
-    },
-    // Slug is "iii-worker-ops" to avoid clashing with the built-in
-    // `WorkerManager` already registered as "iii-worker-manager".
-    KnownExternal {
-        name: "iii-worker-ops",
-        binary: "iii-worker",
-        args: &["worker-manager-daemon"],
-    },
-];
+/// standalone project workers. This list is intentionally closed: unknown
+/// workers belong in `worker-compose.yaml`.
+const KNOWN_EXTERNAL: &[KnownExternal] = &[KnownExternal {
+    name: "iii-sandbox",
+    binary: "iii-worker",
+    args: &["sandbox-daemon"],
+}];
 
 pub fn resolve_external_module(class: &str) -> Option<ExternalWorkerInfo> {
-    let base_dir = std::env::current_dir().ok()?;
-    resolve_external_module_in(&base_dir, class)
-}
-
-pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<ExternalWorkerInfo> {
-    // Normalize the class to a binary-name candidate for KNOWN_EXTERNAL
-    // matching. The real caller (`WorkerRegistry::create_worker`) passes
-    // the bare `name` from config.yaml — e.g. "iii-sandbox". Tests and
-    // the legacy iii.toml path use the `workers::<slug>` form. Handle
-    // both by taking the last `::` segment (or the whole string if no
-    // separator) and normalizing `_` -> `-`.
-    let binary_name_candidate = class.rsplit("::").next().unwrap_or(class).replace('_', "-");
-
-    // Check well-known externals first. These are shipped as
-    // subcommands of iii-binaries on $PATH, so we skip the
-    // iii_workers/<name> directory convention entirely.
-    if let Some(hit) = KNOWN_EXTERNAL
-        .iter()
-        .find(|k| k.name == binary_name_candidate)
-    {
-        // Shared PATH-first resolver: system PATH, then managed ~/.local/bin.
-        let binary_path = crate::bin_resolve::find_existing_binary(hit.binary)?;
-
-        return Some(ExternalWorkerInfo {
-            name: binary_name_candidate,
-            binary_path,
-            extra_args: hit.args.iter().map(|s| (*s).to_string()).collect(),
-            env: Vec::new(),
-        });
-    }
-
-    // iii.toml lookup uses the `workers::<slug>` class-path form.
-    let parts: Vec<&str> = class.split("::").collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let slug = parts.get(1)?;
-    let binary_name = slug.replace('_', "-");
-
-    // Parse iii.toml and check for exact worker key
-    let manifest_path = base_dir.join("iii.toml");
-    if manifest_path.exists() {
-        let content = std::fs::read_to_string(&manifest_path).ok()?;
-        let parsed: ManifestFile = toml::from_str(&content).ok()?;
-        let workers = parsed.workers.unwrap_or_default();
-        if !workers.contains_key(&binary_name) {
-            return None;
-        }
-    } else {
-        return None;
-    }
-
-    let file_name = if cfg!(target_os = "windows") {
-        format!("{}.exe", binary_name)
-    } else {
-        binary_name.clone()
-    };
-    let binary_path = base_dir.join("iii_workers").join(&file_name);
-    if !binary_path.exists() {
-        tracing::warn!(
-            "Worker '{}' is in iii.toml but binary not found at {}",
-            binary_name,
-            binary_path.display()
-        );
-        return None;
-    }
+    let hit = KNOWN_EXTERNAL.iter().find(|known| known.name == class)?;
+    // Shared PATH-first resolver: system PATH, then managed ~/.local/bin.
+    let binary_path = crate::bin_resolve::find_existing_binary(hit.binary)?;
 
     Some(ExternalWorkerInfo {
-        name: binary_name,
+        name: class.to_string(),
         binary_path,
-        extra_args: vec![],
+        extra_args: hit.args.iter().map(|arg| (*arg).to_string()).collect(),
         env: Vec::new(),
     })
 }
@@ -157,21 +64,17 @@ pub struct ExternalWorkerInfo {
     pub name: String,
     pub binary_path: PathBuf,
     /// Args prepended to the child's argv, before `--config <path>`.
-    /// Empty for conventional iii_workers/<binary> resolution; populated
-    /// when the worker was matched via KNOWN_EXTERNAL.
+    /// Populated when the worker is dispatched through a sibling binary.
     pub extra_args: Vec<String>,
-    /// Extra environment variables set on the child (e.g. `III_CONFIG_PATH`
-    /// so daemons that edit the project config file target the engine's
-    /// actual file, not a hardcoded ./config.yaml).
+    /// Extra environment variables set on the child.
     pub env: Vec<(String, String)>,
 }
 
-/// A worker implementation backed by an external binary from `iii_workers/`.
+/// A worker implementation backed by an engine-owned sibling binary.
 ///
 /// The binary is spawned as a child process during `start_background_tasks`
 /// and killed during `destroy`. A supervisor task respawns it (with backoff)
-/// if it exits unexpectedly — a dead worker-manager daemon must not take the
-/// `worker::*` surface down until an engine restart (MOT-3857). The worker
+/// if it exits unexpectedly. The worker
 /// config is serialized to a temporary YAML file and passed via
 /// `--config <path>`.
 #[derive(Clone)]
@@ -181,8 +84,8 @@ pub struct ExternalWorker {
     binary_path: PathBuf,
     extra_args: Vec<String>,
     /// Effective `iii-worker-manager` port, from `engine.worker_manager_port()`.
-    /// Exported to the child as III_ENGINE_URL/III_URL so builtin daemons
-    /// (sandbox-daemon, worker-manager-daemon) connect back to THIS engine
+    /// Exported to the child as III_ENGINE_URL/III_URL so the sandbox daemon
+    /// connects back to THIS engine
     /// instead of their hardcoded ws://127.0.0.1:49134 default (MOT-3970).
     worker_manager_port: u16,
     env: Vec<(String, String)>,
@@ -501,9 +404,7 @@ impl Worker for ExternalWorker {
         }
 
         // Supervisor: kill the child on shutdown, respawn it on unexpected
-        // exit. Without the respawn, a dead worker-manager daemon takes the
-        // whole worker::* surface down until a full engine restart
-        // (MOT-3857).
+        // exit.
         let worker = self.clone();
         tokio::spawn(async move {
             let mut backoff = RESPAWN_BACKOFF_MIN;
@@ -708,179 +609,15 @@ where
 mod tests {
     use super::*;
 
-    /// Creates a temp dir with an `iii.toml` and optional binaries under `iii_workers/`.
-    fn setup_manifest(workers: &[(&str, &str)], binaries: &[&str]) -> tempfile::TempDir {
-        let dir = tempfile::TempDir::new().unwrap();
-
-        let mut toml = String::from("[workers]\n");
-        for (name, version) in workers {
-            toml.push_str(&format!("{} = \"{}\"\n", name, version));
-        }
-        std::fs::write(dir.path().join("iii.toml"), &toml).unwrap();
-
-        let workers_dir = dir.path().join("iii_workers");
-        std::fs::create_dir_all(&workers_dir).unwrap();
-        for bin in binaries {
-            std::fs::write(workers_dir.join(bin), b"fake-binary").unwrap();
-        }
-
-        dir
-    }
-
     #[test]
     fn resolve_external_module_returns_none_for_builtin_name() {
         assert!(resolve_external_module("iii-stream").is_none());
     }
 
     #[test]
-    fn resolve_external_module_returns_none_for_short_class() {
-        assert!(resolve_external_module("SomeModule").is_none());
-    }
-
-    #[test]
-    fn resolve_happy_path_three_segment_class() {
-        let dir = setup_manifest(&[("image-resize", "1.0.0")], &["image-resize"]);
-
-        let result =
-            resolve_external_module_in(dir.path(), "workers::image_resize::ImageResizeModule");
-        let info = result.expect("should resolve valid external module");
-        assert_eq!(info.name, "image-resize");
-        assert_eq!(
-            info.binary_path,
-            dir.path().join("iii_workers/image-resize")
-        );
-    }
-
-    #[test]
-    fn resolve_happy_path_two_segment_class() {
-        let dir = setup_manifest(&[("my-worker", "2.0.0")], &["my-worker"]);
-
-        let result = resolve_external_module_in(dir.path(), "workers::my_worker");
-        let info = result.expect("two-segment class should resolve");
-        assert_eq!(info.name, "my-worker");
-    }
-
-    #[test]
-    fn resolve_underscore_to_hyphen_conversion() {
-        let dir = setup_manifest(&[("data-transform", "0.1.0")], &["data-transform"]);
-
-        let result =
-            resolve_external_module_in(dir.path(), "workers::data_transform::DataTransformModule");
-        let info = result.expect("underscores should convert to hyphens");
-        assert_eq!(info.name, "data-transform");
-    }
-
-    #[test]
-    fn resolve_selects_correct_worker_among_multiple() {
-        let dir = setup_manifest(
-            &[("alpha", "1.0.0"), ("beta", "2.0.0"), ("gamma", "3.0.0")],
-            &["alpha", "beta", "gamma"],
-        );
-
-        let result = resolve_external_module_in(dir.path(), "workers::beta::BetaModule");
-        let info = result.expect("should resolve 'beta' among multiple workers");
-        assert_eq!(info.name, "beta");
-    }
-
-    #[test]
-    fn resolve_slug_with_no_underscores_passes_through() {
-        let dir = setup_manifest(&[("simple", "1.0.0")], &["simple"]);
-
-        let result = resolve_external_module_in(dir.path(), "workers::simple::SimpleModule");
-        let info = result.expect("slug without underscores should pass through unchanged");
-        assert_eq!(info.name, "simple");
-    }
-
-    #[test]
-    fn resolve_returns_none_for_empty_class() {
-        let dir = setup_manifest(&[("x", "1.0.0")], &["x"]);
-        assert!(resolve_external_module_in(dir.path(), "").is_none());
-    }
-
-    #[test]
-    fn resolve_returns_none_for_single_segment_class() {
-        let dir = setup_manifest(&[("x", "1.0.0")], &["x"]);
-        assert!(resolve_external_module_in(dir.path(), "OnlyOneSegment").is_none());
-    }
-
-    #[test]
-    fn resolve_returns_none_when_no_iii_toml() {
-        let dir = tempfile::TempDir::new().unwrap();
-        // No iii.toml created
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::foo::FooModule").is_none(),
-            "should return None when iii.toml does not exist"
-        );
-    }
-
-    #[test]
-    fn resolve_returns_none_when_worker_not_in_manifest() {
-        let dir = setup_manifest(&[("other-worker", "1.0.0")], &["other-worker"]);
-
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::missing::MissingModule").is_none(),
-            "should return None when worker key is not in iii.toml"
-        );
-    }
-
-    #[test]
-    fn resolve_returns_none_when_binary_missing_on_disk() {
-        // Worker is in iii.toml but binary file doesn't exist
-        let dir = setup_manifest(&[("ghost", "1.0.0")], &[]); // no binaries created
-
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::ghost::GhostModule").is_none(),
-            "should return None when binary is not on disk"
-        );
-    }
-
-    #[test]
-    fn resolve_returns_none_for_empty_workers_section() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("iii.toml"), "[workers]\n").unwrap();
-        std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
-
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::foo::FooModule").is_none(),
-            "empty workers section should not match anything"
-        );
-    }
-
-    #[test]
-    fn resolve_returns_none_when_toml_has_no_workers_key() {
-        let dir = tempfile::TempDir::new().unwrap();
-        // Valid TOML but no [workers] section
-        std::fs::write(dir.path().join("iii.toml"), "[package]\nname = \"test\"\n").unwrap();
-        std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
-
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::foo::FooModule").is_none(),
-            "should return None when iii.toml has no [workers] section"
-        );
-    }
-
-    #[test]
-    fn resolve_no_false_positive_on_substring() {
-        let dir = setup_manifest(&[("image-resize", "1.0.0")], &["image-resize"]);
-
-        // "workers::image::ImageModule" extracts slug "image" which should NOT match "image-resize"
-        let result = resolve_external_module_in(dir.path(), "workers::image::ImageModule");
-        assert!(
-            result.is_none(),
-            "Should not match 'image' when only 'image-resize' is installed"
-        );
-    }
-
-    #[test]
-    fn resolve_returns_none_for_malformed_toml() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("iii.toml"), "this is not valid toml {{{{").unwrap();
-        std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
-
-        assert!(
-            resolve_external_module_in(dir.path(), "workers::foo::FooModule").is_none(),
-            "should return None for unparseable iii.toml"
-        );
+    fn resolve_external_module_returns_none_for_legacy_class_paths() {
+        assert!(resolve_external_module("workers::iii_sandbox").is_none());
+        assert!(resolve_external_module("workers::image_resize::ImageResizeModule").is_none());
     }
 
     #[test]
@@ -1041,92 +778,17 @@ mod tests {
     }
 
     #[test]
-    fn known_external_iii_worker_ops_dispatches_to_iii_worker() {
-        let hit = KNOWN_EXTERNAL
-            .iter()
-            .find(|k| k.name == "iii-worker-ops")
-            .expect("iii-worker-ops must be in KNOWN_EXTERNAL");
-        assert_eq!(hit.binary, "iii-worker");
-        assert_eq!(hit.args, &["worker-manager-daemon"]);
+    fn known_external_does_not_expose_legacy_worker_ops() {
+        assert!(
+            KNOWN_EXTERNAL
+                .iter()
+                .all(|entry| entry.name != "iii-worker-ops")
+        );
     }
 
     #[test]
     #[serial_test::serial]
-    fn resolves_iii_worker_ops_to_subcommand() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("iii-worker");
-        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let orig_path = std::env::var_os("PATH");
-        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
-        unsafe {
-            std::env::set_var("PATH", dir.path());
-        }
-
-        let result = resolve_external_module_in(dir.path(), "iii-worker-ops");
-
-        // SAFETY: test is marked #[serial]; restoring original.
-        unsafe {
-            if let Some(v) = orig_path {
-                std::env::set_var("PATH", v);
-            } else {
-                std::env::remove_var("PATH");
-            }
-        }
-
-        let info = result.expect("bare 'iii-worker-ops' must resolve via KNOWN_EXTERNAL");
-        assert_eq!(info.name, "iii-worker-ops");
-        assert_eq!(info.binary_path, fake);
-        assert_eq!(info.extra_args, vec!["worker-manager-daemon".to_string()]);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn resolve_external_module_in_hits_known_external_when_binary_on_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("iii-worker");
-        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let orig_path = std::env::var_os("PATH");
-        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
-        unsafe {
-            std::env::set_var("PATH", dir.path());
-        }
-
-        let result = resolve_external_module_in(dir.path(), "workers::iii_sandbox");
-
-        // SAFETY: test is marked #[serial] so no other thread mutates env concurrently.
-        unsafe {
-            if let Some(v) = orig_path {
-                std::env::set_var("PATH", v);
-            } else {
-                std::env::remove_var("PATH");
-            }
-        }
-
-        let info = result.expect("iii-sandbox should resolve via KNOWN_EXTERNAL");
-        assert_eq!(info.name, "iii-sandbox");
-        assert_eq!(info.binary_path, fake);
-        assert_eq!(info.extra_args, vec!["sandbox-daemon".to_string()]);
-    }
-
-    // Regression: `WorkerRegistry::create_worker` calls
-    // `resolve_external_module(name)` with the bare `name` from
-    // config.yaml — e.g. "iii-sandbox" — not the `workers::iii_sandbox`
-    // class-path form. The KNOWN_EXTERNAL lookup must handle both.
-    #[test]
-    #[serial_test::serial]
-    fn resolve_external_module_in_hits_known_external_with_bare_name() {
+    fn resolve_external_module_hits_known_external_with_bare_name() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("iii-worker");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
@@ -1142,7 +804,7 @@ mod tests {
             std::env::set_var("PATH", dir.path());
         }
 
-        let result = resolve_external_module_in(dir.path(), "iii-sandbox");
+        let result = resolve_external_module("iii-sandbox");
 
         // SAFETY: #[serial]; restoring original.
         unsafe {

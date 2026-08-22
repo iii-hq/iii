@@ -1,15 +1,19 @@
-workers:
-  - name: iii-stream
-    config:
+namespace: default
+engine:
+  workers:
+    iii-stream:
       port: ${STREAM_PORT:31112}
       host: 127.0.0.1
       adapter:
         name: bridge
         config:
           bridge_url: ws://localhost:49133
-
-  - name: iii-http
-    config:
+containers:
+  http:
+    worker: package://api.workers.iii.dev/http
+    version: "0.21.3"
+    config_name: http
+    config_override:
       port: ${API_PORT:3111}
       host: 127.0.0.1
       default_timeout: 30000
@@ -18,15 +22,4 @@ workers:
         allowed_origins:
           - http://localhost:3000
           - http://localhost:5173
-        allowed_methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
-
-  - name: iii-observability
-    config:
-      enabled: false
-      level: debug
-      format: default
+        allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]

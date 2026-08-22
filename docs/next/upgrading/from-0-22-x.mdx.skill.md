@@ -3,6 +3,12 @@
 # Upgrading from 0.22.x to 0.23.x
 
 
+<Warning>
+  0.23 also removes engine-managed project workers and the `iii worker` / `worker::*` lifecycle
+  surface. Complete [Move workers from config.yaml to
+  Compose](./workers-to-compose) before starting an existing project.
+</Warning>
+
 0.23.x adds namespaces as a routing dimension. Workers that declare no namespace land in `default`
 and behave exactly as before, so most projects upgrade with no code change. The one hard break is
 durable queue naming on the RabbitMQ adapter. Apply the steps below that touch surfaces your project
@@ -37,39 +43,17 @@ For each affected subscriber:
 3. Upgrade and restart. The adapter declares the new namespace-qualified queue on the next subscribe.
 4. Delete the drained queue and its dead-letter queue from the broker.
 
-## Step 2: Verify migration of engine-managed queues
+## Step 2: Preserve queue storage before moving the worker
 
-This step applies when your deployment stores durable queues in the queue storage managed by the
-engine. It does not apply to RabbitMQ.
+The queue implementation is no longer supplied by the engine. Before upgrading, stop publishing
+and let 0.22.x drain active work, then move `iii-queue` to the standalone `queue` Compose package.
+Keep the same `file_path` or broker settings under its `config_override`; changing the path creates
+an empty store and leaves the old jobs behind.
 
-At startup, before queue consumers start, the engine scans the stored durable subscriber queues. For
-each queue without a namespace, it moves the waiting, active, delayed, and dead-letter entries to the
-same queue in `default`. Active jobs return to the waiting state. Delayed jobs keep their scheduled
-time.
-
-| Before                       | After                                |
-| ---------------------------- | ------------------------------------ |
-| `{topic}::{function_id}`     | `{topic}::{function_id}@default`     |
-
-The engine uses `default` because a legacy queue does not contain a namespace. The migration is
-idempotent. If startup stops during migration, the next startup continues without duplicating jobs.
-The engine logs each migrated queue:
-
-```text
-Drained legacy subscriber queue into its namespace
-```
-
-If a legacy queue name contains `@`, the engine cannot determine if the character is part of the old
-name or marks a namespace. It does not migrate that queue and logs this warning:
-
-```text
-Queue name contains the namespace separator; skipped by the legacy subscriber-queue drain
-```
-
-<Warning>
-  If you see this warning, stop publishing. Restart 0.22.x with the same queue storage, let its
-  consumer drain the skipped queue, and then repeat the upgrade.
-</Warning>
+Follow the queue row in [Move workers from config.yaml to
+Compose](./workers-to-compose), including the configuration-id change from `iii-queue` to `queue`.
+Back up the queue data before the first 0.23 start. iii does not rewrite or relocate it
+automatically.
 
 ## Step 3: Tune the registration grace period, if needed
 
@@ -80,13 +64,16 @@ the grace period expires and the connection is set to `default`.
 The default grace period is 5000 ms. Raise it if workers on slow links register but land in `default`
 unexpectedly:
 
-```yaml config.yaml
-registration_namespace_grace_ms: 10000
+```yaml worker-compose.yaml
+engine:
+  registration_namespace_grace_ms: 10000
+  workers: {}
 ```
 
 Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a worker environment. It
 applies to namespace resolution for all new worker connections and overrides
-`registration_namespace_grace_ms`.
+`registration_namespace_grace_ms`. A directly supervised engine keeps the same field at the top
+level of `config.yaml`.
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 
@@ -101,9 +88,9 @@ a non-default namespace registers an `engine::*` function id, the engine rejects
 with `FUNCTION_NAMESPACE_CONFLICT`. The connection stays open, and its other functions continue to
 serve requests. Rename the function with your own `service::name` prefix.
 
-The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
-The rule does not reject these functions. It applies to a custom worker connection that registers an
-`engine::*` function in a non-default namespace.
+The standalone queue worker registers its infrastructure functions in `default`. The rule does not
+reject those functions. It applies to a custom worker connection that registers an `engine::*`
+function in a non-default namespace.
 
 ## Step 5: Scope RBAC rules when adopting a namespace
 
@@ -135,8 +122,9 @@ returns no `namespaces` keeps the behaviour it had.
 ## Migration checklist
 
 - [ ] Drain and delete pre-0.23 RabbitMQ subscriber and dead-letter queues (Step 1)
-- [ ] Confirm the engine logged each legacy queue migration on startup (Step 2)
-- [ ] Recover each queue that the legacy migration skipped because its name contains `@` (Step 2)
+- [ ] Stop publishers and drain active `iii-queue` jobs before the upgrade (Step 2)
+- [ ] Back up the queue data and preserve its `file_path` or broker settings (Step 2)
+- [ ] Rename the queue configuration id from `iii-queue` to `queue` (Step 2)
 - [ ] Raise `registration_namespace_grace_ms` if workers land in `default` unexpectedly (Step 3)
 - [ ] Rename `engine::*` function ids registered by namespaced workers (Step 4)
 - [ ] Add `namespace:` to `expose_functions` rules for namespaced workers (Step 5)

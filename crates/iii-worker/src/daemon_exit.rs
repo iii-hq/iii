@@ -1,10 +1,9 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Shared self-exit watch for engine-spawned daemons (`worker-manager-daemon`,
-//! `sandbox-daemon`).
+//! Shared self-exit watch for the engine-spawned `sandbox-daemon`.
 //!
-//! The engine spawns these daemons in their OWN session (setsid, see
+//! The engine spawns this daemon in its OWN session (setsid, see
 //! engine/src/workers/external.rs) so it can clean-kill the whole process
 //! group — but that detaches them from parent-death signals (an orphaned
 //! session leader gets no SIGHUP from the kernel). Without a self-exit path,

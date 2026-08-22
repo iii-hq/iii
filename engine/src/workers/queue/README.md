@@ -1,15 +1,15 @@
-# iii-queue
+# Queue compatibility API
 
 Asynchronous job processing with named queues, retries, and dead-letter support.
 
-> **Queueing is no longer built into the engine by default.** `iii-queue` is
-> retired from the default runtime — the engine routes `TriggerAction.Enqueue`
+> **Queueing is no longer built into the engine.** The legacy `iii-queue` worker is
+> no longer registered — the engine routes `TriggerAction.Enqueue`
 > and `durable:subscriber` through the standalone **`queue`** worker instead. If
-> enqueue fails with `enqueue_error: … engine::queue::enqueue not found`, install
-> the worker:
+> enqueue fails with `enqueue_error: … engine::queue::enqueue not found`, add
+> the standalone worker to Compose:
 >
 > ```bash
-> iii worker add queue
+> iii trigger -n dev compose::add worker=queue
 > ```
 
 Supports two modes:
@@ -17,42 +17,46 @@ Supports two modes:
 - **Topic-based queues** — register a consumer per topic, emit events via `iii::durable::publish`. Fan-out: every distinct function subscribed to a topic receives a copy of each message.
 - **Named queues** — define queues in config, then enqueue function calls via `TriggerAction.Enqueue`. No trigger registration needed.
 
-## Install
+## Add to Compose
 
 ```bash
-iii worker add iii-queue
+iii trigger -n dev compose::add worker=queue
 ```
 
 Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
 
 ## Skills
 
-Install the `iii-queue` agent skill for Claude Code, Cursor, and 30+ other agents:
+Install the standalone `queue` agent skill for Claude Code, Cursor, and 30+ other agents:
 
 ```bash
-npx skills add iii-hq/iii --full-depth --skill iii-queue
+npx skills add iii-hq/workers --skill queue
 ```
 
 ## Sample Configuration
 
 ```yaml
-- name: iii-queue
-  config:
-    queue_configs:
-      default:
-        max_retries: 5
-        concurrency: 5
-        type: standard
-      payment:
-        max_retries: 10
-        concurrency: 2
-        type: fifo
-        message_group_field: transaction_id
-    adapter:
-      name: builtin
-      config:
-        store_method: file_based
-        file_path: ./data/queue_store
+containers:
+  queue:
+    worker: package://api.workers.iii.dev/queue
+    version: "0.21.5"
+    config_name: queue
+    config_override:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 5
+          type: standard
+        payment:
+          max_retries: 10
+          concurrency: 2
+          type: fifo
+          message_group_field: transaction_id
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
 ```
 
 ## Configuration

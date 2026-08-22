@@ -47,7 +47,7 @@ fn help_flag_shows_all_subcommands() {
     // All subcommands should appear in help
     assert!(stdout.contains("trigger"), "help should list trigger");
     assert!(stdout.contains("console"), "help should list console");
-    assert!(stdout.contains("worker"), "help should list worker");
+    assert!(!stdout.contains("  worker"), "help must not list worker");
     assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");
     // "create" was replaced by `iii project init --template` — it must not
@@ -106,112 +106,16 @@ fn start_subcommand_is_rejected() {
 // ── Worker subcommand group ─────────────────────────────────────────
 
 #[test]
-fn worker_help_shows_subcommands() {
+fn worker_subcommand_is_rejected() {
     let output = iii_bin()
-        .args(["worker", "--help"])
-        .output()
-        .expect("failed to execute");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("add"), "worker help should list add");
-    assert!(stdout.contains("remove"), "worker help should list remove");
-    assert!(stdout.contains("list"), "worker help should list list");
-    assert!(stdout.contains("logs"), "worker help should list logs");
-}
-
-#[test]
-fn worker_without_subcommand_shows_help() {
-    let output = iii_bin().arg("worker").output().expect("failed to execute");
-    // clap shows help/error when subcommand is missing
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("add") || combined.contains("Usage"),
-        "worker without subcommand should show help or usage"
-    );
-}
-
-#[test]
-fn worker_list_runs_in_empty_dir() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = iii_bin()
-        .args(["worker", "list"])
-        .current_dir(dir.path())
-        .output()
-        .expect("failed to execute");
-    // Should succeed (empty list) or fail gracefully (no iii.toml)
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = format!("{}{}", stderr, stdout);
-    assert!(
-        combined.contains("No workers") || combined.contains("iii.toml") || output.status.success(),
-        "worker list should handle empty directory gracefully, got: {}",
-        combined
-    );
-}
-
-#[test]
-fn worker_add_without_network_fails_gracefully() {
-    // worker add with a fake name — should fail with a registry error, not panic
-    let dir = tempfile::tempdir().unwrap();
-    let output = iii_bin()
-        .args(["worker", "add", "nonexistent-worker-xyz-99999"])
-        .current_dir(dir.path())
-        .output()
-        .expect("failed to execute");
-    assert!(
-        !output.status.success(),
-        "adding nonexistent worker should fail"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("error") || stderr.contains("failed") || stderr.contains("not found"),
-        "should show an error message, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn worker_remove_nonexistent_fails_gracefully() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = iii_bin()
-        .args(["worker", "remove", "nonexistent-worker"])
-        .current_dir(dir.path())
+        .args(["worker", "add", "http"])
         .output()
         .expect("failed to execute");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("error") || stderr.contains("not installed") || stderr.contains("iii.toml"),
-        "should show a helpful error, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn worker_info_is_not_a_valid_subcommand() {
-    let output = iii_bin()
-        .args(["worker", "info"])
-        .output()
-        .expect("failed to execute");
-    assert!(
-        !output.status.success(),
-        "worker info should fail (not a valid subcommand)"
-    );
-}
-
-#[test]
-fn worker_remove_requires_worker_name() {
-    let output = iii_bin()
-        .args(["worker", "remove"])
-        .output()
-        .expect("failed to execute");
-    assert!(
-        !output.status.success(),
-        "worker remove without name should fail"
+        stderr.contains("unrecognized subcommand") && stderr.contains("worker"),
+        "worker should be rejected by the root CLI, got: {stderr}"
     );
 }
 
@@ -252,18 +156,38 @@ fn no_update_check_flag_accepted_with_version() {
 }
 
 #[test]
-fn no_update_check_flag_accepted_with_worker_list() {
-    let dir = tempfile::tempdir().unwrap();
+fn no_update_check_flag_accepted_with_subcommand() {
     let output = iii_bin()
-        .args(["--no-update-check", "worker", "list"])
-        .current_dir(dir.path())
+        .args(["--no-update-check", "compose", "--help"])
         .output()
         .expect("failed to execute");
-    // May succeed or fail (no iii.toml), but should not reject the flag
+    assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("unexpected argument"),
         "--no-update-check should be accepted globally"
+    );
+}
+
+#[test]
+fn config_flag_is_rejected_with_compose() {
+    let output = iii_bin()
+        .args([
+            "--config",
+            "legacy-config.yaml",
+            "compose",
+            "--engine",
+            "ws://127.0.0.1:49134",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--config cannot be used with `iii compose`")
+            && stderr.contains("engine: in worker-compose.yaml"),
+        "compose should reject the legacy root config instead of silently ignoring it:\n{stderr}"
     );
 }
 
@@ -276,8 +200,7 @@ fn error_messages_never_reference_iii_cli() {
 
     let commands: Vec<Vec<&str>> = vec![
         vec!["start"],                           // invalid subcommand
-        vec!["worker", "remove", "nonexistent"], // worker not found
-        vec!["worker", "info"],                  // invalid subcommand
+        vec!["worker", "remove", "nonexistent"], // removed subcommand
     ];
 
     for args in &commands {
@@ -302,14 +225,19 @@ fn error_messages_never_reference_iii_cli() {
 
 #[test]
 fn old_install_command_is_not_valid() {
-    // "iii install" should not work — use "iii worker add" instead
+    // "iii install" should not work; project workers are managed by Compose.
     let output = iii_bin()
         .arg("install")
         .output()
         .expect("failed to execute");
     assert!(
         !output.status.success(),
-        "\"iii install\" should not be valid (use \"iii worker add\")"
+        "\"iii install\" should not be valid"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("install"),
+        "install should be rejected by the root CLI, got: {stderr}"
     );
 }
 
@@ -321,16 +249,23 @@ fn old_uninstall_command_is_not_valid() {
         .expect("failed to execute");
     assert!(
         !output.status.success(),
-        "\"iii uninstall\" should not be valid (use \"iii worker remove\")"
+        "\"iii uninstall\" should not be valid"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("uninstall"),
+        "uninstall should be rejected by the root CLI, got: {stderr}"
     );
 }
 
 #[test]
 fn old_list_command_is_not_valid() {
     let output = iii_bin().arg("list").output().expect("failed to execute");
+    assert!(!output.status.success(), "\"iii list\" should not be valid");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "\"iii list\" should not be valid (use \"iii worker list\")"
+        stderr.contains("unrecognized subcommand") && stderr.contains("list"),
+        "list should be rejected by the root CLI, got: {stderr}"
     );
 }
 
@@ -340,9 +275,11 @@ fn old_info_command_is_not_valid() {
         .args(["info", "pdfkit"])
         .output()
         .expect("failed to execute");
+    assert!(!output.status.success(), "\"iii info\" should not be valid");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "\"iii info\" should not be valid (use \"iii worker info\")"
+        stderr.contains("unrecognized subcommand") && stderr.contains("info"),
+        "info should be rejected by the root CLI, got: {stderr}"
     );
 }
 

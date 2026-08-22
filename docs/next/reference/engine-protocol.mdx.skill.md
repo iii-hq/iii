@@ -14,16 +14,18 @@
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the iii-observability worker.
+  end-to-end by the iii-observability worker. The engine injects this worker automatically; do not
+  declare it in `config.yaml`, `engine.workers`, or `containers`.
 </Note>
 
 ## Connection ports
 
-The engine binds three ports of its own and runs alongside one more from the observability worker:
+The engine binds its worker and stream WebSockets. Project HTTP routes and observability use their
+own workers:
 
 | Port    | Bound by           | Surface                                                       |
 | ------- | ------------------ | ------------------------------------------------------------- |
-| `3111`  | engine             | REST API.                                                     |
+| `3111`  | `http` worker      | Project HTTP routes (configurable in `worker-compose.yaml`).   |
 | `3112`  | engine             | Stream API (WebSocket; consumer-side stream subscriptions).   |
 | `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
 | `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |

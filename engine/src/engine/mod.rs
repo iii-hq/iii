@@ -419,15 +419,12 @@ pub struct Engine {
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     /// Effective `iii-worker-manager` port, resolved from config at build
     /// time. Set once by `EngineBuilder::build`; subsequent reads see the
-    /// same value for the engine's lifetime. Used by `registry_worker::
-    /// ExternalWorkerProcess::spawn` so externally-spawned workers connect
-    /// back to the actual configured port, not a hardcoded DEFAULT_PORT.
+    /// same value for the engine's lifetime. Engine-owned external workers
+    /// use it to connect back to the actual configured port.
     worker_manager_port: Arc<std::sync::OnceLock<u16>>,
     /// Absolute path of the config file this engine was built from, when
     /// file-backed. Set once by `EngineBuilder::build`. Handed to spawned
-    /// worker processes as `III_CONFIG_PATH` so `iii-worker` reads/edits
-    /// the SAME file the engine watches (a non-default name like
-    /// `config.yml` otherwise silently splits the two).
+    /// engine-owned child processes as `III_CONFIG_PATH`.
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
     /// Registration namespace grace in milliseconds, resolved from the global
     /// engine config by `EngineBuilder::build`. Read through
@@ -1860,7 +1857,9 @@ impl Engine {
                                                      `TriggerAction::Enqueue` routes through the \
                                                      `{}` provider, which the standalone queue \
                                                      worker registers. Add it with \
-                                                     `iii worker add queue`. (underlying: {})",
+                                                     `iii trigger -n <compose-daemon-namespace> \
+                                                     compose::add worker=queue`. \
+                                                     (underlying: {})",
                                                     ENQUEUE_PROVIDER_FUNCTION_ID, err.message
                                                 )
                                             } else {
@@ -4533,8 +4532,15 @@ mod tests {
                 assert!(error.message.contains("engine::queue::enqueue"));
                 // DX: the fail-closed error must tell the user how to fix it.
                 assert!(
-                    error.message.contains("iii worker add queue"),
+                    error.message.contains(
+                        "iii trigger -n <compose-daemon-namespace> compose::add worker=queue"
+                    ),
                     "expected install guidance, got: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains("iii trigger -n default"),
+                    "target function namespace must not be presented as the Compose daemon namespace: {}",
                     error.message
                 );
             }

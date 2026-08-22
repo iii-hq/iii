@@ -13,22 +13,22 @@ use std::{
     time::Duration,
 };
 
+use serde::Serialize;
 use tokio::io::AsyncReadExt;
 
 use crate::{
+    config::{CONFIGURABLE_ENGINE_WORKERS, EngineSpec},
     error::{ComposeError, Result},
     process::{ChildOutput, DEFAULT_STOP_GRACE, Supervised, spawn_supervised_piped},
     state::StateStore,
 };
-
-/// The config selected by the root `iii` CLI when `--config` is absent.
-pub const DEFAULT_ENGINE_CONFIG: &str = "config.yaml";
 
 /// Maximum size of the active engine log before it rolls into an archive.
 const ENGINE_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// Number of old engine log segments retained beside `engine.log`.
 const ENGINE_LOG_ARCHIVES: usize = 3;
 const ENGINE_LOCK_FILE: &str = "engine.lock";
+const ENGINE_CONFIG_FILE: &str = "engine-config.yaml";
 
 /// The engine process owned by one foreground compose invocation.
 pub struct ManagedEngine {
@@ -36,29 +36,32 @@ pub struct ManagedEngine {
     logs: LogCapture,
     config_path: PathBuf,
     log_path: PathBuf,
+    remove_config_on_stop: bool,
     _namespace_lock: Option<NamespaceLock>,
 }
 
 impl ManagedEngine {
     /// Starts the current `iii` executable with output detached from compose's
     /// terminal and captured below this daemon namespace's state directory.
-    pub async fn start(config_path: impl Into<PathBuf>, daemon_namespace: &str) -> Result<Self> {
+    pub async fn start(spec: &EngineSpec, daemon_namespace: &str) -> Result<Self> {
         let executable =
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
             })?;
         let state_root = StateStore::root()?;
         let namespace_dir = state_root.join(daemon_namespace);
+        let lock_dir = namespace_dir.clone();
         let namespace = daemon_namespace.to_string();
         let namespace_lock =
-            tokio::task::spawn_blocking(move || NamespaceLock::acquire(&namespace_dir, &namespace))
+            tokio::task::spawn_blocking(move || NamespaceLock::acquire(&lock_dir, &namespace))
                 .await
                 .map_err(|source| ComposeError::EngineSpawnFailed {
                     message: format!("could not claim the managed engine namespace: {source}"),
                 })??;
+        let config_path = materialize_engine_config(spec, &namespace_dir)?;
         let log_path = engine_log_path(&state_root, daemon_namespace);
-        let mut engine =
-            Self::spawn_with_paths(&executable, &config_path.into(), &log_path).await?;
+        let mut engine = Self::spawn_with_paths(&executable, &config_path, &log_path).await?;
+        engine.remove_config_on_stop = true;
         engine._namespace_lock = Some(namespace_lock);
         Ok(engine)
     }
@@ -108,6 +111,7 @@ impl ManagedEngine {
             logs,
             config_path: config_path.to_path_buf(),
             log_path: log_path.to_path_buf(),
+            remove_config_on_stop: false,
             _namespace_lock: None,
         })
     }
@@ -146,6 +150,9 @@ impl ManagedEngine {
     pub async fn stop(&self, grace: Duration) -> ExitStatus {
         let status = self.process.stop(grace).await;
         self.finish_logging().await;
+        if self.remove_config_on_stop {
+            let _ = std::fs::remove_file(&self.config_path);
+        }
         status
     }
 
@@ -157,6 +164,80 @@ impl ManagedEngine {
     pub async fn finish_logging(&self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.logs.wait()).await;
     }
+}
+
+#[derive(Serialize)]
+struct MaterializedEngineConfig<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_namespace_grace_ms: Option<u64>,
+    workers: Vec<MaterializedWorker<'a>>,
+}
+
+#[derive(Serialize)]
+struct MaterializedWorker<'a> {
+    name: &'a str,
+    config: &'a serde_yaml::Value,
+}
+
+fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(namespace_dir).map_err(|source| ComposeError::Io {
+        path: namespace_dir.to_path_buf(),
+        source,
+    })?;
+    owner_only(namespace_dir).map_err(|source| ComposeError::Io {
+        path: namespace_dir.to_path_buf(),
+        source,
+    })?;
+
+    let workers = CONFIGURABLE_ENGINE_WORKERS
+        .iter()
+        .flat_map(|worker_type| {
+            spec.workers
+                .iter()
+                .filter(move |(name, _)| crate::config::engine_worker_type(name) == *worker_type)
+                .map(|(name, config)| MaterializedWorker { name, config })
+        })
+        .collect();
+    let document = MaterializedEngineConfig {
+        registration_namespace_grace_ms: spec.registration_namespace_grace_ms,
+        workers,
+    };
+    let text = serde_yaml::to_string(&document).map_err(|err| ComposeError::EngineSpawnFailed {
+        message: format!("could not serialize managed engine configuration: {err}"),
+    })?;
+
+    let path = namespace_dir.join(ENGINE_CONFIG_FILE);
+    let temp = namespace_dir.join(format!("{ENGINE_CONFIG_FILE}.tmp"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp).map_err(|source| ComposeError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|source| ComposeError::Io {
+            path: temp.clone(),
+            source,
+        })?;
+    owner_only(&temp).map_err(|source| ComposeError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    std::fs::rename(&temp, &path).map_err(|source| ComposeError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    owner_only(&path).map_err(|source| ComposeError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
 }
 
 /// Cross-process ownership of one managed engine namespace.
@@ -605,6 +686,79 @@ mod tests {
     use std::{path::Path, time::Duration};
 
     use super::*;
+
+    fn engine_spec() -> crate::config::EngineSpec {
+        crate::ComposeFile::parse(
+            r#"
+engine:
+  url: ws://127.0.0.1:50123
+  registration_namespace_grace_ms: 2500
+  workers:
+    iii-sandbox:
+      auto_install: false
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+    iii-worker-manager:
+      port: ${ENGINE_PORT:50123}
+    iii-worker-manager#rbac:
+      port: 50124
+containers: {}
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap()
+        .engine
+        .unwrap()
+    }
+
+    #[test]
+    fn materialized_config_contains_only_engine_fields_in_canonical_worker_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = materialize_engine_config(&engine_spec(), dir.path()).unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(document["registration_namespace_grace_ms"], 2500);
+        assert!(document.get("url").is_none());
+        assert!(document.get("containers").is_none());
+        let workers = document["workers"].as_sequence().unwrap();
+        assert_eq!(
+            workers
+                .iter()
+                .map(|entry| entry["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "configuration",
+                "iii-worker-manager",
+                "iii-worker-manager#rbac",
+                "iii-sandbox"
+            ]
+        );
+        assert_eq!(workers[1]["config"]["port"], "${ENGINE_PORT:50123}");
+        assert_eq!(workers[3]["config"]["auto_install"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialized_config_and_directory_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("daemon");
+        let path = materialize_engine_config(&engine_spec(), &state_dir).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[cfg(unix)]
     fn write_executable(path: &Path, contents: &str) {
