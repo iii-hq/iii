@@ -263,6 +263,41 @@ async fn the_daemon_serves_compose_functions_in_the_default_namespace() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn schema_introspection_is_callable_and_matches_engine_metadata() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let schema = call(
+        port,
+        "compose::schema",
+        json!({ "function_id": "compose::up" }),
+    )
+    .await
+    .expect("compose::schema should answer");
+    let schemas = schema["schemas"].as_array().expect("schemas array");
+    assert_eq!(schemas.len(), 1, "the filter returns one entry: {schema}");
+    assert_eq!(schemas[0]["function_id"], "compose::up");
+    assert!(schemas[0]["request"]["properties"]["file"].is_object());
+    assert!(schemas[0]["response"]["properties"]["containers"].is_object());
+    assert_eq!(schemas[0]["default_timeout_ms"], 600_000);
+    assert_eq!(schemas[0]["idempotent"], true);
+
+    let info = call(
+        port,
+        "engine::functions::info",
+        json!({ "function_id": "compose::up" }),
+    )
+    .await
+    .expect("engine::functions::info should find compose::up");
+    assert_eq!(info["request_schema"], schemas[0]["request"]);
+    assert_eq!(info["response_schema"], schemas[0]["response"]);
+    assert_eq!(info["metadata"]["default_timeout_ms"], 600_000);
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_project_scoped_call_names_the_argument_it_wanted() {
     isolate_state();
     let port = spawn_engine().await;
