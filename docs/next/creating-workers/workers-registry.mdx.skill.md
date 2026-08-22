@@ -8,6 +8,10 @@
 The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live so
 other iii projects can declare them in `worker-compose.yaml` or add them with `compose::add`.
 
+Compose is a CLI and daemon subsystem, not a registry worker. Its daemon registers `compose::*`,
+uses `worker-compose.yaml` as the project manifest, and uses `-n` / `--namespace` to select the
+daemon that receives a trigger.
+
 ## Publish a worker
 
 Publishing a worker uploads its binary or OCI image to the registry, records its semver version, and

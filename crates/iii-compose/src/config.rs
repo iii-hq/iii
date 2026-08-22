@@ -57,6 +57,14 @@ pub fn engine_worker_type(name: &str) -> &str {
     name.split('#').next().unwrap_or(name)
 }
 
+/// Whether an engine worker key is either a bare type or one `#instance`.
+pub fn valid_engine_worker_name(name: &str) -> bool {
+    !name.contains('#')
+        || name
+            .split_once('#')
+            .is_some_and(|(_, instance)| !instance.is_empty() && !instance.contains('#'))
+}
+
 const INJECTED_ENGINE_WORKERS: &[&str] =
     &["iii-engine-functions", "iii-telemetry", "iii-observability"];
 
@@ -173,12 +181,7 @@ impl ComposeFile {
         //
         // The file on disk is never rewritten. This is the text compose reads,
         // not the text the operator keeps.
-        let mut document: serde_yaml::Value =
-            serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
-                path: path.clone(),
-                message: err.to_string(),
-            })?;
-        crate::interpolate::expand_tree(&mut document, &path, &|name| std::env::var(name).ok())?;
+        let document = expanded_document(text, &path)?;
 
         // Back to text before the compose file is read out of it. Reading the
         // document directly would tighten the types: YAML says `30` is a
@@ -253,14 +256,10 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
     let mut workers = BTreeMap::new();
     for (name, config) in raw.workers {
         let worker_type = engine_worker_type(&name);
-        let valid_instance = !name.contains('#')
-            || name
-                .split_once('#')
-                .is_some_and(|(_, instance)| !instance.is_empty() && !instance.contains('#'));
         if INJECTED_ENGINE_WORKERS.contains(&worker_type) {
             return Err(ComposeError::EngineWorkerIsInjected { worker: name });
         }
-        if !valid_instance || !CONFIGURABLE_ENGINE_WORKERS.contains(&worker_type) {
+        if !valid_engine_worker_name(&name) || !CONFIGURABLE_ENGINE_WORKERS.contains(&worker_type) {
             return Err(ComposeError::UnsupportedEngineWorker { worker: name });
         }
         if !matches!(config, serde_yaml::Value::Mapping(_)) {
@@ -280,6 +279,51 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
         registration_namespace_grace_ms: raw.registration_namespace_grace_ms,
         workers,
     })
+}
+
+/// Reads only the engine ownership section from a Compose document.
+///
+/// Mutation and teardown paths use this to reject ownership changes without
+/// requiring the container graph to be valid first. In particular,
+/// `compose::remove` must still be able to delete a container from a graph
+/// whose remaining `depends_on` edge is temporarily unresolved.
+pub(crate) fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+
+    // Expand only the engine subtree. A cached project must still be stoppable
+    // when an unrelated container edit is temporarily invalid or references a
+    // host variable that is no longer present.
+    let engine_key = serde_yaml::Value::String("engine".to_string());
+    let engine = document
+        .as_mapping()
+        .and_then(|mapping| mapping.get(&engine_key))
+        .cloned();
+    let mut engine_document = serde_yaml::Mapping::new();
+    if let Some(engine) = engine {
+        engine_document.insert(engine_key, engine);
+    }
+    let mut engine_document = serde_yaml::Value::Mapping(engine_document);
+    crate::interpolate::expand_tree(&mut engine_document, path, &|name| std::env::var(name).ok())?;
+    let raw: RawEngineOnly =
+        serde_yaml::from_value(engine_document).map_err(|err| ComposeError::Yaml {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    raw.engine.map(validate_engine).transpose()
+}
+
+fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
+    let mut document: serde_yaml::Value =
+        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    crate::interpolate::expand_tree(&mut document, path, &|name| std::env::var(name).ok())?;
+    Ok(document)
 }
 
 fn validate_container(
@@ -565,6 +609,12 @@ struct RawEngineSpec {
     workers: IndexMap<String, serde_yaml::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawEngineOnly {
+    #[serde(default)]
+    engine: Option<RawEngineSpec>,
+}
+
 /// YAML mappings tolerate duplicate keys by keeping the last one, which would
 /// silently drop a declared worker. Container keys are identities here, so a
 /// repeat is a hard error.
@@ -644,6 +694,30 @@ struct RawScripts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_only_parse_ignores_invalid_container_state() {
+        let text = r#"
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    iii-stream:
+      port: ${III_COMPOSE_ENGINE_ONLY_DEFERRED}
+containers:
+  api:
+    worker: path://./api
+    depends_on: [missing]
+    environment:
+      BROKEN: ${III_COMPOSE_ENGINE_ONLY_MISSING}
+"#;
+
+        let engine = parse_engine_section(text, Path::new("worker-compose.yaml"))
+            .expect("container validation must not affect the engine-only preflight")
+            .expect("engine section");
+
+        assert_eq!(engine.url, "ws://127.0.0.1:49134");
+        assert!(engine.workers.contains_key("iii-stream"));
+    }
 
     #[test]
     fn parses_units_on_durations() {

@@ -19,16 +19,11 @@ use serde_json::Value;
 
 use notify::Watcher;
 
+pub use iii_compose::config::CONFIGURABLE_ENGINE_WORKERS;
+use iii_compose::config::{engine_worker_type, valid_engine_worker_name};
+
 use super::{registry::WorkerRegistration, traits::Worker};
 use crate::engine::Engine;
-
-pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
-    "configuration",
-    "iii-worker-manager",
-    "iii-http-functions",
-    "iii-stream",
-    "iii-sandbox",
-];
 
 const WORKER_COMPOSE_MIGRATION_GUIDE: &str = "https://iii.dev/docs/upgrading/workers-to-compose";
 
@@ -160,7 +155,10 @@ impl EngineConfig {
             .workers
             .iter()
             .chain(self.modules.iter())
-            .filter(|entry| !CONFIGURABLE_ENGINE_WORKERS.contains(&entry.worker_type()))
+            .filter(|entry| {
+                !valid_engine_worker_name(&entry.name)
+                    || !CONFIGURABLE_ENGINE_WORKERS.contains(&entry.worker_type())
+            })
             .map(|entry| migration_guidance(&entry.name))
             .collect();
 
@@ -202,7 +200,7 @@ impl EngineConfig {
 }
 
 fn worker_type_of(name: &str) -> &str {
-    name.split('#').next().unwrap_or(name)
+    engine_worker_type(name)
 }
 
 fn migration_guidance(name: &str) -> String {
@@ -1305,6 +1303,21 @@ mod tests {
             );
         }
         assert!(declared.contains("iii-worker-manager#rbac"));
+    }
+
+    #[test]
+    fn test_config_file_rejects_malformed_engine_worker_instance_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        for name in ["iii-stream#", "iii-stream#1#2"] {
+            std::fs::write(&path, format!("workers:\n  - name: {name}\n")).unwrap();
+
+            let error = EngineConfig::config_file(path.to_str().unwrap())
+                .expect_err("malformed instance names must be rejected");
+            let message = error.to_string();
+            assert!(message.contains(name), "{message}");
+        }
     }
 
     #[test]

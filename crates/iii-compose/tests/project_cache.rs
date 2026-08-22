@@ -141,6 +141,23 @@ async fn external_daemon_rejects_a_project_that_tries_to_own_an_engine() {
 }
 
 #[tokio::test]
+async fn external_daemon_validation_rejects_a_project_that_owns_an_engine() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let err = daemon()
+        .validate(Some(&file))
+        .await
+        .expect_err("offline validation must enforce engine ownership");
+    assert_eq!(err.code(), "ENGINE_SECTION_REQUIRES_MANAGED_START");
+}
+
+#[tokio::test]
 async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes() {
     isolate_state();
     let tmp = project_dir();
@@ -222,4 +239,97 @@ async fn managed_daemon_rejects_a_second_engine_owner() {
         Ok(_) => panic!("a second file must not own the same engine"),
     };
     assert_eq!(err.code(), "ENGINE_ALREADY_OWNED");
+}
+
+fn managed_mutation_fixture(
+    containers: &str,
+) -> (tempfile::TempDir, std::path::PathBuf, Arc<Daemon>) {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("workers/api")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("workers/extra")).unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        format!(
+            "engine: {{ url: 'ws://127.0.0.1:1/ws', workers: {{}} }}\ncontainers:\n{containers}"
+        ),
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-mutation-test-{}", std::process::id()),
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    (tmp, file, daemon)
+}
+
+fn change_managed_engine(file: &std::path::Path, containers: &str) -> String {
+    let changed = format!(
+        "engine:\n  url: ws://127.0.0.1:1/ws\n  workers:\n    iii-stream: {{ port: 3112 }}\ncontainers:\n{containers}"
+    );
+    std::fs::write(file, &changed).unwrap();
+    changed
+}
+
+#[tokio::test]
+async fn add_rejects_an_engine_change_before_editing_the_file() {
+    let (_tmp, file, daemon) =
+        managed_mutation_fixture("  api:\n    worker: path://./workers/api\n");
+    let changed = change_managed_engine(&file, "  api:\n    worker: path://./workers/api\n");
+
+    let err = daemon
+        .add(
+            Some(&file),
+            Some("./workers/extra"),
+            "add-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("add must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn update_rejects_an_engine_change_before_editing_the_file() {
+    let containers =
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n";
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let changed = change_managed_engine(&file, containers);
+
+    let err = daemon
+        .update(
+            Some(&file),
+            Some("state@2.0.0"),
+            "update-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("update must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn remove_rejects_an_engine_change_before_editing_the_file() {
+    let containers = concat!(
+        "  api:\n    worker: path://./workers/api\n",
+        "  extra:\n    worker: path://./workers/extra\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let changed = change_managed_engine(&file, containers);
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            Some("api"),
+            "remove-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("remove must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
 }
