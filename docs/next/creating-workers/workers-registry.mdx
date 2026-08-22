@@ -99,7 +99,8 @@ Bundle manifests use a strict subset of the local-worker manifest. Three fields 
 
 Required fields:
 
-- `name`: must equal the registry package name (the value passed as `worker=` to `compose::add`).
+- `name`: must equal the registry package name without an `@version` suffix. For example, use
+  `my-worker` for both `worker=my-worker` and `worker=my-worker@1.2.0`.
 - `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM. Example:
   `node bundle.js`, `python -m worker`, `bun run bundle.js`.
 
