@@ -343,6 +343,10 @@ impl ConfigurationAdapter for FsAdapter {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 while raw_rx.try_recv().is_ok() {}
 
+                // Register/set hold this lock across their disk writes. Take it
+                // before reading the directory so the snapshot and cache always
+                // describe the same point in the internal write sequence.
+                let mut cache_guard = cache.write().await;
                 let snapshot = match Self::load_directory(&directory).await {
                     Ok(s) => s,
                     Err(err) => {
@@ -355,9 +359,6 @@ impl ConfigurationAdapter for FsAdapter {
                     }
                 };
 
-                // Diff under the cache write lock so concurrent register/set
-                // calls don't race the watcher.
-                let mut cache_guard = cache.write().await;
                 let mut events: Vec<ExternalChange> = Vec::new();
 
                 for (id, fresh) in snapshot.iter() {
@@ -679,6 +680,39 @@ mod tests {
         assert!(
             echoed.is_err(),
             "an internal set must not echo back through the watcher (would loop)"
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_write_during_watcher_reconcile_does_not_restore_stale_snapshot() {
+        let dir = temp_dir();
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        adapter.register(sample_entry("race")).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+
+        // Keep the cache locked while the watcher handles a file event. The
+        // watcher must take this lock before reading the directory; otherwise,
+        // it can retain the old disk value and restore it after this simulated
+        // internal write updates both disk and cache.
+        let mut cache = adapter.cache.write().await;
+        let current = cache.get("race").unwrap().clone();
+        adapter.write_entry(&current).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(750)).await;
+
+        let mut updated = current;
+        updated.value = json!({ "port": 4242 });
+        adapter.write_entry(&updated).await.unwrap();
+        cache.insert(updated.id.clone(), updated);
+        drop(cache);
+
+        let echoed = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(
+            echoed.is_err(),
+            "the watcher must not restore a snapshot read before an internal write"
         );
     }
 
