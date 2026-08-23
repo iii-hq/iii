@@ -87,6 +87,9 @@ impl From<&ComposeError> for OpError {
 pub struct LifecycleCtx<'a> {
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
+    /// Namespace of the compose daemon that owns this project. Children use
+    /// it for explicit per-call routing to `compose::*`.
+    pub compose_namespace: &'a str,
     /// Namespace the *children* register in — not the daemon's own.
     pub project_namespace: &'a str,
     pub engine_url: &'a str,
@@ -537,6 +540,8 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     let spawn_ctx = SpawnCtx {
         engine_url: ctx.engine_url,
         namespace: ctx.project_namespace,
+        compose_namespace: ctx.compose_namespace,
+        compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
         config_path: config.as_ref().map(|resolved| resolved.file.path()),
@@ -826,6 +831,8 @@ async fn stop_one(
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
             namespace: ctx.project_namespace,
+            compose_namespace: ctx.compose_namespace,
+            compose_file: &ctx.file.path,
             container_key: key,
             start: &start,
             config_path: None,

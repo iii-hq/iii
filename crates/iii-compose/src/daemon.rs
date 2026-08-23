@@ -30,7 +30,7 @@ use crate::{
     config::{ComposeFile, EngineSpec},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::OpResult,
+    lifecycle::{OpResult, OpStatus},
     project::Project,
 };
 
@@ -228,7 +228,7 @@ impl Daemon {
         for project in projects {
             listed.push(serde_json::json!({
                 "namespace": project.project_namespace,
-                "file": project.file.path,
+                "file": project.file_path(),
                 "containers": project.status().await,
             }));
         }
@@ -252,7 +252,7 @@ impl Daemon {
         Ok(project.up(container, operation_id).await)
     }
 
-    /// Adds a container to a project's file, then restarts the project.
+    /// Adds a container to a project's file, then reconciles the project.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
     /// [`crate::edit`]. A version the caller did not pin is resolved once and
@@ -260,10 +260,11 @@ impl Daemon {
     /// `up` silently getting a different one is the drift a compose file exists
     /// to prevent.
     ///
-    /// Restart is `down` then `up`, and deliberately unclever for now. A failed
-    /// `up` leaves the file as edited and reports the failure: the edit is what
-    /// was asked for, and undoing it would hide the reason the project will not
-    /// start.
+    /// Reconciliation leaves unchanged containers running, restarts existing
+    /// declarations whose resolved version changed, and starts declarations
+    /// that are new. A failed start leaves the file as edited and reports the
+    /// failure: the edit is what was asked for, and undoing it would hide the
+    /// reason the project will not start.
     pub async fn add(
         &self,
         file: Option<&Path>,
@@ -299,6 +300,7 @@ impl Daemon {
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
+        let mut restart: Vec<String> = Vec::new();
         for container in &wanted {
             match crate::edit::upsert_container(&edited, container)? {
                 crate::edit::Outcome::Unchanged => {}
@@ -309,6 +311,7 @@ impl Daemon {
                 crate::edit::Outcome::Replaced { text, from, to } => {
                     edited = text;
                     replaced.push(format!("{} {from} to {to}", container.key));
+                    restart.push(container.key.clone());
                 }
             }
         }
@@ -337,14 +340,28 @@ impl Daemon {
         crate::ComposeFile::parse(edited, path)?;
         write_atomically(path, edited)?;
 
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let current = ComposeFile::load(path)?;
+        let project = self.project(path).await?;
+        let (restarted, up) = project
+            .reconcile_file(current, &restart, operation_id)
+            .await;
+        let status = if up.status == OpStatus::Failed
+            || restarted
+                .iter()
+                .any(|result| result.status == OpStatus::Failed)
+        {
+            OpStatus::Failed
+        } else {
+            OpStatus::Ok
+        };
         Ok(serde_json::json!({
-            "status": up.status,
+            "status": status,
             "container": asked.key,
             "changed": true,
             "declared": added,
             "detail": action,
-            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
+            "down": Value::Null,
+            "restarted": serde_json::to_value(&restarted).unwrap_or(Value::Null),
             "up": serde_json::to_value(&up).unwrap_or(Value::Null),
         }))
     }

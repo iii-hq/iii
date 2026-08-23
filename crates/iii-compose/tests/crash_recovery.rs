@@ -23,6 +23,8 @@ fn spawn(script: &str, cwd: &Path) -> Supervised {
     let ctx = SpawnCtx {
         engine_url: "ws://127.0.0.1:49134",
         namespace: "orders-test",
+        compose_namespace: "compose-test",
+        compose_file: cwd,
         container_key: "api",
         start: &start,
         config_path: None,

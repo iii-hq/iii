@@ -190,6 +190,7 @@ struct AddOutcome {
     detail: String,
     declared: Option<Vec<String>>,
     down: Option<OpResult>,
+    restarted: Option<Vec<OpResult>>,
     up: Option<OpResult>,
 }
 
@@ -390,7 +391,7 @@ async fn dispatch(
         Operation::Status => match daemon.status(file.as_deref()).await {
             Ok(project) => Ok(json!({
                 "namespace": project.project_namespace,
-                "file": project.file.path,
+                "file": project.file_path(),
                 // Derived from the file, so nobody can guess it: where this
                 // project's state, delivered config and container logs live.
                 "state_dir": project.state_dir(),
@@ -452,7 +453,7 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::add" => {
             "Declare a worker and its registry dependencies in the compose \
-             file, pin resolved versions, then restart the project."
+             file, pin resolved versions, then reconcile only changed workers."
         }
         "compose::remove" => {
             "Remove one declared worker from the compose file, then restart \
