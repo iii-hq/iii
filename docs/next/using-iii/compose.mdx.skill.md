@@ -167,7 +167,7 @@ one at the wrong file.
 | `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
-| `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
+| `compose::add`      | `file`, `worker` | What the edit did, any changed workers restarted, and newly started workers. |
 | `compose::remove`   | `file`, `worker` | The worker removed, and the `down` and `up` that followed.              |
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
@@ -190,7 +190,7 @@ iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 
 ### Adding a worker
 
-`compose::add` declares a worker in the compose file and restarts the project.
+`compose::add` declares a worker in the compose file and reconciles the running project.
 `worker=` takes a registry name (`state`), a name with a version (`state@0.21.4`)
 or a directory (`./workers/api`); a leading `.` or `/` is what makes it a path,
 since a registry reference may carry a host of its own.
@@ -199,6 +199,11 @@ An unpinned name is resolved once and written out as an exact version, so a
 later `up` cannot quietly get a different build. The same worker at the same
 version changes nothing and says so; at a different version it is replaced,
 which is how an upgrade or a rollback is asked for.
+
+Workers whose declarations did not change remain running. Existing workers whose resolved
+versions changed restart in place, and newly declared workers start through the normal dependency
+plan. This lets a worker call `compose::add` for its own project without stopping the caller before
+the result can return.
 
 A worker is rarely alone. Its manifest names what it calls, and the registry
 answers with that whole graph already pinned to versions that satisfy each
@@ -503,6 +508,8 @@ Three layers apply, lowest to highest.
 | ------------------ | ----------------------------------------------------------------------- |
 | `III_URL`          | The engine address the daemon is connected to.                          |
 | `III_NAMESPACE`    | The project's namespace.                                                |
+| `III_COMPOSE_NAMESPACE` | The supervising Compose daemon's namespace for explicit `compose::*` routing. |
+| `III_COMPOSE_FILE` | Canonical path of the compose file that owns this container.             |
 | `III_WORKER_NAME`  | The container key.                                                      |
 | `III_CONFIG`       | Path to the resolved configuration file. Absent when there is none.     |
 | `III_CONFIG_NAME`  | The configuration entry the container owns. Absent when it declares none. |
@@ -511,7 +518,7 @@ Declaring a reserved variable in `environment` or an `env_file` fails with `RESE
 in both cases at `compose::validate` time.
 
 <Note>
-  For why the daemon owns these five rather than treating them as defaults a container can replace,
+  For why the daemon owns these seven rather than treating them as defaults a container can replace,
   see [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
 
