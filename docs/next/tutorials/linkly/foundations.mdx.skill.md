@@ -194,8 +194,8 @@ keep different kinds of data in `state` from colliding; later chapters add more.
 ## Start the engine
 
 From the project root, start the engine and Compose project. The workers register their functions
-with the engine. `iii compose --up` is a supported flag documented in the
-[CLI reference](/cli-reference/index#iii-compose-up):
+with the engine. `--up` is a `iii compose` flag, as shown in the generated
+[CLI reference](/cli-reference/index#iii-compose):
 
 ```bash
 iii compose --up --namespace linkly --file worker-compose.yaml
@@ -355,8 +355,9 @@ worker.registerTrigger({
 ### Mint a link over HTTP
 
 Save the file and the worker reloads with the new route registered. In this project,
-`worker-compose.yaml` configures the `http` container to listen on `127.0.0.1:3111`; that
-container, not the engine process, owns the route below. Now try out your new Trigger:
+`config/http.yaml` configures the `http` container to listen on `127.0.0.1:3111`. This Compose
+setup does not start a separate in-process engine HTTP server. The `http` container provides the
+engine HTTP API and owns the route below. Now try out your new Trigger:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \
