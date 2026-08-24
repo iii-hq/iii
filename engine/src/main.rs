@@ -159,8 +159,10 @@ enum Commands {
 
     /// Serve worker-compose projects: supervise each one's workers as a graph.
     ///
-    /// Projects are started and stopped through `iii trigger compose::*`,
-    /// naming one with `id=`; this command only puts the daemon there.
+    /// Without `--up`, projects are started and stopped through
+    /// `iii trigger compose::*`, naming one with `id=`; the command only
+    /// starts the daemon. With `--up`, it also starts the initial project and
+    /// the engine declared by its compose file.
     Compose(iii_compose::ComposeCli),
 
     /// Generate the committed MDX CLI reference page from this binary's

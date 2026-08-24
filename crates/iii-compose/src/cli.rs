@@ -57,8 +57,9 @@ pub struct ComposeCli {
     #[arg(long)]
     pub up: bool,
 
-    /// The compose file. Defaults to `./worker-compose.yaml`, the same
-    /// fallback `compose::up` uses when a call names no file.
+    /// The compose file. Only valid with `--up`. Defaults to
+    /// `./worker-compose.yaml`, the same fallback `compose::up` uses when a
+    /// call names no file.
     #[arg(short = 'f', long, value_name = "PATH", requires = "up")]
     pub file: Option<PathBuf>,
 }
