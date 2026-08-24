@@ -31,7 +31,7 @@ containers:
     config_name: state
   api:
     worker: path://./workers/api
-    depends_on: [state]
+    start_after: [state]
     scripts:
       run: pnpm start
 ```

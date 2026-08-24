@@ -100,7 +100,7 @@ impl Default for Scripts {
 pub struct Container {
     pub worker: WorkerSource,
     pub version: Option<String>,
-    pub depends_on: Vec<String>,
+    pub start_after: Vec<String>,
     /// The configuration entry this container owns.
     ///
     /// Not a source. Compose fetches it as the base, publishes the merged
@@ -342,7 +342,7 @@ fn validate_container(
         });
     }
 
-    for dependency in &raw.depends_on {
+    for dependency in &raw.start_after {
         if dependency == key {
             return Err(ComposeError::SelfDependency {
                 container: key.to_string(),
@@ -407,7 +407,7 @@ fn validate_container(
     Ok(Container {
         worker,
         version: raw.version.clone(),
-        depends_on: raw.depends_on.clone(),
+        start_after: raw.start_after.clone(),
         config_name,
         config_override: raw.config_override.clone(),
         scripts,
@@ -664,7 +664,7 @@ struct RawContainer {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    depends_on: Vec<String>,
+    start_after: Vec<String>,
     #[serde(default)]
     config_name: Option<String>,
     #[serde(default)]
@@ -729,7 +729,7 @@ engine:
 containers:
   api:
     worker: path://./api
-    depends_on: [missing]
+    start_after: [missing]
     environment:
       BROKEN: ${III_COMPOSE_ENGINE_ONLY_MISSING}
 "#;

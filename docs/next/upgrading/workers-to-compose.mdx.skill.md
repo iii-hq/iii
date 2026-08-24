@@ -105,7 +105,7 @@ containers:
       port: 3111
   app:
     worker: path://.
-    depends_on: [state, http]
+    start_after: [state, http]
     scripts:
       pre_run: pnpm build
       run: pnpm start

@@ -325,7 +325,7 @@ impl Daemon {
         // that satisfy each other. They are declared rather than started
         // behind the file, so what runs is still what the file says.
         //
-        // Dependencies first and the worker last: with no `depends_on`, start
+        // Dependencies first and the worker last: with no `start_after`, start
         // order is declaration order, so this is what makes a worker start
         // after the things it calls.
         let mut wanted = Vec::new();
@@ -516,7 +516,7 @@ impl Daemon {
                 reference: reference.clone(),
                 version: Some(wanted.clone()),
             },
-            depends_on: container.depends_on.clone(),
+            start_after: container.start_after.clone(),
         };
 
         let edited = match crate::edit::upsert_container(&text, &new)? {
@@ -965,7 +965,7 @@ fn expand_graph(
             },
             version: Some(node.version.clone()),
         },
-        depends_on: needs(&node.name),
+        start_after: needs(&node.name),
     };
 
     // Registry nodes are a set, not an ordered plan. Derive a deterministic
@@ -1028,7 +1028,7 @@ fn expand_graph(
         .map(|name| {
             if name == asked.key {
                 let mut root = asked.clone();
-                root.depends_on = needs(&asked.key);
+                root.start_after = needs(&asked.key);
                 if let Some(node) = nodes.get(asked.key.as_str()) {
                     root.source = crate::edit::Source::Package {
                         reference: reference.to_string(),
@@ -1059,7 +1059,7 @@ mod tests {
                 reference: name.to_string(),
                 version: None,
             },
-            depends_on: Vec::new(),
+            start_after: Vec::new(),
         }
     }
 
@@ -1136,7 +1136,7 @@ mod tests {
         let expanded = expand_graph(&package("api"), "api", graph).expect("expand graph");
         let names: Vec<&str> = expanded.iter().map(|entry| entry.key.as_str()).collect();
         assert_eq!(names, vec!["state", "api"]);
-        assert_eq!(expanded[1].depends_on, vec!["state"]);
+        assert_eq!(expanded[1].start_after, vec!["state"]);
     }
 
     #[test]

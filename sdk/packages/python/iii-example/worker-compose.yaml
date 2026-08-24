@@ -27,6 +27,6 @@ containers:
     config_name: cron
   iii-example:
     worker: path://.
-    depends_on: [state, http, pubsub, cron]
+    start_after: [state, http, pubsub, cron]
     scripts:
       run: uv run iii-example

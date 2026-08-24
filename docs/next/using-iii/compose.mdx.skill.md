@@ -213,20 +213,20 @@ the result can return.
 
 A worker is rarely alone. Its manifest names what it calls, and the registry
 answers with that whole graph already pinned to versions that satisfy each
-other, so those are declared too, as containers with their own `depends_on`.
+other, so those are declared too, as containers with their own `start_after`.
 Nothing starts behind the file: what runs is still what the file says, and an
 operator can read it, pin it differently, or take a container out.
 
 Two rules shape the expansion. Requesting a root package whose registry kind is `engine` fails with
 `ENGINE_WORKER_IS_BUILTIN`, because the engine already supplies it. Engine-kind dependencies of a
 normal project worker are filtered from the graph; an edge to one is dropped rather than written,
-since `depends_on` may only name a container the file declares. And a worker two others need is
+since `start_after` may only name a container the file declares. And a worker two others need is
 declared once, named by both.
 
 The file is edited, not rewritten: comments, blank lines and quoting survive,
 entries are appended, and the result is parsed before it is written, so a bad
 edit never reaches disk. What is written is `worker`, `version` and
-`depends_on`. It writes no `scripts`, so a `path://` worker needs
+`start_after`. It writes no `scripts`, so a `path://` worker needs
 `scripts.start` in its own `iii.worker.yaml` to start. A `path://` worker is added alone: its
 dependencies are declared in a manifest on disk rather than in the registry's
 answer.
@@ -261,7 +261,7 @@ the daemon owning nothing. Validation is offline, so `package://` containers are
 
 ### Removing a worker
 
-`compose::remove worker=state` removes the named container and every surviving `depends_on`
+`compose::remove worker=state` removes the named container and every surviving `start_after`
 reference to it. The complete edited declaration is validated before the file or any process
 changes. Compose then stops only that container and runs an idempotent `up`, so healthy surviving
 workers stay running and anything already missing can start.
@@ -301,7 +301,7 @@ The container has to be declared already, and has to be a `package://` one: this
 line, it does not add a container, and a `path://` worker has no version to move. Use
 [`compose::add`](#adding-workers) to declare something new.
 
-Only the version line changes. A `depends_on` written by hand comes through as it was, since
+Only the version line changes. A `start_after` written by hand comes through as it was, since
 rewriting the graph is what `compose::add` is for.
 
 <Note>
@@ -376,7 +376,7 @@ containers:
     worker: path://./workers/database
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
     config_name: shop-api
     config_override:
       log_level: debug
@@ -433,7 +433,7 @@ Each key under `containers` is the worker name the container registers under.
 | ----------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------- |
 | `worker`          | string         | required             | `path://<dir>` or `package://<registry-host>/<name>`.                               |
 | `version`         | string         | absent               | Version range. Required for `package://`.                                           |
-| `depends_on`      | array          | empty                | Container keys that start first. Self-dependencies and cycles are rejected.         |
+| `start_after`     | array          | empty                | Container keys that start first. Self-dependencies and cycles are rejected.         |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this container owns.              |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration.                                         |
 | `working_dir`     | path           | the worker directory | Resolved against the compose file's directory.                                      |

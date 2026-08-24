@@ -33,7 +33,7 @@ that reference an absent worker wait in memory and flush when that worker
 arrives (or re-arrives after a restart). Compose exposes the knobs — how long
 a registration may wait, how many retries — so the buffer cannot silently
 hold a route forever. Ordering becomes a performance concern, not a
-correctness one; `depends_on` stays about *data* dependencies, not
+correctness one; `start_after` stays about *data* dependencies, not
 registration order.
 
 ## Cascading failure

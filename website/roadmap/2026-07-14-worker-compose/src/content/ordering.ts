@@ -42,6 +42,6 @@ export const ORDER_STEPS: SeqStep[] = [
     to: 'api',
     label: 'route confirmed',
     title: 'order is now a performance concern',
-    desc: 'depends_on stays about data dependencies; registration order stops being a correctness bug.',
+    desc: 'start_after stays about data dependencies; registration order stops being a correctness bug.',
   },
 ]
