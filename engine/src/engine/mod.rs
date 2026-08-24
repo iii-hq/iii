@@ -655,17 +655,20 @@ impl Engine {
         }
 
         let known = self.functions.namespaces_for(function_id);
-        let hint = if known.is_empty() {
-            String::new()
+        let message = if known.is_empty() {
+            crate::legacy_worker_functions::migration_message(function_id).unwrap_or_else(|| {
+                format!("Function {function_id} not found in namespace {namespace}.")
+            })
         } else {
-            format!(" It is registered in namespace(s): {}.", known.join(", "))
+            format!(
+                "Function {function_id} not found in namespace {namespace}. It is registered in \
+                 namespace(s): {}.",
+                known.join(", ")
+            )
         };
         Err(ErrorBody {
             code: "function_not_found".into(),
-            message: format!(
-                "Function {} not found in namespace {}.{}",
-                function_id, namespace, hint
-            ),
+            message,
             stacktrace: None,
         })
     }
@@ -4654,6 +4657,49 @@ mod tests {
             }
             other => panic!("expected InvocationResult, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn removed_worker_function_points_to_compose_and_migration_guide() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "worker::add".to_string(),
+                    data: json!({}),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: None,
+                },
+            )
+            .await
+            .expect("invoke should produce a structured error");
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for invocation result")
+            .expect("channel should produce invocation result");
+
+        let Outbound::Protocol(Message::InvocationResult { error, .. }) = outbound else {
+            panic!("expected InvocationResult");
+        };
+        let error = error.expect("removed function should return an error");
+        assert_eq!(error.code, "function_not_found");
+        assert!(error.message.contains("Use compose::add instead"));
+        assert!(
+            error
+                .message
+                .contains("https://iii.dev/docs/upgrading/workers-to-compose")
+        );
     }
 
     // ---------------------------------------------------------------

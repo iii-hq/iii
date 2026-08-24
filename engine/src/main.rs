@@ -6,6 +6,7 @@
 
 mod cli;
 mod cli_trigger;
+mod legacy_worker_functions;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
