@@ -29,7 +29,7 @@ WARN). That becomes a **rejected registration**: the second worker's
 connection fails with a structured error, and its process exits instead of
 running blind behind an engine that forgot it.
 
-`compose up` twice against the same running file: the daemon sees its own
+`compose --up` twice against the same running file: the daemon sees its own
 live children and no-ops; a *second* daemon (or a hand-started worker)
 claiming the same name in the same namespace is rejected. A future
 `on_conflict: fail | ignore | replace` per container can soften this — the
@@ -39,7 +39,7 @@ default is `fail`.
 
 | Situation | Namespace |
 | --- | --- |
-| `compose up` with no CLI namespace | inherited from the compose file; `default` when the file has none |
+| `compose --up` with no CLI namespace | inherited from the compose file; `default` when the file has none |
 | worker started by hand, no env | default namespace — single-user flow unchanged |
 | two files sharing one database | both declare the shared namespace explicitly; exactly one file owns the process |
 

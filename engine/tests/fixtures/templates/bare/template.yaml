@@ -19,5 +19,5 @@ files: []
 
 next_steps:
   - "Declare workers: edit worker-compose.yaml"
-  - "Start the engine and workers: iii compose up"
+  - "Start the engine and workers: iii compose --up"
   - "Docs: https://iii.dev/docs/quickstart"

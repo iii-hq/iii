@@ -92,11 +92,11 @@ fn the_flag_is_held_to_the_same_charset_as_the_file() {
 #[test]
 fn the_project_flags_are_gone_rather_than_ignored() {
     // Everything an operator does to a running project is a `compose::*` call,
-    // so `down`, `logs` and `stop` are not process arguments. `up` is the one
+    // so `down`, `logs` and `stop` are not process arguments. `--up` is the one
     // exception, and only because a daemon has to exist before the first call
     // can be made: it is the step that cannot be a call.
     //
-    // `--file` belongs to `up` alone. On the bare command there is no project
+    // `--file` belongs to `--up` alone. On the bare command there is no project
     // for it to name, and accepting it would silently do nothing.
     for removed in [
         &["iii", "compose", "--file", "c.yaml"][..],
@@ -109,7 +109,8 @@ fn the_project_flags_are_gone_rather_than_ignored() {
         &["iii", "compose", "-d"][..],
         &["iii", "compose", "--detach"][..],
         &["iii", "compose", "--attach"][..],
-        &["iii", "compose", "up", "--no-engine"][..],
+        &["iii", "compose", "up"][..],
+        &["iii", "compose", "--up", "--no-engine"][..],
     ] {
         assert!(
             Wrapper::try_parse_from(removed).is_err(),
@@ -161,8 +162,8 @@ fn bare_compose_starts_holding_nothing() {
 
 #[test]
 fn up_names_the_file_in_the_current_directory() {
-    // The point of the command: in a project directory, one word starts it.
-    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "up"]).plan().unwrap();
+    // The point of the flag: in a project directory, one option starts it.
+    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "--up"]).plan().unwrap();
     assert_eq!(
         start.as_deref(),
         Some(std::path::Path::new("worker-compose.yaml"))
@@ -175,7 +176,7 @@ fn up_without_a_cli_namespace_defers_to_the_compose_file() {
         explicit_daemon_namespace,
         start,
         ..
-    } = parse(&["iii", "compose", "up"]).plan().unwrap();
+    } = parse(&["iii", "compose", "--up"]).plan().unwrap();
 
     assert_eq!(explicit_daemon_namespace, None);
     assert!(start.is_some());
@@ -245,19 +246,19 @@ fn compose_without_engine_section_requires_an_external_url() {
 #[test]
 fn up_takes_a_file_of_its_own() {
     let ComposeCommand::Serve { start, .. } =
-        parse(&["iii", "compose", "up", "-f", "./other.yaml"])
+        parse(&["iii", "compose", "--up", "-f", "./other.yaml"])
             .plan()
             .unwrap();
     assert_eq!(start.as_deref(), Some(std::path::Path::new("./other.yaml")));
 }
 
 #[test]
-fn the_namespace_reads_the_same_on_either_side_of_the_subcommand() {
-    // `-n` is global, so an operator who types it where it feels natural does
-    // not get told it belongs somewhere else.
+fn the_namespace_reads_the_same_on_either_side_of_the_up_flag() {
+    // Flags can appear in either order, so an operator can put the action
+    // before or after its namespace.
     for args in [
-        ["iii", "compose", "-n", "orders", "up"],
-        ["iii", "compose", "up", "-n", "orders"],
+        ["iii", "compose", "-n", "orders", "--up"],
+        ["iii", "compose", "--up", "-n", "orders"],
     ] {
         let cli = parse(&args);
         assert_eq!(cli.daemon_namespace().unwrap(), "orders");
@@ -267,6 +268,6 @@ fn the_namespace_reads_the_same_on_either_side_of_the_subcommand() {
             ..
         } = cli.plan().unwrap();
         assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
-        assert!(start.is_some(), "{args:?} should still be an up");
+        assert!(start.is_some(), "{args:?} should still enable --up");
     }
 }

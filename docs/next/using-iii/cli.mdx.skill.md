@@ -16,7 +16,7 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 
 | Subcommand | What it does |
 | --- | --- |
-| `iii compose` | Run the Compose daemon; `iii compose up` supervises a declared engine and project workers. |
+| `iii compose` | Run the Compose daemon; `iii compose --up` supervises a declared engine and project workers. |
 | `iii trigger` | Invoke a registered function on a running engine. |
 | `iii project` | Scaffold projects and generate Docker assets. |
 | `iii console` | Launch the iii web console. |
@@ -27,10 +27,10 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 [Workers](./workers). The `worker::*` function surface was removed with it.
 
 Running `iii` with no subcommand starts only the engine from `./config.yaml` or `--config`. Use
-`iii compose up` for the normal project lifecycle:
+`iii compose --up` for the normal project lifecycle:
 
 ```bash
-iii compose --namespace dev up --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
 ## Managing iii Cloud deployments

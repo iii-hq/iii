@@ -60,7 +60,7 @@ pub enum ComposeError {
 
     #[error(
         "{path} declares engine:, but this Compose daemon is connected to an external engine. \
-         Start the file in a separate `iii compose up` invocation without --engine"
+         Start the file in a separate `iii compose --up` invocation without --engine"
     )]
     EngineSectionRequiresManagedStart { path: PathBuf },
 
@@ -193,7 +193,7 @@ pub enum ComposeError {
         to: String,
     },
 
-    /// `iii compose up` could not bring its project up. The container that
+    /// `iii compose --up` could not bring its project up. The container that
     /// failed has already reported itself; this is the command saying so with
     /// an exit code.
     #[error("{path} did not start")]

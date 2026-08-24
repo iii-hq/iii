@@ -159,8 +159,10 @@ enum Commands {
 
     /// Serve worker-compose projects: supervise each one's workers as a graph.
     ///
-    /// Projects are started and stopped through `iii trigger compose::*`,
-    /// naming one with `id=`; this command only puts the daemon there.
+    /// Without `--up`, projects are started and stopped through
+    /// `iii trigger compose::*`, naming one with `id=`; the command only
+    /// starts the daemon. With `--up`, it also starts the initial project and
+    /// the engine declared by its compose file.
     Compose(iii_compose::ComposeCli),
 
     /// Generate the committed MDX CLI reference page from this binary's
@@ -260,7 +262,7 @@ fn ensure_config_file(path: &str) -> anyhow::Result<bool> {
     std::fs::write(path, EngineConfig::starter_config_yaml())
         .map_err(|e| anyhow::anyhow!("failed to create config file '{}': {}", path, e))?;
     eprintln!(
-        "Created {}. Declare project workers in worker-compose.yaml and start them with `iii compose up`.",
+        "Created {}. Declare project workers in worker-compose.yaml and start them with `iii compose --up`.",
         path
     );
     Ok(true)
@@ -364,7 +366,7 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         // Compose owns its own lifecycle. The initial worker-compose.yaml
-        // decides whether `up` starts a managed engine or connects to the URL
+        // decides whether `--up` starts a managed engine or connects to the URL
         // supplied through --engine / III_URL.
         Some(Commands::Compose(args)) => {
             if cli_args.config.is_some() {
@@ -787,11 +789,12 @@ mod tests {
 
     /// A word that is not a subcommand must fail rather than be swallowed as a
     /// stray argument: `iii compose down` doing nothing quietly is the failure
-    /// mode this guards. `up` is the exception, and the test below is what
-    /// holds it to being one.
+    /// mode this guards. Starting the initial project is a flag, not an
+    /// exception to this rule.
     #[test]
     fn a_word_that_is_not_a_subcommand_does_not_parse() {
         for removed in [
+            ["iii", "compose", "up"],
             ["iii", "compose", "down"],
             ["iii", "compose", "logs"],
             ["iii", "compose", "validate"],
@@ -806,15 +809,13 @@ mod tests {
     /// The one step that cannot be a `compose::*` call: a daemon has to exist
     /// before a call can reach it.
     #[test]
-    fn compose_up_reaches_the_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev"]).expect("should parse");
+    fn compose_up_reaches_the_flag() {
+        let cli =
+            Cli::try_parse_from(["iii", "compose", "--up", "-n", "dev"]).expect("should parse");
         match cli.command {
             Some(Commands::Compose(args)) => {
                 assert_eq!(args.ns.as_deref(), Some("dev"));
-                assert!(
-                    matches!(args.command, Some(iii_compose::ComposeSub::Up { .. })),
-                    "up should reach the subcommand"
-                );
+                assert!(args.up, "--up should reach the compose arguments");
             }
             _ => panic!("expected Compose subcommand"),
         }
@@ -955,7 +956,7 @@ mod tests {
 
     #[test]
     fn config_flag_still_works_before_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "compose", "up"])
+        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "compose", "--up"])
             .expect("config before subcommand should still parse");
         assert_eq!(cli.config.as_deref(), Some("foo.yaml"));
     }
@@ -963,8 +964,8 @@ mod tests {
     #[test]
     fn compose_uses_the_root_engine_config_selection() {
         let explicit =
-            Cli::try_parse_from(["iii", "--config", "custom.yaml", "compose", "up"]).unwrap();
-        let default = Cli::try_parse_from(["iii", "compose", "up"]).unwrap();
+            Cli::try_parse_from(["iii", "--config", "custom.yaml", "compose", "--up"]).unwrap();
+        let default = Cli::try_parse_from(["iii", "compose", "--up"]).unwrap();
 
         assert_eq!(config_path_of(&explicit), "custom.yaml");
         assert_eq!(config_path_of(&default), "config.yaml");

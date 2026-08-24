@@ -40,7 +40,7 @@ pub mod report;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand, ComposeSub};
+pub use cli::{ComposeCli, ComposeCommand};
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
@@ -108,7 +108,7 @@ pub async fn run(cli: ComposeCli) -> i32 {
 
 /// Serves `compose::*` until asked to stop.
 ///
-/// `start` is the project `iii compose up` named. Without it no project is
+/// `start` is the project `iii compose --up` named. Without it no project is
 /// loaded: a daemon that has just started knows nothing, and the first
 /// `compose::up file=…` is what teaches it — which is what lets one daemon hold
 /// several projects without being restarted for each.

@@ -10,7 +10,7 @@
 //! in the foreground; everything an operator does to a project goes through
 //! `iii trigger` from there, naming the project with `file=`.
 //!
-//! `iii compose up` is the same daemon with the first call already made. The
+//! `iii compose --up` is the same daemon with the first call already made. The
 //! initial compose file decides engine ownership: an `engine:` section starts
 //! a managed engine, while its absence requires `--engine` or `III_URL`.
 //!
@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::Args;
 
 use crate::error::{ComposeError, Result};
 
@@ -37,37 +37,31 @@ pub struct ComposeCli {
     /// Existing engine WebSocket address. Falls back to III_URL when the
     /// compose file does not declare an engine section.
     ///
-    /// Global, so it reads the same before or after a subcommand.
-    #[arg(long, value_name = "URL", global = true)]
+    #[arg(long, value_name = "URL")]
     pub engine: Option<String>,
 
     /// Namespace this daemon answers `compose::*` in. Several attach to one
     /// engine; this is what tells them apart.
     ///
     /// It is the address an operator reaches exactly one of them with:
-    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `up`, an
+    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `--up`, an
     /// omitted value inherits the initial compose file namespace. Without an
     /// initial namespace, the daemon uses `default`.
     ///
     /// Spelled the way the rest of the CLI spells it, and only that way: this
     /// has not shipped, so there is nothing calling it `--ns` to keep working.
-    #[arg(short = 'n', long = "namespace", value_name = "NS", global = true)]
+    #[arg(short = 'n', long = "namespace", value_name = "NS")]
     pub ns: Option<String>,
 
-    /// Absent, the daemon starts holding nothing.
-    #[command(subcommand)]
-    pub command: Option<ComposeSub>,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum ComposeSub {
     /// Serve with one project brought up first, starting its declared engine.
-    Up {
-        /// The compose file. Defaults to `./worker-compose.yaml`, the same
-        /// fallback `compose::up` uses when a call names no file.
-        #[arg(short = 'f', long, value_name = "PATH")]
-        file: Option<PathBuf>,
-    },
+    #[arg(long)]
+    pub up: bool,
+
+    /// The compose file. Only valid with `--up`. Defaults to
+    /// `./worker-compose.yaml`, the same fallback `compose::up` uses when a
+    /// call names no file.
+    #[arg(short = 'f', long, value_name = "PATH", requires = "up")]
+    pub file: Option<PathBuf>,
 }
 
 /// What an invocation resolved to, after the flag combination is checked.
@@ -77,7 +71,7 @@ pub enum ComposeCommand {
     Serve {
         explicit_engine_url: Option<String>,
         /// A namespace set on the CLI. `None` is resolved after the initial
-        /// compose file is loaded, so `up` can inherit the file namespace.
+        /// compose file is loaded, so `--up` can inherit the file namespace.
         explicit_daemon_namespace: Option<String>,
         /// A project to bring up before the first call arrives. `None` is a
         /// daemon that starts holding nothing.
@@ -92,8 +86,9 @@ impl ComposeCli {
 
         // A missing `--file` is not "no file": it is the same fallback a call
         // with no `file=` gets, the compose file in the working directory.
-        let start = self.command.as_ref().map(|ComposeSub::Up { file }| {
-            file.clone()
+        let start = self.up.then(|| {
+            self.file
+                .clone()
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE))
         });
 

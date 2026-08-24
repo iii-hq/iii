@@ -81,7 +81,7 @@ engine:
 Restart the project so Compose can materialize the changed engine configuration:
 
 ```bash
-iii compose up --namespace linkly --file worker-compose.yaml
+iii compose --up --namespace linkly --file worker-compose.yaml
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`

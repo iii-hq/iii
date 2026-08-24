@@ -56,7 +56,7 @@ HTTP, cron, queue, state, pubsub, bridge, application workers, and other registr
 direct `engine.workers` map and start the single file:
 
 ```bash
-iii compose --namespace dev up --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
 Keep the list-shaped `config.yaml` only when another supervisor owns the engine. In that case omit
@@ -76,7 +76,7 @@ Compose expanding it.
 ## Default configuration
 
 The generated file contains `workers: []`. Mandatory engine services still start, but no project
-worker does. Add project workers to `worker-compose.yaml` and use `iii compose up`; do not add them
+worker does. Add project workers to `worker-compose.yaml` and use `iii compose --up`; do not add them
 to the empty engine list.
 
 Workers may also be started by another supervisor or on another machine. Any SDK process that

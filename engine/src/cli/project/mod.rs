@@ -496,7 +496,7 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
     );
     eprintln!(
         "    {}    # start the engine and project workers",
-        "iii compose up".bold()
+        "iii compose --up".bold()
     );
     if docker {
         eprintln!(
