@@ -282,7 +282,7 @@ async fn add_rejects_an_engine_change_before_editing_the_file() {
     let err = daemon
         .add(
             Some(&file),
-            Some("./workers/extra"),
+            &["./workers/extra".to_string()],
             "add-after-engine-change".to_string(),
         )
         .await

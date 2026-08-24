@@ -151,7 +151,8 @@ All functions accept the same payload.
 | `file`      | string | Which project: the path to its compose file.                                      |
 | `container` | string | Restricts the operation to one container and the containers it depends on.        |
 | `namespace` | string | Which daemon the caller believed they were reaching. A guard, see below.          |
-| `worker`    | string | The worker used by `add`, `remove`, `restart`, and `update`.                      |
+| `worker`    | string | A repeatable CLI argument for `add`; one worker for `remove`, `restart`, and `update`. |
+| `workers`   | string[] | The canonical JSON list used by `add`.                                          |
 | `function_id` | string | The function or file contract requested by `compose::schema`.                  |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
@@ -172,7 +173,7 @@ one at the wrong file.
 | `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
-| `compose::add`      | `file`, `worker` | What the edit did, any changed workers restarted, and newly started workers. |
+| `compose::add`      | `file`, `workers` | What the edit did, changed workers restarted, and new workers started.  |
 | `compose::remove`   | `file`, `worker` | The worker removed, its targeted stop, and the idempotent `up`.         |
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
@@ -180,7 +181,7 @@ one at the wrong file.
 | `compose::schema`   | `function_id` | Request/response JSON Schemas, descriptions, timeouts, and retry safety.    |
 
 `file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
-working directory. `worker` has no fallback.
+working directory. `worker` and `workers` have no fallback.
 
 `compose::schema` is read-only. With no `function_id`, it returns every `compose::*` contract.
 Pass a function id to return one contract. The pseudo-id `worker-compose.yaml` returns the file's
@@ -193,12 +194,14 @@ iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
-### Adding a worker
+### Adding workers
 
-`compose::add` declares a worker in the compose file and reconciles the running project.
-`worker=` takes a registry name (`state`), a name with a version (`state@0.21.4`)
-or a directory (`./workers/api`); a leading `.` or `/` is what makes it a path,
-since a registry reference may carry a host of its own.
+`compose::add` declares one or more workers in the compose file and reconciles the project once.
+On the CLI, repeat `worker=` for each worker. Each value takes a registry name (`state`), a name
+with a version (`state@0.21.4`), or a directory (`./workers/api`); a leading `.` or `/` is what
+makes it a path, since a registry reference may carry a host of its own. The JSON function contract
+uses one list: `{ "workers": ["database", "web"] }`. The old singular JSON field remains accepted
+for one worker.
 
 An unpinned name is resolved once and written out as an exact version, so a
 later `up` cannot quietly get a different build. The same worker at the same
@@ -236,7 +239,7 @@ iii trigger compose::up     --namespace dev file=./worker-compose.yaml container
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
 iii trigger compose::down   --namespace dev file=./worker-compose.yaml
 iii trigger compose::list   --namespace dev
-iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=state
+iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=database worker=web
 iii trigger compose::remove --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::restart --namespace dev file=./worker-compose.yaml
 iii trigger compose::schema --namespace dev function_id=compose::up
@@ -298,7 +301,7 @@ Already on the version asked for, nothing is written and `changed` is `false`.
 
 The container has to be declared already, and has to be a `package://` one: this edits a version
 line, it does not add a container, and a `path://` worker has no version to move. Use
-[`compose::add`](#adding-a-worker) to declare something new.
+[`compose::add`](#adding-workers) to declare something new.
 
 Only the version line changes. A `depends_on` written by hand comes through as it was, since
 rewriting the graph is what `compose::add` is for.
