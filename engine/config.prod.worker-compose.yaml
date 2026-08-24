@@ -1,4 +1,4 @@
-namespace: default
+# namespace: default
 engine:
   workers: {}
 containers:

@@ -47,7 +47,7 @@ pub struct ComposeCli {
     /// It is the address an operator reaches exactly one of them with:
     /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `up`, an
     /// omitted value inherits the initial compose file namespace. Without an
-    /// initial namespace, the daemon generates one and prints it.
+    /// initial namespace, the daemon uses `default`.
     ///
     /// Spelled the way the rest of the CLI spells it, and only that way: this
     /// has not shipped, so there is nothing calling it `--ns` to keep working.
@@ -108,33 +108,21 @@ impl ComposeCli {
         })
     }
 
-    /// `--namespace`, or a generated name when no compose file is available.
-    ///
-    /// There is no safe well-known default. A shared one — `default`, the
-    /// hostname — is the collision the namespace exists to prevent: the second
-    /// daemon to claim it loses the `(namespace, compose)` lease and is
-    /// refused. So an invocation that does not name itself gets a name,
-    /// printed on start for an operator to capture:
-    ///
-    /// ```text
-    /// iii compose             # prints the namespace
-    /// iii trigger compose::up --namespace <ns> file=./worker-compose.yaml
-    /// ```
-    ///
-    /// A generated one is new on every start, so a daemon meant to find its own
-    /// children again after a restart passes `--namespace` and keeps it.
+    /// `--namespace`, or `default` when no compose file is available.
     ///
     /// Validated here rather than at first use: it is both a namespace the
     /// engine routes on and a directory under `~/.iii/compose`, so a separator
     /// or an empty string is a daemon that half-works until the first write.
     pub fn daemon_namespace(&self) -> Result<String> {
-        Ok(self
-            .validated_namespace()?
-            .unwrap_or_else(generated_daemon_namespace))
+        let explicit = self.validated_namespace()?;
+        Ok(crate::namespace::project_namespace(
+            explicit.as_deref(),
+            None,
+        ))
     }
 
     /// `--namespace` as given, checked. `None` when it was not given — the caller
-    /// decides whether that means "generate one" or "go and find it".
+    /// decides whether to inherit the compose file namespace or use `default`.
     pub fn validated_namespace(&self) -> Result<Option<String>> {
         let Some(namespace) = &self.ns else {
             return Ok(None);
@@ -169,14 +157,4 @@ impl ComposeCli {
             .filter(|url| !url.trim().is_empty())
             .or_else(|| std::env::var("III_URL").ok().filter(|url| !url.is_empty()))
     }
-}
-
-pub(crate) fn generated_daemon_namespace() -> String {
-    // A name already holding state on this machine belongs to a daemon that
-    // ran before, and taking it would mean adopting what it left.
-    let root = crate::state::StateStore::root().ok();
-    crate::name::generate(|candidate| {
-        root.as_ref()
-            .is_some_and(|root| root.join(candidate).exists())
-    })
 }

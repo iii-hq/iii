@@ -41,7 +41,7 @@ The map value is the worker config itself; do not keep the old nested `config:` 
 instances use a `#instance` suffix, such as `iii-worker-manager#rbac`.
 
 ```yaml worker-compose.yaml
-namespace: default
+# namespace: default
 engine:
   url: ws://127.0.0.1:49134
   registration_namespace_grace_ms: 5000

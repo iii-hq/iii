@@ -31,22 +31,20 @@ that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
 With `iii compose up`, the daemon inherits `namespace:` from the initial compose file when
 `--namespace` is absent. If the file has no namespace, or if the daemon starts without an initial
-file, it generates and prints a two-word namespace. A generated name never reuses one that already
-holds state on this machine, and the engine refuses a second daemon claiming a namespace that is
-already served.
+file, it uses `default`. The engine refuses a second daemon claiming a namespace that is already
+served.
 
 ```text
 $ iii compose --engine ws://127.0.0.1:49134
 compose serving
   engine: ws://127.0.0.1:49134
-  namespace: cobalt-meadow
-  start a project: iii trigger compose::up --namespace cobalt-meadow file=./worker-compose.yaml
+  namespace: default
+  start a project: iii trigger compose::up --namespace default file=./worker-compose.yaml
 ```
 
 <Warning>
-  A generated namespace is new on every start, and a project's durable state is stored under it.
-  Set `namespace:` in the compose file, or pass `--namespace`, when a daemon must find its own
-  children again after a restart.
+  Only one Compose daemon can serve a namespace on an engine. Set `namespace:` in the compose file
+  or pass `--namespace` when several daemons must share one engine.
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
@@ -120,8 +118,8 @@ For a quick session, a shell redirect is enough:
 iii compose --namespace dev --engine ws://127.0.0.1:49134 >> ~/iii-compose.log 2>&1 &
 ```
 
-On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
-namespace there: a unit that restarts under a generated one loses track of its own children.
+On a server, a unit file gives restart-on-failure and hands the output to the journal. Set a
+namespace when this daemon must be isolated from another daemon on the same engine.
 
 ```ini
 [Unit]

@@ -20,7 +20,7 @@ Compose daemon's `--namespace` separately addresses that daemon's `compose::*` f
 Project workers live under `containers:` in `worker-compose.yaml`:
 
 ```yaml
-namespace: default
+# namespace: default
 engine:
   workers:
     configuration: {}

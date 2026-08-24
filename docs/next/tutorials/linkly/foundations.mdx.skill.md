@@ -24,7 +24,7 @@ short-code → URL mappings in a key-value store (provided by `state`). Declare 
 ready when the `link` worker reaches for them:
 
 ```yaml worker-compose.yaml
-namespace: default
+# namespace: default
 engine:
   workers: {}
 containers:

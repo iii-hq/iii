@@ -31,33 +31,10 @@ fn bare_compose_serves_in_the_foreground() {
 }
 
 #[test]
-fn an_unnamed_daemon_names_itself() {
-    // Without an id there is no safe well-known name to fall back to: two
-    // daemons sharing one would be the collision the id exists to prevent, and
-    // the second would be refused. So an invocation that does not name itself
-    // gets a name — printed on start, and what an operator captures to address
-    // it.
-    let first = parse(&["iii", "compose"]).daemon_namespace().unwrap();
-    let second = parse(&["iii", "compose"]).daemon_namespace().unwrap();
-
-    // Two words, because the name is printed for an operator to read once and
-    // type from memory. It is still held to the namespace charset: it is also a
-    // directory and a routing key.
-    assert!(
-        iii_compose::namespace::check(&first).is_ok(),
-        "a generated name must be a valid namespace, got {first:?}"
-    );
+fn an_unnamed_daemon_uses_default() {
     assert_eq!(
-        first.split('-').count(),
-        2,
-        "expected adjective-noun, got {first:?}"
-    );
-    // Not a uniqueness guarantee — two words collide, and `generate` is given a
-    // predicate for the state directory precisely because they do. This only
-    // catches a generator that returns a constant.
-    assert_ne!(
-        first, second,
-        "two daemons that did not name themselves drew the same name"
+        parse(&["iii", "compose"]).daemon_namespace().unwrap(),
+        iii_compose::namespace::DEFAULT_NAMESPACE
     );
 }
 

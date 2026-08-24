@@ -31,7 +31,6 @@ pub mod interpolate;
 pub mod lifecycle;
 mod managed_engine;
 pub mod manifest;
-pub mod name;
 pub mod namespace;
 pub mod process;
 pub mod project;
@@ -195,9 +194,10 @@ fn resolve_daemon_namespace(
     explicit_daemon_namespace: Option<String>,
     initial_file: Option<&ComposeFile>,
 ) -> String {
-    explicit_daemon_namespace
-        .or_else(|| initial_file.and_then(|file| file.namespace.clone()))
-        .unwrap_or_else(cli::generated_daemon_namespace)
+    namespace::project_namespace(
+        explicit_daemon_namespace.as_deref(),
+        initial_file.and_then(|file| file.namespace.as_deref()),
+    )
 }
 
 async fn serve_daemon(
@@ -259,9 +259,8 @@ async fn serve_daemon(
     println!("  {} {}", "engine:".dimmed(), daemon.engine_url);
     println!("  {} {}", "namespace:".dimmed(), daemon.daemon_namespace);
     // Printed with this daemon's own address already in it. Several daemons
-    // share an engine, and which one a call reaches is a flag an operator
-    // should not have to work out, and a generated name is meant to be read
-    // once and typed from memory.
+    // can share an engine, and which one a call reaches is a flag an operator
+    // should not have to work out.
     //
     // Not printed when a project was named: the operator already started one,
     // and the line would be telling them to do what they just did.
@@ -407,6 +406,28 @@ mod tests {
         assert_eq!(
             resolve_daemon_namespace(Some("development".to_string()), Some(&compose)),
             "development"
+        );
+    }
+
+    #[test]
+    fn daemon_without_a_namespace_uses_default() {
+        assert_eq!(
+            resolve_daemon_namespace(None, None),
+            crate::namespace::DEFAULT_NAMESPACE
+        );
+    }
+
+    #[test]
+    fn initial_compose_without_a_namespace_uses_default() {
+        let compose = ComposeFile::parse(
+            "containers:\n  api:\n    worker: path://./api\n",
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_daemon_namespace(None, Some(&compose)),
+            crate::namespace::DEFAULT_NAMESPACE
         );
     }
 }

@@ -1,4 +1,4 @@
-namespace: default
+# namespace: default
 engine:
   registration_namespace_grace_ms: 5000
   workers:
