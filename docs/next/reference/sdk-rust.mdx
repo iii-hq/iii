@@ -18,14 +18,7 @@ cargo add iii-sdk
 
 ### register_worker
 
-Register the worker with a iii instance, returns a connected worker client.
-The WebSocket connection is established automatically in a dedicated
-background thread with its own tokio runtime.
 
-Call `IIIClient::shutdown` before the end of `main` to cleanly stop the
-connection and join the background thread. In Rust the process exits
-when `main` returns, terminating all threads, so `shutdown()` must be
-called while `main` is still running.
 
 **Signature**
 
@@ -33,15 +26,12 @@ called while `main` is still running.
 register_worker(address: &str, options: InitOptions) -> IIIClient
 ```
 
-<Tabs>
-  <Tab title="Parameters">
+#### Parameters
 
 <ParamField body="address" type="&str" required>
-  WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
 </ParamField>
 
 <ParamField body="options" type="InitOptions" required>
-  Configuration for worker metadata and OTel.
 
   <Expandable title="`InitOptions` fields">
     <ParamField body="metadata" type="Option<iii::WorkerMetadata>">
@@ -53,24 +43,12 @@ register_worker(address: &str, options: InitOptions) -> IIIClient
     <ParamField body="otel" type="Option<iii_helpers::observability::OtelConfig>">
       OpenTelemetry configuration.
     </ParamField>
+    <ParamField body="namespace" type="Option<String>">
+      Namespace this worker belongs to. Resolution order: `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its default namespace). Mirrors the `III_WORKER_NAME` precedence. It scopes more than the registration. The worker and its functions register here, and everything the worker does afterwards follows it: a `IIIClient::trigger` resolves its target here and a `IIIClient::register_trigger` binds here, unless the call names another namespace.
+    </ParamField>
   </Expandable>
 </ParamField>
 
-
-  </Tab>
-  <Tab title="Example">
-
-```rust
-use iii_sdk::{register_worker, InitOptions};
-
-let worker = register_worker("ws://localhost:49134", InitOptions::default());
-// register functions, handle events, etc.
-worker.shutdown(); // cleanly stops the connection thread
-```
-
-
-  </Tab>
-</Tabs>
 
 ## Methods
 
@@ -103,6 +81,12 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
     <ParamField body="metadata" type="Option<Value>">
       Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
+    <ParamField body="namespace" type="Option<String>">
+      Namespace the trigger's target function resolves in. `None` inherits this worker's namespace; name another namespace, including `default`, to bind the trigger elsewhere.
+    </ParamField>
+    <ParamField body="trigger_namespace" type="Option<String>">
+      Namespace to find the trigger type's provider in. `None` asks the engine to resolve it: this worker's namespace first, the engine's own second. Naming one is strict.
+    </ParamField>
   </Expandable>
 </ParamField>
 
@@ -111,12 +95,11 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
   <Tab title="Example">
 
 ```rust
-let trigger = worker.register_trigger(RegisterTriggerInput {
-    trigger_type: "http".to_string(),
-    function_id: "greet".to_string(),
-    config: json!({ "api_path": "/greet", "http_method": "GET" }),
-    metadata: None,
-})?;
+let trigger = worker.register_trigger(RegisterTriggerInput::new(
+    "http",
+    "greet",
+    json!({ "api_path": "/greet", "http_method": "GET" }),
+))?;
 // Later...
 trigger.unregister();
 ```
@@ -227,6 +210,15 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
 
 <ParamField body="request" type="impl Into<TriggerRequestWithMetadata>" required>
 
+  <Expandable title="`TriggerRequestWithMetadata` fields" defaultOpen>
+    <ParamField body="metadata" type="fn(metadata: Value) -> Self" required>
+      Attach per-invocation metadata.
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
+      Target a specific namespace for this invocation.
+    </ParamField>
+  </Expandable>
+
   <Expandable title="`TriggerRequest` fields" defaultOpen>
     <ParamField body="function_id" type="String" required>
       ID of the function to invoke.
@@ -242,6 +234,9 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
     </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> TriggerRequestWithMetadata" required>
       Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals.
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> TriggerRequestWithMetadata" required>
+      Target a specific namespace for this invocation without adding a required field to `TriggerRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -378,6 +373,20 @@ worker.unregister_trigger_type("cron");
 
 ---
 
+### fatal_error
+
+Fatal error that stopped the worker, if any. Set when the engine rejects
+registration (see `Error::RegistrationRejected`); the worker does not
+reconnect once this is populated.
+
+**Signature**
+
+```rust
+fatal_error() -> Option<Error>
+```
+
+---
+
 ### get_connection_state
 
 Get the current connection state.
@@ -395,6 +404,39 @@ if worker.get_connection_state() != IIIConnectionState::Connected {
     eprintln!("engine not reachable yet");
 }
 ```
+
+
+---
+
+### namespace
+
+The effective worker namespace (resolved from `InitOptions.namespace` /
+`III_NAMESPACE`), or `None` for the engine's `default`.
+
+**Signature**
+
+```rust
+namespace() -> Option<String>
+```
+
+---
+
+### set_namespace
+
+Override the worker's target namespace (call before connect). Applied by
+`register_worker` after resolving
+`InitOptions.namespace` and `III_NAMESPACE`.
+
+**Signature**
+
+```rust
+set_namespace(namespace: impl Into<String>)
+```
+
+#### Parameters
+
+<ParamField body="namespace" type="impl Into<String>" required>
+</ParamField>
 
 
 ---
@@ -474,6 +516,7 @@ Configuration options passed to `register_worker`.
 | `metadata` | Option&lt;iii::[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. |
 | `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake. |
 | `otel` | `Option<iii_helpers::observability::OtelConfig>` | No | OpenTelemetry configuration. |
+| `namespace` | `Option<String>` | No | Namespace this worker belongs to. Resolution order:<br />`namespace` > env `III_NAMESPACE` > `None` (the engine then applies its<br />default namespace). Mirrors the `III_WORKER_NAME` precedence.<br /><br />It scopes more than the registration. The worker and its functions<br />register here, and everything the worker does afterwards follows it: a<br />`IIIClient::trigger` resolves its target here and a<br />`IIIClient::register_trigger` binds here, unless the call names<br />another namespace. |
 
 ---
 
@@ -798,6 +841,7 @@ Errors returned by the III SDK.
 | `Handler` | `(String)` | Yes | - |
 | `Serde` | `(String)` | Yes | - |
 | `WebSocket` | `(String)` | Yes | - |
+| `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Fatal registration rejection: another live worker already holds this<br />worker name in the namespace, or the engine sent an unknown rejection<br />code. The SDK stops and does not reconnect. A<br />`FUNCTION_NAMESPACE_CONFLICT` is non-fatal, is logged, and does not<br />produce this error. |
 | `invocation_error` | fn() -&gt; Option&lt;[`InvocationError`](#invocationerror)&gt; | Yes | If this is a remote invocation failure (`Error::Remote`), return its structured form. Returns `None` for transport/serde/handler errors. |
 
 ---
@@ -847,18 +891,20 @@ does not carry it.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `RegisterTriggerType` | `{ id: String, description: String, trigger_request_format: Option<Value>, call_request_format: Option<Value> }` | Yes | - |
-| `RegisterTrigger` | `{ id: String, trigger_type: String, function_id: String, config: Value, metadata: Option<Value> }` | Yes | - |
+| `RegisterTriggerType` | `{ id: String, description: String, trigger_request_format: Option<Value>, call_request_format: Option<Value>, namespace: Option<String> }` | Yes | - |
+| `RegisterTrigger` | `{ id: String, trigger_type: String, function_id: String, config: Value, metadata: Option<Value>, namespace: Option<String>, trigger_namespace: Option<String> }` | Yes | - |
 | `TriggerRegistrationResult` | \{ id: String, trigger_type: String, function_id: String, error: Option&lt;[`ErrorBody`](#errorbody)&gt; \} | Yes | - |
 | `UnregisterTrigger` | `{ id: String, trigger_type: String }` | Yes | - |
 | `UnregisterTriggerType` | `{ id: String }` | Yes | - |
 | `RegisterFunction` | `{ id: String, description: Option<String>, request_format: Option<Value>, response_format: Option<Value>, metadata: Option<Value>, invocation: Option<iii_helpers::http::HttpInvocationConfig> }` | Yes | - |
 | `UnregisterFunction` | `{ id: String }` | Yes | - |
-| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt; \} | Yes | - |
+| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt;, namespace: Option&lt;String&gt; \} | Yes | - |
 | `InvocationResult` | \{ invocation_id: uuid::Uuid, function_id: String, result: Option&lt;Value&gt;, error: Option&lt;[`ErrorBody`](#errorbody)&gt;, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt; \} | Yes | - |
 | `Ping` | `unit` | Yes | - |
 | `Pong` | `unit` | Yes | - |
-| `WorkerRegistered` | `{ worker_id: String }` | Yes | - |
+| `Reattach` | `{ previous_worker_id: String, reattach_token: Option<String> }` | Yes | Sent to the engine as the first message of a reconnect, before the<br />registration replay: `previous_worker_id` and `reattach_token` are<br />the values the engine assigned via `WorkerRegistered` on the previous<br />connection. The engine retires that connection so the replay lands on<br />a clean slate; the token is required because worker ids alone are<br />publicly discoverable. |
+| `WorkerRegistered` | `{ worker_id: String, reattach_token: Option<String> }` | Yes | - |
+| `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Pushed by the engine when a registration collides with a live worker in<br />the same namespace. The `code` distinguishes the two cases:<br />`WORKER_NAMESPACE_CONFLICT` is fatal (the engine closes the connection;<br />the SDK stops and does not reconnect), while `FUNCTION_NAMESPACE_CONFLICT`<br />refuses a single function id and keeps the connection open. |
 
 ---
 
@@ -881,12 +927,25 @@ does not carry it.
 Input for `IIIClient::register_trigger`.
 The `id` is auto-generated internally.
 
+Build it with `RegisterTriggerInput::new`, or with
+`IIITrigger` for a type the engine
+provides. A struct literal has to name every field, so each field added here
+breaks it -- `namespace` did that once and `trigger_namespace` did it again,
+which is why the constructors exist.
+
+The two are different questions. `namespace` is where the target function
+resolves; `trigger_namespace` is where the trigger type's provider is found,
+and `None` there asks the engine to take this worker's namespace first and
+the engine's own second.
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `trigger_type` | `String` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
 | `function_id` | `String` | Yes | ID of the function this trigger invokes when it fires. |
 | `config` | `Value` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
 | `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `namespace` | `Option<String>` | No | Namespace the trigger's target function resolves in. `None` inherits<br />this worker's namespace; name another namespace, including `default`,<br />to bind the trigger elsewhere. |
+| `trigger_namespace` | `Option<String>` | No | Namespace to find the trigger type's provider in. `None` asks the<br />engine to resolve it: this worker's namespace first, the engine's own<br />second. Naming one is strict. |
 
 ---
 
@@ -899,6 +958,8 @@ The `id` is auto-generated internally.
 | `function_id` | `String` | Yes | - |
 | `config` | `Value` | Yes | - |
 | `metadata` | `Option<Value>` | No | - |
+| `namespace` | `Option<String>` | No | - |
+| `trigger_namespace` | `Option<String>` | No | - |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
 
 ---
@@ -911,6 +972,7 @@ The `id` is auto-generated internally.
 | `description` | `String` | Yes | Human-readable description of what this trigger type does. |
 | `trigger_request_format` | `Option<Value>` | No | - |
 | `call_request_format` | `Option<Value>` | No | - |
+| `namespace` | `Option<String>` | No | Namespace this provider serves. `None` lets the engine use the<br />connection's own, which is what a worker providing a trigger type for<br />its own project wants. |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
 
 ---
@@ -968,12 +1030,18 @@ TriggerRequest {
 | `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Sets how the trigger is routed. `None` for a synchronous request/response.<br />Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`). |
 | `timeout_ms` | `Option<u64>` | No | Override the default invocation timeout, in milliseconds. |
 | `metadata` | fn(metadata: Value) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals. |
+| `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `TriggerRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
 
 ---
 
 #### TriggerRequestWithMetadata
 
-Trigger request plus optional per-invocation metadata.
+Trigger request plus optional per-invocation metadata and target namespace.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `metadata` | `fn(metadata: Value) -> Self` | Yes | Attach per-invocation metadata. |
+| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | Target a specific namespace for this invocation. |
 
 ---
 
@@ -1009,6 +1077,7 @@ Function information returned by `engine::functions::list`
 | `request_format` | `Option<Value>` | No | - |
 | `response_format` | `Option<Value>` | No | - |
 | `metadata` | `Option<Value>` | No | - |
+| `namespace` | `Option<String>` | No | - |
 
 ---
 
@@ -1046,6 +1115,7 @@ Trigger information returned by `engine::triggers::list`
 | `function_id` | `String` | Yes | - |
 | `config` | `Value` | Yes | - |
 | `metadata` | `Option<Value>` | No | - |
+| `namespace` | `Option<String>` | No | - |
 
 ---
 
@@ -1084,6 +1154,7 @@ Worker information returned by `engine::workers::list`
 | `functions` | `Vec<String>` | Yes | - |
 | `active_invocations` | `usize` | Yes | - |
 | `isolation` | `Option<String>` | No | - |
+| `namespace` | `Option<String>` | No | - |
 
 ---
 
@@ -1101,6 +1172,7 @@ Worker metadata for auto-registration
 | `pid` | `Option<u32>` | No | - |
 | `telemetry` | Option&lt;[`TelemetryOptions`](#telemetryoptions)&gt; | No | - |
 | `isolation` | `Option<String>` | No | - |
+| `namespace` | `Option<String>` | No | Namespace this worker belongs to, and therefore the one its calls and<br />its trigger bindings resolve in unless they name another. Absent means<br />the engine applies its default namespace. Resolved from<br />`InitOptions.namespace` / `III_NAMESPACE` (see `resolve_namespace`). |
 
 ### iii_sdk::stream_provider
 
@@ -1139,6 +1211,7 @@ the target function.
 | `payload` | `Value` | Yes | Payload sent by the caller. |
 | `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Routing action, if any. |
 | `context` | `Value` | Yes | Auth context returned by the auth function for this session. |
+| `namespace` | `Option<String>` | No | Target namespace the invoke addressed; forward the call here to stay in<br />the caller's namespace. Absent → the engine's default namespace. |
 
 ### iii_sdk::trigger
 
@@ -1192,6 +1265,7 @@ registered or unregistered.
 | `function_id` | `String` | Yes | Function to invoke when the trigger fires. |
 | `config` | `Value` | Yes | Trigger-specific configuration. |
 | `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `namespace` | `Option<String>` | No | Resolved namespace the trigger's target `function_id` uses. Current SDKs<br />fill an omitted registration value from the registering worker's<br />namespace. A provider that stores this config and later calls<br />`trigger()` must pass it through; `None` is the legacy/default case. |
 
 ---
 

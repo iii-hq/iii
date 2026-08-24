@@ -64,24 +64,34 @@ async fn empty_config_injects_all_mandatory_workers() {
 #[tokio::test]
 async fn duplicate_worker_names_get_instance_ids() {
     let f = write_config(
-        "workers:\n  - name: foo\n    config:\n      port: 1\n  - name: foo\n    config:\n      port: 2\nmodules: []\n",
+        "workers:\n  - name: iii-stream\n    config:\n      port: 1\n  - name: iii-stream\n    config:\n      port: 2\nmodules: []\n",
     );
     let entries = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
         .await
         .expect("duplicates should get instance IDs");
 
-    let foo_entries: Vec<_> = entries
+    let stream_entries: Vec<_> = entries
         .iter()
-        .filter(|e| e.name.starts_with("foo"))
+        .filter(|e| e.name.starts_with("iii-stream"))
         .collect();
-    assert_eq!(foo_entries.len(), 2, "both foo entries should be preserved");
-    assert_eq!(foo_entries[0].name, "foo");
-    assert_eq!(foo_entries[1].name, "foo#1");
-    assert_eq!(foo_entries[0].config, Some(serde_json::json!({"port": 1})));
-    assert_eq!(foo_entries[1].config, Some(serde_json::json!({"port": 2})));
+    assert_eq!(
+        stream_entries.len(),
+        2,
+        "both iii-stream entries should be preserved"
+    );
+    assert_eq!(stream_entries[0].name, "iii-stream");
+    assert_eq!(stream_entries[1].name, "iii-stream#1");
+    assert_eq!(
+        stream_entries[0].config,
+        Some(serde_json::json!({"port": 1}))
+    );
+    assert_eq!(
+        stream_entries[1].config,
+        Some(serde_json::json!({"port": 2}))
+    );
     // worker_type strips the #N suffix for factory lookup
-    assert_eq!(foo_entries[0].worker_type(), "foo");
-    assert_eq!(foo_entries[1].worker_type(), "foo");
+    assert_eq!(stream_entries[0].worker_type(), "iii-stream");
+    assert_eq!(stream_entries[1].worker_type(), "iii-stream");
 }
 
 /// Minimal config whose `configuration` worker persists into a throwaway
@@ -144,14 +154,15 @@ async fn commit_noop_when_diff_is_empty() {
 }
 
 #[tokio::test]
-async fn user_defined_workers_are_preserved() {
+async fn user_defined_workers_are_rejected_with_compose_guidance() {
     let f = write_config("workers:\n  - name: my::CustomUserWorker\nmodules: []\n");
-    let entries = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
+    let error = ReloadManager::parse_and_normalize(f.path().to_str().unwrap())
         .await
-        .expect("normalize should succeed");
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert!(names.contains(&"my::CustomUserWorker"));
-    assert!(names.contains(&"iii-engine-functions")); // mandatory still injected
+        .expect_err("user-managed workers must move to worker-compose.yaml");
+    let message = error.to_string();
+    assert!(message.contains("my::CustomUserWorker"));
+    assert!(message.contains("worker-compose.yaml"));
+    assert!(message.contains("https://iii.dev/docs/upgrading/workers-to-compose"));
 }
 
 #[test]
@@ -272,7 +283,7 @@ async fn promote_dead_unchanged_leaves_live_workers_alone() {
 
 #[tokio::test]
 async fn promote_dead_unchanged_revives_dead_worker() {
-    // This is the regression test for `iii worker add ./w --force` not
+    // This is the regression test for a forced local worker reinstall not
     // restarting the VM: the CLI rewrites config.yaml with the same entry,
     // the diff says unchanged, but the tracked worker is dead. The reloader
     // must promote it to `changed` so commit() destroys + restarts.

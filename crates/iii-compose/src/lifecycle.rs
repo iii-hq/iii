@@ -16,7 +16,8 @@
 //!    already running untouched.
 //! 3. **Teardown follows the graph backwards.** Dependents stop before the
 //!    things they depend on, so nothing is talking to a worker that just went
-//!    away.
+//!    away. Removal is the explicit exception: its validated new graph first
+//!    drops those edges, then only the deleted container stops.
 
 use std::{
     collections::BTreeMap,
@@ -87,6 +88,9 @@ impl From<&ComposeError> for OpError {
 pub struct LifecycleCtx<'a> {
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
+    /// Namespace of the compose daemon that owns this project. Children use
+    /// it for explicit per-call routing to `compose::*`.
+    pub compose_namespace: &'a str,
     /// Namespace the *children* register in — not the daemon's own.
     pub project_namespace: &'a str,
     pub engine_url: &'a str,
@@ -366,6 +370,55 @@ pub async fn restart_one(
     }
 }
 
+/// Stops one container because its declaration is being removed.
+///
+/// This path is intentionally narrower than targeted `down`: dependency edges
+/// pointing at the container are removed from the new declaration, so stopping
+/// dependents would discard healthy processes that the following idempotent
+/// `up` is expected to preserve. The old declaration remains available here so
+/// the removed container can still run its `post_run` hook.
+pub async fn remove_one(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+) -> OpResult {
+    let began = Instant::now();
+    if !ctx.file.containers.contains_key(key) {
+        let error = ComposeError::UnknownContainer {
+            container: key.to_string(),
+        };
+        report::summary_failed("remove", error.code(), began.elapsed());
+        return failed_op(operation_id, Some(key), &error);
+    }
+
+    report::plan(&[(key.to_string(), 0)]);
+    let changed = children.contains_key(key);
+    if changed {
+        report::starting(key, "stopping");
+        stop_one(ctx, children, records, key).await;
+        report::stopped(key);
+    } else {
+        report::unchanged(key, "not running");
+    }
+    records.remove(key);
+    report::plan_done();
+    report::summary_ok("remove", usize::from(changed), 1, began.elapsed());
+
+    OpResult {
+        operation_id,
+        status: OpStatus::Ok,
+        changed,
+        containers: vec![ContainerResult {
+            container: key.to_string(),
+            state: ChildStatus::Stopped,
+            changed,
+            error: None,
+        }],
+    }
+}
+
 /// How long a name may stay registered after the process holding it exits.
 /// Generous, because the cost of being wrong is refusing a restart that would
 /// have worked a moment later.
@@ -537,6 +590,8 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     let spawn_ctx = SpawnCtx {
         engine_url: ctx.engine_url,
         namespace: ctx.project_namespace,
+        compose_namespace: ctx.compose_namespace,
+        compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
         config_path: config.as_ref().map(|resolved| resolved.file.path()),
@@ -826,6 +881,8 @@ async fn stop_one(
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
             namespace: ctx.project_namespace,
+            compose_namespace: ctx.compose_namespace,
+            compose_file: &ctx.file.path,
             container_key: key,
             start: &start,
             config_path: None,

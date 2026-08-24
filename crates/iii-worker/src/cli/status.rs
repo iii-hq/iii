@@ -762,11 +762,8 @@ impl WorkerStatus {
 /// - OCI/VM workers: `~/.iii/managed/{name}/vm.pid`
 /// - Binary workers: `~/.iii/pids/{name}.pid`
 ///
-/// MUST stay in sync with `engine/src/workers/registry_worker.rs::
-/// pid_file_candidates`. Engine and iii-worker are sibling crates with no
-/// shared dep; duplicating this function keeps the path convention single-
-/// sourced within each crate. If you add a third worker type or location
-/// here, mirror it there.
+/// These paths are internal iii-worker lifecycle details. The engine no
+/// longer probes them or starts project workers.
 pub(crate) fn pid_file_candidates(
     home: &std::path::Path,
     worker_name: &str,

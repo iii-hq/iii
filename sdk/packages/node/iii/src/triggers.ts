@@ -14,9 +14,9 @@ export type TriggerConfig<TConfig> = {
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: Record<string, unknown>
   /**
-   * Namespace the trigger's target `function_id` resolves in. A provider that
-   * stores this config and later calls `trigger()` must pass this namespace, or
-   * it fires in `default`. Absent means the engine's default namespace.
+   * Resolved namespace the trigger's target `function_id` uses. When the
+   * registration omitted it, the registering SDK fills this from its worker's
+   * namespace. A provider that later calls `trigger()` must pass it through.
    */
   namespace?: string
 }

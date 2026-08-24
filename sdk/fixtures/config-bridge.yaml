@@ -1,29 +1,26 @@
-workers:
-  - name: iii-worker-manager
-    config:
+namespace: default
+engine:
+  url: ws://127.0.0.1:49197
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./data/config-bridge-configuration
+    iii-worker-manager:
       port: 49197
-
-  - name: iii-stream
-    config:
+    iii-stream:
       port: 3114
-      host: 0.0.0.0
+      host: 127.0.0.1
       adapter:
         name: bridge
         config:
           bridge_url: ws://localhost:49198
-
-  - name: iii-state
-    config:
-      adapter:
-        name: bridge
-        config:
-          bridge_url: ws://localhost:49198
-
-  - name: iii-pubsub
-    config:
+containers:
+  pubsub:
+    worker: package://api.workers.iii.dev/pubsub
+    version: "0.21.2"
+    config_name: pubsub
+    config_override:
       adapter:
         name: local
-
-  - name: iii-observability
-    config:
-      enabled: false

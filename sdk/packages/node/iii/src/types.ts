@@ -234,7 +234,7 @@ export interface IIIClient {
   shutdown(): Promise<void>
 
   /**
-   * The current WebSocket connection state. `'failed'` is terminal — it follows
+   * The current WebSocket connection state. `'failed'` is terminal: it follows
    * a fatal registration rejection (see {@link getFatalError}). Mirrors the
    * Python/Rust SDKs' `get_connection_state()`.
    */

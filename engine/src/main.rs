@@ -6,6 +6,7 @@
 
 mod cli;
 mod cli_trigger;
+mod legacy_worker_functions;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
@@ -99,9 +100,8 @@ struct Cli {
     /// Path to the config file [default: config.yaml]. When the file does
     /// not exist, `iii` offers to create it with an empty workers list (and
     /// creates it without asking in non-interactive sessions).
-    // Option (not default_value) so subcommand dispatch can tell "user chose
-    // this file" from "clap default" — only an explicit choice is forwarded
-    // to `iii worker …` as III_CONFIG_PATH.
+    // Option (not default_value) so direct engine startup can distinguish an
+    // explicit file from its `config.yaml` fallback.
     #[arg(short, long)]
     config: Option<String>,
 
@@ -150,17 +150,6 @@ enum Commands {
         disable_help_flag = true
     )]
     Cloud {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
-    },
-
-    /// Manage workers (add, remove, list)
-    #[command(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Worker {
         #[arg(num_args = 0..)]
         args: Vec<String>,
     },
@@ -220,7 +209,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Trigger(_)) => "trigger".to_string(),
         Some(Commands::Console { args }) => passthrough_command_path("console", args),
         Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
-        Some(Commands::Worker { args }) => passthrough_command_path("worker", args),
         Some(Commands::Project(args)) => match args.action {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
@@ -272,7 +260,7 @@ fn ensure_config_file(path: &str) -> anyhow::Result<bool> {
     std::fs::write(path, EngineConfig::starter_config_yaml())
         .map_err(|e| anyhow::anyhow!("failed to create config file '{}': {}", path, e))?;
     eprintln!(
-        "Created {}. Add workers with `iii worker add <name>` — the engine picks them up live.",
+        "Created {}. Declare project workers in worker-compose.yaml and start them with `iii compose up`.",
         path
     );
     Ok(true)
@@ -282,26 +270,6 @@ fn ensure_config_file(path: &str) -> anyhow::Result<bool> {
 /// `config.yaml` default.
 fn config_path_of(cli: &Cli) -> &str {
     cli.config.as_deref().unwrap_or("config.yaml")
-}
-
-/// Env vars for a dispatched `iii worker …` child. An explicit `--config`
-/// is forwarded as III_CONFIG_PATH (absolutized — the child keeps our cwd,
-/// but everything IT spawns may not) so `iii -c config.yml worker add x`
-/// edits the same file the engine reads. Without an explicit flag the
-/// child keeps its own default (and any user-exported III_CONFIG_PATH).
-fn worker_dispatch_envs(cli: &Cli) -> Vec<(String, String)> {
-    let Some(ref config) = cli.config else {
-        return Vec::new();
-    };
-    let path = std::path::Path::new(config);
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
-    };
-    vec![("III_CONFIG_PATH".to_string(), abs.display().to_string())]
 }
 
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
@@ -391,25 +359,21 @@ async fn main() -> anyhow::Result<()> {
                 cli::handle_dispatch("cloud", args, cli_args.no_update_check, &[]).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Worker { args }) => {
-            let envs = worker_dispatch_envs(&cli_args);
-            let exit_code =
-                cli::handle_dispatch("worker", args, cli_args.no_update_check, &envs).await;
-            std::process::exit(exit_code);
-        }
         Some(Commands::Project(args)) => {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // Compose owns its own lifecycle. `up` starts a managed engine unless
-        // --no-engine was selected; the root config flag is the engine child's
-        // config path, just as it is on the ordinary serve path.
+        // Compose owns its own lifecycle. The initial worker-compose.yaml
+        // decides whether `up` starts a managed engine or connects to the URL
+        // supplied through --engine / III_URL.
         Some(Commands::Compose(args)) => {
-            let exit_code = iii_compose::run_with_config(
-                args.clone(),
-                std::path::PathBuf::from(config_path_of(&cli_args)),
-            )
-            .await;
+            if cli_args.config.is_some() {
+                anyhow::bail!(
+                    "--config cannot be used with `iii compose`. Put managed engine settings under \
+                     engine: in worker-compose.yaml, or start the external engine separately"
+                );
+            }
+            let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
         // Handled before telemetry above.
@@ -532,6 +496,15 @@ mod tests {
     }
 
     #[test]
+    fn worker_is_no_longer_a_public_command() {
+        let result = Cli::try_parse_from(["iii", "worker", "add", "http"]);
+        assert!(
+            result.is_err(),
+            "iii worker must be rejected by the root CLI"
+        );
+    }
+
+    #[test]
     fn version_flag_works_globally() {
         let cli = Cli::try_parse_from(["iii", "--version"]).expect("should parse --version");
         assert!(cli.version);
@@ -560,20 +533,6 @@ mod tests {
             }
             _ => panic!("expected Console subcommand"),
         }
-    }
-
-    #[test]
-    fn cli_usage_command_path_keeps_passthrough_command_but_not_values() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add", "--secret", "value"])
-            .expect("should parse worker passthrough");
-        assert_eq!(cli_usage_command_path(&cli), "worker add");
-    }
-
-    #[test]
-    fn cli_usage_command_path_covers_worker_commands() {
-        let cli = Cli::try_parse_from(["iii", "worker", "logs", "pdf-worker"])
-            .expect("should parse worker logs passthrough");
-        assert_eq!(cli_usage_command_path(&cli), "worker logs");
     }
 
     #[test]
@@ -645,64 +604,6 @@ mod tests {
     }
 
     #[test]
-    fn worker_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit@1.0.0"])
-            .expect("should parse worker with passthrough args");
-        match cli.command {
-            Some(Commands::Worker { args }) => {
-                assert_eq!(args, vec!["add", "pdfkit@1.0.0"]);
-            }
-            _ => panic!("expected Worker subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_parses_with_no_args() {
-        let cli = Cli::try_parse_from(["iii", "worker"]).expect("should parse worker with no args");
-        match cli.command {
-            Some(Commands::Worker { args }) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Worker subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_dev_parses_passthrough() {
-        let cli = Cli::try_parse_from(["iii", "worker", "dev", ".", "--rebuild", "--port", "5000"])
-            .expect("should parse worker dev with passthrough args");
-        match cli.command {
-            Some(Commands::Worker { args }) => {
-                assert_eq!(args, vec!["dev", ".", "--rebuild", "--port", "5000"]);
-            }
-            _ => panic!("expected Worker subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_list_parses_passthrough() {
-        let cli = Cli::try_parse_from(["iii", "worker", "list"]).expect("should parse worker list");
-        match cli.command {
-            Some(Commands::Worker { args }) => {
-                assert_eq!(args, vec!["list"]);
-            }
-            _ => panic!("expected Worker subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_logs_parses_passthrough() {
-        let cli = Cli::try_parse_from(["iii", "worker", "logs", "image-resize", "--follow"])
-            .expect("should parse worker logs --follow");
-        match cli.command {
-            Some(Commands::Worker { args }) => {
-                assert_eq!(args, vec!["logs", "image-resize", "--follow"]);
-            }
-            _ => panic!("expected Worker subcommand"),
-        }
-    }
-
-    #[test]
     fn update_parses_with_target() {
         let cli = Cli::try_parse_from(["iii", "update", "console"])
             .expect("should parse update with target");
@@ -770,8 +671,7 @@ mod tests {
 
     #[test]
     fn sandbox_is_no_longer_a_valid_subcommand() {
-        // `iii sandbox` was moved to `iii worker sandbox` for managing ephemeral VMs.
-        // As well as `iii trigger sandbox::<op>` for working with the sandbox through the sandbox worker.
+        // Sandboxes are managed through the iii-sandbox worker's function surface.
         // Bare `iii sandbox` should now fail to parse.
         let result = Cli::try_parse_from(["iii", "sandbox"]);
         assert!(
@@ -907,20 +807,13 @@ mod tests {
     /// before a call can reach it.
     #[test]
     fn compose_up_reaches_the_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev", "--no-engine"])
-            .expect("should parse");
+        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev"]).expect("should parse");
         match cli.command {
             Some(Commands::Compose(args)) => {
                 assert_eq!(args.ns.as_deref(), Some("dev"));
                 assert!(
-                    matches!(
-                        args.command,
-                        Some(iii_compose::ComposeSub::Up {
-                            no_engine: true,
-                            ..
-                        })
-                    ),
-                    "up --no-engine should reach the subcommand"
+                    matches!(args.command, Some(iii_compose::ComposeSub::Up { .. })),
+                    "up should reach the subcommand"
                 );
             }
             _ => panic!("expected Compose subcommand"),
@@ -1062,17 +955,9 @@ mod tests {
 
     #[test]
     fn config_flag_still_works_before_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "worker", "add", "x"])
+        let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "compose", "up"])
             .expect("config before subcommand should still parse");
         assert_eq!(cli.config.as_deref(), Some("foo.yaml"));
-        // An explicit --config is forwarded to the dispatched `iii worker`
-        // child as an absolute III_CONFIG_PATH so both sides edit the same
-        // file even when it isn't named config.yaml.
-        let envs = worker_dispatch_envs(&cli);
-        assert_eq!(envs.len(), 1);
-        assert_eq!(envs[0].0, "III_CONFIG_PATH");
-        assert!(std::path::Path::new(&envs[0].1).is_absolute());
-        assert!(envs[0].1.ends_with("foo.yaml"));
     }
 
     #[test]
@@ -1085,14 +970,6 @@ mod tests {
         assert_eq!(config_path_of(&default), "config.yaml");
     }
 
-    #[test]
-    fn default_config_is_not_forwarded_to_worker_dispatch() {
-        // Without an explicit --config the child keeps its own default and
-        // any user-exported III_CONFIG_PATH stays in effect.
-        let cli = Cli::try_parse_from(["iii", "worker", "list"]).unwrap();
-        assert!(cli.config.is_none());
-        assert!(worker_dispatch_envs(&cli).is_empty());
-    }
     #[test]
     fn trigger_parses_namespace_flag_alongside_kv_pairs() {
         let cli = Cli::try_parse_from([

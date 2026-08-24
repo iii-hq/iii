@@ -42,8 +42,14 @@ registerWorker(address: string, options?: InitOptions) => ISdk
     <ParamField body="invocationTimeoutMs" type="number">
       Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`.
     </ParamField>
+    <ParamField body="namespace" type="string">
+      Namespace this worker registers under. When omitted the engine applies its `default` namespace. Scopes worker and function registrations so identically-named entries can coexist across namespaces. The browser has no `process.env`, so there is no environment-variable fallback -- pass the option explicitly.
+    </ParamField>
     <ParamField body="reconnectionConfig" type="Partial<IIIReconnectionConfig>">
       WebSocket reconnection behavior.
+    </ParamField>
+    <ParamField body="workerName" type="string">
+      Name this worker announces to the engine. Defaults to a unique `browser:<random>` per client: a browser has no pid to disambiguate by, and the engine allows only one live worker per name in a namespace, so two tabs sharing a fixed name would evict each other.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -86,6 +92,9 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
     </ParamField>
     <ParamField body="function_id" type="string" required>
       ID of the function this trigger invokes when it fires.
+    </ParamField>
+    <ParamField body="namespace" type="string">
+      Namespace the trigger's target function resolves in. Omitting it does not bind in the engine's default: `registerTrigger` fills it from this worker's namespace, because the function a trigger names is one this worker registered, and that landed in the worker's namespace. Name another namespace, `default` included, to bind elsewhere.
     </ParamField>
     <ParamField body="type" type="string" required>
       Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
@@ -198,6 +207,9 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
     </ParamField>
     <ParamField body="function_id" type="string" required>
       ID of the function to invoke.
+    </ParamField>
+    <ParamField body="namespace" type="string">
+      Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="payload" type="TInput" required>
       Input data passed to the function.
@@ -388,6 +400,20 @@ unsub()
 
 ---
 
+### getFatalError
+
+The fatal registration rejection that terminated this connection, if any
+(e.g. a `WORKER_NAMESPACE_CONFLICT`); `undefined` while healthy. Mirrors the
+Node/Python/Rust SDKs.
+
+**Signature**
+
+```typescript
+getFatalError() => RegistrationRejectedError | undefined
+```
+
+---
+
 ### shutdown
 
 Gracefully shutdown the iii, cleaning up all resources.
@@ -411,7 +437,7 @@ The `iii-browser-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `MessageType`, `MiddlewareFunctionInput`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult`, `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerAction`, `TriggerConfig`, `TriggerHandler`, `TriggerRequest`, `TriggerTypeRef`, `registerWorker` |
+| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `MessageType`, `MiddlewareFunctionInput`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult`, `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerAction`, `TriggerConfig`, `TriggerHandler`, `TriggerRequest`, `TriggerTypeRef`, `registerWorker` |
 | `iii-browser-sdk/state` | `DeleteResult`, `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
 | `iii-browser-sdk/stream` | `DeleteResult`, `IStream`, `MergePath`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamContext`, `StreamDeleteInput`, `StreamGetInput`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamListGroupsInput`, `StreamListInput`, `StreamSetInput`, `StreamSetResult`, `StreamTriggerConfig`, `StreamUpdateInput`, `StreamUpdateResult`, `UpdateAppend`, `UpdateDecrement`, `UpdateIncrement`, `UpdateMerge`, `UpdateOp`, `UpdateOpError`, `UpdateRemove`, `UpdateSet` |
 
@@ -419,7 +445,7 @@ The `iii-browser-sdk` package provides additional entry points:
 
 ### iii-browser-sdk
 
-[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers) · [`EnqueueResult`](#enqueueresult) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerAction`](#triggeraction) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef)
+[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers) · [`EnqueueResult`](#enqueueresult) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerAction`](#triggeraction) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef)
 
 #### ApiRequest
 
@@ -471,11 +497,12 @@ middleware.
 | --- | --- | --- | --- |
 | `allow_function_registration` | `boolean` | No | Whether the worker may register new functions. Defaults to `true` if omitted. |
 | `allow_trigger_type_registration` | `boolean` | No | Whether the worker may register new trigger types. Defaults to `false` if omitted. |
-| `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. |
+| `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. |
 | `allowed_trigger_types` | `string[]` | No | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
 | `context` | `Record<string, unknown>` | No | Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. |
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
+| `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit to scope nothing: the session declares any<br />namespace, and only `allowed_functions` and `expose_functions` apply. |
 
 ---
 
@@ -593,7 +620,9 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `headers` | `Record<string, string>` | No | Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. |
+| `namespace` | `string` | No | Namespace this worker registers under. When omitted the engine applies its<br />`default` namespace. Scopes worker and function registrations so<br />identically-named entries can coexist across namespaces. The browser has no<br />`process.env`, so there is no environment-variable fallback -- pass the<br />option explicitly. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
+| `workerName` | `string` | No | Name this worker announces to the engine. Defaults to a unique<br />`browser:<random>` per client: a browser has no pid to disambiguate by, and<br />the engine allows only one live worker per name in a namespace, so two tabs<br />sharing a fixed name would evict each other. |
 
 ---
 
@@ -603,9 +632,11 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `InvocationResult` | `"invocationresult"` | Yes | - |
 | `InvokeFunction` | `"invokefunction"` | Yes | - |
+| `Reattach` | `"reattach"` | Yes | - |
 | `RegisterFunction` | `"registerfunction"` | Yes | - |
 | `RegisterTrigger` | `"registertrigger"` | Yes | - |
 | `RegisterTriggerType` | `"registertriggertype"` | Yes | - |
+| `RegistrationRejected` | `"registrationrejected"` | Yes | - |
 | `TriggerRegistrationResult` | `"triggerregistrationresult"` | Yes | - |
 | `UnregisterFunction` | `"unregisterfunction"` | Yes | - |
 | `UnregisterTrigger` | `"unregistertrigger"` | Yes | - |
@@ -625,6 +656,7 @@ call before it reaches the target function.
 | `action` | [`TriggerAction`](#triggeraction) | No | Routing action, if any. |
 | `context` | `Record<string, unknown>` | Yes | Auth context returned by the auth function for this session. |
 | `function_id` | `string` | Yes | ID of the function being invoked. |
+| `namespace` | `string` | No | Target namespace the invoke addressed; forward the call here to stay in the<br />caller's namespace. Absent → the engine's default namespace. |
 | `payload` | `Record<string, unknown>` | Yes | Payload sent by the caller. |
 
 ---
@@ -642,6 +674,7 @@ fields, or throw to deny the registration.
 | `description` | `string` | No | Human-readable description of the function. |
 | `function_id` | `string` | Yes | ID of the function being registered. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `namespace` | `string` | No | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
 
 ---
 
@@ -671,6 +704,7 @@ fields, or throw to deny the registration.
 | `config` | `unknown` | Yes | Trigger-specific configuration. |
 | `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
 | `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
+| `namespace` | `string` | No | Namespace the trigger's target resolves in (explicit, or `default` when<br />absent). The same id can exist in several namespaces, so the hook needs this<br />to authorize per target namespace. |
 | `trigger_id` | `string` | Yes | ID of the trigger being registered. |
 | `trigger_type` | `string` | Yes | Trigger type identifier. |
 
@@ -787,6 +821,7 @@ type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 | --- | --- | --- | --- |
 | `config` | `unknown` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
 | `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
+| `namespace` | `string` | No | Namespace the trigger's target function resolves in.<br /><br />Omitting it does not bind in the engine's default: `registerTrigger` fills<br />it from this worker's namespace, because the function a trigger names is<br />one this worker registered, and that landed in the worker's namespace. Name<br />another namespace, `default` included, to bind elsewhere. |
 | `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
 
 ---
@@ -799,6 +834,7 @@ type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 | `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
 | `id` | `string` | Yes | Unique trigger identifier, generated by the SDK during registration. |
 | `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | Wire discriminator; always `MessageType.RegisterTrigger`. |
+| `namespace` | `string` | No | Namespace the trigger's target function resolves in.<br /><br />Omitting it does not bind in the engine's default: `registerTrigger` fills<br />it from this worker's namespace, because the function a trigger names is<br />one this worker registered, and that landed in the worker's namespace. Name<br />another namespace, `default` included, to bind elsewhere. |
 | `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
 
 ---
@@ -823,6 +859,34 @@ type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
 | `description` | `string` | Yes | Human-readable description of what this trigger type does. |
 | `id` | `string` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
 | `message_type` | [`MessageType`](#messagetype).RegisterTriggerType | Yes | - |
+
+---
+
+#### RegistrationRejectedError
+
+A terminal registration rejection from the engine. Thrown into every pending
+invocation and exposed via `getFatalError()` when a worker-name collision
+(or other non-retryable rejection) closes the connection for good.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `namespace` | `string` | Yes | - |
+| `owner_worker_id` | `string` | Yes | - |
+| `worker_name` | `string` | No | - |
+
+---
+
+#### RegistrationRejectedInit
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `namespace` | `string` | Yes | - |
+| `owner_worker_id` | `string` | Yes | - |
+| `worker_name` | `string` | No | - |
 
 ---
 
@@ -882,6 +946,7 @@ registered or unregistered.
 | `config` | `TConfig` | Yes | Trigger-specific configuration. |
 | `function_id` | `string` | Yes | Function to invoke when the trigger fires. |
 | `id` | `string` | Yes | Trigger instance ID. |
+| `namespace` | `string` | No | Namespace the trigger's target `function_id` resolves in. A provider that<br />stores this config and later fires the target must pass this namespace, or<br />it fires in `default`.<br /><br />Omitted, it is filled in with the registering worker's namespace. A trigger<br />names a function, and a worker's functions land in the worker's namespace,<br />so defaulting anywhere else registers a trigger that resolves nothing. Name<br />another namespace, `default` included, to target one. |
 
 ---
 
@@ -905,6 +970,7 @@ Request object passed to ISdk.trigger.
 | --- | --- | --- | --- |
 | `action` | [`TriggerAction`](#triggeraction) | No | Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`). |
 | `function_id` | `string` | Yes | ID of the function to invoke. |
+| `namespace` | `string` | No | Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. |
 | `payload` | `TInput` | Yes | Input data passed to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout, in milliseconds. |
 

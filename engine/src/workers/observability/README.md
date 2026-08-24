@@ -3,13 +3,9 @@
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance
 metrics, alert rules, and trace sampling — all queryable via built-in functions.
 
-## Install
-
-```bash
-iii worker add iii-observability
-```
-
-Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+`iii-observability` is injected by the engine. Do not declare it in `config.yaml`,
+`engine.workers`, or project `containers:`. Configure its registered runtime configuration entry
+through `configuration::set`.
 
 ## Skills
 
@@ -21,36 +17,42 @@ npx skills add iii-hq/iii --full-depth --skill iii-observability
 
 ## Sample Configuration
 
-```yaml
-- name: iii-observability
-  config:
-    enabled: true
-    service_name: my-service
-    service_version: 1.0.0
-    exporter: memory
-    metrics_enabled: true
-    logs_enabled: true
-    memory_max_spans: 1000
-    sampling_ratio: 1.0
-    alerts:
-      - name: high-error-rate
-        metric: iii.invocations.error
-        threshold: 10
-        operator: ">"
-        window_seconds: 60
-        action:
-          type: log
+```json
+{
+  "function_id": "configuration::set",
+  "payload": {
+    "id": "iii-observability",
+    "value": {
+      "enabled": true,
+      "service_name": "my-service",
+      "service_version": "1.0.0",
+      "exporter": "memory",
+      "metrics_enabled": true,
+      "logs_enabled": true,
+      "memory_max_spans": 1000,
+      "sampling_ratio": 1.0,
+      "alerts": [
+        {
+          "name": "high-error-rate",
+          "metric": "iii.invocations.error",
+          "threshold": 10,
+          "operator": "greaterthan",
+          "window_seconds": 60,
+          "action": { "type": "log" }
+        }
+      ]
+    }
+  }
+}
 ```
 
 ## Configure
 
 The full configuration surface is registered with the builtin `configuration`
-worker under the id **`iii-observability`**. **The stored entry is the runtime
-source of truth; the `config.yaml` block is seed-only** — it populates the
-entry on the very first boot and is ignored afterwards. To change a setting
-after first boot, edit the entry (console, or `configuration::set
-{ "id": "iii-observability", "value": { ... } }`); editing `config.yaml`
-alone has no effect anymore.
+worker under the id **`iii-observability`**. The stored entry is the runtime
+source of truth. Change it through the console or `configuration::set
+{ "id": "iii-observability", "value": { ... } }`; the worker is internal and
+cannot be configured as an engine worker declaration.
 
 With the default file-backed adapter the entry persists at
 `./config/iii-observability.yaml` and is read again at every
@@ -62,9 +64,7 @@ Values are validated against the JSON schema at `configuration::set` time
 (unknown fields rejected, ratios bounded to `0..=1`, counts ≥ 1). Two
 caveats:
 
-- Alert `operator` symbols (`>`, `<`, ...) are accepted in `config.yaml`
-  only; remote edits must use the canonical names the schema advertises
-  (`greaterthan`, `lessthan`, ...).
+- Alert `operator` values use the canonical schema names (`greaterthan`, `lessthan`, ...).
 - After a schema tightening, a previously-stored out-of-range value makes
   the boot-time schema refresh fail with `SCHEMA_INVALID` (warn-and-continue);
   reads still work and out-of-range values are clamped on read.
@@ -167,7 +167,7 @@ traces and `logs_exporter: both` for logs.
 | `name`             | string      | Required. Unique alert rule name.                                                                       |
 | `metric`           | string      | Required. Metric name to monitor (e.g., `iii.invocations.error`).                                       |
 | `threshold`        | number      | Required. Threshold value.                                                                              |
-| `operator`         | string      | Comparison operator: `>`, `>=`, `<`, `<=`, `==`, `!=`. Defaults to `>`.                                 |
+| `operator`         | string      | Comparison operator: `greaterthan`, `greaterthanorequal`, `lessthan`, `lessthanorequal`, `equal`, `notequal`. Defaults to `greaterthan`. |
 | `window_seconds`   | number      | Time window in seconds for metric evaluation. Defaults to `60`.                                         |
 | `cooldown_seconds` | number      | Minimum interval between alert fires. Defaults to `60`.                                                 |
 | `enabled`          | boolean     | Whether the alert rule is active. Defaults to `true`.                                                   |

@@ -24,8 +24,9 @@ export type AuthResult = {
    * `match("svc::*")` spelling.
    *
    * The keys are also the namespaces the session may declare on
-   * `engine::workers::register`. Omit to scope nothing: the session declares any
-   * namespace, and only `allowed_functions` and `expose_functions` apply.
+   * `engine::workers::register`. Omit this map to add no namespace-scoped
+   * grants: the session may declare any namespace, and only
+   * `allowed_functions` and `expose_functions` apply.
    */
   namespaces?: Record<string, string[]>
   /** Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. */

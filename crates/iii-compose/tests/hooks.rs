@@ -23,6 +23,8 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
     SpawnCtx {
         engine_url: "ws://engine.test:49134",
         namespace: "orders-test",
+        compose_namespace: "compose-test",
+        compose_file: cwd,
         container_key: "api",
         start,
         config_path: config,

@@ -10,7 +10,7 @@ use iii_worker::{Cli, Commands};
 /// A `stderr` tracing writer that never reports I/O errors back to the fmt
 /// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
 /// when stderr is *also* a broken pipe — precisely the engine-death case for
-/// the spawned daemons (`worker-manager-daemon`, `sandbox-daemon`): the engine
+/// the spawned `sandbox-daemon`: the engine
 /// consumed both fds 1 and 2, so when it dies the connection thread's very
 /// next reconnect log would panic the process (exit 101) before the
 /// engine-gone reaper runs. Swallowing the write error keeps the daemon alive;
@@ -115,42 +115,9 @@ async fn async_main() -> anyhow::Result<()> {
             no_wait,
         } => {
             use colored::Colorize;
-            use iii_worker::cli::builtin_defaults::deprecated_builtin_replacement;
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
-            use iii_worker::core::{AddOptions, ProjectCtx, WorkerSource, add as core_add};
-
-            // --host: route the add through the target engine's worker::add
-            // trigger. The engine host edits ITS config file and installs
-            // artifacts there — nothing in the CLI's cwd is touched.
-            // Hostless from a non-project directory falls back to the
-            // default local engine (MOT-4091).
-            let host_flag = args
-                .host
-                .clone()
-                .or_else(iii_worker::cli::remote_ops::implicit_host_fallback);
-            if let Some(host) = host_flag.as_deref() {
-                let adds = args
-                    .worker_names
-                    .iter()
-                    .map(|name| {
-                        (
-                            name.clone(),
-                            AddOptions {
-                                source: remote_source_for_cli(name, host),
-                                force,
-                                reset_config: args.reset_config,
-                                yes: args.yes,
-                                wait: !no_wait,
-                            },
-                        )
-                    })
-                    .collect();
-                let rc =
-                    iii_worker::cli::remote_ops::handle_remote_add(host, adds, args.host.is_none())
-                        .await;
-                std::process::exit(rc);
-            }
+            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
 
             let total = args.worker_names.len();
             let brief = total > 1;
@@ -158,20 +125,6 @@ async fn async_main() -> anyhow::Result<()> {
 
             for (i, name) in args.worker_names.iter().enumerate() {
                 let source = parse_source_for_cli(name);
-                if let WorkerSource::Registry {
-                    name: registry_name,
-                    ..
-                } = &source
-                    && let Some(replacement) = deprecated_builtin_replacement(registry_name)
-                {
-                    eprintln!(
-                        "{} Worker name '{}' is deprecated and will be removed in a future version. Use `iii worker add {}` instead.",
-                        "warning:".yellow(),
-                        registry_name,
-                        replacement
-                    );
-                }
-
                 if brief {
                     eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
                 }
@@ -262,35 +215,6 @@ async fn async_main() -> anyhow::Result<()> {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
-
-            // Reinstall is `add --force`; same --host routing (and
-            // non-project-cwd fallback, MOT-4091) as Add.
-            let host_flag = args
-                .host
-                .clone()
-                .or_else(iii_worker::cli::remote_ops::implicit_host_fallback);
-            if let Some(host) = host_flag.as_deref() {
-                let adds = args
-                    .worker_names
-                    .iter()
-                    .map(|name| {
-                        (
-                            name.clone(),
-                            AddOptions {
-                                source: remote_source_for_cli(name, host),
-                                force: true,
-                                reset_config: args.reset_config,
-                                yes: args.yes,
-                                wait: false,
-                            },
-                        )
-                    })
-                    .collect();
-                let rc =
-                    iii_worker::cli::remote_ops::handle_remote_add(host, adds, args.host.is_none())
-                        .await;
-                std::process::exit(rc);
-            }
 
             let mut fail_count = 0usize;
             for name in &args.worker_names {
@@ -630,9 +554,6 @@ async fn async_main() -> anyhow::Result<()> {
             } => iii_worker::cli::sandbox::handle_download(id, remote_path, local_path, port).await,
         },
         Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
-        Commands::WorkerManagerDaemon(args) => {
-            iii_worker::cli::worker_manager_daemon::run(args).await
-        }
         Commands::BundlePrepare => {
             std::process::exit(iii_worker::cli::bundle_prepare::run().await);
         }
@@ -715,29 +636,4 @@ fn parse_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
         None => (input.to_string(), None),
     };
     iii_worker::core::WorkerSource::Registry { name, version }
-}
-
-/// Source for a `--host` add. Same parse as the local path, with one
-/// adjustment: `WorkerSource::Local` paths resolve on the ENGINE host by
-/// contract, so when the target is loopback (same machine — the
-/// engine-in-another-directory case `--host` primarily fixes) relative
-/// paths are absolutized against the CLI's cwd. For a non-loopback target
-/// the path is shipped verbatim — rewriting it against a cwd the engine
-/// machine has never seen would silently break the documented semantics —
-/// and a one-line note reminds the user where it resolves.
-fn remote_source_for_cli(input: &str, host: &str) -> iii_worker::core::WorkerSource {
-    let mut source = parse_source_for_cli(input);
-    if let iii_worker::core::WorkerSource::Local { path } = &mut source {
-        if iii_worker::cli::remote_ops::host_is_loopback(host) {
-            if let Ok(abs) = std::path::absolute(&*path) {
-                *path = abs;
-            }
-        } else {
-            eprintln!(
-                "  note: local path '{}' resolves on the engine host, not this machine",
-                path.display()
-            );
-        }
-    }
-    source
 }

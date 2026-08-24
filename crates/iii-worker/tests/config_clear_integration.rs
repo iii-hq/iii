@@ -18,10 +18,10 @@ async fn handle_managed_clear_single_no_artifacts_for_known_worker() {
         // A worker that's registered (in config.yaml) but has no artifacts
         // yet should succeed silently -- "already clean" is not an error.
         let add_rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(add_rc, 0, "precondition: add must succeed");
-        let exit_code = iii_worker::cli::managed::handle_managed_clear(Some("iii-http"), true);
+        let exit_code = iii_worker::cli::managed::handle_managed_clear(Some("iii-stream"), true);
         assert_eq!(
             exit_code, 0,
             "clear of known-but-clean worker should succeed"

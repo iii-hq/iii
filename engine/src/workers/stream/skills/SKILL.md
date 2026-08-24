@@ -23,7 +23,7 @@ Adapters: `kv` (default; in-memory or file-backed; single-instance only, no cros
 
 ## Boundaries
 
-- Not a general key/value store — data is stream-shaped (`stream_name`/`group_id`/`item_id`). Use `iii-state` for scope/key values.
+- Not a general key/value store — data is stream-shaped (`stream_name`/`group_id`/`item_id`). Use the standalone `state` worker for scope/key values.
 - The default `kv` adapter does not fan out across processes; multi-instance fleets that need real-time broadcast must use `redis`.
 - `stream:leave` is not an authorization gate — the subscription is already gone by the time it fires, and its return value is ignored.
 - Trigger handlers run after the originating write returns; a handler failure neither rolls back the write nor surfaces to the caller.

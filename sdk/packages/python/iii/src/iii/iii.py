@@ -180,6 +180,7 @@ class III:
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+            When omitted, resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
         options: Optional configuration. See ``InitOptions``.
 
     Examples:
@@ -1551,10 +1552,10 @@ class III:
         except Exception:
             sdk_version = "unknown"
 
-        # III_WORKER_NAME carries the config.yaml entry name for managed
-        # workers (set by iii-worker at spawn). Engine truth (`iii worker
-        # status`/`list`) matches connections by name, so the managed identity
-        # must win over the hostname:pid fallback.
+        # III_WORKER_NAME carries the orchestrator-assigned name (set by
+        # iii-worker for engine-managed workers). The engine matches live
+        # registrations by name, so that identity must win over the
+        # hostname:pid fallback.
         worker_name = (
             self._options.worker_name
             or os.environ.get("III_WORKER_NAME")
@@ -1705,7 +1706,8 @@ def register_worker(address: str | None = None, options: InitOptions | None = No
     ``add_connection_state_listener`` to observe the actual transition.
 
     Args:
-        address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+        address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``). When omitted,
+            resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
         options: Optional configuration for worker name, timeouts, reconnection, and OTel.
 
     Returns:

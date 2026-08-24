@@ -240,18 +240,18 @@ fn get_worker_config_as_env_no_config() {
 fn append_builtin_worker_creates_entry_with_defaults() {
     in_temp_dir(|| {
         let default_yaml =
-            iii_worker::cli::builtin_defaults::get_builtin_default("iii-http").unwrap();
-        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml.as_str()))
+            iii_worker::cli::builtin_defaults::get_builtin_default("iii-stream").unwrap();
+        iii_worker::cli::config_file::append_worker("iii-stream", Some(default_yaml.as_str()))
             .unwrap();
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
-        assert!(content.contains("- name: iii-http"));
+        assert!(content.contains("- name: iii-stream"));
         assert!(content.contains("config:"));
-        assert!(content.contains("port: 3111"));
+        assert!(content.contains("port: 3112"));
         assert!(content.contains("host: 127.0.0.1"));
-        assert!(content.contains("default_timeout: 30000"));
-        assert!(content.contains("concurrency_request_limit: 1024"));
-        assert!(content.contains("allowed_origins"));
+        assert!(content.contains("adapter:"));
+        assert!(content.contains("store_method: file_based"));
+        assert!(content.contains("file_path: ./data/stream_store"));
     });
 }
 
@@ -260,13 +260,13 @@ fn append_builtin_worker_merges_with_existing_user_config() {
     in_temp_dir(|| {
         std::fs::write(
             "config.yaml",
-            "workers:\n  - name: iii-http\n    config:\n      port: 9999\n      custom_key: preserved\n",
+            "workers:\n  - name: iii-stream\n    config:\n      port: 9999\n      custom_key: preserved\n",
         )
         .unwrap();
 
         let default_yaml =
-            iii_worker::cli::builtin_defaults::get_builtin_default("iii-http").unwrap();
-        iii_worker::cli::config_file::append_worker("iii-http", Some(default_yaml.as_str()))
+            iii_worker::cli::builtin_defaults::get_builtin_default("iii-stream").unwrap();
+        iii_worker::cli::config_file::append_worker("iii-stream", Some(default_yaml.as_str()))
             .unwrap();
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -275,8 +275,8 @@ fn append_builtin_worker_merges_with_existing_user_config() {
         // User's custom key is preserved
         assert!(content.contains("custom_key"));
         // Builtin defaults for missing fields are filled in
-        assert!(content.contains("default_timeout"));
-        assert!(content.contains("concurrency_request_limit"));
+        assert!(content.contains("adapter:"));
+        assert!(content.contains("store_method: file_based"));
     });
 }
 

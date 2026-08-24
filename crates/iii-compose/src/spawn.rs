@@ -8,7 +8,7 @@
 //!
 //! A child's environment is **built**, not inherited. The daemon composes it
 //! from three layers — a host baseline, the container's declared
-//! `env_file`/`environment`, and four reserved variables the daemon owns — and
+//! `env_file`/`environment`, and seven reserved variables the daemon owns — and
 //! the child is spawned with that map and nothing else. A compose project then
 //! starts the same way regardless of which shell launched the daemon, and a
 //! stale `III_URL` in the operator's environment can never point a child at the
@@ -27,10 +27,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these five
+/// would be the wrong way round for most settings. Because each of these seven
 /// is already declared in the compose file, and a second declaration of the
 /// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding a sixth is a decision, not a habit:
+/// separately, so adding an eighth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -41,13 +41,19 @@ use crate::manifest::StartSpec;
 ///   and `compose::status` before it could work at all; short of that, compose
 ///   waits in one place while the child registers in another. Both are already
 ///   declared, by `namespace:` and by the container key.
+/// - `III_COMPOSE_NAMESPACE` and `III_COMPOSE_FILE` let a managed worker reach
+///   the daemon and project that started it. The daemon namespace is not the
+///   project namespace, and one daemon may own several compose files, so both
+///   values are required for an unambiguous control-plane call.
 /// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
 ///   merged value is written to the file and published to the entry. Pointing
 ///   the child at a different file leaves it reading one value while the
 ///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 5] = [
+pub const RESERVED_ENV: [&str; 7] = [
     "III_URL",
     "III_NAMESPACE",
+    "III_COMPOSE_NAMESPACE",
+    "III_COMPOSE_FILE",
     "III_CONFIG",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
@@ -89,6 +95,8 @@ pub const BASELINE_ENV: &[&str] = &[
 pub struct SpawnCtx<'a> {
     pub engine_url: &'a str,
     pub namespace: &'a str,
+    pub compose_namespace: &'a str,
+    pub compose_file: &'a Path,
     pub container_key: &'a str,
     pub start: &'a StartSpec,
     /// Path of the resolved configuration file, when the container has config.
@@ -137,6 +145,14 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
 
     env.insert("III_URL".to_string(), ctx.engine_url.to_string());
     env.insert("III_NAMESPACE".to_string(), ctx.namespace.to_string());
+    env.insert(
+        "III_COMPOSE_NAMESPACE".to_string(),
+        ctx.compose_namespace.to_string(),
+    );
+    env.insert(
+        "III_COMPOSE_FILE".to_string(),
+        ctx.compose_file.to_string_lossy().to_string(),
+    );
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     match ctx.config_path {
         Some(config_path) => {
@@ -238,6 +254,8 @@ mod tests {
         SpawnCtx {
             engine_url: "ws://127.0.0.1:49134",
             namespace: "orders-1234abcd",
+            compose_namespace: "compose-host",
+            compose_file: Path::new("/srv/app/worker-compose.yaml"),
             container_key: "api",
             start,
             config_path: config,
@@ -262,6 +280,8 @@ mod tests {
 
         assert_eq!(plan.env["III_URL"], "ws://127.0.0.1:49134");
         assert_eq!(plan.env["III_NAMESPACE"], "orders-1234abcd");
+        assert_eq!(plan.env["III_COMPOSE_NAMESPACE"], "compose-host");
+        assert_eq!(plan.env["III_COMPOSE_FILE"], "/srv/app/worker-compose.yaml");
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));

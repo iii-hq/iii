@@ -439,15 +439,8 @@ jobs:
       matrix:
         include:
           - { worker: iii-worker-manager, worker_dir: engine/src/workers/worker }
-          - { worker: iii-http, worker_dir: engine/src/workers/rest_api }
           - { worker: iii-stream, worker_dir: engine/src/workers/stream }
-          - { worker: iii-state, worker_dir: engine/src/workers/state }
-          - { worker: iii-queue, worker_dir: engine/src/workers/queue }
-          - { worker: iii-pubsub, worker_dir: engine/src/workers/pubsub }
-          - { worker: iii-cron, worker_dir: engine/src/workers/cron }
           - { worker: iii-observability, worker_dir: engine/src/workers/observability }
-          - { worker: iii-exec, worker_dir: engine/src/workers/shell }
-          - { worker: iii-bridge, worker_dir: engine/src/workers/bridge_client }
           - { worker: configuration, worker_dir: engine/src/workers/configuration }
           - { worker: iii-sandbox, worker_dir: crates/iii-worker/src/sandbox_daemon }
           - { worker: iii-engine-functions, worker_dir: engine/src/workers/engine_fn }

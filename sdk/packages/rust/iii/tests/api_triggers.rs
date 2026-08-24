@@ -16,6 +16,10 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{Error, RegisterFunction};
 use tokio::time::sleep;
 
+// The standalone HTTP worker accepts request bodies up to 16 MiB. Keep upload
+// fixtures below that limit, including multipart framing overhead.
+const UPLOAD_FIXTURE_BYTES: usize = 8 * 1024 * 1024;
+
 fn test_pdf_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -503,7 +507,8 @@ async fn upload_pdf_streaming() {
         return;
     }
 
-    let original_pdf = std::fs::read(&pdf_path).expect("read pdf");
+    let mut original_pdf = std::fs::read(&pdf_path).expect("read pdf");
+    original_pdf.truncate(UPLOAD_FIXTURE_BYTES);
 
     let iii = common::shared_iii();
 
@@ -900,7 +905,8 @@ async fn multipart_form_data() {
         return;
     }
 
-    let original_pdf = std::fs::read(&pdf_path).expect("read pdf");
+    let mut original_pdf = std::fs::read(&pdf_path).expect("read pdf");
+    original_pdf.truncate(UPLOAD_FIXTURE_BYTES);
 
     let iii = common::shared_iii();
 

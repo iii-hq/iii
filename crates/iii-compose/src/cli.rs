@@ -10,11 +10,9 @@
 //! in the foreground; everything an operator does to a project goes through
 //! `iii trigger` from there, naming the project with `file=`.
 //!
-//! `iii compose up` is the same daemon with the first call already made and a
-//! managed engine started first by default. A daemon that serves nothing is
-//! not what an operator wants in a project directory: they want the project
-//! running, and the daemon is how it stays running. `--no-engine` keeps the
-//! external-engine workflow for an engine the operator already owns.
+//! `iii compose up` is the same daemon with the first call already made. The
+//! initial compose file decides engine ownership: an `engine:` section starts
+//! a managed engine, while its absence requires `--engine` or `III_URL`.
 //!
 //! The compose process never backgrounds itself; only the managed engine child
 //! does. That is the shape a process supervisor already wants, and it hands
@@ -29,9 +27,6 @@ use clap::{Args, Subcommand};
 
 use crate::error::{ComposeError, Result};
 
-/// Engine address used when neither `--engine` nor `III_URL` is set.
-pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
-
 /// Compose file used when `--file` is not given: the one in the current
 /// directory. Running compose from inside a project should not require naming
 /// the file the project is made of.
@@ -39,8 +34,8 @@ pub const DEFAULT_COMPOSE_FILE: &str = "worker-compose.yaml";
 
 #[derive(Args, Debug, Clone)]
 pub struct ComposeCli {
-    /// Engine WebSocket address. Falls back to III_URL, then
-    /// ws://127.0.0.1:49134.
+    /// Existing engine WebSocket address. Falls back to III_URL when the
+    /// compose file does not declare an engine section.
     ///
     /// Global, so it reads the same before or after a subcommand.
     #[arg(long, value_name = "URL", global = true)]
@@ -50,8 +45,9 @@ pub struct ComposeCli {
     /// engine; this is what tells them apart.
     ///
     /// It is the address an operator reaches exactly one of them with:
-    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. Omitted, the
-    /// daemon generates one and prints it.
+    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `up`, an
+    /// omitted value inherits the initial compose file namespace. Without an
+    /// initial namespace, the daemon generates one and prints it.
     ///
     /// Spelled the way the rest of the CLI spells it, and only that way: this
     /// has not shipped, so there is nothing calling it `--ns` to keep working.
@@ -65,27 +61,13 @@ pub struct ComposeCli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ComposeSub {
-    /// Start an engine, then serve with one project brought up first.
+    /// Serve with one project brought up first, starting its declared engine.
     Up {
         /// The compose file. Defaults to `./worker-compose.yaml`, the same
         /// fallback `compose::up` uses when a call names no file.
         #[arg(short = 'f', long, value_name = "PATH")]
         file: Option<PathBuf>,
-
-        /// Connect to an engine that is already running instead of starting
-        /// and stopping one with this compose invocation.
-        #[arg(long)]
-        no_engine: bool,
     },
-}
-
-/// Who owns the engine lifecycle for this invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineOwnership {
-    /// Compose starts the engine and stops it after every project is down.
-    Managed,
-    /// The operator owns the engine; compose only connects to it.
-    External,
 }
 
 /// What an invocation resolved to, after the flag combination is checked.
@@ -93,9 +75,10 @@ pub enum EngineOwnership {
 pub enum ComposeCommand {
     /// Serve `compose::*` in the foreground.
     Serve {
-        engine_url: String,
-        daemon_namespace: String,
-        engine_ownership: EngineOwnership,
+        explicit_engine_url: Option<String>,
+        /// A namespace set on the CLI. `None` is resolved after the initial
+        /// compose file is loaded, so `up` can inherit the file namespace.
+        explicit_daemon_namespace: Option<String>,
         /// A project to bring up before the first call arrives. `None` is a
         /// daemon that starts holding nothing.
         start: Option<PathBuf>,
@@ -105,33 +88,27 @@ pub enum ComposeCommand {
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
-        let daemon_namespace = self.daemon_namespace()?;
+        let explicit_daemon_namespace = self.validated_namespace()?;
 
         // A missing `--file` is not "no file": it is the same fallback a call
         // with no `file=` gets, the compose file in the working directory.
-        let start = self.command.as_ref().map(|ComposeSub::Up { file, .. }| {
+        let start = self.command.as_ref().map(|ComposeSub::Up { file }| {
             file.clone()
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE))
         });
-        let engine_ownership = match &self.command {
-            Some(ComposeSub::Up {
-                no_engine: false, ..
-            }) => EngineOwnership::Managed,
-            Some(ComposeSub::Up {
-                no_engine: true, ..
-            })
-            | None => EngineOwnership::External,
-        };
 
         Ok(ComposeCommand::Serve {
-            engine_url: self.engine_url(),
-            daemon_namespace,
-            engine_ownership,
+            // Keep the environment out of the parsed plan. An `engine:`
+            // section owns its managed engine and ignores a process-wide
+            // III_URL, while an explicit --engine is a contradictory request
+            // we can report to the operator.
+            explicit_engine_url: self.engine.clone().filter(|url| !url.trim().is_empty()),
+            explicit_daemon_namespace,
             start,
         })
     }
 
-    /// `--namespace`, or a generated name when it is absent.
+    /// `--namespace`, or a generated name when no compose file is available.
     ///
     /// There is no safe well-known default. A shared one — `default`, the
     /// hostname — is the collision the namespace exists to prevent: the second
@@ -151,15 +128,9 @@ impl ComposeCli {
     /// engine routes on and a directory under `~/.iii/compose`, so a separator
     /// or an empty string is a daemon that half-works until the first write.
     pub fn daemon_namespace(&self) -> Result<String> {
-        Ok(self.validated_namespace()?.unwrap_or_else(|| {
-            // A name already holding state on this machine belongs to a daemon
-            // that ran before, and taking it would mean adopting what it left.
-            let root = crate::state::StateStore::root().ok();
-            crate::name::generate(|candidate| {
-                root.as_ref()
-                    .is_some_and(|root| root.join(candidate).exists())
-            })
-        }))
+        Ok(self
+            .validated_namespace()?
+            .unwrap_or_else(generated_daemon_namespace))
     }
 
     /// `--namespace` as given, checked. `None` when it was not given — the caller
@@ -189,13 +160,23 @@ impl ComposeCli {
         }
     }
 
-    /// `--engine` > `III_URL` > [`DEFAULT_ENGINE_URL`]. The env var is part of
-    /// the same reserved contract the daemon injects into its children.
-    pub fn engine_url(&self) -> String {
+    /// `--engine` > `III_URL`. There is deliberately no external-engine
+    /// default: without an `engine:` section the operator must name the engine
+    /// Compose is allowed to use.
+    pub fn requested_engine_url(&self) -> Option<String> {
         self.engine
             .clone()
             .filter(|url| !url.trim().is_empty())
             .or_else(|| std::env::var("III_URL").ok().filter(|url| !url.is_empty()))
-            .unwrap_or_else(|| DEFAULT_ENGINE_URL.to_string())
     }
+}
+
+pub(crate) fn generated_daemon_namespace() -> String {
+    // A name already holding state on this machine belongs to a daemon that
+    // ran before, and taking it would mean adopting what it left.
+    let root = crate::state::StateStore::root().ok();
+    crate::name::generate(|candidate| {
+        root.as_ref()
+            .is_some_and(|root| root.join(candidate).exists())
+    })
 }

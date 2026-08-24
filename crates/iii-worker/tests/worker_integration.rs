@@ -63,15 +63,9 @@ fn cli_parses_all_subcommands() {
     }
 }
 
-/// Engine/CLI IPC contract: the iii engine spawns `iii-worker start <name>
-/// --port <N>` from engine/src/workers/registry_worker.rs::ExternalWorkerProcess::spawn
-/// whenever it encounters a worker in config.yaml that isn't a builtin or a
-/// legacy iii.toml module. The --port flag carries the engine's configured
-/// iii-worker-manager port so spawned workers connect back to the right
-/// place (previously hardcoded DEFAULT_PORT, silently breaking non-default
-/// manager ports). These tests lock both halves of the contract: (a) the
-/// bare-name form still parses for backward compat with direct CLI use, and
-/// (b) the engine's new --port form parses and surfaces the port correctly.
+/// Internal iii-worker CLI parsing contract. Compose owns project worker
+/// startup; the support binary still accepts a port for bundle and sandbox
+/// operations that need to target a non-default engine endpoint.
 #[test]
 fn start_subcommand_matches_engine_spawn_args() {
     // Bare-name form used when a human runs `iii-worker start <name>` from
@@ -210,55 +204,20 @@ fn add_subcommand_accepts_yes_for_large_dependency_graphs() {
 /// `add` subcommand accepts multiple worker names as positional args.
 #[test]
 fn add_subcommand_multiple_workers() {
-    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "iii-http", "iii-state"]);
+    let cli = Cli::parse_from(["iii-worker", "add", "pdfkit", "http", "state"]);
     match cli.command {
         Commands::Add { args, force, .. } => {
-            assert_eq!(args.worker_names, vec!["pdfkit", "iii-http", "iii-state"]);
+            assert_eq!(args.worker_names, vec!["pdfkit", "http", "state"]);
             assert!(!force);
         }
         _ => panic!("Expected Add command"),
     }
 }
 
+/// The support binary must not invent a legacy engine config when invoked
+/// from a directory that is not a project.
 #[test]
-fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
-    let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
-    // A config file keeps the add on the local path — without one, hostless
-    // add falls back to the running engine (MOT-4091) and this test would
-    // depend on whatever listens on the default port.
-    std::fs::write(temp.path().join("config.yaml"), "workers: []\n").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
-        .args(["add", "iii-http", "--no-wait"])
-        .current_dir(temp.path())
-        .env("HOME", temp.path())
-        .env("NO_COLOR", "1")
-        .env("III_API_URL", "http://127.0.0.1:0")
-        .output()
-        .expect("failed to execute iii-worker binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "iii-worker add failed with status {}\nstderr:\n{}",
-        output.status,
-        stderr
-    );
-    assert!(stderr.contains("iii-http"), "stderr was:\n{stderr}");
-    assert!(stderr.contains("deprecated"), "stderr was:\n{stderr}");
-    assert!(stderr.contains("future version"), "stderr was:\n{stderr}");
-    assert!(
-        stderr.contains("iii worker add http"),
-        "stderr was:\n{stderr}"
-    );
-}
-
-/// MOT-4091: hostless `add` from a directory with no config file must not
-/// create one there — it redirects to the default local engine instead.
-/// The bogus worker name makes the op fail identically whether or not an
-/// engine happens to listen on the default port (connection refused vs.
-/// engine-side not-found), so the assertions are environment-independent.
-#[test]
-fn add_from_non_project_dir_redirects_and_leaves_cwd_untouched() {
+fn add_from_non_project_dir_leaves_cwd_untouched() {
     let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
         .args(["add", "definitely-not-a-worker-mot4091", "--no-wait"])
@@ -271,10 +230,6 @@ fn add_from_non_project_dir_redirects_and_leaves_cwd_untouched() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "stderr was:\n{stderr}");
-    assert!(
-        stderr.contains("no config file in"),
-        "expected the fallback note, stderr was:\n{stderr}"
-    );
     assert!(
         !temp.path().join("iii.config.yaml").exists() && !temp.path().join("config.yaml").exists(),
         "hostless add from a non-project dir must not create a config file"

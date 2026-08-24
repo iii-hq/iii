@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     config::ComposeFile,
@@ -38,7 +38,12 @@ use crate::{
 };
 
 pub struct Project {
-    pub file: ComposeFile,
+    /// Current parsed compose file. Mutations replace it in place so an add
+    /// can reconcile new declarations without dropping supervision of the
+    /// workers that are already running.
+    file: RwLock<ComposeFile>,
+    file_path: PathBuf,
+    compose_namespace: String,
     /// Namespace the containers register in. Resolved from the file, and
     /// unrelated to `id` — the id addresses the project, the namespace
     /// addresses its workers.
@@ -78,6 +83,7 @@ impl Project {
     ) -> Result<Arc<Self>> {
         let project_namespace = project_namespace(None, file.namespace.as_deref());
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
+        let file_path = file.path.clone();
 
         let recovered = store.load()?;
         if let Some(state) = &recovered {
@@ -91,7 +97,9 @@ impl Project {
         state.namespace = project_namespace.clone();
 
         let project = Arc::new(Self {
-            file,
+            file: RwLock::new(file),
+            file_path,
+            compose_namespace: daemon_namespace.to_string(),
             project_namespace,
             engine_url,
             engine,
@@ -104,6 +112,12 @@ impl Project {
 
         project.reconcile_recovered().await;
         Ok(project)
+    }
+
+    /// Canonical path that identifies this project. The path never changes
+    /// when the parsed declaration is refreshed.
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
     }
 
     /// Re-checks every ready container against the engine after the connection
@@ -121,24 +135,25 @@ impl Project {
             Tone::Plain,
         );
 
-        let running: Vec<String> = {
+        let running: Vec<(String, Duration)> = {
             let inner = self.inner.lock().await;
+            let file = self.file.read().await;
             inner
                 .children
                 .iter()
                 .filter(|(_, child)| matches!(child.poll(), crate::process::Outcome::Running))
-                .map(|(key, _)| key.clone())
+                .map(|(key, _)| {
+                    let budget = file
+                        .containers
+                        .get(key)
+                        .map(|container| container.startup_timeout)
+                        .unwrap_or(SUPERVISION_INTERVAL);
+                    (key.clone(), budget)
+                })
                 .collect()
         };
 
-        for key in running {
-            let budget = self
-                .file
-                .containers
-                .get(&key)
-                .map(|container| container.startup_timeout)
-                .unwrap_or(SUPERVISION_INTERVAL);
-
+        for (key, budget) in running {
             if self.wait_for_reregistration(&key, budget).await {
                 continue;
             }
@@ -215,7 +230,9 @@ impl Project {
             // the dependents first and ends on the dead container itself, which
             // fires its `post_run` and drops it from the map. Leaving dependents
             // running would leave them talking to something that is gone.
-            let dependents = crate::dag::transitive_dependents(&self.file, &key);
+            let file = self.file.read().await;
+            let dependents = crate::dag::transitive_dependents(&file, &key);
+            drop(file);
             if !dependents.is_empty() {
                 daemon_line(
                     &self.project_namespace,
@@ -373,10 +390,12 @@ impl Project {
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
@@ -394,6 +413,143 @@ impl Project {
         result
     }
 
+    /// Applies a compose-file edit without dropping supervision of unchanged
+    /// containers. Existing containers whose declarations changed are
+    /// restarted in place; then the normal idempotent `up` path starts only
+    /// declarations that are not already running.
+    pub async fn reconcile_file(
+        &self,
+        file: ComposeFile,
+        restart: &[String],
+        operation_id: String,
+    ) -> (Vec<OpResult>, OpResult) {
+        let config_dir = self.config_dir();
+        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+
+        {
+            let mut current = self.file.write().await;
+            *current = file;
+        }
+        let file = self.file.read().await;
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            log_dir: &log_dir,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+
+        let mut restarted = Vec::with_capacity(restart.len());
+        for key in restart {
+            restarted.push(
+                lifecycle::restart_one(
+                    &ctx,
+                    children,
+                    &mut state.containers,
+                    key,
+                    format!("{operation_id}-restart-{key}"),
+                )
+                .await,
+            );
+        }
+        let up = lifecycle::up(
+            &ctx,
+            children,
+            &mut state.containers,
+            None,
+            format!("{operation_id}-up"),
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        (restarted, up)
+    }
+
+    /// Applies a removal without dropping supervision of surviving containers.
+    ///
+    /// The removed worker is stopped against the old declaration so its
+    /// cleanup hook and environment are still available. The validated new
+    /// declaration then replaces the held file, and normal idempotent `up`
+    /// starts only anything that was already missing.
+    pub async fn reconcile_removal(
+        &self,
+        file: ComposeFile,
+        removed: &str,
+        operation_id: String,
+    ) -> (OpResult, OpResult) {
+        let config_dir = self.config_dir();
+        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+
+        let stopped = {
+            let current = self.file.read().await;
+            let ctx = LifecycleCtx {
+                file: &current,
+                engine: &self.engine,
+                compose_namespace: &self.compose_namespace,
+                project_namespace: &self.project_namespace,
+                engine_url: &self.engine_url,
+                config_dir: &config_dir,
+                log_dir: &log_dir,
+                package_cache: &package_cache,
+                vm_dir: &vm_dir,
+            };
+            lifecycle::remove_one(
+                &ctx,
+                children,
+                &mut state.containers,
+                removed,
+                format!("{operation_id}-down"),
+            )
+            .await
+        };
+
+        {
+            let mut current = self.file.write().await;
+            *current = file;
+        }
+        let file = self.file.read().await;
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            log_dir: &log_dir,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+        let up = lifecycle::up(
+            &ctx,
+            children,
+            &mut state.containers,
+            None,
+            format!("{operation_id}-up"),
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        (stopped, up)
+    }
+
     /// Bounces one container. See [`lifecycle::restart_one`] for why this does
     /// not take the container's graph with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
@@ -403,10 +559,12 @@ impl Project {
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
@@ -431,10 +589,12 @@ impl Project {
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
@@ -455,8 +615,8 @@ impl Project {
     /// Current state of every declared container, for `compose::status`.
     pub async fn status(&self) -> Vec<ContainerStatus> {
         let inner = self.inner.lock().await;
-        self.file
-            .containers
+        let file = self.file.read().await;
+        file.containers
             .keys()
             .map(|key| {
                 let record = inner.state.containers.get(key);
@@ -498,9 +658,10 @@ impl Project {
 
         // Anything this process spawned is its own mess to clean up; anything
         // it adopted is dropped, which for an adopted handle signals nothing.
+        let stop_timeout = self.file.read().await.stop_timeout;
         for key in spawned {
             if let Some(child) = inner.children.remove(&key) {
-                child.stop(self.file.stop_timeout).await;
+                child.stop(stop_timeout).await;
             }
         }
         inner.children.clear();

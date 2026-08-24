@@ -26,6 +26,17 @@ fn wait_for_file(path: &std::path::Path, timeout: Duration) -> bool {
     false
 }
 
+fn wait_for_port(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
 #[cfg(unix)]
 #[test]
 #[ignore]
@@ -56,36 +67,22 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     let port = probe.local_addr().unwrap().port();
     drop(probe);
 
-    let config = project.path().join("custom-engine.yaml");
+    let compose = project.path().join("worker-compose.yaml");
+    // The missing worker directory is discovered only while bringing the
+    // project up, after the managed engine is ready. That takes the command
+    // through its error cleanup path without a language SDK fixture.
     std::fs::write(
-        &config,
+        &compose,
         format!(
-            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\nmodules: []\n"
+            "namespace: managed-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers:\n  missing:\n    worker: path://./does-not-exist\n"
         ),
-    )
-    .unwrap();
-    // The project is deliberately invalid after the engine becomes ready. It
-    // makes the command leave through its error cleanup path without needing
-    // a language SDK fixture, and that path must still stop the owned engine.
-    std::fs::write(
-        project.path().join("worker-compose.yaml"),
-        "namespace: managed-test\ncontainers: {}\n",
     )
     .unwrap();
 
     let output = iii_bin()
         .current_dir(project.path())
         .env("III_COMPOSE_STATE_DIR", state.path())
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "compose",
-            "--engine",
-            &format!("ws://127.0.0.1:{port}"),
-            "--namespace",
-            "managed-e2e",
-            "up",
-        ])
+        .args(["compose", "--namespace", "managed-e2e", "up"])
         .output()
         .expect("run iii compose up");
 
@@ -100,8 +97,18 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
         "unexpected output:\n{terminal}"
     );
     assert!(
-        terminal.contains(config.to_str().unwrap()),
-        "config not announced:\n{terminal}"
+        terminal.contains(compose.to_str().unwrap()),
+        "owner file not announced:\n{terminal}"
+    );
+
+    let generated_config = state.path().join("managed-e2e/engine-config.yaml");
+    assert!(
+        terminal.contains(generated_config.to_str().unwrap()),
+        "generated config not announced:\n{terminal}"
+    );
+    assert!(
+        !generated_config.exists(),
+        "clean error teardown must remove generated config"
     );
 
     let engine_log = state.path().join("managed-e2e/engine.log");
@@ -130,6 +137,72 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
 }
 
+#[test]
+fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
+    let project = tempfile::tempdir().unwrap();
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let config = project.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        "namespace: external-test\ncontainers:\n  missing:\n    worker: path://./does-not-exist\n",
+    )
+    .unwrap();
+
+    let mut engine = iii_bin()
+        .current_dir(project.path())
+        .args(["--config", config.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start directly supervised engine");
+    if !wait_for_port(port, std::time::Duration::from_secs(20)) {
+        let _ = engine.kill();
+        let _ = engine.wait();
+        panic!("external engine never became ready");
+    }
+
+    let output = iii_bin()
+        .current_dir(project.path())
+        .args([
+            "compose",
+            "--engine",
+            &format!("ws://127.0.0.1:{port}"),
+            "--namespace",
+            "external-e2e",
+            "up",
+        ])
+        .output()
+        .expect("run external compose up");
+    let terminal = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let engine_survived = engine.try_wait().unwrap().is_none();
+    let engine_reachable = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    let _ = engine.kill();
+    let _ = engine.wait();
+
+    assert!(!output.status.success(), "missing project worker must fail");
+    assert!(terminal.contains("compose serving"), "{terminal}");
+    assert!(!terminal.contains("engine started"), "{terminal}");
+    assert!(engine_survived, "Compose stopped the external engine");
+    assert!(
+        engine_reachable,
+        "external engine stopped accepting connections"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn ctrl_c_stops_the_worker_before_the_managed_engine() {
@@ -140,15 +213,6 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
-
-    let config = project.path().join("config.yaml");
-    std::fs::write(
-        &config,
-        format!(
-            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\nmodules: []\n"
-        ),
-    )
-    .unwrap();
 
     let ready = project.path().join("worker.ready");
     let stopped = project.path().join("worker.stopped");
@@ -167,23 +231,16 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     std::fs::set_permissions(&worker_script, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(
         project.path().join("worker-compose.yaml"),
-        "namespace: managed-test\nstartup_timeout: 20s\nstop_timeout: 5s\ncontainers:\n  probe:\n    worker: path://.\n    scripts:\n      run: ./worker.sh\n",
+        format!(
+            "namespace: managed-test\nstartup_timeout: 20s\nstop_timeout: 5s\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers:\n  probe:\n    worker: path://.\n    scripts:\n      run: ./worker.sh\n"
+        ),
     )
     .unwrap();
 
     let mut child = iii_bin()
         .current_dir(project.path())
         .env("III_COMPOSE_STATE_DIR", state.path())
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "compose",
-            "--engine",
-            &format!("ws://127.0.0.1:{port}"),
-            "--namespace",
-            "managed-signal-e2e",
-            "up",
-        ])
+        .args(["compose", "--namespace", "managed-signal-e2e", "up"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

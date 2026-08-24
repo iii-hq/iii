@@ -23,9 +23,11 @@ pub enum Error {
     Serde(String),
     #[error("websocket error: {0}")]
     WebSocket(String),
-    /// The engine rejected this worker's registration because another live
-    /// worker already holds the name (or an exported function id) in the same
-    /// namespace. Fatal: the SDK stops and does not reconnect.
+    /// Fatal registration rejection: another live worker already holds this
+    /// worker name in the namespace, or the engine sent an unknown rejection
+    /// code. The SDK stops and does not reconnect. A
+    /// `FUNCTION_NAMESPACE_CONFLICT` is non-fatal, is logged, and does not
+    /// produce this error.
     #[error(
         "registration rejected ({code}) in namespace '{namespace}' by worker '{owner_worker_id}'"
     )]

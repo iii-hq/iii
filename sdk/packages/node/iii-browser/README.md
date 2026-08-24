@@ -17,12 +17,14 @@ The browser SDK turns your frontend into an iii Worker enabling:
 ## Install
 
 ```bash
-npm install iii-browser-sdk
+pnpm add iii-browser-sdk
 ```
 
-## Add iii-worker-manager
+## Configure a public worker-manager listener
 
-For the iii instance run: `iii worker add iii-worker-manager` to connect workers that run on untrusted clients like a user's browser.
+`iii-worker-manager` is engine-owned. Add an RBAC-protected `#instance` listener under
+`engine.workers`, for example `iii-worker-manager#browser`; do not expose the private listener to
+untrusted browser clients.
 
 Refer to the [iii-worker-manager](https://workers.iii.dev/workers/iii-worker-manager) documentation for more information.
 

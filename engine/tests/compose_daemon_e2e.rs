@@ -141,6 +141,7 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
     let daemon = Daemon::start(
         format!("ws://127.0.0.1:{port}"),
         daemon_namespace.to_string(),
+        iii_compose::daemon::EnginePolicy::External,
     );
     remote::register(&daemon);
     // The SDK flushes registrations after the namespace announce; give the
@@ -298,21 +299,27 @@ async fn schema_introspection_is_callable_and_matches_engine_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_scoped_call_names_the_argument_it_wanted() {
+async fn a_project_scoped_call_uses_the_daemons_default_file() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
 
-    // The daemon runs from the test harness's directory, which holds no
-    // compose file, so there is nothing to fall back to and nothing to guess.
+    // Engine integration tests run from `engine/`, whose canonical Compose
+    // fixture now owns an engine. A bare project-scoped call must find that
+    // default file. Because this particular daemon is attached to an external
+    // engine, the ownership guard then rejects the managed file.
     let error = call(port, "compose::down", json!({}))
         .await
-        .expect_err("down without a file cannot mean anything");
+        .expect_err("an external daemon must not load a managed engine file");
 
-    assert!(error.contains("NO_COMPOSE_FILE"), "unexpected: {error}");
-    // The message is the invocation that would have worked, not a description
-    // of the one that did not.
-    assert!(error.contains("file="), "the way out is named: {error}");
+    assert!(
+        error.contains("ENGINE_SECTION_REQUIRES_MANAGED_START"),
+        "unexpected: {error}"
+    );
+    assert!(
+        error.contains("worker-compose.yaml") && error.contains("without --engine"),
+        "the way out is named: {error}"
+    );
 
     daemon.shutdown().await;
 }
@@ -413,7 +420,7 @@ async fn validating_a_file_does_not_take_the_project_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn add_edits_several_workers_and_restarts_the_project_once() {
+async fn add_edits_several_workers_and_reconciles_the_project_once() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -477,7 +484,8 @@ containers:
     assert_eq!(result["workers"], json!(["database", "web"]), "{result}");
     assert_eq!(result["container"], "database", "{result}");
     assert_eq!(result["changed"], true, "{result}");
-    assert_eq!(result["down"]["status"], "ok", "{result}");
+    assert_eq!(result["down"], json!(null), "{result}");
+    assert_eq!(result["restarted"], json!([]), "{result}");
     assert_eq!(result["up"]["status"], "ok", "{result}");
     assert_eq!(
         operation_containers(&result["up"]),
@@ -509,7 +517,7 @@ containers:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
+async fn remove_drops_dependency_edges_and_keeps_survivors_running() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -570,49 +578,53 @@ containers:
         "initial up used the wrong worker set: {up}"
     );
 
-    // Let the engine release the readiness identities. The child processes
-    // remain active and are the processes remove must stop during its down.
-    foundation.shutdown_async().await;
-    keep.shutdown_async().await;
-    discard.shutdown_async().await;
-    wait_for_worker_state(&daemon, "removal", "foundation", false).await;
-    wait_for_worker_state(&daemon, "removal", "keep", false).await;
-    wait_for_worker_state(&daemon, "removal", "discard", false).await;
+    let before = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status before remove");
+    let pid = |status: &Value, key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))["pid"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("missing pid for {key}: {status}"))
+    };
+    let keep_pid = pid(&before, "keep");
+    let discard_pid = pid(&before, "discard");
 
-    // The next markers can only come from processes started by remove's up.
-    std::fs::remove_file(&foundation_started).expect("remove first foundation start marker");
-    std::fs::remove_file(&keep_started).expect("remove first keep start marker");
-
-    let remove = call(
+    let result = call(
         port,
         "compose::remove",
         json!({
             "file": file.to_str().unwrap(),
-            "worker": "discard",
+            "worker": "foundation",
         }),
-    );
-    let ready = async {
-        wait_for_start_markers(&[foundation_started.as_path()]).await;
-        let foundation = register_test_worker(port, "removal", "foundation");
-        wait_for_worker_state(&daemon, "removal", "foundation", true).await;
-        wait_for_start_markers(&[keep_started.as_path()]).await;
-        let keep = register_test_worker(port, "removal", "keep");
-        wait_for_worker_state(&daemon, "removal", "keep", true).await;
-        (foundation, keep)
-    };
-    let (result, (foundation, keep)) = tokio::join!(remove, ready);
-    let result = result.expect("compose::remove should answer");
+    )
+    .await
+    .expect("compose::remove should answer");
 
     assert_eq!(result["status"], "ok", "{result}");
-    assert_eq!(result["container"], "discard", "{result}");
+    assert_eq!(result["container"], "foundation", "{result}");
     assert_eq!(result["changed"], true, "{result}");
     assert_eq!(result["down"]["status"], "ok", "{result}");
     assert_eq!(result["up"]["status"], "ok", "{result}");
     assert_eq!(
-        operation_containers(&result["up"]),
-        vec!["foundation", "keep"],
-        "restart used the wrong worker set: {result}"
+        operation_containers(&result["down"]),
+        vec!["foundation"],
+        "remove stopped more than the named worker: {result}"
     );
+    assert_eq!(
+        operation_containers(&result["up"]),
+        vec!["discard", "keep"],
+        "reconciliation used the wrong worker set: {result}"
+    );
+    assert_eq!(result["up"]["changed"], false, "survivors moved: {result}");
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
     assert!(
@@ -620,16 +632,66 @@ containers:
         "kept worker was removed: {edited}"
     );
     assert!(
-        edited.contains("    depends_on: [foundation]"),
-        "retained dependency changed: {edited}"
+        !edited.contains("depends_on: [foundation]"),
+        "dependency edge survived: {edited}"
     );
     assert!(
-        !edited.contains("  discard:"),
+        !edited.contains("  foundation:"),
         "named worker survived: {edited}"
     );
 
+    let after = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after remove");
+    assert_eq!(
+        pid(&after, "keep"),
+        keep_pid,
+        "dependent restarted: {after}"
+    );
+    assert_eq!(
+        pid(&after, "discard"),
+        discard_pid,
+        "unrelated worker restarted: {after}"
+    );
+    assert!(
+        after["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .all(|container| container["container"] != "foundation"),
+        "removed worker remains declared: {after}"
+    );
+
+    let later_up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("up after remove should still answer");
+    assert_eq!(later_up["status"], "ok", "{later_up}");
+    assert_eq!(
+        later_up["changed"], false,
+        "later up moved workers: {later_up}"
+    );
+
+    let final_status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("final status");
+    assert_eq!(pid(&final_status, "keep"), keep_pid);
+    assert_eq!(pid(&final_status, "discard"), discard_pid);
+
     foundation.shutdown_async().await;
     keep.shutdown_async().await;
+    discard.shutdown_async().await;
     daemon.shutdown().await;
 }
 

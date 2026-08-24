@@ -25,13 +25,13 @@ def test_trigger_registration_result_error_is_logged(caplog):
             "function_id": "fn-1",
             "error": {
                 "code": "trigger_type_not_found",
-                "message": 'Trigger type "http" not found — worker iii-http is missing. Run: iii worker add iii-http',
+                "message": 'Trigger type "http" not found — worker http is missing. Run: iii trigger -n default compose::add worker=http',
             },
         },
     )
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("iii worker add iii-http" in m for m in messages), messages
+    assert any("compose::add worker=http" in m for m in messages), messages
     assert any("trig-1" in m for m in messages), messages
 
     client.shutdown()

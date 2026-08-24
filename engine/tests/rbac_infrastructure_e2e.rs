@@ -370,10 +370,10 @@ async fn listener_middleware_runs_in_caller_namespace() {
 
 #[tokio::test]
 async fn middleware_bypass_preserved_for_infrastructure_functions() {
-    // Guards the exact-list bypass at engine/src/engine/mod.rs
-    // (`!is_infrastructure_function(id)`). `engine::log::info` IS on the list, so
-    // its call must not recurse through user middleware. (The complementary case
-    // — a non-list `engine::*` id going THROUGH middleware — is the next test.)
+    // Guards the engine-owned builtin bypass at engine/src/engine/mod.rs.
+    // `engine::log::info` is owned by the engine, so its call must not recurse
+    // through user middleware. (The complementary case — a worker-owned
+    // `engine::*` id going THROUGH middleware — is the next test.)
 
     ensure_default_meter();
     let engine = Arc::new(Engine::new());

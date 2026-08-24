@@ -5,7 +5,7 @@
 //! starts holding a project or holding nothing.
 
 use clap::Parser;
-use iii_compose::{ComposeCli, ComposeCommand, EngineOwnership};
+use iii_compose::{ComposeCli, ComposeCommand, ComposeFile, EngineMode, resolve_engine_mode};
 
 /// Mirrors how the engine mounts the subcommand, so parsing is exercised
 /// through the same shape the real binary uses.
@@ -37,14 +37,8 @@ fn an_unnamed_daemon_names_itself() {
     // the second would be refused. So an invocation that does not name itself
     // gets a name — printed on start, and what an operator captures to address
     // it.
-    let ComposeCommand::Serve {
-        daemon_namespace: first,
-        ..
-    } = parse(&["iii", "compose"]).plan().unwrap();
-    let ComposeCommand::Serve {
-        daemon_namespace: second,
-        ..
-    } = parse(&["iii", "compose"]).plan().unwrap();
+    let first = parse(&["iii", "compose"]).daemon_namespace().unwrap();
+    let second = parse(&["iii", "compose"]).daemon_namespace().unwrap();
 
     // Two words, because the name is printed for an operator to read once and
     // type from memory. It is still held to the namespace charset: it is also a
@@ -73,11 +67,12 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
     // it is the namespace this one answers `compose::*` in, so an operator
     // reaches exactly one with `--namespace`.
     let ComposeCommand::Serve {
-        daemon_namespace, ..
+        explicit_daemon_namespace,
+        ..
     } = parse(&["iii", "compose", "--namespace", "pc-da-xuxa"])
         .plan()
         .unwrap();
-    assert_eq!(daemon_namespace, "pc-da-xuxa");
+    assert_eq!(explicit_daemon_namespace.as_deref(), Some("pc-da-xuxa"));
 }
 
 #[test]
@@ -137,6 +132,7 @@ fn the_project_flags_are_gone_rather_than_ignored() {
         &["iii", "compose", "-d"][..],
         &["iii", "compose", "--detach"][..],
         &["iii", "compose", "--attach"][..],
+        &["iii", "compose", "up", "--no-engine"][..],
     ] {
         assert!(
             Wrapper::try_parse_from(removed).is_err(),
@@ -146,19 +142,20 @@ fn the_project_flags_are_gone_rather_than_ignored() {
 }
 
 #[test]
-fn an_explicit_engine_beats_the_environment() {
+fn an_explicit_engine_beats_the_environment_and_there_is_no_default_external_url() {
     // The only test that touches III_URL, so no other test can race it.
     unsafe { std::env::set_var("III_URL", "ws://from-env:1") };
 
-    let from_flag = parse(&["iii", "compose", "--engine", "ws://from-flag:2"]).engine_url();
-    let from_env = parse(&["iii", "compose"]).engine_url();
+    let from_flag =
+        parse(&["iii", "compose", "--engine", "ws://from-flag:2"]).requested_engine_url();
+    let from_env = parse(&["iii", "compose"]).requested_engine_url();
 
     unsafe { std::env::remove_var("III_URL") };
-    let from_default = parse(&["iii", "compose"]).engine_url();
+    let from_default = parse(&["iii", "compose"]).requested_engine_url();
 
-    assert_eq!(from_flag, "ws://from-flag:2");
-    assert_eq!(from_env, "ws://from-env:1");
-    assert_eq!(from_default, iii_compose::cli::DEFAULT_ENGINE_URL);
+    assert_eq!(from_flag.as_deref(), Some("ws://from-flag:2"));
+    assert_eq!(from_env.as_deref(), Some("ws://from-env:1"));
+    assert_eq!(from_default, None);
 }
 
 #[test]
@@ -175,45 +172,97 @@ fn a_project_namespace_still_comes_from_the_file_or_default() {
 
 #[test]
 fn bare_compose_starts_holding_nothing() {
-    let ComposeCommand::Serve {
-        start,
-        engine_ownership,
-        ..
-    } = parse(&["iii", "compose"]).plan().unwrap();
+    let ComposeCommand::Serve { start, .. } =
+        parse(&["iii", "compose", "--engine", "ws://shared:49134"])
+            .plan()
+            .unwrap();
     assert_eq!(
         start, None,
         "a bare daemon learns about a project from a call"
     );
-    assert_eq!(engine_ownership, EngineOwnership::External);
 }
 
 #[test]
 fn up_names_the_file_in_the_current_directory() {
     // The point of the command: in a project directory, one word starts it.
-    let ComposeCommand::Serve {
-        start,
-        engine_ownership,
-        ..
-    } = parse(&["iii", "compose", "up"]).plan().unwrap();
+    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "up"]).plan().unwrap();
     assert_eq!(
         start.as_deref(),
         Some(std::path::Path::new("worker-compose.yaml"))
     );
-    assert_eq!(engine_ownership, EngineOwnership::Managed);
 }
 
 #[test]
-fn up_can_leave_engine_ownership_to_the_operator() {
+fn up_without_a_cli_namespace_defers_to_the_compose_file() {
     let ComposeCommand::Serve {
+        explicit_daemon_namespace,
         start,
-        engine_ownership,
         ..
-    } = parse(&["iii", "compose", "up", "--no-engine"])
-        .plan()
-        .unwrap();
+    } = parse(&["iii", "compose", "up"]).plan().unwrap();
 
+    assert_eq!(explicit_daemon_namespace, None);
     assert!(start.is_some());
-    assert_eq!(engine_ownership, EngineOwnership::External);
+}
+
+#[test]
+fn engine_section_selects_managed_mode_and_forbids_an_external_url() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), None, None).unwrap(),
+        EngineMode::Managed {
+            url: "ws://127.0.0.1:49134".to_string()
+        }
+    );
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), Some("ws://other:1".to_string()), None,)
+            .unwrap_err()
+            .code(),
+        "ENGINE_URL_CONFLICTS_WITH_MANAGED"
+    );
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&managed),
+            None,
+            Some("ws://global-environment:49134".to_string()),
+        )
+        .unwrap(),
+        EngineMode::Managed {
+            url: "ws://127.0.0.1:49134".to_string()
+        },
+        "a process-wide III_URL must not override a file-owned engine"
+    );
+}
+
+#[test]
+fn compose_without_engine_section_requires_an_external_url() {
+    let external = ComposeFile::parse(
+        "containers:\n  api:\n    worker: path://./api\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&external),
+            Some("ws://shared:49134".to_string()),
+            Some("ws://environment:49134".to_string()),
+        )
+        .unwrap(),
+        EngineMode::External {
+            url: "ws://shared:49134".to_string()
+        }
+    );
+    assert_eq!(
+        resolve_engine_mode(Some(&external), None, None)
+            .unwrap_err()
+            .code(),
+        "ENGINE_URL_REQUIRED"
+    );
 }
 
 #[test]
@@ -235,7 +284,12 @@ fn the_namespace_reads_the_same_on_either_side_of_the_subcommand() {
     ] {
         let cli = parse(&args);
         assert_eq!(cli.daemon_namespace().unwrap(), "orders");
-        let ComposeCommand::Serve { start, .. } = cli.plan().unwrap();
+        let ComposeCommand::Serve {
+            explicit_daemon_namespace,
+            start,
+            ..
+        } = cli.plan().unwrap();
+        assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
         assert!(start.is_some(), "{args:?} should still be an up");
     }
 }

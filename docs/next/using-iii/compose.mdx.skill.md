@@ -10,7 +10,8 @@ exposes the `compose::*` functions there, so every project operation is a normal
 [trigger](./triggers), addressed to one daemon with `--namespace`.
 
 `iii compose` is intentionally a verbless top-level daemon command, analogous to `iii console`.
-The `up` subcommand is the convenience path that also starts a project and, by default, its engine.
+The `up` subcommand loads a project; the file's optional `engine:` section decides whether Compose
+owns an engine or connects to an external one.
 
 ## The daemon
 
@@ -20,21 +21,22 @@ iii compose [OPTIONS]
 
 | Option           | Description                                                                            |
 | ---------------- | -------------------------------------------------------------------------------------- |
-| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
-| `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`.        |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Overrides the initial file namespace.   |
+| `--engine <URL>` | Existing engine WebSocket address. Falls back to `III_URL` in external mode.           |
 
 A daemon holds any number of projects, and any number of daemons share one engine. What tells them
 apart is the namespace: the worker name is always `compose`, so the engine leases `(namespace,
 compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
 that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-Without `--namespace` the daemon generates one and prints it: two words, so it can be read once and
-typed from memory. There is no well-known default, because a shared name is the collision the
-namespace exists to prevent. A generated name never reuses one that already holds state on this
-machine, and the engine refuses a second daemon claiming a namespace that is already served.
+With `iii compose up`, the daemon inherits `namespace:` from the initial compose file when
+`--namespace` is absent. If the file has no namespace, or if the daemon starts without an initial
+file, it generates and prints a two-word namespace. A generated name never reuses one that already
+holds state on this machine, and the engine refuses a second daemon claiming a namespace that is
+already served.
 
 ```text
-$ iii compose
+$ iii compose --engine ws://127.0.0.1:49134
 compose serving
   engine: ws://127.0.0.1:49134
   namespace: cobalt-meadow
@@ -42,8 +44,9 @@ compose serving
 ```
 
 <Warning>
-  A generated namespace is new on every start, and a project's durable state is stored under it. A
-  daemon that has to find its own children again after a restart passes `--namespace` and keeps it.
+  A generated namespace is new on every start, and a project's durable state is stored under it.
+  Set `namespace:` in the compose file, or pass `--namespace`, when a daemon must find its own
+  children again after a restart.
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
@@ -52,28 +55,31 @@ engine process is stopped.
 
 ### Starting a project with the daemon
 
-`iii compose up` starts an engine in the background, waits for it to be ready, and then serves and
-brings one project up without waiting for a call to name it. The compose daemon stays in the
-foreground so it can supervise both the project and the engine.
+`iii compose up` validates the initial file, selects engine ownership, and brings the project up
+without waiting for a call to name it. The daemon stays in the foreground to supervise its
+containers and, in managed mode, the engine process.
 
 ```text
-iii compose up [-f, --file <PATH>] [--no-engine]
+iii compose up [-f, --file <PATH>]
 ```
 
 `--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
 names no file. The daemon then stays in the foreground and serves, so every other operation is a
 `compose::*` call as usual.
 
-The managed engine uses `./config.yaml`, or the path selected before the subcommand with
-`iii --config <PATH> compose up`. If the file does not exist, the engine creates its standard
-minimal `workers: []` config. This is the same startup contract as running `iii` manually, so config
-reload and `iii worker add` continue to operate on a real project file.
+If `--namespace` is absent, this initial `up` also uses the file's `namespace:` for the compose
+daemon. An explicit CLI namespace has priority over the file.
+
+When the file contains `engine:`, Compose materializes an engine-only config under
+`~/.iii/compose/<daemon-namespace>/engine-config.yaml`, starts the engine, and removes the generated
+file after a clean shutdown. The Compose file is the source of truth; explicit `--engine` is an
+error, and a process-wide `III_URL` is ignored.
 
 ```text
 $ iii compose up -n orders
 engine started
   pid: 42042
-  config: config.yaml
+  config: /home/me/.iii/compose/orders/engine-config.yaml
   logs: /home/me/.iii/compose/orders/engine.log
   follow logs: tail -f '/home/me/.iii/compose/orders/engine.log'
 
@@ -94,11 +100,11 @@ the engine output.
 A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
 stopped whatever came up, so there is nothing left to supervise.
 
-Use `--no-engine` when the engine is already running. In that mode compose only connects to
-`--engine`, `III_URL`, or the default address, and never stops that external process.
+Without `engine:`, Compose never starts or stops an engine. Supply the external URL explicitly or
+through `III_URL`; there is no default external endpoint.
 
 ```bash
-iii compose up --no-engine --engine ws://127.0.0.1:49134
+iii compose up --engine ws://127.0.0.1:49134
 ```
 
 ### Running it in the background
@@ -111,7 +117,7 @@ that already does both.
 For a quick session, a shell redirect is enough:
 
 ```bash
-iii compose --namespace dev >> ~/iii-compose.log 2>&1 &
+iii compose --namespace dev --engine ws://127.0.0.1:49134 >> ~/iii-compose.log 2>&1 &
 ```
 
 On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
@@ -124,7 +130,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/iii compose --namespace prod
+ExecStart=/usr/local/bin/iii compose --namespace prod --engine ws://127.0.0.1:49134
 Restart=always
 
 [Install]
@@ -167,8 +173,8 @@ one at the wrong file.
 | `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
-| `compose::add`      | `file`, `workers` | What the edit did, and the one `down` and `up` that followed.           |
-| `compose::remove`   | `file`, `worker` | The worker removed, and the `down` and `up` that followed.              |
+| `compose::add`      | `file`, `workers` | What the edit did, changed workers restarted, and new workers started.  |
+| `compose::remove`   | `file`, `worker` | The worker removed, its targeted stop, and the idempotent `up`.         |
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
@@ -190,7 +196,7 @@ iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 
 ### Adding workers
 
-`compose::add` declares one or more workers in the compose file and restarts the project once.
+`compose::add` declares one or more workers in the compose file and reconciles the project once.
 On the CLI, repeat `worker=` for each worker. Each value takes a registry name (`state`), a name
 with a version (`state@0.21.4`), or a directory (`./workers/api`); a leading `.` or `/` is what
 makes it a path, since a registry reference may carry a host of its own. The JSON function contract
@@ -202,17 +208,22 @@ later `up` cannot quietly get a different build. The same worker at the same
 version changes nothing and says so; at a different version it is replaced,
 which is how an upgrade or a rollback is asked for.
 
+Workers whose declarations did not change remain running. Existing workers whose resolved
+versions changed restart in place, and newly declared workers start through the normal dependency
+plan. This lets a worker call `compose::add` for its own project without stopping the caller before
+the result can return.
+
 A worker is rarely alone. Its manifest names what it calls, and the registry
 answers with that whole graph already pinned to versions that satisfy each
 other, so those are declared too, as containers with their own `depends_on`.
 Nothing starts behind the file: what runs is still what the file says, and an
 operator can read it, pin it differently, or take a container out.
 
-Two rules shape the expansion. Workers compiled into the engine are skipped,
-because they are already serving and have no artefact to install; an edge to
-one is dropped rather than written, since `depends_on` may only name a
-container the file declares. And a worker two others need is declared once,
-named by both.
+Two rules shape the expansion. Requesting a root package whose registry kind is `engine` fails with
+`ENGINE_WORKER_IS_BUILTIN`, because the engine already supplies it. Engine-kind dependencies of a
+normal project worker are filtered from the graph; an edge to one is dropped rather than written,
+since `depends_on` may only name a container the file declares. And a worker two others need is
+declared once, named by both.
 
 The file is edited, not rewritten: comments, blank lines and quoting survive,
 entries are appended, and the result is parsed before it is written, so a bad
@@ -252,12 +263,13 @@ the daemon owning nothing. Validation is offline, so `package://` containers are
 
 ### Removing a worker
 
-`compose::remove worker=state` removes only the named container from the compose file and restarts
-the whole project. It does not resolve or rewrite the dependency graph. It does not remove workers
-that were added with this worker, and it leaves other containers' `depends_on` fields unchanged.
+`compose::remove worker=state` removes the named container and every surviving `depends_on`
+reference to it. The complete edited declaration is validated before the file or any process
+changes. Compose then stops only that container and runs an idempotent `up`, so healthy surviving
+workers stay running and anything already missing can start.
 
-If the remaining file has an invalid dependency, the removal stays in the file and the restart
-reports that validation error. Edit or remove the stale dependency before the next `up`.
+Removal does not resolve the registry graph or remove other workers that were added with this
+worker. Those remain declared until they are removed explicitly.
 
 ### Restarting one worker
 
@@ -350,6 +362,17 @@ start.
 namespace: shop
 startup_timeout: 60s
 stop_timeout: 10s
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+    iii-worker-manager:
+      host: 127.0.0.1
+      port: 49134
 containers:
   database:
     worker: path://./workers/database
@@ -379,12 +402,30 @@ containers:
 | `namespace`       | string | absent  | Namespace the project's containers register in. A project that declares none lands in `default`. |
 | `startup_timeout` | string | `60s`   | Readiness budget for every container. A container may override it.                         |
 | `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                         |
-| `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                            |
+| `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                       |
+| `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                              |
 
 The namespace must already be `[a-z0-9_-]`. A value outside that set is refused with
 `INVALID_NAMESPACE` rather than rewritten to fit, so what the file declares is what an operator
 types into `--namespace`. Nothing about the file's path enters it, so two copies of one project
 collide instead of running side by side.
+
+### Engine fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `url` | string | `ws://127.0.0.1:49134` | Managed engine endpoint used by Compose and its containers. |
+| `registration_namespace_grace_ms` | integer | engine default | Namespace-registration grace passed to the engine. |
+| `workers` | map | empty | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
+
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
+and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
+`iii-worker-manager#rbac`. Internal `iii-engine-functions`, `iii-telemetry`, and
+`iii-observability` are injected and must not be declared.
+
+The engine section belongs to the file that started the managed daemon. A runtime change returns
+`ENGINE_RESTART_REQUIRED`; restart the Compose invocation to apply it. A different file cannot
+merge another section into that daemon and fails with `ENGINE_ALREADY_OWNED`.
 
 ### Container fields
 
@@ -476,6 +517,8 @@ Three layers apply, lowest to highest.
 | ------------------ | ----------------------------------------------------------------------- |
 | `III_URL`          | The engine address the daemon is connected to.                          |
 | `III_NAMESPACE`    | The project's namespace.                                                |
+| `III_COMPOSE_NAMESPACE` | The supervising Compose daemon's namespace for explicit `compose::*` routing. |
+| `III_COMPOSE_FILE` | Canonical path of the compose file that owns this container.             |
 | `III_WORKER_NAME`  | The container key.                                                      |
 | `III_CONFIG`       | Path to the resolved configuration file. Absent when there is none.     |
 | `III_CONFIG_NAME`  | The configuration entry the container owns. Absent when it declares none. |
@@ -484,7 +527,7 @@ Declaring a reserved variable in `environment` or an `env_file` fails with `RESE
 in both cases at `compose::validate` time.
 
 <Note>
-  For why the daemon owns these five rather than treating them as defaults a container can replace,
+  For why the daemon owns these seven rather than treating them as defaults a container can replace,
   see [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
 

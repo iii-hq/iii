@@ -3547,10 +3547,9 @@ async fn wait_for_ready(worker_name: &str, port: u16) {
 ///
 /// `port` is the WebSocket port the spawned worker will connect to (used to
 /// build `III_ENGINE_URL` for VM-based workers and to probe engine liveness).
-/// Callers that don't know any better pass `DEFAULT_PORT`; the engine's
-/// auto-spawn path in `registry_worker::ExternalWorkerProcess::spawn` passes
-/// the configured `iii-worker-manager` port so non-default manager ports
-/// don't silently break connectivity for external workers.
+/// Callers that do not supply an explicit port use `DEFAULT_PORT`. Compose
+/// passes the managed engine URL to project workers directly; this helper is
+/// retained for internal bundle preparation and sandbox operations.
 pub async fn handle_managed_start(
     worker_name: &str,
     wait: bool,
@@ -4842,7 +4841,7 @@ mod tests {
 
             let names = vec![
                 "image-resize".to_string(),
-                "iii-http".to_string(),
+                "iii-stream".to_string(),
                 "local-dev".to_string(),
                 "external-image".to_string(),
             ];
@@ -4851,7 +4850,7 @@ mod tests {
                 "\
 workers:
   - name: image-resize
-  - name: iii-http
+  - name: iii-stream
     config:
       port: 3111
   - name: local-dev
@@ -4914,7 +4913,7 @@ workers:
                 "\
 workers:
   - name: image-resize
-  - name: iii-http
+  - name: iii-stream
     config:
       port: 3111
   - name: local-dev
