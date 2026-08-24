@@ -62,10 +62,25 @@ pub async fn await_pre_run(
     script: &str,
     timeout: Duration,
 ) -> Result<(), HookError> {
+    await_pre_run_until_shutdown(ctx, script, timeout, None)
+        .await
+        .expect("a hook without a shutdown signal cannot be interrupted")
+}
+
+/// Runs `pre_run`, killing and reaping its process group if foreground compose
+/// is interrupted while the hook is active.
+pub(crate) async fn await_pre_run_until_shutdown(
+    ctx: &SpawnCtx<'_>,
+    script: &str,
+    timeout: Duration,
+    shutdown: Option<&mut crate::shutdown::ShutdownSignal>,
+) -> Option<Result<(), HookError>> {
     const HOOK: &str = "pre_run";
 
-    let mut hook =
-        spawn_hook(ctx, script).map_err(|source| HookError::Spawn { hook: HOOK, source })?;
+    let mut hook = match spawn_hook(ctx, script) {
+        Ok(hook) => hook,
+        Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+    };
     let child = &mut hook.child;
 
     let mut stdout = child.stdout.take();
@@ -79,28 +94,60 @@ pub async fn await_pre_run(
         (status, out, err)
     };
 
-    match tokio::time::timeout(timeout, run).await {
-        Ok((status, out, err)) => {
+    enum HookOutcome {
+        Finished((std::io::Result<std::process::ExitStatus>, String, String)),
+        TimedOut,
+        Interrupted,
+    }
+
+    let outcome = {
+        tokio::pin!(run);
+        let timer = tokio::time::sleep(timeout);
+        tokio::pin!(timer);
+        match shutdown {
+            Some(shutdown) => tokio::select! {
+                biased;
+                _ = shutdown.wait() => HookOutcome::Interrupted,
+                result = &mut run => HookOutcome::Finished(result),
+                _ = &mut timer => HookOutcome::TimedOut,
+            },
+            None => tokio::select! {
+                result = &mut run => HookOutcome::Finished(result),
+                _ = &mut timer => HookOutcome::TimedOut,
+            },
+        }
+    };
+
+    match outcome {
+        HookOutcome::Finished((status, out, err)) => {
             log_output(HOOK, ctx.container_key, &out, &err);
-            let status = status.map_err(|source| HookError::Spawn { hook: HOOK, source })?;
+            let status = match status {
+                Ok(status) => status,
+                Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+            };
             if status.success() {
-                Ok(())
+                Some(Ok(()))
             } else {
-                Err(HookError::Failed {
+                Some(Err(HookError::Failed {
                     hook: HOOK,
                     code: status.code().unwrap_or(-1),
-                })
+                }))
             }
         }
-        Err(_) => {
+        HookOutcome::TimedOut => {
             // Kill before waiting: the hook is hung by definition, so waiting
             // first would never return.
             hook.kill_tree();
             let _ = hook.child.wait().await;
-            Err(HookError::Timeout {
+            Some(Err(HookError::Timeout {
                 hook: HOOK,
                 timeout,
-            })
+            }))
+        }
+        HookOutcome::Interrupted => {
+            hook.kill_tree();
+            let _ = hook.child.wait().await;
+            None
         }
     }
 }
