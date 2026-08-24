@@ -222,7 +222,7 @@ containers:
       run: "sleep 30"
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
     scripts:
       run: "sleep 30"
 "#;
@@ -539,7 +539,7 @@ containers:
       run: "touch started && sleep 30"
   keep:
     worker: path://./workers/keep
-    depends_on: [foundation]
+    start_after: [foundation]
     scripts:
       run: "touch started && sleep 30"
   discard:
@@ -632,7 +632,7 @@ containers:
         "kept worker was removed: {edited}"
     );
     assert!(
-        !edited.contains("depends_on: [foundation]"),
+        !edited.contains("start_after: [foundation]"),
         "dependency edge survived: {edited}"
     );
     assert!(

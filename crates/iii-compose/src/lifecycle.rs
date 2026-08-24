@@ -1046,10 +1046,10 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
   lonely:
@@ -1168,10 +1168,10 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
 "#,
@@ -1206,13 +1206,13 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   reports:
     worker: path://./workers/reports
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
 "#,

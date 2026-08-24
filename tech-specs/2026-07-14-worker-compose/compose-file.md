@@ -19,7 +19,7 @@ containers:
 
   api:
     worker: path://./workers/api        # no iii.worker.yaml needed — run: is enough
-    depends_on: [database]
+    start_after: [database]
     config_name: orders-api
     config_override:
       server:
@@ -37,7 +37,7 @@ containers:
 | --- | --- | --- |
 | `worker` | yes | `package://` (registry) or `path://` (local directory) |
 | `version` | package only | exact or range, resolved into the lockfile |
-| `depends_on` | no | container ids **from the same file only** |
+| `start_after` | no | container ids **from the same file only** |
 | `config_name` | no | the configuration entry this container owns (see configuration.md) |
 | `config_override` | no | sparse map merged over the fetched base |
 | `scripts` | no (`run` required for manifest-less `path://`) | see scripts.md |
@@ -51,11 +51,11 @@ containers:
   so a `path://` worker whose manifest declares a different `name` registers
   under the key: where the two files say the same thing, `worker-compose.yaml`
   wins and the manifest is the default.
-- No key order semantics: start order comes only from the `depends_on` DAG.
+- No key order semantics: start order comes only from the `start_after` DAG.
 
 ## Dependency scope
 
-`depends_on` resolves inside the same file, full stop. Two compose files that
+`start_after` resolves inside the same file, full stop. Two compose files that
 want to share one database do it by **namespace** (both point at the same
 namespace, one of them owns the process — see namespace.md), never by a
 cross-file dependency edge. This keeps ownership, rollback, and teardown
@@ -63,7 +63,7 @@ decidable by one daemon looking at one file.
 
 ## Validation (hard errors)
 
-- empty `containers`; unknown or self `depends_on`; dependency cycle (error
+- empty `containers`; unknown or self `start_after`; dependency cycle (error
   prints the full path: `api -> queue -> database -> api`);
 - unknown field anywhere (strict schema);
 - `run` on a `package://` worker; `pre_start_timeout` without `pre_start`;
@@ -73,7 +73,7 @@ decidable by one daemon looking at one file.
 
 ## Not in v1
 
-Cross-file `depends_on`, docker runtime keys (`ports`, `image`), full inline
+Cross-file `start_after`, docker runtime keys (`ports`, `image`), full inline
 configuration bodies, hot reload, `environment`/`env_file` (children get the
 standard injected contract plus the host env they inherit; per-container env
 maps return if a concrete need appears).

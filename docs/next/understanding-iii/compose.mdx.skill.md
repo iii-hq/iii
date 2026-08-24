@@ -132,7 +132,7 @@ wrong place for it.
 
 Compose determines ready state through the engine rather than locally as this is the one way to
 ensure dependencies are ready for a given worker. For example when `api` starts after `database`,
-`depends_on` guarantees the engine can already route a trigger to `database`, so `api` can reliably
+`start_after` guarantees the engine can already route a trigger to `database`, so `api` can reliably
 use the `database` dependency from boot. A check on the process alone would guarantee only that
 something was launched.
 

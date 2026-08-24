@@ -14,7 +14,7 @@
 //!
 //! So each block is spliced in or out and matched to the indentation already in
 //! use. A removal also drops references to the removed key from surviving
-//! `depends_on` fields, because a dangling edge would make the file impossible
+//! `start_after` fields, because a dangling edge would make the file impossible
 //! to start. Every caller parses the result before it is written.
 
 use crate::error::{ComposeError, Result};
@@ -55,7 +55,7 @@ pub struct NewContainer {
     pub source: Source,
     /// Containers this one calls. Two workers may need the same one, so the
     /// shared worker is declared once and named here by both.
-    pub depends_on: Vec<String>,
+    pub start_after: Vec<String>,
 }
 
 /// What the edit did, so the caller can report it and decide whether to restart.
@@ -97,7 +97,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
             source: Source::Path {
                 path: spec.to_string(),
             },
-            depends_on: Vec::new(),
+            start_after: Vec::new(),
         });
     }
 
@@ -129,7 +129,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     Ok(NewContainer {
         key: key.to_string(),
         source: Source::Package { reference, version },
-        depends_on: Vec::new(),
+        start_after: Vec::new(),
     })
 }
 
@@ -143,7 +143,7 @@ fn invalid(spec: &str, reason: &str) -> ComposeError {
 /// Splices `new` into the `containers:` mapping of `text`.
 ///
 /// Appended rather than inserted anywhere clever: the order of the mapping does
-/// not affect anything — start order comes from `depends_on` — so the end is
+/// not affect anything — start order comes from `start_after` — so the end is
 /// where it disturbs the smallest part of the file and of its diff.
 pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
     let lines: Vec<&str> = text.lines().collect();
@@ -175,9 +175,9 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             let wanted = wanted_version(new);
             // Version alone is not the whole declaration. An entry written
             // before its dependencies were known carries the right version and
-            // no `depends_on`, and leaving it would start the worker by where
+            // no `start_after`, and leaving it would start the worker by where
             // its line happens to sit rather than after what it calls.
-            let mut needs = new.depends_on.clone();
+            let mut needs = new.start_after.clone();
             needs.sort();
             if existing == wanted && declared_needs(&lines[entry.clone()]) == needs {
                 return Ok(Outcome::Unchanged);
@@ -216,7 +216,7 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
 ///
 /// Unrelated text stays byte-for-byte as the operator wrote it. Dependency
 /// edits preserve block or inline form, quoting, comments, and surviving list
-/// items where possible. An empty `depends_on` field is removed with its last
+/// items where possible. An empty `start_after` field is removed with its last
 /// item so the result remains a valid compose declaration.
 pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
     // Keep terminators in the slices. Rebuilding from `str::lines()` would
@@ -282,27 +282,27 @@ fn dependency_removals(
             continue;
         };
 
-        let Some(depends_at) = (head + 1..end).find(|index| {
+        let Some(start_after_at) = (head + 1..end).find(|index| {
             leading_whitespace(lines[*index]) == field_indent
-                && lines[*index].trim_start().starts_with("depends_on:")
+                && lines[*index].trim_start().starts_with("start_after:")
         }) else {
             continue;
         };
 
-        let line = lines[depends_at];
+        let line = lines[start_after_at];
         let body = line
             .strip_suffix("\r\n")
             .or_else(|| line.strip_suffix('\n'))
             .unwrap_or(line);
-        let Some(colon) = body.find("depends_on:") else {
+        let Some(colon) = body.find("start_after:") else {
             continue;
         };
-        let value = &body[colon + "depends_on:".len()..];
+        let value = &body[colon + "start_after:".len()..];
 
         if let Some(open_relative) = value.find('[')
             && let Some(close_relative) = value[open_relative + 1..].find(']')
         {
-            let open = colon + "depends_on:".len() + open_relative;
+            let open = colon + "start_after:".len() + open_relative;
             let close = open + 1 + close_relative;
             let items = &body[open + 1..close];
             let kept: Vec<&str> = items
@@ -313,10 +313,13 @@ fn dependency_removals(
                 continue;
             }
             if kept.is_empty() {
-                edits.push((offsets[depends_at]..offsets[depends_at + 1], String::new()));
+                edits.push((
+                    offsets[start_after_at]..offsets[start_after_at + 1],
+                    String::new(),
+                ));
             } else {
                 edits.push((
-                    offsets[depends_at] + open + 1..offsets[depends_at] + close,
+                    offsets[start_after_at] + open + 1..offsets[start_after_at] + close,
                     kept.join(","),
                 ));
             }
@@ -329,7 +332,7 @@ fn dependency_removals(
 
         let mut matching_items = Vec::new();
         let mut surviving_items = 0;
-        for (index, candidate) in lines.iter().enumerate().take(end).skip(depends_at + 1) {
+        for (index, candidate) in lines.iter().enumerate().take(end).skip(start_after_at + 1) {
             let candidate = *candidate;
             let trimmed = candidate.trim();
             if !trimmed.is_empty()
@@ -351,7 +354,10 @@ fn dependency_removals(
             continue;
         }
         if surviving_items == 0 {
-            edits.push((offsets[depends_at]..offsets[depends_at + 1], String::new()));
+            edits.push((
+                offsets[start_after_at]..offsets[start_after_at + 1],
+                String::new(),
+            ));
         }
         edits.extend(
             matching_items
@@ -461,17 +467,17 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
 
 type Entry = std::ops::Range<usize>;
 
-/// The `depends_on:` an entry declares, sorted so two lists compare by content
+/// The `start_after:` an entry declares, sorted so two lists compare by content
 /// rather than by the order someone wrote them in.
 fn declared_needs(entry: &[&str]) -> Vec<String> {
     let mut inside = false;
     let mut needs = Vec::new();
     for line in entry {
         let trimmed = line.trim();
-        // `depends_on: [queue, state]` declares the same thing as a block list,
+        // `start_after: [queue, state]` declares the same thing as a block list,
         // and reading it as empty would rewrite an entry that already says what
         // was asked for — and a rewrite is where fields get lost.
-        if let Some(inline) = trimmed.strip_prefix("depends_on:")
+        if let Some(inline) = trimmed.strip_prefix("start_after:")
             && let Some(list) = inline
                 .trim()
                 .strip_prefix('[')
@@ -484,7 +490,7 @@ fn declared_needs(entry: &[&str]) -> Vec<String> {
             );
             continue;
         }
-        if trimmed == "depends_on:" {
+        if trimmed == "start_after:" {
             inside = true;
             continue;
         }
@@ -554,7 +560,7 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
         .skip(1)
     {
         let trimmed = line.trim();
-        // The list items under a `depends_on:` we are replacing.
+        // The list items under a `start_after:` we are replacing.
         if skipping_list {
             if trimmed.starts_with("- ") {
                 continue;
@@ -564,7 +570,7 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
         if trimmed.starts_with("worker:") || trimmed.starts_with("version:") {
             continue;
         }
-        if trimmed.starts_with("depends_on:") {
+        if trimmed.starts_with("start_after:") {
             skipping_list = !trimmed.contains('[');
             continue;
         }
@@ -592,9 +598,9 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
             out.push_str(&format!("{inner}worker: path://{path}\n"));
         }
     }
-    if !new.depends_on.is_empty() {
-        out.push_str(&format!("{inner}depends_on:\n"));
-        for dependency in &new.depends_on {
+    if !new.start_after.is_empty() {
+        out.push_str(&format!("{inner}start_after:\n"));
+        for dependency in &new.start_after {
             out.push_str(&format!("{inner}{indent}- {dependency}\n"));
         }
     }
@@ -622,9 +628,9 @@ fn render(new: &NewContainer, indent: &str) -> String {
             out.push_str(&format!("{inner}worker: path://{path}\n"));
         }
     }
-    if !new.depends_on.is_empty() {
-        out.push_str(&format!("{inner}depends_on:\n"));
-        for dependency in &new.depends_on {
+    if !new.start_after.is_empty() {
+        out.push_str(&format!("{inner}start_after:\n"));
+        for dependency in &new.start_after {
             out.push_str(&format!("{inner}{indent}- {dependency}\n"));
         }
     }
@@ -776,7 +782,7 @@ containers:
     }
 
     /// An entry written before its dependencies were known has the right
-    /// version and no `depends_on`. Leaving it alone would start the worker by
+    /// version and no `start_after`. Leaving it alone would start the worker by
     /// where its line sits rather than after what it calls — which is how a
     /// worker added by an older build kept starting fourth out of eight.
     #[test]
@@ -787,7 +793,7 @@ containers:
                 reference: "api.workers.iii.dev/state".to_string(),
                 version: Some("0.21.4".to_string()),
             },
-            depends_on: vec!["queue".to_string()],
+            start_after: vec!["queue".to_string()],
         };
 
         let once = added(FILE);
@@ -796,7 +802,7 @@ containers:
             Outcome::Replaced { text, .. } => text,
             other => panic!("expected a rewrite, got {other:?}"),
         };
-        assert!(out.contains("depends_on:"), "{out}");
+        assert!(out.contains("start_after:"), "{out}");
         assert!(out.contains("- queue"), "{out}");
         assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
 
@@ -842,7 +848,7 @@ containers:
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
     }
 
-    /// `depends_on: [queue]` is the same declaration as a block list, so it has
+    /// `start_after: [queue]` is the same declaration as a block list, so it has
     /// to compare equal — otherwise an entry is rewritten for no reason, and a
     /// rewrite is where fields get lost.
     #[test]
@@ -854,10 +860,10 @@ containers:
   api:
     worker: package://api.workers.iii.dev/api
     version: \"1.0.0\"
-    depends_on: [queue, state]
+    start_after: [queue, state]
 ";
         let mut wanted = parse_worker("api@1.0.0").unwrap();
-        wanted.depends_on = vec!["queue".to_string(), "state".to_string()];
+        wanted.start_after = vec!["queue".to_string(), "state".to_string()];
         assert_eq!(
             upsert_container(file, &wanted).unwrap(),
             Outcome::Unchanged,
@@ -914,7 +920,7 @@ containers:
     worker: path://./workers/database
   api:
     worker: path://./workers/api
-    depends_on: ['queue', database, "state"] # keep this style
+    start_after: ['queue', database, "state"] # keep this style
   queue:
     worker: path://./workers/queue
   state:
@@ -927,7 +933,7 @@ containers:
 
         assert!(!out.contains("database:"), "database survived: {out}");
         assert!(
-            out.contains("depends_on: ['queue', \"state\"] # keep this style"),
+            out.contains("start_after: ['queue', \"state\"] # keep this style"),
             "surviving dependencies changed style: {out}"
         );
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
@@ -940,7 +946,7 @@ containers:
     worker: path://./workers/database
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - queue
       - database
       - state # keep this comment
@@ -970,7 +976,7 @@ containers:
     worker: path://./workers/database
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - database
     environment:
       RUST_LOG: info
@@ -980,7 +986,7 @@ containers:
             .unwrap()
             .expect("database should be removed");
 
-        assert!(!out.contains("depends_on:"), "empty field survived: {out}");
+        assert!(!out.contains("start_after:"), "empty field survived: {out}");
         assert!(out.contains("environment:"), "next field changed: {out}");
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
     }
@@ -1014,7 +1020,7 @@ containers:
                 reference: "workers.iii.dev/state".to_string(),
                 version: Some("1.2.3".to_string()),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         let err = upsert_container(text, &new).unwrap_err();
@@ -1029,7 +1035,7 @@ containers:
             source: Source::Path {
                 path: "./workers/state".to_string(),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         assert_eq!(
@@ -1047,7 +1053,7 @@ containers:
                 reference: "workers.iii.dev/state".to_string(),
                 version: Some("1.2.3".to_string()),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         assert!(matches!(

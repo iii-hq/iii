@@ -54,7 +54,7 @@ containers:
     config_name: orders-db
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - database
     config_name: orders-api
     config_override:
@@ -77,7 +77,7 @@ fn accepts_the_canonical_project() {
     assert_eq!(file.start_order().unwrap(), vec!["database", "api"]);
 
     let api = &file.containers["api"];
-    assert_eq!(api.depends_on, vec!["database".to_string()]);
+    assert_eq!(api.start_after, vec!["database".to_string()]);
     assert_eq!(api.config_name.as_deref(), Some("orders-api"));
     assert_eq!(
         api.scripts.pre_run_timeout,
@@ -294,7 +294,7 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - databse
 "#
         ),
@@ -311,11 +311,33 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - api
 "#
         ),
         "SELF_DEPENDENCY"
+    );
+}
+
+#[test]
+fn rejects_depends_on_as_a_legacy_field() {
+    let err = parse(
+        r#"
+namespace: orders
+containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    depends_on: [database]
+"#,
+    )
+    .expect_err("depends_on should not remain as an alias");
+
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert!(
+        err.to_string().contains("start_after"),
+        "the error should name the replacement field: {err}"
     );
 }
 
@@ -327,15 +349,15 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - queue
   queue:
     worker: path://./workers/queue
-    depends_on:
+    start_after:
       - database
   database:
     worker: path://./workers/database
-    depends_on:
+    start_after:
       - api
 "#,
     )
@@ -644,16 +666,16 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on:
+    start_after:
       - api
       - queue
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - database
   queue:
     worker: path://./workers/queue
-    depends_on:
+    start_after:
       - database
   database:
     worker: path://./workers/database

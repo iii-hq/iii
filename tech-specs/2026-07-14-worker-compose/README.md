@@ -29,7 +29,7 @@ Six contracts, each in its own doc:
 
 | Doc | Contract |
 | --- | --- |
-| [compose-file.md](./compose-file.md) | `worker-compose.yaml` v1 — an id-keyed `containers:` object; `depends_on` inside one file only |
+| [compose-file.md](./compose-file.md) | `worker-compose.yaml` v1 — an id-keyed `containers:` object; `start_after` inside one file only |
 | [scripts.md](./scripts.md) | per-container `scripts:` — `pre_start` (blocking, timed), `run` (supervised), `post_run` (fires after the run exits) |
 | [namespace.md](./namespace.md) | namespace as a runtime argument — never a function-name prefix; engine rejects same-name collisions inside a namespace |
 | [configuration.md](./configuration.md) | the daemon fetches base config, applies compose overrides, hands the worker its final config at start |
@@ -64,7 +64,7 @@ Three facts from the current codebase force each major piece:
   path stays the validated route to cloud. Docker is not the default runtime.
 - **fail early over silent overwrite**: same name + same namespace = rejected
   connection, not a zombie.
-- **one file, one dependency scope**: `depends_on` never crosses compose
+- **one file, one dependency scope**: `start_after` never crosses compose
   files. Sharing across files is a namespace decision, not a dependency edge.
 - **worker knowledge stays with the worker**: compose does not carry full
   configurations, and `setup`/`install` remain the worker/sandbox contract.
