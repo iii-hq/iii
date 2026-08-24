@@ -66,3 +66,4 @@ windows-sys = { version = "0.60", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonschema = { version = "0.30", default-features = false }

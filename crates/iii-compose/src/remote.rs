@@ -470,6 +470,12 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
 /// gives the canonical `workers` list precedence.
 fn add_options_schema() -> Option<Value> {
     let mut schema = schema_for_value::<AddOptions>()?;
+    for field in ["workers", "worker"] {
+        let types = schema
+            .pointer_mut(&format!("/properties/{field}/type"))?
+            .as_array_mut()?;
+        types.retain(|kind| kind != "null");
+    }
     schema
         .pointer_mut("/properties/workers")?
         .as_object_mut()?
@@ -729,6 +735,33 @@ mod tests {
         .expect("the old singular field should deserialize");
         assert_eq!(singular.worker.as_deref(), Some("database"));
         assert_eq!(singular.workers, None);
+    }
+
+    #[test]
+    fn add_schema_requires_one_non_null_non_empty_worker_form() {
+        let schema = schema_entry("compose::add").1.as_ref().unwrap();
+        let validator = jsonschema::Validator::new(schema).expect("add schema should compile");
+
+        for valid in [
+            json!({ "workers": ["database", "web"] }),
+            json!({ "worker": "database" }),
+        ] {
+            let errors = validator
+                .iter_errors(&valid)
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>();
+            assert!(errors.is_empty(), "should accept {valid}: {errors:?}");
+        }
+
+        for invalid in [
+            json!({}),
+            json!({ "workers": [] }),
+            json!({ "workers": null }),
+            json!({ "worker": null }),
+            json!({ "workers": [], "worker": "database" }),
+        ] {
+            assert!(!validator.is_valid(&invalid), "should reject {invalid}");
+        }
     }
 
     #[test]
