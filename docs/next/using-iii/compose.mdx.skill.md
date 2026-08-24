@@ -309,7 +309,6 @@ rewriting the graph is what `compose::add` is for.
   file was read, so a new version is only picked up once the project is dropped and read again.
   Dropping it while its other containers run would leave them supervised by nothing.
 </Note>
-
 ### Operation results
 
 `compose::up` and `compose::down` return the same fields.
