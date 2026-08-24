@@ -470,6 +470,10 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
 /// gives the canonical `workers` list precedence.
 fn add_options_schema() -> Option<Value> {
     let mut schema = schema_for_value::<AddOptions>()?;
+    schema
+        .pointer_mut("/properties/workers")?
+        .as_object_mut()?
+        .insert("minItems".to_string(), json!(1));
     schema.as_object_mut()?.insert(
         "anyOf".to_string(),
         json!([
@@ -743,6 +747,7 @@ mod tests {
         assert!(add.contains_key("workers"));
         assert!(add.contains_key("worker"));
         assert!(!add.contains_key("container"));
+        assert_eq!(add["workers"]["minItems"], 1);
         let alternatives = schema_entry("compose::add").1.as_ref().unwrap()["anyOf"]
             .as_array()
             .expect("add should require either request form");
