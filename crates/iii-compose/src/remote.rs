@@ -112,9 +112,11 @@ struct AddOptions {
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
     file: Option<String>,
-    /// Worker names, `name@version` references, registry references, or local
-    /// paths to add in one edit and one restart.
-    workers: Vec<String>,
+    /// Canonical list of worker names, `name@version` references, registry
+    /// references, or local paths to add in one edit and one restart.
+    workers: Option<Vec<String>>,
+    /// Backward-compatible form for adding one worker.
+    worker: Option<String>,
 }
 
 /// Request fields used by single-worker compose-file edits.
@@ -460,6 +462,24 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
 
+/// `compose::add` accepts its canonical list or the old singular field.
+///
+/// Both fields are optional in the Rust shape so they can share the common
+/// namespace and file properties. `anyOf` states the runtime rule that at
+/// least one input form must be present. Supplying both is valid; dispatch
+/// gives the canonical `workers` list precedence.
+fn add_options_schema() -> Option<Value> {
+    let mut schema = schema_for_value::<AddOptions>()?;
+    schema.as_object_mut()?.insert(
+        "anyOf".to_string(),
+        json!([
+            { "required": ["workers"] },
+            { "required": ["worker"] },
+        ]),
+    );
+    Some(schema)
+}
+
 /// One source of truth for function registration and `compose::schema`.
 fn op_description(function_id: &str) -> &'static str {
     match function_id {
@@ -570,7 +590,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                schema_for_value::<AddOptions>(),
+                add_options_schema(),
                 schema_for_value::<AddOutcome>(),
             ),
             (
@@ -721,13 +741,18 @@ mod tests {
         assert!(add.contains_key("namespace"));
         assert!(add.contains_key("file"));
         assert!(add.contains_key("workers"));
-        assert!(!add.contains_key("worker"));
+        assert!(add.contains_key("worker"));
         assert!(!add.contains_key("container"));
-        assert!(
-            schema_entry("compose::add").1.as_ref().unwrap()["required"]
-                .as_array()
-                .is_some_and(|fields| fields.iter().any(|field| field.as_str() == Some("workers")))
-        );
+        let alternatives = schema_entry("compose::add").1.as_ref().unwrap()["anyOf"]
+            .as_array()
+            .expect("add should require either request form");
+        for field in ["workers", "worker"] {
+            assert!(alternatives.iter().any(|alternative| {
+                alternative["required"]
+                    .as_array()
+                    .is_some_and(|required| required.iter().any(|item| item == field))
+            }));
+        }
 
         let (_, list, _) = schema_entry("compose::list");
         let list = list.as_ref().unwrap()["properties"].as_object().unwrap();

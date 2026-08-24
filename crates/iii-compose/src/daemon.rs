@@ -39,6 +39,41 @@ use crate::{
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Keeps one declaration for a dependency shared by several requested workers.
+///
+/// Registry graphs are resolved per requested root. Two roots may therefore
+/// return the same container. Identical declarations are one shared
+/// dependency; different declarations mean the roots resolved incompatible
+/// versions, sources, or dependency edges. Reject that batch before the file
+/// is read or edited, so argument order cannot select the winning declaration.
+fn coalesce_expanded(
+    expanded: Vec<crate::edit::NewContainer>,
+) -> Result<Vec<crate::edit::NewContainer>> {
+    let mut positions = BTreeMap::new();
+    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(expanded.len());
+
+    for container in expanded {
+        if let Some(&position) = positions.get(&container.key) {
+            if unique[position] != container {
+                return Err(ComposeError::InvalidWorkerSpec {
+                    spec: container.key.clone(),
+                    reason: format!(
+                        "the requested workers resolve container '{}' to conflicting sources, \
+                         versions, or dependencies",
+                        container.key
+                    ),
+                });
+            }
+            continue;
+        }
+
+        positions.insert(container.key.clone(), unique.len());
+        unique.push(container);
+    }
+
+    Ok(unique)
+}
+
 pub struct Daemon {
     /// What this daemon registered as. Fixed, and the same on every machine:
     /// what tells two daemons apart is the namespace, not the name.
@@ -235,6 +270,7 @@ impl Daemon {
         for worker in &asked {
             wanted.extend(self.expand(worker).await?);
         }
+        let wanted = coalesce_expanded(wanted)?;
 
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
@@ -810,6 +846,31 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_shared_dependencies_are_declared_once() {
+        let state = crate::edit::parse_worker("state@1.0.0").unwrap();
+        let queue = crate::edit::parse_worker("queue@1.0.0").unwrap();
+
+        let merged = coalesce_expanded(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
+
+        assert_eq!(merged, vec![state, queue]);
+    }
+
+    #[test]
+    fn conflicting_shared_dependencies_are_rejected_before_editing() {
+        let first = crate::edit::parse_worker("state@1.0.0").unwrap();
+        let second = crate::edit::parse_worker("state@2.0.0").unwrap();
+
+        for expanded in [vec![first.clone(), second.clone()], vec![second, first]] {
+            let error = coalesce_expanded(expanded)
+                .expect_err("two versions of one shared dependency must not be order-dependent");
+
+            assert_eq!(error.code(), "INVALID_WORKER_SPEC");
+            assert!(error.to_string().contains("state"), "{error}");
+            assert!(error.to_string().contains("conflicting"), "{error}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]
