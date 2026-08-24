@@ -5,6 +5,12 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.23.0" description="Upcoming">
+  ## Breaking: Compose startup uses `--up`
+
+  `iii compose up` is replaced by `iii compose --up`. The positional `up` form is rejected, and `--file` is valid only with `--up`; bare `iii compose` starts the daemon without starting a project. Migrate explicit files to `iii compose --up --file worker-compose.yaml`.
+</Update>
+
 <Update label="0.22.1" description="August 2026">
   ## Queue workers restore their persisted transport on restart
 

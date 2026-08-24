@@ -45,7 +45,7 @@ containers: {}
 Start it with:
 
 ```bash
-iii compose --namespace orders-daemon up --file worker-compose.yaml
+iii compose --namespace orders-daemon --up --file worker-compose.yaml
 ```
 
 `engine.url` defaults to `ws://127.0.0.1:49134` and uses Compose's `${VAR:-default}` expansion.
@@ -95,7 +95,7 @@ Start the engine and external Compose daemon separately:
 
 ```bash
 iii --config config.yaml
-iii compose --namespace orders-daemon --engine ws://127.0.0.1:49134 up --file worker-compose.yaml
+iii compose --namespace orders-daemon --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml
 ```
 
 The external Compose file must omit `engine:`. `III_URL` may replace `--engine`. Direct config
