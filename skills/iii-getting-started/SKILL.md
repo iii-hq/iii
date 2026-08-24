@@ -41,7 +41,7 @@ cd <your-project>
 ## Step 3: Start the Project
 
 ```bash
-iii compose --namespace dev up --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
 The file's `engine:` section starts the engine; `containers:` starts project workers. The engine

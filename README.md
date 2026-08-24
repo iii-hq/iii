@@ -46,7 +46,7 @@ state, observability, agents, and sandboxes each usually bring their own integra
 collapses that into one live system surface.
 
 ```bash
-iii compose --namespace dev up
+iii compose --namespace dev --up
 iii trigger -n dev compose::add worker=queue
 iii trigger -n dev compose::add worker=agent
 iii trigger -n dev compose::add worker=<anything>
