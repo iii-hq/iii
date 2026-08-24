@@ -284,10 +284,10 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
 
 /// Reads only the engine ownership section from a Compose document.
 ///
-/// Mutation and teardown paths use this to reject ownership changes without
-/// requiring the container graph to be valid first. In particular,
-/// `compose::remove` must still be able to delete a container from a graph
-/// whose remaining `depends_on` edge is temporarily unresolved.
+/// Mutation preflight and teardown paths use this to reject ownership changes
+/// without requiring the container graph to be valid first. A cached project
+/// must still be stoppable or repairable when an unrelated container edit is
+/// temporarily invalid.
 pub(crate) fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {

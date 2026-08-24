@@ -456,8 +456,8 @@ fn op_description(function_id: &str) -> &'static str {
              file, pin resolved versions, then reconcile only changed workers."
         }
         "compose::remove" => {
-            "Remove one declared worker from the compose file, then restart \
-             the project."
+            "Remove one declared worker and dependency references to it, stop \
+             only that worker, then reconcile anything already missing."
         }
         "compose::restart" => {
             "Restart the whole project, or restart one named container without \

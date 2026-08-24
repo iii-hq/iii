@@ -174,7 +174,7 @@ one at the wrong file.
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
 | `compose::add`      | `file`, `worker` | What the edit did, any changed workers restarted, and newly started workers. |
-| `compose::remove`   | `file`, `worker` | The worker removed, and the `down` and `up` that followed.              |
+| `compose::remove`   | `file`, `worker` | The worker removed, its targeted stop, and the idempotent `up`.         |
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
@@ -261,12 +261,13 @@ the daemon owning nothing. Validation is offline, so `package://` containers are
 
 ### Removing a worker
 
-`compose::remove worker=state` removes only the named container from the compose file and restarts
-the whole project. It does not resolve or rewrite the dependency graph. It does not remove workers
-that were added with this worker, and it leaves other containers' `depends_on` fields unchanged.
+`compose::remove worker=state` removes the named container and every surviving `depends_on`
+reference to it. The complete edited declaration is validated before the file or any process
+changes. Compose then stops only that container and runs an idempotent `up`, so healthy surviving
+workers stay running and anything already missing can start.
 
-If the remaining file has an invalid dependency, the removal stays in the file and the restart
-reports that validation error. Edit or remove the stale dependency before the next `up`.
+Removal does not resolve the registry graph or remove other workers that were added with this
+worker. Those remain declared until they are removed explicitly.
 
 ### Restarting one worker
 

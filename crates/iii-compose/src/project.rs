@@ -476,6 +476,80 @@ impl Project {
         (restarted, up)
     }
 
+    /// Applies a removal without dropping supervision of surviving containers.
+    ///
+    /// The removed worker is stopped against the old declaration so its
+    /// cleanup hook and environment are still available. The validated new
+    /// declaration then replaces the held file, and normal idempotent `up`
+    /// starts only anything that was already missing.
+    pub async fn reconcile_removal(
+        &self,
+        file: ComposeFile,
+        removed: &str,
+        operation_id: String,
+    ) -> (OpResult, OpResult) {
+        let config_dir = self.config_dir();
+        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+
+        let stopped = {
+            let current = self.file.read().await;
+            let ctx = LifecycleCtx {
+                file: &current,
+                engine: &self.engine,
+                compose_namespace: &self.compose_namespace,
+                project_namespace: &self.project_namespace,
+                engine_url: &self.engine_url,
+                config_dir: &config_dir,
+                log_dir: &log_dir,
+                package_cache: &package_cache,
+                vm_dir: &vm_dir,
+            };
+            lifecycle::remove_one(
+                &ctx,
+                children,
+                &mut state.containers,
+                removed,
+                format!("{operation_id}-down"),
+            )
+            .await
+        };
+
+        {
+            let mut current = self.file.write().await;
+            *current = file;
+        }
+        let file = self.file.read().await;
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            log_dir: &log_dir,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+        let up = lifecycle::up(
+            &ctx,
+            children,
+            &mut state.containers,
+            None,
+            format!("{operation_id}-up"),
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        (stopped, up)
+    }
+
     /// Bounces one container. See [`lifecycle::restart_one`] for why this does
     /// not take the container's graph with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {

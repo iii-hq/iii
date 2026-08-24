@@ -333,3 +333,24 @@ async fn remove_rejects_an_engine_change_before_editing_the_file() {
     assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
     assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
 }
+
+#[tokio::test]
+async fn remove_validates_the_edited_file_before_writing_it() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = daemon();
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            Some("api"),
+            "remove-only-container".to_string(),
+        )
+        .await
+        .expect_err("remove must reject an empty edited project");
+
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), before);
+}

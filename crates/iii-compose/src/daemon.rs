@@ -503,12 +503,12 @@ impl Daemon {
         }))
     }
 
-    /// Removes one declared worker and restarts the whole project.
+    /// Removes one declared worker and reconciles the running project.
     ///
-    /// This is a literal edit, not a graph operation. It does not ask the
-    /// registry what the worker brought with it, remove dependencies, or
-    /// rewrite another container's `depends_on`. The restart re-reads the
-    /// result and reports if the remaining declaration cannot start.
+    /// Dependency edges pointing at the removed worker are deleted with it.
+    /// The edited declaration is fully validated before the file or any
+    /// process changes. Only the removed container stops; normal idempotent
+    /// `up` then starts anything else that was already missing.
     pub async fn remove(
         &self,
         file: Option<&Path>,
@@ -535,12 +535,19 @@ impl Daemon {
             });
         };
 
-        // Unlike add and update, removal intentionally does not parse the
-        // edited declaration first. Parsing validates the dependency graph,
-        // which would turn a literal removal into a graph-aware operation.
+        let current = crate::ComposeFile::parse(&edited, path)?;
+        self.engine_policy.validate_project(&current)?;
+        let namespace = crate::namespace::project_namespace(None, current.namespace.as_deref());
+        crate::manifest::validate_offline(&current, &namespace)?;
+
+        // Claim or load the old project before replacing the file: cleanup of
+        // the removed container needs its old scripts and environment.
+        let project = self.project(path).await?;
         write_atomically(path, &edited)?;
 
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let (down, up) = project
+            .reconcile_removal(current, worker, operation_id)
+            .await;
         Ok(serde_json::json!({
             "status": up.status,
             "container": worker,
