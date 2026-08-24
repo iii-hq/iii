@@ -38,6 +38,47 @@ fn wait_for_port(port: u16, timeout: std::time::Duration) -> bool {
 }
 
 #[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("compose did not exit after the shutdown signal");
+}
+
+#[cfg(unix)]
+fn send_signal(child: &std::process::Child, signal: nix::sys::signal::Signal) {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(child.id() as i32), signal).unwrap();
+}
+
+#[cfg(unix)]
+fn write_fixture_worker(
+    script: &std::path::Path,
+    ready: &std::path::Path,
+    stopped: &std::path::Path,
+    test_binary: &std::path::Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(
+        script,
+        format!(
+            "#!/bin/sh\nREADY_MARKER={}\nSTOPPED_MARKER={}\nTEST_BINARY={}\nexport READY_MARKER\non_stop() {{\n  kill \"$worker\" 2>/dev/null || true\n  wait \"$worker\" 2>/dev/null || true\n  printf stopped > \"$STOPPED_MARKER\"\n  exit 0\n}}\ntrap on_stop TERM INT\n\"$TEST_BINARY\" --ignored --exact managed_worker_fixture --nocapture &\nworker=$!\nwait \"$worker\"\n",
+            shell_quote(ready),
+            shell_quote(stopped),
+            shell_quote(test_binary),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(unix)]
 #[test]
 #[ignore]
 fn managed_worker_fixture() {
@@ -201,6 +242,190 @@ fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
         engine_reachable,
         "external engine stopped accepting connections"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn signal_during_managed_engine_startup_stops_the_engine() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let worker = project.path().join("worker.sh");
+    std::fs::write(&worker, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        format!(
+            "namespace: managed-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers:\n  probe:\n    worker: path://.\n    scripts:\n      run: ./worker.sh\n"
+        ),
+    )
+    .unwrap();
+
+    let generated_config = state.path().join("managed-early-signal/engine-config.yaml");
+    let mut child = iii_bin()
+        .current_dir(project.path())
+        .env("III_COMPOSE_STATE_DIR", state.path())
+        .args(["compose", "--namespace", "managed-early-signal", "--up"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run iii compose --up");
+
+    if !wait_for_file(&generated_config, Duration::from_secs(20)) {
+        send_signal(&child, nix::sys::signal::Signal::SIGTERM);
+        let _ = child.wait();
+        panic!("managed engine config was never created");
+    }
+    send_signal(&child, nix::sys::signal::Signal::SIGINT);
+    wait_for_exit(&mut child, Duration::from_secs(20));
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "compose exited with {output:?}");
+    assert!(
+        !generated_config.exists(),
+        "managed engine config survived shutdown"
+    );
+    TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
+}
+
+#[cfg(unix)]
+#[test]
+fn signal_during_dependent_startup_rolls_back_every_started_process() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let test_binary = std::env::current_exe().unwrap();
+    let root_ready = project.path().join("root.ready");
+    let root_stopped = project.path().join("root.stopped");
+    let root_script = project.path().join("root.sh");
+    write_fixture_worker(&root_script, &root_ready, &root_stopped, &test_binary);
+
+    let dependent_started = project.path().join("dependent.started");
+    let dependent_stopped = project.path().join("dependent.stopped");
+    let dependent_pid = project.path().join("dependent.pid");
+    let dependent_script = project.path().join("dependent.sh");
+    std::fs::write(
+        &dependent_script,
+        format!(
+            "#!/bin/sh\nprintf %s \"$$\" > {}\nprintf started > {}\non_stop() {{\n  printf stopped > {}\n  exit 0\n}}\ntrap on_stop TERM INT\nwhile :; do sleep 1; done\n",
+            shell_quote(&dependent_pid),
+            shell_quote(&dependent_started),
+            shell_quote(&dependent_stopped),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&dependent_script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        format!(
+            "namespace: managed-test\nstartup_timeout: 60s\nstop_timeout: 5s\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers:\n  root:\n    worker: path://.\n    scripts:\n      run: ./root.sh\n  dependent:\n    worker: path://.\n    start_after: [root]\n    scripts:\n      run: ./dependent.sh\n"
+        ),
+    )
+    .unwrap();
+
+    let generated_config = state
+        .path()
+        .join("managed-dependent-signal/engine-config.yaml");
+    let mut child = iii_bin()
+        .current_dir(project.path())
+        .env("III_COMPOSE_STATE_DIR", state.path())
+        .args(["compose", "--namespace", "managed-dependent-signal", "--up"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run iii compose --up");
+
+    if !wait_for_file(&dependent_started, Duration::from_secs(30)) {
+        send_signal(&child, nix::sys::signal::Signal::SIGTERM);
+        let _ = child.wait();
+        panic!("dependent worker never entered startup");
+    }
+    let pid: i32 = std::fs::read_to_string(&dependent_pid)
+        .unwrap()
+        .parse()
+        .unwrap();
+    send_signal(&child, nix::sys::signal::Signal::SIGINT);
+    wait_for_exit(&mut child, Duration::from_secs(20));
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "compose exited with {output:?}");
+    assert!(
+        root_stopped.exists(),
+        "ready root worker was not rolled back"
+    );
+    assert!(
+        dependent_stopped.exists(),
+        "starting dependent worker was not stopped"
+    );
+    assert!(
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err(),
+        "dependent worker process {pid} survived"
+    );
+    assert!(
+        !generated_config.exists(),
+        "managed engine config survived shutdown"
+    );
+    TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
+
+    // A clean restart on the same engine address and namespace proves that no
+    // old worker registration or process survived the interrupted attempt.
+    for marker in [
+        &root_ready,
+        &root_stopped,
+        &dependent_started,
+        &dependent_stopped,
+        &dependent_pid,
+    ] {
+        let _ = std::fs::remove_file(marker);
+    }
+    write_fixture_worker(
+        &dependent_script,
+        &dependent_started,
+        &dependent_stopped,
+        &test_binary,
+    );
+
+    let mut restarted = iii_bin()
+        .current_dir(project.path())
+        .env("III_COMPOSE_STATE_DIR", state.path())
+        .args(["compose", "--namespace", "managed-dependent-signal", "--up"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("restart iii compose --up");
+    if !wait_for_file(&dependent_started, Duration::from_secs(30)) {
+        send_signal(&restarted, nix::sys::signal::Signal::SIGTERM);
+        let output = restarted.wait_with_output().unwrap();
+        panic!("dependent worker was not ready after restart: {output:?}");
+    }
+    send_signal(&restarted, nix::sys::signal::Signal::SIGINT);
+    wait_for_exit(&mut restarted, Duration::from_secs(20));
+    let output = restarted.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "compose restart exited with {output:?}"
+    );
+    assert!(root_stopped.exists(), "root worker survived the restart");
+    assert!(
+        dependent_stopped.exists(),
+        "dependent worker survived the restart"
+    );
+    assert!(
+        !generated_config.exists(),
+        "managed engine config survived restart shutdown"
+    );
+    TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped after restart");
 }
 
 #[cfg(unix)]

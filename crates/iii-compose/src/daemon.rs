@@ -287,6 +287,28 @@ impl Daemon {
         Ok(project.up(container, operation_id).await)
     }
 
+    /// Brings the initial foreground project up until the process is asked to
+    /// stop. Remote `compose::up` calls use [`Self::up`] and are not tied to a
+    /// signal received by the foreground CLI.
+    pub(crate) async fn up_until_shutdown(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        operation_id: String,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> Result<Option<OpResult>> {
+        let file = self.resolve_file(file)?;
+        let current = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&current)?;
+        let project = self.project(file).await?;
+        if shutdown.requested() {
+            return Ok(None);
+        }
+        Ok(project
+            .up_until_shutdown(container, operation_id, shutdown)
+            .await)
+    }
+
     /// Adds containers to a project's file, then reconciles the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see

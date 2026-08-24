@@ -37,6 +37,7 @@ pub mod project;
 pub mod registry;
 pub mod remote;
 pub mod report;
+mod shutdown;
 pub mod spawn;
 pub mod state;
 
@@ -137,6 +138,11 @@ async fn serve(
         EngineMode::Managed { url } | EngineMode::External { url } => url.clone(),
     };
 
+    // Install this before the first owned process starts. Signal delivery uses
+    // separate process groups, so compose must stay alive long enough to stop
+    // each child itself.
+    let shutdown = shutdown::ShutdownSignal::install()?;
+
     let managed_engine = match engine_mode {
         EngineMode::Managed { .. } => {
             let spec = initial_file
@@ -173,14 +179,19 @@ async fn serve(
         .and_then(daemon::EnginePolicy::managed)
         .unwrap_or(daemon::EnginePolicy::External);
 
-    let result = serve_daemon(
-        engine_url,
-        daemon_namespace,
-        start,
-        managed_engine.as_ref(),
-        engine_policy,
-    )
-    .await;
+    let result = if shutdown.requested() {
+        Ok(())
+    } else {
+        serve_daemon(
+            engine_url,
+            daemon_namespace,
+            start,
+            managed_engine.as_ref(),
+            engine_policy,
+            shutdown,
+        )
+        .await
+    };
 
     if let Some(engine) = &managed_engine {
         println!("{}", "stopping engine...".dimmed());
@@ -206,6 +217,7 @@ async fn serve_daemon(
     start: Option<std::path::PathBuf>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
+    shutdown: shutdown::ShutdownSignal,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -241,7 +253,14 @@ async fn serve_daemon(
             daemon.shutdown().await;
             return Err(engine_exited(engine, status).await);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut interrupted = shutdown.clone();
+        tokio::select! {
+            _ = interrupted.wait() => {
+                daemon.shutdown().await;
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
     }
 
     if let Some(engine) = managed_engine
@@ -279,13 +298,23 @@ async fn serve_daemon(
     if let Some(file) = &start {
         println!();
         let operation_id = uuid::Uuid::new_v4().to_string();
-        let result = daemon.up(Some(file), None, operation_id).await;
+        let result = daemon
+            .up_until_shutdown(Some(file), None, operation_id, shutdown.clone())
+            .await;
         match result {
-            Ok(result) if result.status == lifecycle::OpStatus::Failed => {
+            Ok(None) => {
+                println!(
+                    "{}",
+                    "startup interrupted; stopping every project...".dimmed()
+                );
+                daemon.shutdown().await;
+                return Ok(());
+            }
+            Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
                 daemon.shutdown().await;
                 return Err(ComposeError::ProjectDidNotStart { path: file.clone() });
             }
-            Ok(_) => {}
+            Ok(Some(_)) => {}
             Err(err) => {
                 daemon.shutdown().await;
                 return Err(err);
@@ -295,35 +324,10 @@ async fn serve_daemon(
 
     // Serve until asked to stop, or until the engine refuses this identity.
     //
-    // Both signals matter and for different reasons: an operator presses Ctrl-C
-    // (SIGINT), while every supervisor — systemd, docker, a `kill` in a script
-    // — sends SIGTERM. Handling only the first leaves the children orphaned on
-    // the path that production actually takes.
-    let interrupted = tokio::signal::ctrl_c();
-    tokio::pin!(interrupted);
-    #[cfg(unix)]
-    let mut terminated =
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(terminated) => terminated,
-            Err(err) => {
-                daemon.shutdown().await;
-                return Err(ComposeError::SpawnFailed {
-                    container: "<daemon>".to_string(),
-                    message: format!("could not listen for SIGTERM: {err}"),
-                });
-            }
-        };
-
     loop {
-        #[cfg(unix)]
+        let mut interrupted = shutdown.clone();
         let stop = tokio::select! {
-            _ = &mut interrupted => true,
-            _ = terminated.recv() => true,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => false,
-        };
-        #[cfg(not(unix))]
-        let stop = tokio::select! {
-            _ = &mut interrupted => true,
+            _ = interrupted.wait() => true,
             _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => false,
         };
 

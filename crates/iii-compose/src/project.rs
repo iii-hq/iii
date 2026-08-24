@@ -413,6 +413,48 @@ impl Project {
         result
     }
 
+    pub(crate) async fn up_until_shutdown(
+        &self,
+        target: Option<&str>,
+        operation_id: String,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> Option<OpResult> {
+        let config_dir = self.config_dir();
+        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
+
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            log_dir: &log_dir,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+
+        let result = lifecycle::up_until_shutdown(
+            &ctx,
+            children,
+            &mut state.containers,
+            target,
+            operation_id,
+            shutdown,
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        result
+    }
+
     /// Applies a compose-file edit without dropping supervision of unchanged
     /// containers. Existing containers whose declarations changed are
     /// restarted in place; then the normal idempotent `up` path starts only
