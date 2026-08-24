@@ -80,7 +80,15 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
     let function_path = args.function_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!("iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`")
     })?;
-    let payload = payload::parse(&args.kv, args.json.as_deref())?;
+    // `compose::add` has a list in its JSON contract, while the shell form
+    // repeats the readable singular key: `worker=database worker=web`.
+    // Keep this adaptation scoped to that function so repeated keys for every
+    // other trigger retain their established last-value-wins behaviour.
+    let payload = if function_path == "compose::add" {
+        payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")?
+    } else {
+        payload::parse(&args.kv, args.json.as_deref())?
+    };
     exec::invoke(
         function_path,
         payload,

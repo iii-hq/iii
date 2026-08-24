@@ -55,12 +55,17 @@ pub struct ComposeRequest {
     pub container: Option<String>,
     /// The worker a call is about.
     ///
-    /// `compose::add` and `compose::update` read a spec: `name`,
-    /// `name@version`, or a path. `compose::remove` and `compose::restart` read
-    /// a container key, where it is the spelling for `container` — an operator
-    /// naming a worker should not have to know which of the two words this call
-    /// wanted.
+    /// `compose::update` reads a spec: `name`, `name@version`, or a path.
+    /// `compose::remove` and `compose::restart` read a container key, where it
+    /// is the spelling for `container` — an operator naming a worker should not
+    /// have to know which of the two words this call wanted. `compose::add`
+    /// keeps this field as a compatibility alias for a single list item.
     pub worker: Option<String>,
+    /// Workers to add in one file edit and one project restart.
+    ///
+    /// This is the canonical `compose::add` JSON field. The singular `worker`
+    /// field remains accepted for clients that used the old contract.
+    pub workers: Option<Vec<String>>,
     /// Function or file contract requested by `compose::schema`.
     pub function_id: Option<String>,
 }
@@ -98,7 +103,21 @@ struct ProjectOptions {
     file: Option<String>,
 }
 
-/// Request fields used by compose-file worker edits.
+/// Request fields used by `compose::add`.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct AddOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
+    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
+    /// the daemon working directory.
+    file: Option<String>,
+    /// Worker names, `name@version` references, registry references, or local
+    /// paths to add in one edit and one restart.
+    workers: Vec<String>,
+}
+
+/// Request fields used by single-worker compose-file edits.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct WorkerOptions {
@@ -185,7 +204,11 @@ struct StopOutcome {
 #[derive(Debug, Clone, JsonSchema)]
 struct AddOutcome {
     status: OpStatus,
+    /// The first requested worker. This keeps the single-worker response
+    /// contract stable.
     container: String,
+    /// Every requested worker. Present in responses from list-aware daemons.
+    workers: Option<Vec<String>>,
     changed: bool,
     detail: String,
     declared: Option<Vec<String>>,
@@ -332,13 +355,24 @@ async fn dispatch(
             Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
-        Operation::Add => match daemon
-            .add(file.as_deref(), request.worker.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Add => {
+            let result = match request.workers.as_deref() {
+                Some(workers) => daemon.add(file.as_deref(), workers, operation_id()).await,
+                None => match request.worker.as_ref() {
+                    Some(worker) => {
+                        daemon
+                            .add(
+                                file.as_deref(),
+                                std::slice::from_ref(worker),
+                                operation_id(),
+                            )
+                            .await
+                    }
+                    None => daemon.add(file.as_deref(), &[], operation_id()).await,
+                },
+            };
+            result.map_err(|err| compose_error(&err))
+        }
         Operation::Remove => match daemon
             .remove(file.as_deref(), request.worker.as_deref(), operation_id())
             .await
@@ -451,8 +485,8 @@ fn op_description(function_id: &str) -> &'static str {
              starting its project."
         }
         "compose::add" => {
-            "Declare a worker and its registry dependencies in the compose \
-             file, pin resolved versions, then restart the project."
+            "Declare workers and their registry dependencies in the compose \
+             file, pin resolved versions, then restart the project once."
         }
         "compose::remove" => {
             "Remove one declared worker from the compose file, then restart \
@@ -536,7 +570,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                schema_for_value::<WorkerOptions>(),
+                schema_for_value::<AddOptions>(),
                 schema_for_value::<AddOutcome>(),
             ),
             (
@@ -654,6 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn add_request_accepts_a_worker_list_and_the_singular_compatibility_field() {
+        let listed: ComposeRequest = serde_json::from_value(json!({
+            "workers": ["database", "web"],
+        }))
+        .expect("workers should deserialize");
+        assert_eq!(
+            listed.workers,
+            Some(vec!["database".to_string(), "web".to_string()])
+        );
+        assert_eq!(listed.worker, None);
+
+        let singular: ComposeRequest = serde_json::from_value(json!({
+            "worker": "database",
+        }))
+        .expect("the old singular field should deserialize");
+        assert_eq!(singular.worker.as_deref(), Some("database"));
+        assert_eq!(singular.workers, None);
+    }
+
+    #[test]
     fn operation_requests_expose_only_supported_fields() {
         let (_, up, _) = schema_entry("compose::up");
         let up = up.as_ref().unwrap()["properties"].as_object().unwrap();
@@ -666,12 +720,13 @@ mod tests {
         let add = add.as_ref().unwrap()["properties"].as_object().unwrap();
         assert!(add.contains_key("namespace"));
         assert!(add.contains_key("file"));
-        assert!(add.contains_key("worker"));
+        assert!(add.contains_key("workers"));
+        assert!(!add.contains_key("worker"));
         assert!(!add.contains_key("container"));
         assert!(
             schema_entry("compose::add").1.as_ref().unwrap()["required"]
                 .as_array()
-                .is_some_and(|fields| fields.iter().any(|field| field.as_str() == Some("worker")))
+                .is_some_and(|fields| fields.iter().any(|field| field.as_str() == Some("workers")))
         );
 
         let (_, list, _) = schema_entry("compose::list");

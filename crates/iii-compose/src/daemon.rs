@@ -192,7 +192,7 @@ impl Daemon {
         Ok(project.up(container, operation_id).await)
     }
 
-    /// Adds a container to a project's file, then restarts the project.
+    /// Adds containers to a project's file, then restarts the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
     /// [`crate::edit`]. A version the caller did not pin is resolved once and
@@ -207,18 +207,22 @@ impl Daemon {
     pub async fn add(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<Value> {
-        let Some(worker) = worker else {
+        if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
-                reason: "no worker was named. Pass worker=<name|name@version|./path>".to_string(),
+                reason: "no worker was named. Pass one or more worker=<name|name@version|./path> arguments"
+                    .to_string(),
             });
-        };
+        }
 
         let path = self.resolve_file(file)?;
-        let asked = crate::edit::parse_worker(worker)?;
+        let asked = workers
+            .iter()
+            .map(|worker| crate::edit::parse_worker(worker))
+            .collect::<Result<Vec<_>>>()?;
         // A worker is not useful alone: its manifest names what it calls, and
         // the registry answers with that whole graph already pinned to versions
         // that satisfy each other. They are declared rather than started
@@ -227,7 +231,10 @@ impl Daemon {
         // Dependencies first and the worker last: with no `depends_on`, start
         // order is declaration order, so this is what makes a worker start
         // after the things it calls.
-        let wanted = self.expand(&asked).await?;
+        let mut wanted = Vec::new();
+        for worker in &asked {
+            wanted.extend(self.expand(worker).await?);
+        }
 
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
@@ -251,12 +258,24 @@ impl Daemon {
             }
         }
 
+        let requested = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        let container = requested[0].clone();
+
         if added.is_empty() && replaced.is_empty() {
+            let detail = if requested.len() == 1 {
+                "already declared at this version"
+            } else {
+                "all workers are already declared at these versions"
+            };
             return Ok(serde_json::json!({
                 "status": "ok",
-                "container": asked.key,
+                "container": container,
+                "workers": requested,
                 "changed": false,
-                "detail": "already declared at this version",
+                "detail": detail,
             }));
         }
         let action = match (added.is_empty(), replaced.is_empty()) {
@@ -278,7 +297,8 @@ impl Daemon {
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
         Ok(serde_json::json!({
             "status": up.status,
-            "container": asked.key,
+            "container": container,
+            "workers": requested,
             "changed": true,
             "declared": added,
             "detail": action,
