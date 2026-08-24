@@ -198,11 +198,11 @@ keep different kinds of data in `state` from colliding; later chapters add more.
 ## Start the engine
 
 From the project root, start the engine and Compose project. The workers register their functions
-with the engine. `iii compose up` is a supported nested subcommand documented in the
+with the engine. `iii compose --up` is a supported flag documented in the
 [CLI reference](/cli-reference/index#iii-compose-up):
 
 ```bash
-iii compose up --namespace linkly --file worker-compose.yaml
+iii compose --up --namespace linkly --file worker-compose.yaml
 ```
 
 On this first start, the configuration worker creates `config/state.yaml` and `config/http.yaml`

@@ -144,7 +144,7 @@ Do not rename only the YAML file: filesystem-backed entries also contain id and 
 For a managed engine, the file owns both lifecycles:
 
 ```bash
-iii compose --namespace dev up --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
 The daemon namespace (`dev`) addresses `compose::*`; the file's `namespace:` is the namespace of
@@ -157,7 +157,7 @@ the existing URL:
 
 ```bash
 iii --config config.yaml
-iii compose --namespace dev --engine ws://127.0.0.1:49134 up --file worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml
 ```
 
 Run those commands under separate supervisors. `III_URL` may replace `--engine`. An external

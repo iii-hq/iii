@@ -16,7 +16,7 @@ exposes the `compose::*` functions there, so every project operation is a normal
 [trigger](./triggers), addressed to one daemon with `--namespace`.
 
 `iii compose` is intentionally a verbless top-level daemon command, analogous to `iii console`.
-The `up` subcommand loads a project; the file's optional `engine:` section decides whether Compose
+The `--up` flag loads a project; the file's optional `engine:` section decides whether Compose
 owns an engine or connects to an external one.
 
 ## The daemon
@@ -35,7 +35,7 @@ apart is the namespace: the worker name is always `compose`, so the engine lease
 compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
 that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-With `iii compose up`, the daemon inherits `namespace:` from the initial compose file when
+With `iii compose --up`, the daemon inherits `namespace:` from the initial compose file when
 `--namespace` is absent. If the file has no namespace, or if the daemon starts without an initial
 file, it uses `default`. The engine refuses a second daemon claiming a namespace that is already
 served.
@@ -54,24 +54,24 @@ compose serving
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
-does the same over the engine. When `up` owns the engine, every project and worker stops before the
+does the same over the engine. When `--up` owns the engine, every project and worker stops before the
 engine process is stopped.
 
 ### Starting a project with the daemon
 
-`iii compose up` validates the initial file, selects engine ownership, and brings the project up
+`iii compose --up` validates the initial file, selects engine ownership, and brings the project up
 without waiting for a call to name it. The daemon stays in the foreground to supervise its
 containers and, in managed mode, the engine process.
 
 ```text
-iii compose up [-f, --file <PATH>]
+iii compose --up [-f, --file <PATH>]
 ```
 
 `--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
 names no file. The daemon then stays in the foreground and serves, so every other operation is a
 `compose::*` call as usual.
 
-If `--namespace` is absent, this initial `up` also uses the file's `namespace:` for the compose
+If `--namespace` is absent, this initial `--up` also uses the file's `namespace:` for the compose
 daemon. An explicit CLI namespace has priority over the file.
 
 When the file contains `engine:`, Compose materializes an engine-only config under
@@ -80,7 +80,7 @@ file after a clean shutdown. The Compose file is the source of truth; explicit `
 error, and a process-wide `III_URL` is ignored.
 
 ```text
-$ iii compose up -n orders
+$ iii compose --up -n orders
 engine started
   pid: 42042
   config: /home/me/.iii/compose/orders/engine-config.yaml
@@ -108,12 +108,12 @@ Without `engine:`, Compose never starts or stops an engine. Supply the external 
 through `III_URL`; there is no default external endpoint.
 
 ```bash
-iii compose up --engine ws://127.0.0.1:49134
+iii compose --up --engine ws://127.0.0.1:49134
 ```
 
 ### Running it in the background
 
-Compose never backgrounds itself. Even when `up` runs its managed engine in the background, the
+Compose never backgrounds itself. Even when `--up` runs its managed engine in the background, the
 compose daemon serves in the foreground and writes its own output to stdout. This is the shape every
 process supervisor already expects, and it leaves log rotation and restart-on-failure to something
 that already does both.

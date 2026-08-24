@@ -95,7 +95,7 @@ engine:
     iii-sandbox: {}
 ```
 
-Start this file with `iii compose up` before calling the sandbox function. `iii-sandbox` is an
+Start this file with `iii compose --up` before calling the sandbox function. `iii-sandbox` is an
 engine-owned exception, so it belongs under the top-level `engine.workers`, not under `containers`.
 
 ```bash

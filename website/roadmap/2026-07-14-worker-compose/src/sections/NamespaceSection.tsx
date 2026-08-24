@@ -24,7 +24,7 @@ export function NamespaceSection() {
             trigger() without a namespace resolves in the default namespace, and only there; an explicit namespace
             targets exactly that instance. no best-fit guessing.
           </SpecRow>
-          <SpecRow name="compose up, nothing set">
+          <SpecRow name="compose --up, nothing set">
             the default namespace — use an explicit namespace when two projects must coexist.
           </SpecRow>
           <SpecRow name="worker started by hand">the default namespace; the single-user flow is unchanged.</SpecRow>

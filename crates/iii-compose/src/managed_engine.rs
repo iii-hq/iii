@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Lifecycle of the engine process owned by `iii compose up`.
+//! Lifecycle of the engine process owned by `iii compose --up`.
 
 use std::{
     io::{Read, Seek, SeekFrom, Write},

@@ -82,9 +82,9 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     let output = iii_bin()
         .current_dir(project.path())
         .env("III_COMPOSE_STATE_DIR", state.path())
-        .args(["compose", "--namespace", "managed-e2e", "up"])
+        .args(["compose", "--namespace", "managed-e2e", "--up"])
         .output()
-        .expect("run iii compose up");
+        .expect("run iii compose --up");
 
     assert!(!output.status.success(), "invalid project must fail");
     let terminal = format!(
@@ -179,10 +179,10 @@ fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
             &format!("ws://127.0.0.1:{port}"),
             "--namespace",
             "external-e2e",
-            "up",
+            "--up",
         ])
         .output()
-        .expect("run external compose up");
+        .expect("run external compose --up");
     let terminal = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -240,11 +240,11 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     let mut child = iii_bin()
         .current_dir(project.path())
         .env("III_COMPOSE_STATE_DIR", state.path())
-        .args(["compose", "--namespace", "managed-signal-e2e", "up"])
+        .args(["compose", "--namespace", "managed-signal-e2e", "--up"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("run iii compose up");
+        .expect("run iii compose --up");
 
     if !wait_for_file(&ready, Duration::from_secs(30)) {
         let _ = nix::sys::signal::kill(

@@ -40,7 +40,7 @@ file or `scripts.start` from their `iii.worker.yaml` manifest.
 Start a project and keep its daemon in the foreground:
 
 ```bash
-iii compose --namespace dev up --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
 The presence of `engine:` makes the daemon own and stop the engine. Without it, pass `--engine` or

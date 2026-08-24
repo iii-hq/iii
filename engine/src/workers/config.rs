@@ -192,7 +192,7 @@ impl EngineConfig {
     /// list.
     pub fn starter_config_yaml() -> String {
         "# iii engine configuration.\n\
-         # Declare project workers in worker-compose.yaml and run `iii compose up`.\n\
+         # Declare project workers in worker-compose.yaml and run `iii compose --up`.\n\
          # Configure engine workers at runtime through the configuration worker (configuration::set).\n\
          workers: []\n"
             .to_string()
@@ -428,7 +428,7 @@ impl WorkerRegistry {
 
         anyhow::bail!(
             "worker '{}' is not an engine worker. Move it to worker-compose.yaml and start it with \
-             `iii compose up`. See: {}",
+             `iii compose --up`. See: {}",
             name,
             WORKER_COMPOSE_MIGRATION_GUIDE
         )

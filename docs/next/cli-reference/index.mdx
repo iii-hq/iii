@@ -41,27 +41,15 @@ Serve worker-compose projects: supervise each one's workers as a graph.
 Projects are started and stopped through `iii trigger compose::*`, naming one with `id=`; this command only puts the daemon there.
 
 ```text
-iii compose [OPTIONS] [COMMAND]
+iii compose [OPTIONS]
 ```
 
 | Option | Description |
 | ------ | ----------- |
 | `--engine <URL>` | Existing engine WebSocket address. Falls back to III_URL when the compose file does not declare an engine section |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
-
-#### `iii compose up`
-
-Serve with one project brought up first, starting its declared engine
-
-```text
-iii compose up [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
+| `--up` | Serve with one project brought up first, starting its declared engine |
 | `-f, --file <PATH>` | The compose file. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
-| `--engine <URL>` | Existing engine WebSocket address. Falls back to III_URL when the compose file does not declare an engine section |
-| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
 
 ### `iii project`
 
