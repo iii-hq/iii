@@ -21,7 +21,7 @@ iii compose [OPTIONS]
 
 | Option           | Description                                                                            |
 | ---------------- | -------------------------------------------------------------------------------------- |
-| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Overrides the initial file namespace.   |
 | `--engine <URL>` | Existing engine WebSocket address. Falls back to `III_URL` in external mode.           |
 
 A daemon holds any number of projects, and any number of daemons share one engine. What tells them
@@ -29,10 +29,11 @@ apart is the namespace: the worker name is always `compose`, so the engine lease
 compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
 that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-Without `--namespace` the daemon generates one and prints it: two words, so it can be read once and
-typed from memory. There is no well-known default, because a shared name is the collision the
-namespace exists to prevent. A generated name never reuses one that already holds state on this
-machine, and the engine refuses a second daemon claiming a namespace that is already served.
+With `iii compose up`, the daemon inherits `namespace:` from the initial compose file when
+`--namespace` is absent. If the file has no namespace, or if the daemon starts without an initial
+file, it generates and prints a two-word namespace. A generated name never reuses one that already
+holds state on this machine, and the engine refuses a second daemon claiming a namespace that is
+already served.
 
 ```text
 $ iii compose --engine ws://127.0.0.1:49134
@@ -43,8 +44,9 @@ compose serving
 ```
 
 <Warning>
-  A generated namespace is new on every start, and a project's durable state is stored under it. A
-  daemon that has to find its own children again after a restart passes `--namespace` and keeps it.
+  A generated namespace is new on every start, and a project's durable state is stored under it.
+  Set `namespace:` in the compose file, or pass `--namespace`, when a daemon must find its own
+  children again after a restart.
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
@@ -64,6 +66,9 @@ iii compose up [-f, --file <PATH>]
 `--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
 names no file. The daemon then stays in the foreground and serves, so every other operation is a
 `compose::*` call as usual.
+
+If `--namespace` is absent, this initial `up` also uses the file's `namespace:` for the compose
+daemon. An explicit CLI namespace has priority over the file.
 
 When the file contains `engine:`, Compose materializes an engine-only config under
 `~/.iii/compose/<daemon-namespace>/engine-config.yaml`, starts the engine, and removes the generated

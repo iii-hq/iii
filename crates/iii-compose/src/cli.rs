@@ -45,8 +45,9 @@ pub struct ComposeCli {
     /// engine; this is what tells them apart.
     ///
     /// It is the address an operator reaches exactly one of them with:
-    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. Omitted, the
-    /// daemon generates one and prints it.
+    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `up`, an
+    /// omitted value inherits the initial compose file namespace. Without an
+    /// initial namespace, the daemon generates one and prints it.
     ///
     /// Spelled the way the rest of the CLI spells it, and only that way: this
     /// has not shipped, so there is nothing calling it `--ns` to keep working.
@@ -75,7 +76,9 @@ pub enum ComposeCommand {
     /// Serve `compose::*` in the foreground.
     Serve {
         explicit_engine_url: Option<String>,
-        daemon_namespace: String,
+        /// A namespace set on the CLI. `None` is resolved after the initial
+        /// compose file is loaded, so `up` can inherit the file namespace.
+        explicit_daemon_namespace: Option<String>,
         /// A project to bring up before the first call arrives. `None` is a
         /// daemon that starts holding nothing.
         start: Option<PathBuf>,
@@ -85,7 +88,7 @@ pub enum ComposeCommand {
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
-        let daemon_namespace = self.daemon_namespace()?;
+        let explicit_daemon_namespace = self.validated_namespace()?;
 
         // A missing `--file` is not "no file": it is the same fallback a call
         // with no `file=` gets, the compose file in the working directory.
@@ -100,12 +103,12 @@ impl ComposeCli {
             // III_URL, while an explicit --engine is a contradictory request
             // we can report to the operator.
             explicit_engine_url: self.engine.clone().filter(|url| !url.trim().is_empty()),
-            daemon_namespace,
+            explicit_daemon_namespace,
             start,
         })
     }
 
-    /// `--namespace`, or a generated name when it is absent.
+    /// `--namespace`, or a generated name when no compose file is available.
     ///
     /// There is no safe well-known default. A shared one — `default`, the
     /// hostname — is the collision the namespace exists to prevent: the second
@@ -125,15 +128,9 @@ impl ComposeCli {
     /// engine routes on and a directory under `~/.iii/compose`, so a separator
     /// or an empty string is a daemon that half-works until the first write.
     pub fn daemon_namespace(&self) -> Result<String> {
-        Ok(self.validated_namespace()?.unwrap_or_else(|| {
-            // A name already holding state on this machine belongs to a daemon
-            // that ran before, and taking it would mean adopting what it left.
-            let root = crate::state::StateStore::root().ok();
-            crate::name::generate(|candidate| {
-                root.as_ref()
-                    .is_some_and(|root| root.join(candidate).exists())
-            })
-        }))
+        Ok(self
+            .validated_namespace()?
+            .unwrap_or_else(generated_daemon_namespace))
     }
 
     /// `--namespace` as given, checked. `None` when it was not given — the caller
@@ -172,4 +169,14 @@ impl ComposeCli {
             .filter(|url| !url.trim().is_empty())
             .or_else(|| std::env::var("III_URL").ok().filter(|url| !url.is_empty()))
     }
+}
+
+pub(crate) fn generated_daemon_namespace() -> String {
+    // A name already holding state on this machine belongs to a daemon that
+    // ran before, and taking it would mean adopting what it left.
+    let root = crate::state::StateStore::root().ok();
+    crate::name::generate(|candidate| {
+        root.as_ref()
+            .is_some_and(|root| root.join(candidate).exists())
+    })
 }

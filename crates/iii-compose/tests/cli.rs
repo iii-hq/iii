@@ -37,14 +37,8 @@ fn an_unnamed_daemon_names_itself() {
     // the second would be refused. So an invocation that does not name itself
     // gets a name — printed on start, and what an operator captures to address
     // it.
-    let ComposeCommand::Serve {
-        daemon_namespace: first,
-        ..
-    } = parse(&["iii", "compose"]).plan().unwrap();
-    let ComposeCommand::Serve {
-        daemon_namespace: second,
-        ..
-    } = parse(&["iii", "compose"]).plan().unwrap();
+    let first = parse(&["iii", "compose"]).daemon_namespace().unwrap();
+    let second = parse(&["iii", "compose"]).daemon_namespace().unwrap();
 
     // Two words, because the name is printed for an operator to read once and
     // type from memory. It is still held to the namespace charset: it is also a
@@ -73,11 +67,12 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
     // it is the namespace this one answers `compose::*` in, so an operator
     // reaches exactly one with `--namespace`.
     let ComposeCommand::Serve {
-        daemon_namespace, ..
+        explicit_daemon_namespace,
+        ..
     } = parse(&["iii", "compose", "--namespace", "pc-da-xuxa"])
         .plan()
         .unwrap();
-    assert_eq!(daemon_namespace, "pc-da-xuxa");
+    assert_eq!(explicit_daemon_namespace.as_deref(), Some("pc-da-xuxa"));
 }
 
 #[test]
@@ -198,6 +193,18 @@ fn up_names_the_file_in_the_current_directory() {
 }
 
 #[test]
+fn up_without_a_cli_namespace_defers_to_the_compose_file() {
+    let ComposeCommand::Serve {
+        explicit_daemon_namespace,
+        start,
+        ..
+    } = parse(&["iii", "compose", "up"]).plan().unwrap();
+
+    assert_eq!(explicit_daemon_namespace, None);
+    assert!(start.is_some());
+}
+
+#[test]
 fn engine_section_selects_managed_mode_and_forbids_an_external_url() {
     let managed = ComposeFile::parse(
         "engine: { workers: {} }\ncontainers: {}\n",
@@ -277,7 +284,12 @@ fn the_namespace_reads_the_same_on_either_side_of_the_subcommand() {
     ] {
         let cli = parse(&args);
         assert_eq!(cli.daemon_namespace().unwrap(), "orders");
-        let ComposeCommand::Serve { start, .. } = cli.plan().unwrap();
+        let ComposeCommand::Serve {
+            explicit_daemon_namespace,
+            start,
+            ..
+        } = cli.plan().unwrap();
+        assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
         assert!(start.is_some(), "{args:?} should still be an up");
     }
 }

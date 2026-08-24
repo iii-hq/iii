@@ -98,9 +98,9 @@ pub async fn run(cli: ComposeCli) -> i32 {
     match command {
         ComposeCommand::Serve {
             explicit_engine_url,
-            daemon_namespace,
+            explicit_daemon_namespace,
             start,
-        } => match serve(explicit_engine_url, daemon_namespace, start).await {
+        } => match serve(explicit_engine_url, explicit_daemon_namespace, start).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -115,7 +115,7 @@ pub async fn run(cli: ComposeCli) -> i32 {
 /// several projects without being restarted for each.
 async fn serve(
     explicit_engine_url: Option<String>,
-    daemon_namespace: String,
+    explicit_daemon_namespace: Option<String>,
     start: Option<std::path::PathBuf>,
 ) -> Result<()> {
     use colored::Colorize;
@@ -124,6 +124,8 @@ async fn serve(
     // engine. Invalid YAML and missing external URLs must fail with no child
     // process left behind.
     let initial_file = start.as_ref().map(ComposeFile::load).transpose()?;
+    let daemon_namespace =
+        resolve_daemon_namespace(explicit_daemon_namespace, initial_file.as_ref());
     let environment_engine_url = std::env::var("III_URL")
         .ok()
         .filter(|url| !url.trim().is_empty());
@@ -187,6 +189,15 @@ async fn serve(
     }
 
     result
+}
+
+fn resolve_daemon_namespace(
+    explicit_daemon_namespace: Option<String>,
+    initial_file: Option<&ComposeFile>,
+) -> String {
+    explicit_daemon_namespace
+        .or_else(|| initial_file.and_then(|file| file.namespace.clone()))
+        .unwrap_or_else(cli::generated_daemon_namespace)
 }
 
 async fn serve_daemon(
@@ -370,4 +381,32 @@ fn report_error(err: &ComposeError) -> i32 {
     use colored::Colorize;
     eprintln!("{} {err}", format!("error[{}]:", err.code()).red().bold());
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComposeFile, resolve_daemon_namespace};
+
+    fn compose_with_namespace() -> ComposeFile {
+        ComposeFile::parse(
+            "namespace: orders\ncontainers:\n  api:\n    worker: path://./api\n",
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn initial_compose_namespace_is_inherited() {
+        let compose = compose_with_namespace();
+        assert_eq!(resolve_daemon_namespace(None, Some(&compose)), "orders");
+    }
+
+    #[test]
+    fn explicit_daemon_namespace_overrides_compose_file() {
+        let compose = compose_with_namespace();
+        assert_eq!(
+            resolve_daemon_namespace(Some("development".to_string()), Some(&compose)),
+            "development"
+        );
+    }
 }
