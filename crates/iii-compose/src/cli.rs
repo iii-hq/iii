@@ -82,6 +82,10 @@ pub enum ComposeCommand {
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
+        if !self.up && self.file.is_some() {
+            return Err(ComposeError::FileRequiresUp);
+        }
+
         let explicit_daemon_namespace = self.validated_namespace()?;
 
         // A missing `--file` is not "no file": it is the same fallback a call

@@ -120,6 +120,20 @@ fn the_project_flags_are_gone_rather_than_ignored() {
 }
 
 #[test]
+fn a_programmatic_file_without_up_is_refused() {
+    let err = ComposeCli {
+        engine: None,
+        ns: None,
+        up: false,
+        file: Some("other.yaml".into()),
+    }
+    .plan()
+    .expect_err("a public ComposeCli must enforce the same rule as clap");
+
+    assert_eq!(err.code(), "FILE_REQUIRES_UP");
+}
+
+#[test]
 fn an_explicit_engine_beats_the_environment_and_there_is_no_default_external_url() {
     // The only test that touches III_URL, so no other test can race it.
     unsafe { std::env::set_var("III_URL", "ws://from-env:1") };
