@@ -480,6 +480,12 @@ fn add_options_schema() -> Option<Value> {
         .pointer_mut("/properties/workers")?
         .as_object_mut()?
         .insert("minItems".to_string(), json!(1));
+    for pointer in ["/properties/worker", "/properties/workers/items"] {
+        schema
+            .pointer_mut(pointer)?
+            .as_object_mut()?
+            .insert("pattern".to_string(), json!(r"\S"));
+    }
     schema.as_object_mut()?.insert(
         "anyOf".to_string(),
         json!([
@@ -759,6 +765,10 @@ mod tests {
             json!({ "workers": null }),
             json!({ "worker": null }),
             json!({ "workers": [], "worker": "database" }),
+            json!({ "worker": "" }),
+            json!({ "worker": "  " }),
+            json!({ "workers": [""] }),
+            json!({ "workers": ["  "] }),
         ] {
             assert!(!validator.is_valid(&invalid), "should reject {invalid}");
         }
