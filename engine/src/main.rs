@@ -1116,6 +1116,29 @@ mod tests {
     }
 
     #[test]
+    fn compose_add_parses_repeated_worker_arguments() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "trigger",
+            "-n",
+            "dev",
+            "compose::add",
+            "worker=database",
+            "worker=web",
+        ])
+        .expect("compose::add should parse repeated workers");
+
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.namespace.as_deref(), Some("dev"));
+                assert_eq!(args.function_path.as_deref(), Some("compose::add"));
+                assert_eq!(args.kv, vec!["worker=database", "worker=web"]);
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
     fn trigger_without_the_flag_carries_no_namespace() {
         let cli = Cli::try_parse_from(["iii", "trigger", "state::get", "key=a"])
             .expect("should parse a plain trigger");

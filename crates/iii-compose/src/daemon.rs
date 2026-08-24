@@ -39,6 +39,41 @@ use crate::{
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Keeps one declaration for a dependency shared by several requested workers.
+///
+/// Registry graphs are resolved per requested root. Two roots may therefore
+/// return the same container. Identical declarations are one shared
+/// dependency; different declarations mean the roots resolved incompatible
+/// versions, sources, or dependency edges. Reject that batch before the file
+/// is read or edited, so argument order cannot select the winning declaration.
+fn coalesce_expanded(
+    expanded: Vec<crate::edit::NewContainer>,
+) -> Result<Vec<crate::edit::NewContainer>> {
+    let mut positions = BTreeMap::new();
+    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(expanded.len());
+
+    for container in expanded {
+        if let Some(&position) = positions.get(&container.key) {
+            if unique[position] != container {
+                return Err(ComposeError::InvalidWorkerSpec {
+                    spec: container.key.clone(),
+                    reason: format!(
+                        "the requested workers resolve container '{}' to conflicting sources, \
+                         versions, or dependencies",
+                        container.key
+                    ),
+                });
+            }
+            continue;
+        }
+
+        positions.insert(container.key.clone(), unique.len());
+        unique.push(container);
+    }
+
+    Ok(unique)
+}
+
 pub struct Daemon {
     /// What this daemon registered as. Fixed, and the same on every machine:
     /// what tells two daemons apart is the namespace, not the name.
@@ -192,7 +227,7 @@ impl Daemon {
         Ok(project.up(container, operation_id).await)
     }
 
-    /// Adds a container to a project's file, then restarts the project.
+    /// Adds containers to a project's file, then restarts the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
     /// [`crate::edit`]. A version the caller did not pin is resolved once and
@@ -207,18 +242,22 @@ impl Daemon {
     pub async fn add(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<Value> {
-        let Some(worker) = worker else {
+        if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
-                reason: "no worker was named. Pass worker=<name|name@version|./path>".to_string(),
+                reason: "no worker was named. Pass one or more worker=<name|name@version|./path> arguments"
+                    .to_string(),
             });
-        };
+        }
 
         let path = self.resolve_file(file)?;
-        let asked = crate::edit::parse_worker(worker)?;
+        let asked = workers
+            .iter()
+            .map(|worker| crate::edit::parse_worker(worker))
+            .collect::<Result<Vec<_>>>()?;
         // A worker is not useful alone: its manifest names what it calls, and
         // the registry answers with that whole graph already pinned to versions
         // that satisfy each other. They are declared rather than started
@@ -227,7 +266,11 @@ impl Daemon {
         // Dependencies first and the worker last: with no `depends_on`, start
         // order is declaration order, so this is what makes a worker start
         // after the things it calls.
-        let wanted = self.expand(&asked).await?;
+        let mut wanted = Vec::new();
+        for worker in &asked {
+            wanted.extend(self.expand(worker).await?);
+        }
+        let wanted = coalesce_expanded(wanted)?;
 
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
@@ -251,12 +294,24 @@ impl Daemon {
             }
         }
 
+        let requested = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        let container = requested[0].clone();
+
         if added.is_empty() && replaced.is_empty() {
+            let detail = if requested.len() == 1 {
+                "already declared at this version"
+            } else {
+                "all workers are already declared at these versions"
+            };
             return Ok(serde_json::json!({
                 "status": "ok",
-                "container": asked.key,
+                "container": container,
+                "workers": requested,
                 "changed": false,
-                "detail": "already declared at this version",
+                "detail": detail,
             }));
         }
         let action = match (added.is_empty(), replaced.is_empty()) {
@@ -278,7 +333,8 @@ impl Daemon {
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
         Ok(serde_json::json!({
             "status": up.status,
-            "container": asked.key,
+            "container": container,
+            "workers": requested,
             "changed": true,
             "declared": added,
             "detail": action,
@@ -790,6 +846,31 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_shared_dependencies_are_declared_once() {
+        let state = crate::edit::parse_worker("state@1.0.0").unwrap();
+        let queue = crate::edit::parse_worker("queue@1.0.0").unwrap();
+
+        let merged = coalesce_expanded(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
+
+        assert_eq!(merged, vec![state, queue]);
+    }
+
+    #[test]
+    fn conflicting_shared_dependencies_are_rejected_before_editing() {
+        let first = crate::edit::parse_worker("state@1.0.0").unwrap();
+        let second = crate::edit::parse_worker("state@2.0.0").unwrap();
+
+        for expanded in [vec![first.clone(), second.clone()], vec![second, first]] {
+            let error = coalesce_expanded(expanded)
+                .expect_err("two versions of one shared dependency must not be order-dependent");
+
+            assert_eq!(error.code(), "INVALID_WORKER_SPEC");
+            assert!(error.to_string().contains("state"), "{error}");
+            assert!(error.to_string().contains("conflicting"), "{error}");
+        }
+    }
 
     #[cfg(unix)]
     #[test]

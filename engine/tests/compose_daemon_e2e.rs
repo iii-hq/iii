@@ -413,6 +413,102 @@ async fn validating_a_file_does_not_take_the_project_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn add_edits_several_workers_and_restarts_the_project_once() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let existing_started = tmp.path().join("workers/existing/started");
+    let database_started = tmp.path().join("workers/database/started");
+    let web_started = tmp.path().join("workers/web/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: addition
+startup_timeout: 3s
+stop_timeout: 100ms
+containers:
+  existing:
+    worker: path://./workers/existing
+    scripts:
+      run: "echo started >> started && sleep 30"
+"#,
+        &["existing", "database", "web"],
+    );
+    for worker in ["database", "web"] {
+        std::fs::write(
+            tmp.path()
+                .join("workers")
+                .join(worker)
+                .join("iii.worker.yaml"),
+            "scripts:\n  start: \"echo started >> started && sleep 30\"\n",
+        )
+        .expect("write worker manifest");
+    }
+
+    let add = call(
+        port,
+        "compose::add",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["./workers/database", "./workers/web"],
+        }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[
+            existing_started.as_path(),
+            database_started.as_path(),
+            web_started.as_path(),
+        ])
+        .await;
+        let existing = register_test_worker(port, "addition", "existing");
+        let database = register_test_worker(port, "addition", "database");
+        let web = register_test_worker(port, "addition", "web");
+        for worker in ["existing", "database", "web"] {
+            wait_for_worker_state(&daemon, "addition", worker, true).await;
+        }
+        (existing, database, web)
+    };
+    let (result, (existing, database, web)) = tokio::join!(add, ready);
+    let result = result.expect("compose::add should answer");
+
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["workers"], json!(["database", "web"]), "{result}");
+    assert_eq!(result["container"], "database", "{result}");
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(result["down"]["status"], "ok", "{result}");
+    assert_eq!(result["up"]["status"], "ok", "{result}");
+    assert_eq!(
+        operation_containers(&result["up"]),
+        vec!["database", "existing", "web"],
+        "the one restart used the complete edited worker set: {result}"
+    );
+
+    let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    for worker in ["database", "web"] {
+        assert_eq!(
+            edited.matches(&format!("  {worker}:\n")).count(),
+            1,
+            "worker should be declared once: {edited}"
+        );
+    }
+    for marker in [&existing_started, &database_started, &web_started] {
+        let starts = std::fs::read_to_string(marker).expect("read start count");
+        assert_eq!(
+            starts.lines().count(),
+            1,
+            "the batch should restart the project once: {starts}"
+        );
+    }
+
+    existing.shutdown_async().await;
+    database.shutdown_async().await;
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
     isolate_state();
     let port = spawn_engine().await;

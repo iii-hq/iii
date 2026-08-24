@@ -2814,6 +2814,7 @@ dependencies = [
  "hex",
  "iii-sdk",
  "indexmap 2.14.0",
+ "jsonschema",
  "nix 0.31.2",
  "reqwest 0.12.28",
  "schemars 0.8.22",
