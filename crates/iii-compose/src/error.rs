@@ -58,6 +58,9 @@ pub enum ComposeError {
     )]
     EngineUrlConflictsWithManaged,
 
+    #[error("--file requires --up")]
+    FileRequiresUp,
+
     #[error(
         "{path} declares engine:, but this Compose daemon is connected to an external engine. \
          Start the file in a separate `iii compose --up` invocation without --engine"
@@ -495,6 +498,7 @@ impl ComposeError {
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::EngineUrlRequired => "ENGINE_URL_REQUIRED",
             Self::EngineUrlConflictsWithManaged => "ENGINE_URL_CONFLICTS_WITH_MANAGED",
+            Self::FileRequiresUp => "FILE_REQUIRES_UP",
             Self::EngineSectionRequiresManagedStart { .. } => {
                 "ENGINE_SECTION_REQUIRES_MANAGED_START"
             }

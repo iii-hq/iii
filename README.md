@@ -92,7 +92,7 @@ Before iii:
 After iii:
 
 - Declare workers in `worker-compose.yaml`
-- Run them with `iii compose up`
+- Run them with `iii compose --up`
 - Done. It is in the system, traceable, and callable.
 
 Platform teams publish workers. Application teams register functions and declare triggers. Agents
@@ -119,7 +119,7 @@ Then scaffold and start a project:
 iii project init myapp    # scaffold a project
 cd myapp
 # declare project workers in worker-compose.yaml
-iii compose up            # start the engine and project workers
+iii compose --up          # start the engine and project workers
 ```
 
 Full walkthrough at the [Quickstart guide](https://iii.dev/docs/quickstart).

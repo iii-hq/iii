@@ -61,7 +61,7 @@ if [[ -n "$COMPOSE_FILE" ]]; then
     fi
     "$BINARY" compose \
       --namespace "$COMPOSE_NAMESPACE" \
-      up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
+      --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
   else
     if [[ -z "$ENGINE_URL" ]]; then
       echo "Compose file $COMPOSE_FILE has no engine section; pass --engine or --iii-url" >&2
@@ -70,7 +70,7 @@ if [[ -n "$COMPOSE_FILE" ]]; then
     "$BINARY" compose \
       --engine "$ENGINE_URL" \
       --namespace "$COMPOSE_NAMESPACE" \
-      up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
+      --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
   fi
 else
   "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
