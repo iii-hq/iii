@@ -516,6 +516,7 @@ Three layers apply, lowest to highest.
 | `III_NAMESPACE`    | The project's namespace.                                                |
 | `III_COMPOSE_NAMESPACE` | The supervising Compose daemon's namespace for explicit `compose::*` routing. |
 | `III_COMPOSE_FILE` | Canonical path of the compose file that owns this container.             |
+| `III_COMPOSE_DIR`  | Canonical directory that contains the owning compose file.                |
 | `III_WORKER_NAME`  | The container key.                                                      |
 | `III_CONFIG`       | Path to the resolved configuration file. Absent when there is none.     |
 | `III_CONFIG_NAME`  | The configuration entry the container owns. Absent when it declares none. |
@@ -524,7 +525,7 @@ Declaring a reserved variable in `environment` or an `env_file` fails with `RESE
 in both cases at `compose::validate` time.
 
 <Note>
-  For why the daemon owns these seven rather than treating them as defaults a container can replace,
+  For why the daemon owns these eight rather than treating them as defaults a container can replace,
   see [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
 

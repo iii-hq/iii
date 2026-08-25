@@ -63,11 +63,11 @@ reports a duplicate for every other worker as well.
   [Namespaces](./namespaces).
 </Note>
 
-## Why the daemon owns seven variables
+## Why the daemon owns eight variables
 
-A container's environment is its own, with seven exceptions the daemon sets and refuses to let a
+A container's environment is its own, with eight exceptions the daemon sets and refuses to let a
 container replace. The rule is not that static configuration outranks an environment variable, which
-would be the wrong way round for most settings. It is that each of these seven is already declared
+would be the wrong way round for most settings. It is that each of these eight is already declared
 somewhere in the compose file, and a second declaration of the same thing is a disagreement nobody
 resolves.
 
@@ -81,10 +81,12 @@ either would mean compose waiting in one place while the child registers in anot
 would have to be threaded through readiness, the child record and `compose::status` before it could
 work at all. Both are already declared: the namespace by the file, the name by the container key.
 
-`III_COMPOSE_NAMESPACE` and `III_COMPOSE_FILE` identify the supervisor and project that started the
-container. The project namespace cannot route to the daemon namespace, and one daemon can supervise
-several files, so a managed worker needs both values to make an explicit, unambiguous `compose::*`
-call. Letting the container replace either value could send a lifecycle edit to another project.
+`III_COMPOSE_NAMESPACE`, `III_COMPOSE_FILE`, and `III_COMPOSE_DIR` identify the supervisor and
+project that started the container. The project namespace cannot route to the daemon namespace, and
+one daemon can supervise several files, so a managed worker needs the namespace and file to make an
+explicit, unambiguous `compose::*` call. The directory is the canonical parent of the file and gives
+workers one stable base for project-owned data. Letting the container replace these values could
+send a lifecycle edit to another project or write data outside that project.
 
 `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery. Compose merges the configuration,
 writes it to the file the first names, and publishes the same value to the entry the second names. A
