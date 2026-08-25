@@ -187,6 +187,7 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
         plan.env["III_COMPOSE_FILE"],
         "/srv/finance/worker-compose.yaml"
     );
+    assert_eq!(plan.env["III_COMPOSE_DIR"], "/srv/finance");
     // The container key still names the worker. They are different questions:
     // one is what the engine routes to, the other is where the configuration
     // lives — and it is exactly their conflation that made the id global.
