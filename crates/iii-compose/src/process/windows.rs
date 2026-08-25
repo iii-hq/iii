@@ -124,15 +124,21 @@ fn spawn_supervised_inner(
         // Without a job there is no way to guarantee the worker's own children
         // come down with it, so refuse to supervise half-blind.
         let err = std::io::Error::last_os_error();
-        let _ = child.start_kill();
+        kill_and_reap(child);
         return Err(err);
     }
     let job = OwnedHandle(job);
 
-    if let Some(handle) = child.raw_handle() {
-        // A failed assignment leaves the child running outside the job: it can
-        // still be stopped by pid, only its descendants are not guaranteed.
-        unsafe { AssignProcessToJobObject(job.0, handle as HANDLE) };
+    let Some(handle) = child.raw_handle() else {
+        kill_and_reap(child);
+        return Err(std::io::Error::other(
+            "child handle disappeared before job assignment",
+        ));
+    };
+    if unsafe { AssignProcessToJobObject(job.0, handle as HANDLE) } == 0 {
+        let err = std::io::Error::last_os_error();
+        kill_and_reap(child);
+        return Err(err);
     }
 
     let (tx, exit) = watch::channel(None);
@@ -150,6 +156,15 @@ fn spawn_supervised_inner(
         },
         output,
     ))
+}
+
+/// Ends a child that could not be placed under supervision, then keeps its
+/// handle alive until the OS reports the exit.
+fn kill_and_reap(mut child: tokio::process::Child) {
+    let _ = child.start_kill();
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
 }
 
 impl Supervised {

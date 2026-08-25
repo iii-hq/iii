@@ -75,7 +75,22 @@ if [[ -n "$COMPOSE_FILE" ]]; then
 else
   "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
 fi
-echo $! > "$PID_FILE"
+started_pid=$!
+echo "$started_pid" > "$PID_FILE"
+
+ready=false
+cleanup_failed_start() {
+  if [[ "$ready" == true ]]; then
+    return
+  fi
+
+  if kill -0 "$started_pid" 2>/dev/null; then
+    kill "$started_pid" 2>/dev/null || true
+  fi
+  wait "$started_pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+}
+trap cleanup_failed_start EXIT
 
 echo "Waiting for III Engine on port $PORT..."
 for _ in $(seq 1 "$TIMEOUT"); do
@@ -86,11 +101,13 @@ for _ in $(seq 1 "$TIMEOUT"); do
 
   if [[ -n "$COMPOSE_FILE" ]] && grep -Eq '^up: (nothing to do|[0-9]+ of [0-9]+ changed)' "$LOG_FILE"; then
     echo "III Engine and Compose workers are ready (PID: $pid)"
+    ready=true
     exit 0
   fi
 
   if [[ -z "$COMPOSE_FILE" ]] && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
     echo "III Engine is ready on port $PORT (PID: $(cat "$PID_FILE"))"
+    ready=true
     exit 0
   fi
   sleep 1

@@ -88,6 +88,7 @@ impl From<&ComposeError> for OpError {
 pub struct LifecycleCtx<'a> {
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
+    pub post_runs: &'a hooks::PostRunSupervisor,
     /// Namespace of the compose daemon that owns this project. Children use
     /// it for explicit per-call routing to `compose::*`.
     pub compose_namespace: &'a str,
@@ -753,7 +754,7 @@ async fn start_one_until_shutdown(
             biased;
             _ = signal.wait() => {
                 child.stop(ctx.file.stop_timeout).await;
-                fire_post_run(&spawn_ctx, container);
+                fire_post_run(ctx, &spawn_ctx, container).await;
                 return Err(StartFailure::Interrupted);
             }
             readiness = ctx.engine.wait_until_ready(
@@ -782,7 +783,7 @@ async fn start_one_until_shutdown(
         // The child is ours whether or not it registered; it must not outlive
         // the failed attempt.
         child.stop(ctx.file.stop_timeout).await;
-        fire_post_run(&spawn_ctx, container);
+        fire_post_run(ctx, &spawn_ctx, container).await;
         return Err(StartFailure::Failed(error));
     }
 
@@ -1026,7 +1027,7 @@ async fn stop_one(
             working_dir: &working_dir,
             user_env: &user_env,
         };
-        fire_post_run(&spawn_ctx, container);
+        fire_post_run(ctx, &spawn_ctx, container).await;
     }
 
     if let Some(record) = records.get_mut(key) {
@@ -1124,9 +1125,11 @@ async fn resolve_config(
     }))
 }
 
-fn fire_post_run(spawn_ctx: &SpawnCtx<'_>, container: &Container) {
+async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {
     if let Some(script) = &container.scripts.post_run {
-        hooks::fire_post_run(spawn_ctx, script);
+        ctx.post_runs
+            .fire(spawn_ctx, script, ctx.file.stop_timeout)
+            .await;
     }
 }
 
