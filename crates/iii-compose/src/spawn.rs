@@ -152,12 +152,16 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         "III_COMPOSE_NAMESPACE".to_string(),
         ctx.compose_namespace.to_string(),
     );
+    let compose_file = ctx
+        .compose_file
+        .canonicalize()
+        .or_else(|_| std::path::absolute(ctx.compose_file))
+        .unwrap_or_else(|_| ctx.compose_file.to_path_buf());
     env.insert(
         "III_COMPOSE_FILE".to_string(),
-        ctx.compose_file.to_string_lossy().to_string(),
+        compose_file.to_string_lossy().to_string(),
     );
-    let compose_dir = ctx
-        .compose_file
+    let compose_dir = compose_file
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
@@ -298,6 +302,26 @@ mod tests {
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));
+    }
+
+    #[test]
+    fn relative_compose_file_contract_is_canonical() {
+        let canonical_cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let temp = tempfile::tempdir_in(&canonical_cwd).unwrap();
+        let absolute_file = temp.path().join("worker-compose.yaml");
+        std::fs::write(&absolute_file, "containers: {}").unwrap();
+        let relative_file = absolute_file.strip_prefix(&canonical_cwd).unwrap();
+        let expected_file = absolute_file.canonicalize().unwrap();
+        let expected_dir = expected_file.parent().unwrap();
+
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = BTreeMap::new();
+        let mut context = ctx(&start, None, &user_env);
+        context.compose_file = relative_file;
+        let plan = spawn_plan(&context);
+
+        assert_eq!(Path::new(&plan.env["III_COMPOSE_FILE"]), expected_file);
+        assert_eq!(Path::new(&plan.env["III_COMPOSE_DIR"]), expected_dir);
     }
 
     #[test]

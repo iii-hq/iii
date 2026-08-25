@@ -162,7 +162,12 @@ impl ComposeFile {
             path: path.clone(),
             source,
         })?;
-        let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+        let canonical = std::fs::canonicalize(&path)
+            .or_else(|_| std::path::absolute(&path))
+            .map_err(|source| ComposeError::Io {
+                path: path.clone(),
+                source,
+            })?;
         Self::parse(&text, canonical)
     }
 
