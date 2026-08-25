@@ -19,7 +19,10 @@
 //!    artefact's whole identity, so a second `up` reuses the first one's work
 //!    and two projects on one machine share it.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -33,13 +36,17 @@ pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
 /// there rather than in the compose file.
 pub const BUNDLE_MANIFEST: &str = "iii.worker.yaml";
 
-/// How long the registry has to answer. Resolution is a single small request;
-/// a minute means something is wrong, not slow.
-const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Registry resolution is small and idempotent. A short transport outage or
+/// overloaded server should not roll back an otherwise healthy project.
+const RESOLVE_ATTEMPTS: usize = 3;
+/// Three attempts keep the whole operation near the original one-minute
+/// budget, instead of multiplying that budget for every retry.
+const RESOLVE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+const RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Downloads get their own budget: an artefact is megabytes over a link we do
 /// not control.
-const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// What the registry answers to `POST /resolve`.
 #[derive(Debug, Deserialize)]
@@ -350,18 +357,17 @@ async fn resolve_response(
     target: &str,
 ) -> Result<ResolveResponse> {
     let client = reqwest::Client::builder()
-        .timeout(RESOLVE_TIMEOUT)
+        .timeout(RESOLVE_ATTEMPT_TIMEOUT)
         .build()
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
-    let response = client
-        .post(format!("{registry}/resolve"))
-        .json(&serde_json::json!({
-            "worker": name,
-            "version": version_range,
-            "target": target,
-        }))
-        .send()
+    let endpoint = format!("{registry}/resolve");
+    let request = serde_json::json!({
+        "worker": name,
+        "version": version_range,
+        "target": target,
+    });
+    let response = send_resolve_request(&client, &endpoint, &request)
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
@@ -383,6 +389,33 @@ async fn resolve_response(
 
     check_names(container, registry, &resolved)?;
     Ok(resolved)
+}
+
+async fn send_resolve_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    request: &serde_json::Value,
+) -> std::result::Result<reqwest::Response, reqwest::Error> {
+    for attempt in 1..RESOLVE_ATTEMPTS {
+        let result = client.post(endpoint).json(request).send().await;
+        let should_retry = match &result {
+            Err(_) => true,
+            Ok(response) => {
+                let status = response.status();
+                status.is_server_error()
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            }
+        };
+
+        if !should_retry {
+            return result;
+        }
+
+        tokio::time::sleep(RESOLVE_RETRY_DELAY * attempt as u32).await;
+    }
+
+    client.post(endpoint).json(request).send().await
 }
 
 /// Whether a value from the registry may be used to build a path.
@@ -654,13 +687,82 @@ fn download_error(container: &str, url: &str, message: &str) -> ComposeError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
     #[test]
     fn a_reference_without_a_host_uses_the_default_registry() {
         let (registry, name) = split_reference("state");
         assert_eq!(registry, DEFAULT_REGISTRY);
         assert_eq!(name, "state");
+    }
+
+    #[tokio::test]
+    async fn resolve_retries_a_transient_server_failure() {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = Arc::clone(&attempts);
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "graph": [{
+                            "name": "state",
+                            "version": "1.0.0",
+                            "type": "binary",
+                            "binaries": {}
+                        }]
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let resolved = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            "x86_64-unknown-linux-gnu",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.graph[0].name, "state");
+    }
+
+    #[tokio::test]
+    async fn resolve_does_not_retry_a_client_error() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": {"message": "version does not exist"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "99.0.0",
+            "x86_64-unknown-linux-gnu",
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
     }
 
     #[test]
