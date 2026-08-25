@@ -38,6 +38,14 @@ export function getStreamsWs(): string {
   return `${wsProtocol}//${host}/ws/streams`
 }
 
+export function getConsoleEventsWs(): string {
+  const wsProtocol =
+    typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const c = getConfig()
+  const host = typeof window !== 'undefined' ? window.location.host : `localhost:${c.consolePort}`
+  return `${wsProtocol}//${host}/ws/console-events`
+}
+
 export function getEngineBaseUrl(): string {
   return '/api/engine'
 }
