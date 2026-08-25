@@ -124,21 +124,17 @@ fn spawn_supervised_inner(
         // Without a job there is no way to guarantee the worker's own children
         // come down with it, so refuse to supervise half-blind.
         let err = std::io::Error::last_os_error();
-        kill_and_reap(child);
-        return Err(err);
+        return Err(kill_and_reap(child, err));
     }
     let job = OwnedHandle(job);
 
     let Some(handle) = child.raw_handle() else {
-        kill_and_reap(child);
-        return Err(std::io::Error::other(
-            "child handle disappeared before job assignment",
-        ));
+        let err = std::io::Error::other("child handle disappeared before job assignment");
+        return Err(kill_and_reap(child, err));
     };
     if unsafe { AssignProcessToJobObject(job.0, handle as HANDLE) } == 0 {
         let err = std::io::Error::last_os_error();
-        kill_and_reap(child);
-        return Err(err);
+        return Err(kill_and_reap(child, err));
     }
 
     let (tx, exit) = watch::channel(None);
@@ -159,12 +155,44 @@ fn spawn_supervised_inner(
 }
 
 /// Ends a child that could not be placed under supervision, then keeps its
-/// handle alive until the OS reports the exit.
-fn kill_and_reap(mut child: tokio::process::Child) {
-    let _ = child.start_kill();
-    tokio::spawn(async move {
-        let _ = child.wait().await;
+/// handle alive until the OS reports the exit. Cleanup failures are added to
+/// the setup error returned to the caller.
+fn kill_and_reap(mut child: tokio::process::Child, setup_error: std::io::Error) -> std::io::Error {
+    let pid = child.id();
+    let termination = child.start_kill().or_else(|start_error| {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+
+        let handle = child.raw_handle().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "start_kill failed ({start_error}) and the child handle is unavailable"
+            ))
+        })?;
+        if unsafe { TerminateProcess(handle as HANDLE, 1) } == 0 {
+            let fallback_error = std::io::Error::last_os_error();
+            return Err(std::io::Error::other(format!(
+                "start_kill failed ({start_error}); TerminateProcess also failed ({fallback_error})"
+            )));
+        }
+        Ok(())
     });
+
+    tokio::spawn(async move {
+        if let Err(error) = child.wait().await {
+            crate::report::line(&format!(
+                "[compose] could not reap process {} after supervision setup failed: {error}",
+                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+            ));
+        }
+    });
+
+    match termination {
+        Ok(()) => setup_error,
+        Err(cleanup_error) => std::io::Error::other(format!(
+            "{setup_error}; failed to terminate the unsupervised child: {cleanup_error}"
+        )),
+    }
 }
 
 impl Supervised {

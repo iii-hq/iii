@@ -7,6 +7,7 @@ PORT=""
 PID_FILE="/tmp/iii-engine.pid"
 LOG_FILE="/tmp/iii-engine.log"
 TIMEOUT=60
+CLEANUP_GRACE_SECONDS="${III_START_CLEANUP_GRACE_SECONDS:-15}"
 COMPOSE_FILE=""
 COMPOSE_NAMESPACE=""
 ENGINE_URL=""
@@ -86,6 +87,15 @@ cleanup_failed_start() {
 
   if kill -0 "$started_pid" 2>/dev/null; then
     kill "$started_pid" 2>/dev/null || true
+  fi
+  for _ in $(seq 1 "$CLEANUP_GRACE_SECONDS"); do
+    if ! kill -0 "$started_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$started_pid" 2>/dev/null; then
+    kill -KILL "$started_pid" 2>/dev/null || true
   fi
   wait "$started_pid" 2>/dev/null || true
   rm -f "$PID_FILE"
