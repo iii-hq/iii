@@ -8,7 +8,7 @@
 //!
 //! A child's environment is **built**, not inherited. The daemon composes it
 //! from three layers — a host baseline, the container's declared
-//! `env_file`/`environment`, and seven reserved variables the daemon owns — and
+//! `env_file`/`environment`, and eight reserved variables the daemon owns — and
 //! the child is spawned with that map and nothing else. A compose project then
 //! starts the same way regardless of which shell launched the daemon, and a
 //! stale `III_URL` in the operator's environment can never point a child at the
@@ -27,10 +27,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these seven
+/// would be the wrong way round for most settings. Because each of these eight
 /// is already declared in the compose file, and a second declaration of the
 /// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding an eighth is a decision, not a habit:
+/// separately, so adding a ninth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -41,19 +41,22 @@ use crate::manifest::StartSpec;
 ///   and `compose::status` before it could work at all; short of that, compose
 ///   waits in one place while the child registers in another. Both are already
 ///   declared, by `namespace:` and by the container key.
-/// - `III_COMPOSE_NAMESPACE` and `III_COMPOSE_FILE` let a managed worker reach
-///   the daemon and project that started it. The daemon namespace is not the
-///   project namespace, and one daemon may own several compose files, so both
-///   values are required for an unambiguous control-plane call.
+/// - `III_COMPOSE_NAMESPACE`, `III_COMPOSE_FILE`, and `III_COMPOSE_DIR` let a
+///   managed worker reach the daemon and project that started it, and resolve
+///   project-owned paths. The daemon namespace is not the project namespace,
+///   and one daemon may own several compose files, so the namespace and file
+///   are required for an unambiguous control-plane call. The directory is the
+///   canonical parent of that file.
 /// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
 ///   merged value is written to the file and published to the entry. Pointing
 ///   the child at a different file leaves it reading one value while the
 ///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 7] = [
+pub const RESERVED_ENV: [&str; 8] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
     "III_COMPOSE_FILE",
+    "III_COMPOSE_DIR",
     "III_CONFIG",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
@@ -152,6 +155,15 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     env.insert(
         "III_COMPOSE_FILE".to_string(),
         ctx.compose_file.to_string_lossy().to_string(),
+    );
+    let compose_dir = ctx
+        .compose_file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    env.insert(
+        "III_COMPOSE_DIR".to_string(),
+        compose_dir.to_string_lossy().to_string(),
     );
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     match ctx.config_path {
@@ -282,6 +294,7 @@ mod tests {
         assert_eq!(plan.env["III_NAMESPACE"], "orders-1234abcd");
         assert_eq!(plan.env["III_COMPOSE_NAMESPACE"], "compose-host");
         assert_eq!(plan.env["III_COMPOSE_FILE"], "/srv/app/worker-compose.yaml");
+        assert_eq!(plan.env["III_COMPOSE_DIR"], "/srv/app");
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));
