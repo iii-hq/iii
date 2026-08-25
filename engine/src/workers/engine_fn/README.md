@@ -1,6 +1,6 @@
 # iii
 
-iii is a language agnostic runtime where services, agents, and tools are composed of the same
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same
 things: workers, triggers, and functions. One engine process (default port `49134`) holds a live
 registry of every connected worker, every function those workers expose, and every trigger bound to
 them. Workers are independent processes that open a WebSocket to the engine and register
@@ -37,9 +37,11 @@ handlers without needing the worker name.
 
 ## Architecture
 
+The engine is the coordinator: one process that holds the registry and routes every invocation. The
+three primitives it routes between are:
+
 | Primitive | What it is                                                                                |
 | --------- | ----------------------------------------------------------------------------------------- |
-| Engine    | One coordinator process. Routes every invocation.                                         |
 | Worker    | A process that opens a WebSocket to the engine.                                           |
 | Function  | A named handler inside a worker, id `service::name`.                                      |
 | Trigger   | A `(type, config, function_id)` triple that causes a function to run when an event fires. |

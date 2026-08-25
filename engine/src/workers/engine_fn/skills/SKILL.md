@@ -1,15 +1,15 @@
 ---
 name: iii
 description:
-  How iii works and the and the iii sdk surface for authoring workers, triggers, and functions.
-  Teaches the ordered way to gain a capability before writing code — (1) check functions already
-  registered in the engine, (2) search the public registry via iii-directory, (3) build a worker.
-  Single self-contained skill — meant for system-prompt injection; do not re-fetch.
+  How iii works and the iii SDK surface for authoring workers, triggers, and functions. Teaches the
+  ordered way to gain a capability before writing code — (1) check functions already registered in
+  the engine, (2) search the public registry via iii-directory, (3) build a worker. Single
+  self-contained skill — meant for system-prompt injection; do not re-fetch.
 ---
 
 # iii
 
-iii is a language agnostic runtime where services, agents, and tools are composed of the same
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same
 things: workers, triggers, and functions. One engine process (default port `49134`) holds a live
 registry of every connected worker, every function those workers expose, and every trigger bound to
 them. Workers are independent OS processes that open a WebSocket to the engine and register
@@ -33,11 +33,13 @@ The instant the handshake completes, `demo::add` is callable from any worker (an
 itself) via `iii.trigger({ function_id: 'demo::add', payload: { a: 2, b: 3 } })`. No restart, no
 registration with the harness — the engine routes it automatically.
 
-## The four primitives
+## The three primitives
+
+The engine is the coordinator, owned by the operator: one process that holds the registry and routes
+every invocation between the three primitives below.
 
 | Primitive | What it is                                                                            | Owned by                                               |
 | --------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Engine    | One coordinator process. Routes every invocation.                                     | The operator                                           |
 | Worker    | A process that opens a WebSocket to the engine.                                       | Anyone who writes one                                  |
 | Function  | A named handler inside a worker, id `service::name`. Stable across worker restarts.   | The registering worker                                 |
 | Trigger   | A `(type, config, function_id)` triple. Causes a function to run when an event fires. | A worker (the type-publisher) + a caller (the binding) |
