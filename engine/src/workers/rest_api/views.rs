@@ -342,6 +342,23 @@ pub async fn dynamic_handler(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
+    // Resolve the route BEFORE creating the span: the function kind must be
+    // on the span from its first (pending) snapshot — live views and the
+    // trace-trigger subscriber see spans on START, and a kind recorded only
+    // later inside the handler leaves the pending snapshot classified as
+    // user work (an engine-internal `POST _console/*` would list as a user
+    // trace and re-arm the trace tick it was caused by).
+    let function_kind = api_handler
+        .get_router(method.as_str(), &registered_path)
+        .map(|m| {
+            if m.function_id.starts_with("engine::") {
+                "internal"
+            } else {
+                "user"
+            }
+        })
+        .unwrap_or("user");
+
     let span = tracing::info_span!(
         "HTTP",
         otel.name = %format!("{} {}", method, registered_path),
@@ -358,7 +375,7 @@ pub async fn dynamic_handler(
         "http.request.header.content_type" = %content_type,
         "http.request.body.size" = %request_body_size,
         "http.response.status_code" = tracing::field::Empty,
-        "iii.function.kind" = tracing::field::Empty,
+        "iii.function.kind" = function_kind,
     )
     .with_parent_headers(tp.as_deref(), ts.as_deref(), bg.as_deref());
 
@@ -386,12 +403,6 @@ pub async fn dynamic_handler(
                 namespace,
             } = router_match;
 
-            let function_kind = if function_id.starts_with("engine::") {
-                "internal"
-            } else {
-                "user"
-            };
-            tracing::Span::current().record("iii.function.kind", function_kind);
 
             // Global middleware (from rest_api_config, sorted by priority at config load time)
             // These run before channel creation, so on short-circuit we return directly.

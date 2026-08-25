@@ -230,7 +230,7 @@ final span **replaces the snapshot in place** — same storage position, one ent
 
 This is what lets live trace views show in-progress work: engine-side parent spans (`trigger <fn>`,
 `enqueue`, builtin `call <fn>`) become visible while the work under them is still running, traces
-appear in list views as soon as they start, and the trace trigger / devtools streams tick on span
+appear in list views as soon as they start, and the trace triggers tick on span
 start as well as close. Worker (SDK) spans still arrive only when they close — they are ingested
 over OTLP, which has no notion of an unfinished span.
 
@@ -239,8 +239,8 @@ Consumers of the Traces API should treat `pending: true` (or `end_time_unix_nano
 `engine::metrics::list` excludes them from latency statistics. The `pending` field is only
 serialized when true, so the wire shape of finished spans is unchanged.
 
-**OTEL compliance:** pending snapshots exist ONLY in the in-memory store and the `iii:devtools:*`
-streams fed from it. The OTLP export path (both the engine exporter and the SDK-span forwarder) is
+**OTEL compliance:** pending snapshots exist ONLY in the in-memory store (and the query views and
+trace-trigger ticks fed from it). The OTLP export path (both the engine exporter and the SDK-span forwarder) is
 untouched and only ever ships complete spans — `end_time_unix_nano` is semantically required on the
 OTLP wire, and nothing partial ever reaches it. Spans that never close (e.g. a leaked guard) remain
 pending until buffer eviction; they are a dev-store artifact, not exported data.

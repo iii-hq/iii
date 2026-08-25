@@ -862,14 +862,15 @@ impl StreamWorker {
             return;
         }
 
-        // The observability pipeline must never observe itself: deliveries of
-        // the devtools span/log feeds (`iii:devtools:*` — the console's live
-        // trace streams) get NO eval span and NO trace context. A traced
-        // delivery re-enters the very feed it delivers — span stored → next
-        // coalesce window pushes it → new delivery spans → stored → … — an
-        // endless loop that floods the span store (seen live: `stream_triggers`
-        // + `call iii::console::all_spans::*` dominating storage). With an
-        // empty ambient context, `Engine::call_with_metadata` injects no
+        // The observability pipeline must never observe itself: deliveries on
+        // devtools streams (`iii:devtools:*`, e.g. the console's state feed)
+        // get NO eval span and NO trace context. A traced delivery of
+        // observability-derived data re-enters the span store it was derived
+        // from — span stored → next push → new delivery spans → stored → … —
+        // an endless loop that floods storage (seen live with the since-
+        // removed trace feeds: `stream_triggers` + `call
+        // iii::console::all_spans::*` dominating storage). With an empty
+        // ambient context, `Engine::call_with_metadata` injects no
         // traceparent, so the consumer-callback invocations emit no spans
         // either (`telemetry::should_suppress_invocation_span`).
         let observability_feed = event_stream_name.starts_with("iii:devtools:");
