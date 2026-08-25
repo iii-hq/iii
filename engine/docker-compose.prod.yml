@@ -22,7 +22,7 @@ services:
       - compose
       - --namespace
       - production
-      - up
+      - --up
       - --file
       - /app/worker-compose.yaml
     environment:

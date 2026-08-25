@@ -60,10 +60,27 @@ impl ManagedEngine {
                 })??;
         let config_path = materialize_engine_config(spec, &namespace_dir)?;
         let log_path = engine_log_path(&state_root, daemon_namespace);
-        let mut engine = Self::spawn_with_paths(&executable, &config_path, &log_path).await?;
-        engine.remove_config_on_stop = true;
+        let mut engine =
+            Self::spawn_with_materialized_config(&executable, &config_path, &log_path).await?;
         engine._namespace_lock = Some(namespace_lock);
         Ok(engine)
+    }
+
+    async fn spawn_with_materialized_config(
+        executable: &Path,
+        config_path: &Path,
+        log_path: &Path,
+    ) -> Result<Self> {
+        match Self::spawn_with_paths(executable, config_path, log_path).await {
+            Ok(mut engine) => {
+                engine.remove_config_on_stop = true;
+                Ok(engine)
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(config_path);
+                Err(error)
+            }
+        }
     }
 
     async fn spawn_with_paths(
@@ -985,6 +1002,30 @@ containers: {}
         assert!(
             !output.contains('\u{1b}') && !output.contains("forged title"),
             "terminal escape sequence was persisted in {output:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_start_removes_the_materialized_engine_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-iii");
+        let namespace_dir = dir.path().join("daemon");
+        let config = materialize_engine_config(&engine_spec(), &namespace_dir).unwrap();
+        let log = namespace_dir.join("engine.log");
+        write_executable(&script, "#!/bin/sh\nexit 0\n");
+        std::fs::create_dir(&log).unwrap();
+
+        let error =
+            match ManagedEngine::spawn_with_materialized_config(&script, &config, &log).await {
+                Ok(_) => panic!("a directory cannot be opened as the engine log"),
+                Err(error) => error,
+            };
+
+        assert_eq!(error.code(), "IO_ERROR");
+        assert!(
+            !config.exists(),
+            "a failed managed-engine start left its generated config behind"
         );
     }
 

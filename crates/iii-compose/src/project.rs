@@ -52,6 +52,7 @@ pub struct Project {
     /// Shared with every other project on this daemon: one socket, many
     /// projects.
     engine: Arc<EngineClient>,
+    post_runs: crate::hooks::PostRunSupervisor,
     store: StateStore,
     inner: Mutex<Inner>,
 }
@@ -103,6 +104,7 @@ impl Project {
             project_namespace,
             engine_url,
             engine,
+            post_runs: crate::hooks::PostRunSupervisor::default(),
             store,
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
@@ -395,6 +397,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -430,6 +433,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -480,6 +484,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -542,6 +547,7 @@ impl Project {
             let ctx = LifecycleCtx {
                 file: &current,
                 engine: &self.engine,
+                post_runs: &self.post_runs,
                 compose_namespace: &self.compose_namespace,
                 project_namespace: &self.project_namespace,
                 engine_url: &self.engine_url,
@@ -568,6 +574,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -606,6 +613,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -636,6 +644,7 @@ impl Project {
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
@@ -709,6 +718,7 @@ impl Project {
         inner.children.clear();
         drop(inner);
 
+        self.post_runs.shutdown().await;
         self.engine.shutdown().await;
     }
 
@@ -717,6 +727,7 @@ impl Project {
     pub async fn shutdown(&self) {
         let operation_id = "shutdown".to_string();
         self.down(None, operation_id).await;
+        self.post_runs.shutdown().await;
         let _ = self.store.clear();
         self.engine.shutdown().await;
     }

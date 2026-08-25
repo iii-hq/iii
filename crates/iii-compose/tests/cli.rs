@@ -185,6 +185,34 @@ fn up_names_the_file_in_the_current_directory() {
 }
 
 #[test]
+fn production_docker_compose_command_matches_the_cli() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("engine/docker-compose.prod.yml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let document: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    let command = document["services"]["iii"]["command"]
+        .as_sequence()
+        .unwrap();
+    let args = std::iter::once("iii".to_string())
+        .chain(command.iter().map(|arg| arg.as_str().unwrap().to_string()))
+        .collect::<Vec<_>>();
+
+    let Wrapper::Compose(cli) = Wrapper::try_parse_from(args).unwrap();
+    let ComposeCommand::Serve {
+        explicit_daemon_namespace,
+        start,
+        ..
+    } = cli.plan().unwrap();
+
+    assert_eq!(explicit_daemon_namespace.as_deref(), Some("production"));
+    assert_eq!(
+        start.as_deref(),
+        Some(std::path::Path::new("/app/worker-compose.yaml"))
+    );
+}
+
+#[test]
 fn up_without_a_cli_namespace_defers_to_the_compose_file() {
     let ComposeCommand::Serve {
         explicit_daemon_namespace,
