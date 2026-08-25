@@ -288,17 +288,34 @@ mod tests {
             .collect()
     }
 
+    fn normalize_path(path: &Path) -> PathBuf {
+        path.canonicalize()
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
     #[test]
     fn injects_the_full_contract() {
         let start = StartSpec::Shell("cargo run".to_string());
         let user_env = BTreeMap::new();
         let plan = spawn_plan(&ctx(&start, None, &user_env));
+        let expected_compose_file = normalize_path(Path::new("/srv/app/worker-compose.yaml"));
+        let expected_compose_dir = expected_compose_file
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
         assert_eq!(plan.env["III_URL"], "ws://127.0.0.1:49134");
         assert_eq!(plan.env["III_NAMESPACE"], "orders-1234abcd");
         assert_eq!(plan.env["III_COMPOSE_NAMESPACE"], "compose-host");
-        assert_eq!(plan.env["III_COMPOSE_FILE"], "/srv/app/worker-compose.yaml");
-        assert_eq!(plan.env["III_COMPOSE_DIR"], "/srv/app");
+        assert_eq!(
+            Path::new(&plan.env["III_COMPOSE_FILE"]),
+            expected_compose_file.as_path()
+        );
+        assert_eq!(
+            Path::new(&plan.env["III_COMPOSE_DIR"]),
+            expected_compose_dir
+        );
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));
