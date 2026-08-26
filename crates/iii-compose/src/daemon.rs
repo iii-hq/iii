@@ -41,8 +41,18 @@ const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub enum EnginePolicy {
-    Managed { owner: PathBuf, spec: EngineSpec },
+    Managed {
+        owner: PathBuf,
+        spec: EngineSpec,
+    },
     External,
+    /// An external engine selected while the invocation file still contains
+    /// `engine:`. `expected` is tracked when that section supplied the URL;
+    /// `None` means an explicit CLI URL overrides the section entirely.
+    ExternalFile {
+        owner: PathBuf,
+        expected: Option<EngineSpec>,
+    },
 }
 
 impl EnginePolicy {
@@ -51,6 +61,20 @@ impl EnginePolicy {
             owner: file.path.clone(),
             spec: spec.clone(),
         })
+    }
+
+    pub fn external_from_file(file: &ComposeFile) -> Self {
+        Self::ExternalFile {
+            owner: file.path.clone(),
+            expected: file.engine.clone(),
+        }
+    }
+
+    pub fn external_overriding(file: &ComposeFile) -> Self {
+        Self::ExternalFile {
+            owner: file.path.clone(),
+            expected: None,
+        }
     }
 
     fn validate_project(&self, file: &ComposeFile) -> Result<()> {
@@ -64,6 +88,20 @@ impl EnginePolicy {
                 Err(ComposeError::EngineSectionRequiresManagedStart { path })
             }
             Self::External => Ok(()),
+            Self::ExternalFile { owner, expected } if &path == owner => {
+                if expected.as_ref().is_some_and(|spec| engine != Some(spec)) {
+                    Err(ComposeError::EngineRestartRequired { path })
+                } else {
+                    Ok(())
+                }
+            }
+            Self::ExternalFile { owner, .. } if engine.is_some() => {
+                Err(ComposeError::EngineAlreadyOwned {
+                    owner: owner.clone(),
+                    path,
+                })
+            }
+            Self::ExternalFile { .. } => Ok(()),
             Self::Managed { owner, spec } if &path == owner => {
                 if engine == Some(spec) {
                     Ok(())
@@ -124,6 +162,9 @@ pub struct Daemon {
     /// This machine's identity — the `--id`, and the namespace it answers
     /// `compose::*` in. `id=` on a call is checked against it.
     pub daemon_namespace: String,
+    /// An explicit CLI namespace for every project loaded by this daemon.
+    /// When absent, each project keeps the namespace from its own file.
+    project_namespace_override: Option<String>,
     pub engine_url: String,
     engine: Arc<EngineClient>,
     engine_policy: EnginePolicy,
@@ -154,6 +195,7 @@ impl Daemon {
     pub fn start(
         requested_engine_url: String,
         daemon_namespace: String,
+        project_namespace_override: Option<String>,
         engine_policy: EnginePolicy,
     ) -> Arc<Self> {
         // A managed file is the sole engine source. Public callers receive the
@@ -161,7 +203,7 @@ impl Daemon {
         // different engines even if a stale URL was passed separately.
         let engine_url = match &engine_policy {
             EnginePolicy::Managed { spec, .. } => spec.url.clone(),
-            EnginePolicy::External => requested_engine_url,
+            EnginePolicy::External | EnginePolicy::ExternalFile { .. } => requested_engine_url,
         };
         // The name stays fixed and the *namespace* carries the identity, so
         // the lease is `(daemon_namespace, compose)`: two machines coexist, and two
@@ -175,6 +217,7 @@ impl Daemon {
         let daemon = Arc::new(Self {
             worker_name: DAEMON_WORKER_NAME.to_string(),
             daemon_namespace,
+            project_namespace_override,
             engine_url,
             engine,
             engine_policy,
@@ -194,6 +237,13 @@ impl Daemon {
     /// The registration rejection that stopped this daemon, if any.
     pub fn fatal_error(&self) -> Option<iii_sdk::Error> {
         self.engine.fatal_error()
+    }
+
+    fn project_namespace(&self, file: &ComposeFile) -> String {
+        crate::namespace::project_namespace(
+            self.project_namespace_override.as_deref(),
+            file.namespace.as_deref(),
+        )
     }
 
     /// The project `file` declares, loading it if this is the first time.
@@ -223,11 +273,12 @@ impl Daemon {
             self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
-            let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
+            let namespace = self.project_namespace(&compose);
             crate::manifest::validate_offline(&compose, &namespace)?;
 
             let project = Project::open(
                 &self.daemon_namespace,
+                namespace.clone(),
                 compose,
                 Arc::clone(&self.engine),
                 self.engine_url.clone(),
@@ -615,7 +666,7 @@ impl Daemon {
 
         let current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
-        let namespace = crate::namespace::project_namespace(None, current.namespace.as_deref());
+        let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
 
         // Claim or load the old project before replacing the file: cleanup of
@@ -761,7 +812,7 @@ impl Daemon {
         }
         let compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
-        let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
+        let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)
     }
 
@@ -1233,6 +1284,7 @@ mod tests {
         let daemon = Daemon::start(
             "ws://127.0.0.1:1/ws".to_string(),
             "managed-url-test".to_string(),
+            None,
             policy,
         );
 

@@ -159,10 +159,10 @@ enum Commands {
 
     /// Serve worker-compose projects: supervise each one's workers as a graph.
     ///
-    /// Without `--up`, projects are started and stopped through
-    /// `iii trigger compose::*`, naming one with `id=`; the command only
-    /// starts the daemon. With `--up`, it also starts the initial project and
-    /// the engine declared by its compose file.
+    /// Without `--up`, worker-compose.yaml supplies daemon defaults but no
+    /// project starts. Projects are then managed through `compose::*` calls.
+    /// With `--up`, the initial project also starts, together with its declared
+    /// engine unless `--engine` selects an existing one.
     Compose(iii_compose::ComposeCli),
 
     /// Generate the committed MDX CLI reference page from this binary's
@@ -365,9 +365,9 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // Compose owns its own lifecycle. The initial worker-compose.yaml
-        // decides whether `--up` starts a managed engine or connects to the URL
-        // supplied through --engine / III_URL.
+        // Compose owns its own lifecycle. Its file supplies daemon defaults;
+        // an explicit --engine overrides them, and --up decides whether an
+        // unoverridden engine section starts a managed engine.
         Some(Commands::Compose(args)) => {
             if cli_args.config.is_some() {
                 anyhow::bail!(

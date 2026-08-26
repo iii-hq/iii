@@ -52,26 +52,38 @@ pub enum EngineMode {
     External { url: String },
 }
 
-/// Resolves engine ownership only after the initial compose file has been
-/// parsed. The file is authoritative for managed mode; an explicit CLI URL is
-/// contradictory there, while a process-wide environment URL is ignored. In
-/// external mode the CLI wins over the environment.
+/// Resolves the engine URL and ownership after the compose file is parsed.
+///
+/// An explicit CLI URL always selects an external engine. Without one, an
+/// `engine:` section is managed only when `--up` starts that file; a bare
+/// daemon connects to its URL without taking ownership. File configuration
+/// wins over the process environment, and the local engine address is the
+/// final fallback.
 pub fn resolve_engine_mode(
     file: Option<&ComposeFile>,
-    explicit_engine_url: Option<String>,
-    environment_engine_url: Option<String>,
-) -> Result<EngineMode> {
-    match file.and_then(|file| file.engine.as_ref()) {
-        Some(_) if explicit_engine_url.is_some() => {
-            Err(ComposeError::EngineUrlConflictsWithManaged)
-        }
-        Some(engine) => Ok(EngineMode::Managed {
+    start: bool,
+    explicit_engine_url: Option<&str>,
+    environment_engine_url: Option<&str>,
+) -> EngineMode {
+    if let Some(url) = explicit_engine_url {
+        return EngineMode::External {
+            url: url.to_string(),
+        };
+    }
+
+    if start && let Some(engine) = file.and_then(|file| file.engine.as_ref()) {
+        return EngineMode::Managed {
             url: engine.url.clone(),
-        }),
-        None => explicit_engine_url
-            .or(environment_engine_url)
-            .map(|url| EngineMode::External { url })
-            .ok_or(ComposeError::EngineUrlRequired),
+        };
+    }
+
+    let url = file
+        .and_then(|file| file.engine.as_ref())
+        .map(|engine| engine.url.as_str())
+        .or(environment_engine_url)
+        .unwrap_or(config::DEFAULT_ENGINE_URL);
+    EngineMode::External {
+        url: url.to_string(),
     }
 }
 
@@ -99,8 +111,9 @@ pub async fn run(cli: ComposeCli) -> i32 {
         ComposeCommand::Serve {
             explicit_engine_url,
             explicit_daemon_namespace,
+            file,
             start,
-        } => match serve(explicit_engine_url, explicit_daemon_namespace, start).await {
+        } => match serve(explicit_engine_url, explicit_daemon_namespace, file, start).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -109,33 +122,54 @@ pub async fn run(cli: ComposeCli) -> i32 {
 
 /// Serves `compose::*` until asked to stop.
 ///
-/// `start` is the project `iii compose --up` named. Without it no project is
-/// loaded: a daemon that has just started knows nothing, and the first
-/// `compose::up file=…` is what teaches it — which is what lets one daemon hold
-/// several projects without being restarted for each.
+/// `file` configures the daemon when it exists. `start` controls only whether
+/// that file is also brought up before the first remote call.
 async fn serve(
     explicit_engine_url: Option<String>,
     explicit_daemon_namespace: Option<String>,
-    start: Option<std::path::PathBuf>,
+    file: std::path::PathBuf,
+    start: bool,
 ) -> Result<()> {
     use colored::Colorize;
 
-    // Ownership is a property of the file, so load it before spawning the
-    // engine. Invalid YAML and missing external URLs must fail with no child
-    // process left behind.
-    let initial_file = start.as_ref().map(ComposeFile::load).transpose()?;
+    // Parse before any child is started. A bare daemon can run outside a
+    // project, but an existing default file still supplies its URL and
+    // namespace.
+    let initial_file = load_invocation_file(&file, start)?;
     let daemon_namespace =
-        resolve_daemon_namespace(explicit_daemon_namespace, initial_file.as_ref());
+        resolve_daemon_namespace(explicit_daemon_namespace.clone(), initial_file.as_ref());
     let environment_engine_url = std::env::var("III_URL")
         .ok()
         .filter(|url| !url.trim().is_empty());
     let engine_mode = resolve_engine_mode(
         initial_file.as_ref(),
-        explicit_engine_url,
-        environment_engine_url,
-    )?;
+        start,
+        explicit_engine_url.as_deref(),
+        environment_engine_url.as_deref(),
+    );
     let engine_url = match &engine_mode {
         EngineMode::Managed { url } | EngineMode::External { url } => url.clone(),
+    };
+
+    let engine_policy = match &engine_mode {
+        EngineMode::Managed { .. } => {
+            let Some(policy) = initial_file
+                .as_ref()
+                .and_then(daemon::EnginePolicy::managed)
+            else {
+                unreachable!("managed mode is selected only from an engine section");
+            };
+            policy
+        }
+        EngineMode::External { .. } => {
+            match initial_file.as_ref().filter(|file| file.engine.is_some()) {
+                Some(file) if explicit_engine_url.is_some() => {
+                    daemon::EnginePolicy::external_overriding(file)
+                }
+                Some(file) => daemon::EnginePolicy::external_from_file(file),
+                None => daemon::EnginePolicy::External,
+            }
+        }
     };
 
     // Install this before the first owned process starts. Signal delivery uses
@@ -145,22 +179,16 @@ async fn serve(
 
     let managed_engine = match engine_mode {
         EngineMode::Managed { .. } => {
-            let spec = initial_file
-                .as_ref()
-                .and_then(|file| file.engine.as_ref())
-                .expect("managed mode requires an engine section");
+            let Some(owner) = initial_file.as_ref() else {
+                unreachable!("managed mode is selected only from a compose file");
+            };
+            let Some(spec) = owner.engine.as_ref() else {
+                unreachable!("managed mode is selected only from an engine section");
+            };
             let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
             println!("engine {}", "started".green());
             println!("  {} {}", "pid:".dimmed(), engine.pid());
-            println!(
-                "  {} {}",
-                "owner:".dimmed(),
-                initial_file
-                    .as_ref()
-                    .expect("managed mode requires an owner file")
-                    .path
-                    .display()
-            );
+            println!("  {} {}", "owner:".dimmed(), owner.path.display());
             println!(
                 "  {} {}",
                 "config:".dimmed(),
@@ -174,18 +202,15 @@ async fn serve(
         EngineMode::External { .. } => None,
     };
 
-    let engine_policy = initial_file
-        .as_ref()
-        .and_then(daemon::EnginePolicy::managed)
-        .unwrap_or(daemon::EnginePolicy::External);
-
     let result = if shutdown.requested() {
         Ok(())
     } else {
+        let start_file = start.then_some(file);
         serve_daemon(
             engine_url,
             daemon_namespace,
-            start,
+            explicit_daemon_namespace,
+            start_file,
             managed_engine.as_ref(),
             engine_policy,
             shutdown,
@@ -211,9 +236,22 @@ fn resolve_daemon_namespace(
     )
 }
 
+fn load_invocation_file(file: &std::path::Path, required: bool) -> Result<Option<ComposeFile>> {
+    match ComposeFile::load(file) {
+        Ok(file) => Ok(Some(file)),
+        Err(ComposeError::Io { source, .. })
+            if !required && source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
+    project_namespace_override: Option<String>,
     start: Option<std::path::PathBuf>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
@@ -221,7 +259,12 @@ async fn serve_daemon(
 ) -> Result<()> {
     use colored::Colorize;
 
-    let daemon = daemon::Daemon::start(engine_url, daemon_namespace, engine_policy);
+    let daemon = daemon::Daemon::start(
+        engine_url,
+        daemon_namespace,
+        project_namespace_override,
+        engine_policy,
+    );
     remote::register(&daemon);
 
     // Announce only once the engine has accepted this daemon. A rejection
@@ -388,7 +431,7 @@ fn report_error(err: &ComposeError) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeFile, resolve_daemon_namespace};
+    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace};
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
@@ -433,5 +476,33 @@ mod tests {
             resolve_daemon_namespace(None, Some(&compose)),
             crate::namespace::DEFAULT_NAMESPACE
         );
+    }
+
+    #[test]
+    fn bare_compose_loads_an_existing_default_file_for_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "namespace: orders\nengine: { workers: {} }\ncontainers: {}\n",
+        )
+        .unwrap();
+
+        let loaded = load_invocation_file(&path, false).unwrap();
+
+        assert_eq!(
+            loaded.and_then(|file| file.namespace).as_deref(),
+            Some("orders")
+        );
+    }
+
+    #[test]
+    fn bare_compose_tolerates_a_missing_default_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+
+        let loaded = load_invocation_file(&path, false).unwrap();
+
+        assert!(loaded.is_none());
     }
 }

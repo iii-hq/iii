@@ -55,21 +55,13 @@ if [[ -n "$COMPOSE_FILE" ]]; then
     config_name="$(basename "${CONFIG%.*}")"
     COMPOSE_NAMESPACE="sdk-${config_name//[^a-zA-Z0-9_-]/-}"
   fi
-  if grep -Eq '^engine:[[:space:]]*' "$COMPOSE_FILE"; then
-    if [[ -n "$ENGINE_URL" ]]; then
-      echo "Managed Compose file $COMPOSE_FILE cannot be combined with --engine/--iii-url" >&2
-      exit 1
-    fi
+  if [[ -n "$ENGINE_URL" ]]; then
     "$BINARY" compose \
+      --engine "$ENGINE_URL" \
       --namespace "$COMPOSE_NAMESPACE" \
       --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
   else
-    if [[ -z "$ENGINE_URL" ]]; then
-      echo "Compose file $COMPOSE_FILE has no engine section; pass --engine or --iii-url" >&2
-      exit 1
-    fi
     "$BINARY" compose \
-      --engine "$ENGINE_URL" \
       --namespace "$COMPOSE_NAMESPACE" \
       --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
   fi

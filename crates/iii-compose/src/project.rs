@@ -32,7 +32,6 @@ use crate::{
     engine::EngineClient,
     error::Result,
     lifecycle::{self, Children, LifecycleCtx, OpResult},
-    namespace::project_namespace,
     process::Supervised,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
 };
@@ -73,16 +72,15 @@ impl Project {
     /// Loads a project, adopts whatever survived a previous run, and returns
     /// it ready to be operated.
     ///
-    /// A project is its compose file. Its namespace comes from that file's
-    /// `name:` and addresses its workers; the two are different questions and
-    /// nothing else names the project.
+    /// `project_namespace` is already resolved by the daemon so an explicit
+    /// CLI namespace cannot be lost while the project is opened.
     pub async fn open(
         daemon_namespace: &str,
+        project_namespace: String,
         file: ComposeFile,
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
-        let project_namespace = project_namespace(None, file.namespace.as_deref());
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
         let file_path = file.path.clone();
 

@@ -46,18 +46,6 @@ pub enum ComposeError {
     #[error("engine.url must not be blank when it is set")]
     InvalidManagedEngineUrl,
 
-    #[error(
-        "worker-compose.yaml has no engine section. Pass --engine <ws-url> or set III_URL to \
-         connect this Compose invocation to an existing engine"
-    )]
-    EngineUrlRequired,
-
-    #[error(
-        "--engine cannot be combined with the engine section in worker-compose.yaml. \
-         Remove --engine or remove engine: to use an existing engine"
-    )]
-    EngineUrlConflictsWithManaged,
-
     #[error("--file requires --up")]
     FileRequiresUp,
 
@@ -316,6 +304,18 @@ pub enum ComposeError {
     #[error("managed engine could not start: {message}")]
     EngineSpawnFailed { message: String },
 
+    #[error("managed engine cannot listen at {listener}: {source}")]
+    ManagedEngineListenerUnavailable {
+        listener: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "engine.url uses port {url_port}, but iii-worker-manager listens on port {listener_port}"
+    )]
+    ManagedEngineEndpointMismatch { url_port: u16, listener_port: u16 },
+
     #[error(
         "managed engine exited with {code}{}",
         match .tail {
@@ -496,8 +496,6 @@ impl ComposeError {
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
-            Self::EngineUrlRequired => "ENGINE_URL_REQUIRED",
-            Self::EngineUrlConflictsWithManaged => "ENGINE_URL_CONFLICTS_WITH_MANAGED",
             Self::FileRequiresUp => "FILE_REQUIRES_UP",
             Self::EngineSectionRequiresManagedStart { .. } => {
                 "ENGINE_SECTION_REQUIRES_MANAGED_START"
@@ -539,6 +537,8 @@ impl ComposeError {
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
             Self::EngineSpawnFailed { .. } => "ENGINE_SPAWN_FAILED",
+            Self::ManagedEngineListenerUnavailable { .. } => "MANAGED_ENGINE_LISTENER_UNAVAILABLE",
+            Self::ManagedEngineEndpointMismatch { .. } => "MANAGED_ENGINE_ENDPOINT_MISMATCH",
             Self::EngineExited { .. } => "ENGINE_EXITED",
             Self::EngineReadinessTimeout { .. } => "ENGINE_STARTUP_TIMEOUT",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",

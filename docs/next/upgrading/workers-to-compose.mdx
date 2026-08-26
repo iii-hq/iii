@@ -147,7 +147,7 @@ For a managed engine, the file owns both lifecycles:
 iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
-The daemon namespace (`dev`) addresses `compose::*`; the file's `namespace:` is the namespace of
+The explicit namespace (`dev`) addresses `compose::*` and overrides the file's `namespace:` for
 its containers. Changing `engine:` while the daemon runs returns `ENGINE_RESTART_REQUIRED`; stop
 and restart that Compose invocation. A second file with `engine:` returns `ENGINE_ALREADY_OWNED`.
 
@@ -160,9 +160,9 @@ iii --config config.yaml
 iii compose --namespace dev --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml
 ```
 
-Run those commands under separate supervisors. `III_URL` may replace `--engine`. An external
-Compose file without either fails with `ENGINE_URL_REQUIRED`; a file with `engine:` cannot be
-started with explicit `--engine`.
+Run those commands under separate supervisors. Explicit `--engine` has highest priority and may
+override an `engine.url` in the Compose file. Without either value, Compose uses `III_URL`, then
+defaults to `ws://127.0.0.1:49134`.
 
 Verify the migration:
 
@@ -177,8 +177,6 @@ iii trigger engine::triggers::list
 - `UNSUPPORTED_CONFIG_WORKERS`: direct `config.yaml` still contains project workers.
 - `UNSUPPORTED_ENGINE_WORKER`: `engine.workers` contains a project or unknown worker.
 - `ENGINE_WORKER_IS_INJECTED`: remove an automatically supplied internal worker.
-- `ENGINE_URL_REQUIRED`: external mode has no `--engine` or `III_URL`.
-- `ENGINE_URL_CONFLICTS_WITH_MANAGED`: remove explicit `--engine` or remove `engine:`.
 - `ENGINE_RESTART_REQUIRED`: restart Compose to apply a changed engine section.
 - `ENGINE_ALREADY_OWNED`: start the second managed file in a separate Compose invocation.
 - `ENGINE_SECTION_REQUIRES_MANAGED_START`: an external daemon was asked to load a managed file.
