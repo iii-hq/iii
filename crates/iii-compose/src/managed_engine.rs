@@ -29,6 +29,8 @@ const ENGINE_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const ENGINE_LOG_ARCHIVES: usize = 3;
 const ENGINE_LOCK_FILE: &str = "engine.lock";
 const ENGINE_CONFIG_FILE: &str = "engine-config.yaml";
+const DEFAULT_WORKER_MANAGER_HOST: &str = "0.0.0.0";
+const DEFAULT_WORKER_MANAGER_PORT: u16 = 49134;
 
 /// The engine process owned by one foreground compose invocation.
 pub struct ManagedEngine {
@@ -44,7 +46,7 @@ impl ManagedEngine {
     /// Starts the current `iii` executable with output detached from compose's
     /// terminal and captured below this daemon namespace's state directory.
     pub async fn start(spec: &EngineSpec, daemon_namespace: &str) -> Result<Self> {
-        ensure_listener_available(&spec.url)?;
+        ensure_listener_available(spec)?;
         let executable =
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
@@ -269,8 +271,8 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
     Ok(path)
 }
 
+#[derive(Debug)]
 struct EngineEndpoint {
-    bind_host: String,
     worker_host: String,
     port: u16,
 }
@@ -284,12 +286,9 @@ fn engine_endpoint(engine_url: &str) -> Result<EngineEndpoint> {
             message: "engine.url must be a valid ws:// or wss:// URL".to_string(),
         });
     }
-    let (bind_host, worker_host) = match url.host() {
-        Some(url::Host::Ipv6(address)) => (address.to_string(), format!("[{address}]")),
-        Some(host) => {
-            let host = host.to_string();
-            (host.clone(), host)
-        }
+    let worker_host = match url.host() {
+        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
+        Some(host) => host.to_string(),
         None => {
             return Err(ComposeError::EngineSpawnFailed {
                 message: "engine.url must include a host".to_string(),
@@ -301,21 +300,87 @@ fn engine_endpoint(engine_url: &str) -> Result<EngineEndpoint> {
         .ok_or_else(|| ComposeError::EngineSpawnFailed {
             message: "engine.url must include a port".to_string(),
         })?;
-    Ok(EngineEndpoint {
-        bind_host,
-        worker_host,
-        port,
-    })
+    Ok(EngineEndpoint { worker_host, port })
 }
 
-fn ensure_listener_available(engine_url: &str) -> Result<()> {
-    let endpoint = engine_endpoint(engine_url)?;
-    std::net::TcpListener::bind((endpoint.bind_host.as_str(), endpoint.port))
+fn effective_listener_endpoint(spec: &EngineSpec) -> Result<EngineEndpoint> {
+    let url_endpoint = engine_endpoint(&spec.url)?;
+    let Some(config) = spec.workers.get("iii-worker-manager") else {
+        return Ok(url_endpoint);
+    };
+    let mapping = config
+        .as_mapping()
+        .expect("engine worker mappings are validated while the compose file is parsed");
+    let field = |name: &str| mapping.get(serde_yaml::Value::String(name.to_string()));
+    let worker_host = match field("host") {
+        Some(serde_yaml::Value::String(host)) => expand_engine_env_references(host)?,
+        Some(_) => {
+            return Err(ComposeError::EngineSpawnFailed {
+                message: "iii-worker-manager host must be a string".to_string(),
+            });
+        }
+        None => DEFAULT_WORKER_MANAGER_HOST.to_string(),
+    };
+    let port = match field("port") {
+        Some(serde_yaml::Value::Number(port)) => {
+            port.as_u64().and_then(|port| u16::try_from(port).ok())
+        }
+        Some(serde_yaml::Value::String(port)) => expand_engine_env_references(port)?.parse().ok(),
+        Some(_) => None,
+        None => Some(DEFAULT_WORKER_MANAGER_PORT),
+    }
+    .ok_or_else(|| ComposeError::EngineSpawnFailed {
+        message: "iii-worker-manager port must resolve to an integer from 0 to 65535".to_string(),
+    })?;
+
+    if port != url_endpoint.port {
+        return Err(ComposeError::ManagedEngineEndpointMismatch {
+            url_port: url_endpoint.port,
+            listener_port: port,
+        });
+    }
+
+    Ok(EngineEndpoint { worker_host, port })
+}
+
+/// Expands the `${NAME:default}` syntax used by the engine config loader.
+fn expand_engine_env_references(text: &str) -> Result<String> {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+
+    while let Some(start) = rest.find("${") {
+        output.push_str(&rest[..start]);
+        let reference = &rest[start + 2..];
+        let Some(end) = reference.find('}') else {
+            output.push_str(&rest[start..]);
+            return Ok(output);
+        };
+        let body = &reference[..end];
+        let (name, default) = body
+            .split_once(':')
+            .map_or((body, None), |(name, default)| (name, Some(default)));
+        let value = std::env::var(name)
+            .ok()
+            .or_else(|| default.map(str::to_string))
+            .ok_or_else(|| ComposeError::EngineSpawnFailed {
+                message: format!(
+                    "environment variable '{name}' is required by iii-worker-manager config"
+                ),
+            })?;
+        output.push_str(&value);
+        rest = &reference[end + 1..];
+    }
+
+    output.push_str(rest);
+    Ok(output)
+}
+
+fn ensure_listener_available(spec: &EngineSpec) -> Result<()> {
+    let endpoint = effective_listener_endpoint(spec)?;
+    let listener = format!("{}:{}", endpoint.worker_host, endpoint.port);
+    std::net::TcpListener::bind(&listener)
         .map(drop)
-        .map_err(|source| ComposeError::ManagedEngineListenerUnavailable {
-            engine_url: engine_url.to_string(),
-            source,
-        })
+        .map_err(|source| ComposeError::ManagedEngineListenerUnavailable { listener, source })
 }
 
 fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value> {
@@ -872,11 +937,38 @@ containers: {}
     fn occupied_managed_engine_listener_is_refused() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let mut spec = engine_spec();
+        spec.url = format!("ws://127.0.0.1:{port}");
+        spec.workers.remove("iii-worker-manager");
 
-        let error = ensure_listener_available(&format!("ws://127.0.0.1:{port}"))
+        let error = ensure_listener_available(&spec)
             .expect_err("an occupied managed listener must be rejected");
 
         assert_eq!(error.code(), "MANAGED_ENGINE_LISTENER_UNAVAILABLE");
+    }
+
+    #[test]
+    fn explicit_worker_manager_port_must_match_the_engine_url() {
+        let spec = crate::ComposeFile::parse(
+            r#"
+engine:
+  url: ws://127.0.0.1:50123
+  workers:
+    iii-worker-manager:
+      host: 0.0.0.0
+      port: ${ENGINE_PORT:60123}
+containers: {}
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap()
+        .engine
+        .unwrap();
+
+        let error = effective_listener_endpoint(&spec)
+            .expect_err("different URL and listener ports must be rejected");
+
+        assert_eq!(error.code(), "MANAGED_ENGINE_ENDPOINT_MISMATCH");
     }
 
     #[test]

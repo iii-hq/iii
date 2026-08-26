@@ -304,12 +304,17 @@ pub enum ComposeError {
     #[error("managed engine could not start: {message}")]
     EngineSpawnFailed { message: String },
 
-    #[error("managed engine cannot listen at {engine_url}: {source}")]
+    #[error("managed engine cannot listen at {listener}: {source}")]
     ManagedEngineListenerUnavailable {
-        engine_url: String,
+        listener: String,
         #[source]
         source: std::io::Error,
     },
+
+    #[error(
+        "engine.url uses port {url_port}, but iii-worker-manager listens on port {listener_port}"
+    )]
+    ManagedEngineEndpointMismatch { url_port: u16, listener_port: u16 },
 
     #[error(
         "managed engine exited with {code}{}",
@@ -533,6 +538,7 @@ impl ComposeError {
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
             Self::EngineSpawnFailed { .. } => "ENGINE_SPAWN_FAILED",
             Self::ManagedEngineListenerUnavailable { .. } => "MANAGED_ENGINE_LISTENER_UNAVAILABLE",
+            Self::ManagedEngineEndpointMismatch { .. } => "MANAGED_ENGINE_ENDPOINT_MISMATCH",
             Self::EngineExited { .. } => "ENGINE_EXITED",
             Self::EngineReadinessTimeout { .. } => "ENGINE_STARTUP_TIMEOUT",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
