@@ -11,8 +11,8 @@
 //! `iii trigger` from there, naming the project with `file=`.
 //!
 //! `iii compose --up` is the same daemon with the first call already made. The
-//! initial compose file decides engine ownership: an `engine:` section starts
-//! a managed engine, while its absence requires `--engine` or `III_URL`.
+//! compose file is still read without `--up` when it exists, so its engine URL
+//! and namespace configure the daemon without also starting the project.
 //!
 //! The compose process never backgrounds itself; only the managed engine child
 //! does. That is the shape a process supervisor already wants, and it hands
@@ -34,14 +34,15 @@ pub const DEFAULT_COMPOSE_FILE: &str = "worker-compose.yaml";
 
 #[derive(Args, Debug, Clone)]
 pub struct ComposeCli {
-    /// Existing engine WebSocket address. Falls back to III_URL when the
-    /// compose file does not declare an engine section.
+    /// Existing engine WebSocket address. Overrides the compose file and
+    /// III_URL. The local default is used when none of them supplies a URL.
     ///
     #[arg(long, value_name = "URL")]
     pub engine: Option<String>,
 
-    /// Namespace this daemon answers `compose::*` in. Several attach to one
-    /// engine; this is what tells them apart.
+    /// Namespace this daemon answers `compose::*` in and applies to every
+    /// project it loads. Several daemons attach to one engine; this is what
+    /// tells them apart.
     ///
     /// It is the address an operator reaches exactly one of them with:
     /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `--up`, an
@@ -53,7 +54,8 @@ pub struct ComposeCli {
     #[arg(short = 'n', long = "namespace", value_name = "NS")]
     pub ns: Option<String>,
 
-    /// Serve with one project brought up first, starting its declared engine.
+    /// Serve with one project brought up first, starting its declared engine
+    /// unless `--engine` selects an existing one.
     #[arg(long)]
     pub up: bool,
 
@@ -73,9 +75,11 @@ pub enum ComposeCommand {
         /// A namespace set on the CLI. `None` is resolved after the initial
         /// compose file is loaded, so `--up` can inherit the file namespace.
         explicit_daemon_namespace: Option<String>,
-        /// A project to bring up before the first call arrives. `None` is a
-        /// daemon that starts holding nothing.
-        start: Option<PathBuf>,
+        /// The compose file used to configure this invocation. A bare daemon
+        /// tolerates it being absent; `--up` requires it.
+        file: PathBuf,
+        /// Whether to bring `file` up before the first call arrives.
+        start: bool,
     },
 }
 
@@ -88,22 +92,20 @@ impl ComposeCli {
 
         let explicit_daemon_namespace = self.validated_namespace()?;
 
-        // A missing `--file` is not "no file": it is the same fallback a call
-        // with no `file=` gets, the compose file in the working directory.
-        let start = self.up.then(|| {
-            self.file
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE))
-        });
+        // A missing `--file` is not "no file": the default file still supplies
+        // daemon configuration even when the project is not brought up yet.
+        let file = self
+            .file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE));
 
         Ok(ComposeCommand::Serve {
-            // Keep the environment out of the parsed plan. An `engine:`
-            // section owns its managed engine and ignores a process-wide
-            // III_URL, while an explicit --engine is a contradictory request
-            // we can report to the operator.
+            // Keep the environment out of the parsed plan. File, environment,
+            // and default resolution all happen together after the file load.
             explicit_engine_url: self.engine.clone().filter(|url| !url.trim().is_empty()),
             explicit_daemon_namespace,
-            start,
+            file,
+            start: self.up,
         })
     }
 
@@ -147,9 +149,8 @@ impl ComposeCli {
         }
     }
 
-    /// `--engine` > `III_URL`. There is deliberately no external-engine
-    /// default: without an `engine:` section the operator must name the engine
-    /// Compose is allowed to use.
+    /// Returns the explicit process-level engine selection. File and default
+    /// resolution happens after the compose file is loaded.
     pub fn requested_engine_url(&self) -> Option<String> {
         self.engine
             .clone()

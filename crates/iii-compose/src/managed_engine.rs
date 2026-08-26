@@ -44,6 +44,7 @@ impl ManagedEngine {
     /// Starts the current `iii` executable with output detached from compose's
     /// terminal and captured below this daemon namespace's state directory.
     pub async fn start(spec: &EngineSpec, daemon_namespace: &str) -> Result<Self> {
+        ensure_listener_available(&spec.url)?;
         let executable =
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
@@ -268,7 +269,13 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
     Ok(path)
 }
 
-fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value> {
+struct EngineEndpoint {
+    bind_host: String,
+    worker_host: String,
+    port: u16,
+}
+
+fn engine_endpoint(engine_url: &str) -> Result<EngineEndpoint> {
     let url = url::Url::parse(engine_url).map_err(|_| ComposeError::EngineSpawnFailed {
         message: "engine.url must be a valid ws:// or wss:// URL".to_string(),
     })?;
@@ -277,9 +284,12 @@ fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value>
             message: "engine.url must be a valid ws:// or wss:// URL".to_string(),
         });
     }
-    let host = match url.host() {
-        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
-        Some(host) => host.to_string(),
+    let (bind_host, worker_host) = match url.host() {
+        Some(url::Host::Ipv6(address)) => (address.to_string(), format!("[{address}]")),
+        Some(host) => {
+            let host = host.to_string();
+            (host.clone(), host)
+        }
         None => {
             return Err(ComposeError::EngineSpawnFailed {
                 message: "engine.url must include a host".to_string(),
@@ -291,14 +301,33 @@ fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value>
         .ok_or_else(|| ComposeError::EngineSpawnFailed {
             message: "engine.url must include a port".to_string(),
         })?;
+    Ok(EngineEndpoint {
+        bind_host,
+        worker_host,
+        port,
+    })
+}
+
+fn ensure_listener_available(engine_url: &str) -> Result<()> {
+    let endpoint = engine_endpoint(engine_url)?;
+    std::net::TcpListener::bind((endpoint.bind_host.as_str(), endpoint.port))
+        .map(drop)
+        .map_err(|source| ComposeError::ManagedEngineListenerUnavailable {
+            engine_url: engine_url.to_string(),
+            source,
+        })
+}
+
+fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value> {
+    let endpoint = engine_endpoint(engine_url)?;
     let config = serde_yaml::Mapping::from_iter([
         (
             serde_yaml::Value::String("host".to_string()),
-            serde_yaml::Value::String(host),
+            serde_yaml::Value::String(endpoint.worker_host),
         ),
         (
             serde_yaml::Value::String("port".to_string()),
-            serde_yaml::Value::Number(port.into()),
+            serde_yaml::Value::Number(endpoint.port.into()),
         ),
     ]);
 
@@ -837,6 +866,17 @@ containers: {}
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn occupied_managed_engine_listener_is_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let error = ensure_listener_available(&format!("ws://127.0.0.1:{port}"))
+            .expect_err("an occupied managed listener must be rejected");
+
+        assert_eq!(error.code(), "MANAGED_ENGINE_LISTENER_UNAVAILABLE");
     }
 
     #[test]

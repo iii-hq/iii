@@ -244,6 +244,110 @@ fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
     );
 }
 
+#[test]
+fn cli_engine_overrides_file_engine_and_preserves_the_external_engine() {
+    let project = tempfile::tempdir().unwrap();
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let ignored_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ignored_port = ignored_probe.local_addr().unwrap().port();
+    drop(ignored_probe);
+
+    let config = project.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        format!(
+            "namespace: file-namespace\nengine:\n  url: ws://127.0.0.1:{ignored_port}\n  workers: {{}}\ncontainers:\n  missing:\n    worker: path://./does-not-exist\n"
+        ),
+    )
+    .unwrap();
+
+    let mut engine = iii_bin()
+        .current_dir(project.path())
+        .args(["--config", config.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start directly supervised engine");
+    if !wait_for_port(port, std::time::Duration::from_secs(20)) {
+        let _ = engine.kill();
+        let _ = engine.wait();
+        panic!("external engine never became ready");
+    }
+
+    let output = iii_bin()
+        .current_dir(project.path())
+        .args([
+            "compose",
+            "--engine",
+            &format!("ws://127.0.0.1:{port}"),
+            "--namespace",
+            "cli-namespace",
+            "--up",
+        ])
+        .output()
+        .expect("run external compose --up");
+    let terminal = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let engine_survived = engine.try_wait().unwrap().is_none();
+    let engine_reachable = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    let _ = engine.kill();
+    let _ = engine.wait();
+
+    assert!(!output.status.success(), "missing project worker must fail");
+    assert!(terminal.contains("compose serving"), "{terminal}");
+    assert!(terminal.contains("namespace: cli-namespace"), "{terminal}");
+    assert!(!terminal.contains("engine started"), "{terminal}");
+    assert!(engine_survived, "Compose stopped the external engine");
+    assert!(
+        engine_reachable,
+        "external engine stopped accepting connections"
+    );
+}
+
+#[test]
+fn compose_up_rejects_an_occupied_managed_engine_listener() {
+    let project = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        format!("engine:\n  url: ws://127.0.0.1:{port}\n  workers: {{}}\ncontainers: {{}}\n"),
+    )
+    .unwrap();
+
+    let output = iii_bin()
+        .current_dir(project.path())
+        .env("III_COMPOSE_STATE_DIR", state.path())
+        .args(["compose", "--namespace", "occupied-listener", "--up"])
+        .output()
+        .expect("run iii compose --up");
+    let terminal = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(!output.status.success(), "an occupied listener must fail");
+    assert!(
+        terminal.contains("MANAGED_ENGINE_LISTENER_UNAVAILABLE"),
+        "{terminal}"
+    );
+    assert!(!terminal.contains("engine started"), "{terminal}");
+}
+
 #[cfg(unix)]
 #[test]
 fn signal_during_managed_engine_startup_stops_the_engine() {

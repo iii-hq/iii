@@ -38,7 +38,7 @@ iii [OPTIONS] [COMMAND]
 
 Serve worker-compose projects: supervise each one's workers as a graph.
 
-Without `--up`, projects are started and stopped through `iii trigger compose::*`, naming one with `id=`; the command only starts the daemon. With `--up`, it also starts the initial project and the engine declared by its compose file.
+Without `--up`, worker-compose.yaml supplies daemon defaults but no project starts. Projects are then managed through `compose::*` calls. With `--up`, the initial project also starts, together with its declared engine unless `--engine` selects an existing one.
 
 ```text
 iii compose [OPTIONS]
@@ -46,9 +46,9 @@ iii compose [OPTIONS]
 
 | Option | Description |
 | ------ | ----------- |
-| `--engine <URL>` | Existing engine WebSocket address. Falls back to III_URL when the compose file does not declare an engine section |
-| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
-| `--up` | Serve with one project brought up first, starting its declared engine |
+| `--engine <URL>` | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
+| `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
 
 ### `iii project`

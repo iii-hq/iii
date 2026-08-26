@@ -41,7 +41,7 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
 
-pub const DEFAULT_MANAGED_ENGINE_URL: &str = "ws://127.0.0.1:49134";
+pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
     "configuration",
@@ -277,7 +277,7 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
     let url = match raw.url {
         Some(url) if url.trim().is_empty() => return Err(ComposeError::InvalidManagedEngineUrl),
         Some(url) => url.trim().to_string(),
-        None => DEFAULT_MANAGED_ENGINE_URL.to_string(),
+        None => DEFAULT_ENGINE_URL.to_string(),
     };
 
     Ok(EngineSpec {

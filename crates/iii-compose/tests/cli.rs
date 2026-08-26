@@ -134,7 +134,7 @@ fn a_programmatic_file_without_up_is_refused() {
 }
 
 #[test]
-fn an_explicit_engine_beats_the_environment_and_there_is_no_default_external_url() {
+fn requested_engine_url_reports_only_cli_or_environment_values() {
     // The only test that touches III_URL, so no other test can race it.
     unsafe { std::env::set_var("III_URL", "ws://from-env:1") };
 
@@ -164,24 +164,21 @@ fn a_project_namespace_still_comes_from_the_file_or_default() {
 
 #[test]
 fn bare_compose_starts_holding_nothing() {
-    let ComposeCommand::Serve { start, .. } =
+    let ComposeCommand::Serve { file, start, .. } =
         parse(&["iii", "compose", "--engine", "ws://shared:49134"])
             .plan()
             .unwrap();
-    assert_eq!(
-        start, None,
-        "a bare daemon learns about a project from a call"
-    );
+    assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
+    assert!(!start, "a bare daemon must not start the default file");
 }
 
 #[test]
 fn up_names_the_file_in_the_current_directory() {
     // The point of the flag: in a project directory, one option starts it.
-    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "--up"]).plan().unwrap();
-    assert_eq!(
-        start.as_deref(),
-        Some(std::path::Path::new("worker-compose.yaml"))
-    );
+    let ComposeCommand::Serve { file, start, .. } =
+        parse(&["iii", "compose", "--up"]).plan().unwrap();
+    assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
+    assert!(start);
 }
 
 #[test]
@@ -201,15 +198,14 @@ fn production_docker_compose_command_matches_the_cli() {
     let Wrapper::Compose(cli) = Wrapper::try_parse_from(args).unwrap();
     let ComposeCommand::Serve {
         explicit_daemon_namespace,
+        file,
         start,
         ..
     } = cli.plan().unwrap();
 
     assert_eq!(explicit_daemon_namespace.as_deref(), Some("production"));
-    assert_eq!(
-        start.as_deref(),
-        Some(std::path::Path::new("/app/worker-compose.yaml"))
-    );
+    assert_eq!(file, std::path::Path::new("/app/worker-compose.yaml"));
+    assert!(start);
 }
 
 #[test]
@@ -221,11 +217,11 @@ fn up_without_a_cli_namespace_defers_to_the_compose_file() {
     } = parse(&["iii", "compose", "--up"]).plan().unwrap();
 
     assert_eq!(explicit_daemon_namespace, None);
-    assert!(start.is_some());
+    assert!(start);
 }
 
 #[test]
-fn engine_section_selects_managed_mode_and_forbids_an_external_url() {
+fn up_uses_the_file_engine_when_the_cli_does_not_override_it() {
     let managed = ComposeFile::parse(
         "engine: { workers: {} }\ncontainers: {}\n",
         "/srv/app/worker-compose.yaml",
@@ -233,24 +229,12 @@ fn engine_section_selects_managed_mode_and_forbids_an_external_url() {
     .unwrap();
 
     assert_eq!(
-        resolve_engine_mode(Some(&managed), None, None).unwrap(),
-        EngineMode::Managed {
-            url: "ws://127.0.0.1:49134".to_string()
-        }
-    );
-    assert_eq!(
-        resolve_engine_mode(Some(&managed), Some("ws://other:1".to_string()), None,)
-            .unwrap_err()
-            .code(),
-        "ENGINE_URL_CONFLICTS_WITH_MANAGED"
-    );
-    assert_eq!(
         resolve_engine_mode(
             Some(&managed),
+            true,
             None,
-            Some("ws://global-environment:49134".to_string()),
-        )
-        .unwrap(),
+            Some("ws://global-environment:49134"),
+        ),
         EngineMode::Managed {
             url: "ws://127.0.0.1:49134".to_string()
         },
@@ -259,7 +243,39 @@ fn engine_section_selects_managed_mode_and_forbids_an_external_url() {
 }
 
 #[test]
-fn compose_without_engine_section_requires_an_external_url() {
+fn explicit_engine_overrides_the_file_engine_with_up() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), true, Some("ws://other:1"), None),
+        EngineMode::External {
+            url: "ws://other:1".to_string()
+        }
+    );
+}
+
+#[test]
+fn bare_compose_connects_to_the_file_engine_without_owning_it() {
+    let managed = ComposeFile::parse(
+        "engine: { url: 'ws://file-engine:49134', workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), false, None, None),
+        EngineMode::External {
+            url: "ws://file-engine:49134".to_string()
+        }
+    );
+}
+
+#[test]
+fn explicit_engine_beats_the_environment_without_an_engine_section() {
     let external = ComposeFile::parse(
         "containers:\n  api:\n    worker: path://./api\n",
         "/srv/app/worker-compose.yaml",
@@ -269,29 +285,40 @@ fn compose_without_engine_section_requires_an_external_url() {
     assert_eq!(
         resolve_engine_mode(
             Some(&external),
-            Some("ws://shared:49134".to_string()),
-            Some("ws://environment:49134".to_string()),
-        )
-        .unwrap(),
+            true,
+            Some("ws://shared:49134"),
+            Some("ws://environment:49134"),
+        ),
         EngineMode::External {
             url: "ws://shared:49134".to_string()
         }
     );
+}
+
+#[test]
+fn compose_without_an_engine_source_uses_the_local_default() {
+    let external = ComposeFile::parse(
+        "containers:\n  api:\n    worker: path://./api\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
     assert_eq!(
-        resolve_engine_mode(Some(&external), None, None)
-            .unwrap_err()
-            .code(),
-        "ENGINE_URL_REQUIRED"
+        resolve_engine_mode(Some(&external), true, None, None),
+        EngineMode::External {
+            url: "ws://127.0.0.1:49134".to_string()
+        }
     );
 }
 
 #[test]
 fn up_takes_a_file_of_its_own() {
-    let ComposeCommand::Serve { start, .. } =
+    let ComposeCommand::Serve { file, start, .. } =
         parse(&["iii", "compose", "--up", "-f", "./other.yaml"])
             .plan()
             .unwrap();
-    assert_eq!(start.as_deref(), Some(std::path::Path::new("./other.yaml")));
+    assert_eq!(file, std::path::Path::new("./other.yaml"));
+    assert!(start);
 }
 
 #[test]
@@ -310,6 +337,6 @@ fn the_namespace_reads_the_same_on_either_side_of_the_up_flag() {
             ..
         } = cli.plan().unwrap();
         assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
-        assert!(start.is_some(), "{args:?} should still enable --up");
+        assert!(start, "{args:?} should still enable --up");
     }
 }

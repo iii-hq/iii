@@ -141,6 +141,7 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
     let daemon = Daemon::start(
         format!("ws://127.0.0.1:{port}"),
         daemon_namespace.to_string(),
+        None,
         iii_compose::daemon::EnginePolicy::External,
     );
     remote::register(&daemon);

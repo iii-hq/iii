@@ -43,6 +43,7 @@ fn daemon() -> Arc<Daemon> {
     Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("cache-test-{}", std::process::id()),
+        None,
         EnginePolicy::External,
     )
 }
@@ -108,6 +109,24 @@ async fn the_same_file_reached_twice_is_still_one_project() {
     assert!(Arc::ptr_eq(&first, &second));
 }
 
+#[tokio::test]
+async fn explicit_cli_namespace_overrides_the_project_file_namespace() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        "test".to_string(),
+        Some("test".to_string()),
+        EnginePolicy::External,
+    );
+
+    let project = daemon.project(&file).await.unwrap();
+
+    assert_eq!(project.project_namespace, "test");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_load_that_failed_is_retried_rather_than_cached() {
     let tmp = project_dir();
@@ -138,6 +157,29 @@ async fn external_daemon_rejects_a_project_that_tries_to_own_an_engine() {
         Ok(_) => panic!("external daemon must reject engine ownership"),
     };
     assert_eq!(err.code(), "ENGINE_SECTION_REQUIRES_MANAGED_START");
+}
+
+#[tokio::test]
+async fn explicit_external_engine_overrides_the_owner_file_engine_section() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { url: 'ws://ignored:49134', workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n",
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("external-override-test-{}", std::process::id()),
+        None,
+        EnginePolicy::external_overriding(&initial),
+    );
+
+    let project = daemon.project(&file).await.unwrap();
+
+    assert_eq!(project.engine_url, "ws://127.0.0.1:1/ws");
 }
 
 #[tokio::test]
@@ -178,6 +220,7 @@ async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes()
     let daemon = Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("managed-change-test-{}", std::process::id()),
+        None,
         policy,
     );
     let err = match daemon.project(&file).await {
@@ -198,6 +241,7 @@ async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
     let daemon = Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("managed-cached-change-test-{}", std::process::id()),
+        None,
         EnginePolicy::managed(&initial).unwrap(),
     );
     daemon
@@ -232,6 +276,7 @@ async fn managed_daemon_rejects_a_second_engine_owner() {
     let daemon = Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("managed-owner-test-{}", std::process::id()),
+        None,
         EnginePolicy::managed(&initial).unwrap(),
     );
     let err = match daemon.project(&other).await {
@@ -260,6 +305,7 @@ fn managed_mutation_fixture(
     let daemon = Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("managed-mutation-test-{}", std::process::id()),
+        None,
         EnginePolicy::managed(&initial).unwrap(),
     );
     (tmp, file, daemon)
