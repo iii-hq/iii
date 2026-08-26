@@ -956,7 +956,7 @@ engine:
   workers:
     iii-worker-manager:
       host: 0.0.0.0
-      port: ${ENGINE_PORT:60123}
+      port: 60123
 containers: {}
 "#,
             "/srv/app/worker-compose.yaml",
