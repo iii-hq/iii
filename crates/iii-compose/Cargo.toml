@@ -23,6 +23,7 @@ colored = { workspace = true }
 iii-sdk = { workspace = true }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
+url = { workspace = true }
 flate2 = "1"
 tar = "0.4"
 uuid = { workspace = true }

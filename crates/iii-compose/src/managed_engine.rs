@@ -206,15 +206,26 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
         source,
     })?;
 
-    let workers = CONFIGURABLE_ENGINE_WORKERS
-        .iter()
-        .flat_map(|worker_type| {
+    let inferred_worker_manager = (!spec.workers.contains_key("iii-worker-manager"))
+        .then(|| worker_manager_config_from_url(&spec.url))
+        .transpose()?;
+    let mut workers = Vec::new();
+    for worker_type in CONFIGURABLE_ENGINE_WORKERS {
+        workers.extend(
             spec.workers
                 .iter()
-                .filter(move |(name, _)| crate::config::engine_worker_type(name) == *worker_type)
-                .map(|(name, config)| MaterializedWorker { name, config })
-        })
-        .collect();
+                .filter(|(name, _)| crate::config::engine_worker_type(name) == *worker_type)
+                .map(|(name, config)| MaterializedWorker { name, config }),
+        );
+        if *worker_type == "iii-worker-manager"
+            && let Some(config) = inferred_worker_manager.as_ref()
+        {
+            workers.push(MaterializedWorker {
+                name: "iii-worker-manager",
+                config,
+            });
+        }
+    }
     let document = MaterializedEngineConfig {
         registration_namespace_grace_ms: spec.registration_namespace_grace_ms,
         workers,
@@ -255,6 +266,43 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
         source,
     })?;
     Ok(path)
+}
+
+fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value> {
+    let url = url::Url::parse(engine_url).map_err(|_| ComposeError::EngineSpawnFailed {
+        message: "engine.url must be a valid ws:// or wss:// URL".to_string(),
+    })?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(ComposeError::EngineSpawnFailed {
+            message: "engine.url must be a valid ws:// or wss:// URL".to_string(),
+        });
+    }
+    let host = match url.host() {
+        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
+        Some(host) => host.to_string(),
+        None => {
+            return Err(ComposeError::EngineSpawnFailed {
+                message: "engine.url must include a host".to_string(),
+            });
+        }
+    };
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| ComposeError::EngineSpawnFailed {
+            message: "engine.url must include a port".to_string(),
+        })?;
+    let config = serde_yaml::Mapping::from_iter([
+        (
+            serde_yaml::Value::String("host".to_string()),
+            serde_yaml::Value::String(host),
+        ),
+        (
+            serde_yaml::Value::String("port".to_string()),
+            serde_yaml::Value::Number(port.into()),
+        ),
+    ]);
+
+    Ok(serde_yaml::Value::Mapping(config))
 }
 
 /// Cross-process ownership of one managed engine namespace.
@@ -756,6 +804,73 @@ containers: {}
         );
         assert_eq!(workers[1]["config"]["port"], "${ENGINE_PORT:50123}");
         assert_eq!(workers[3]["config"]["auto_install"], false);
+    }
+
+    #[test]
+    fn materialized_config_infers_worker_manager_endpoint_from_engine_url() {
+        let spec = crate::ComposeFile::parse(
+            r#"
+engine:
+  url: ws://127.0.0.1:50123
+  workers: {}
+containers: {}
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap()
+        .engine
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = materialize_engine_config(&spec, dir.path()).unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        assert_eq!(
+            document["workers"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                r#"
+- name: iii-worker-manager
+  config:
+    host: 127.0.0.1
+    port: 50123
+"#,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn materialized_config_preserves_explicit_worker_manager_config() {
+        let spec = crate::ComposeFile::parse(
+            r#"
+engine:
+  url: ws://127.0.0.1:50123
+  workers:
+    iii-worker-manager:
+      host: 0.0.0.0
+      port: 60123
+containers: {}
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap()
+        .engine
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = materialize_engine_config(&spec, dir.path()).unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        assert_eq!(
+            document["workers"][0]["config"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                r#"
+host: 0.0.0.0
+port: 60123
+"#,
+            )
+            .unwrap()
+        );
     }
 
     #[cfg(unix)]
