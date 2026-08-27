@@ -380,9 +380,7 @@ impl Project {
     /// deriving this by walking up from the state directory would silently
     /// re-scope it the next time that layout gains a level.
     fn package_cache(&self) -> PathBuf {
-        StateStore::root()
-            .unwrap_or_else(|_| self.store.dir().to_path_buf())
-            .join("packages")
+        StateStore::package_cache().unwrap_or_else(|_| self.store.dir().join("packages"))
     }
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {

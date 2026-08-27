@@ -157,12 +157,13 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
-    /// Serve worker-compose projects: supervise each one's workers as a graph.
+    /// Serve worker-compose projects or prepare their registry packages.
     ///
     /// Without `--up`, worker-compose.yaml supplies daemon defaults but no
     /// project starts. Projects are then managed through `compose::*` calls.
     /// With `--up`, the initial project also starts, together with its declared
     /// engine unless `--engine` selects an existing one.
+    /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
     /// Generate the committed MDX CLI reference page from this binary's
@@ -216,6 +217,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
         Some(Commands::Compose(args)) => match &args.command {
+            Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
         },
@@ -756,9 +758,8 @@ mod tests {
         );
     }
 
-    /// Bare `iii compose` is the whole command. What a project is and what
-    /// happens to it are `compose::*` call arguments now, so nothing here
-    /// names one.
+    /// Bare `iii compose` stays the daemon command. Project lifecycle actions
+    /// remain `compose::*` calls; `build` only prepares local packages.
     #[test]
     fn compose_mounts_as_a_single_command() {
         let cli = Cli::try_parse_from(["iii", "compose"]).expect("should parse compose");
@@ -767,6 +768,23 @@ mod tests {
             Some(Commands::Compose(args)) => {
                 assert!(args.engine.is_none());
                 assert!(args.ns.is_none());
+                assert!(args.command.is_none());
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    #[test]
+    fn compose_build_has_its_own_telemetry_path() {
+        let cli =
+            Cli::try_parse_from(["iii", "compose", "build"]).expect("should parse compose build");
+        assert_eq!(cli_usage_command_path(&cli), "compose build");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(matches!(
+                    args.command,
+                    Some(iii_compose::ComposeSubcommand::Build(_))
+                ));
             }
             _ => panic!("expected Compose subcommand"),
         }

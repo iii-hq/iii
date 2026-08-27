@@ -18,6 +18,7 @@
 //! `package://` workers from the registry, keeps watching its children after
 //! they are ready, and adopts whatever survived a restart.
 
+pub mod build;
 pub mod cli;
 pub mod config;
 pub mod configuration;
@@ -33,6 +34,7 @@ pub mod logs;
 mod managed_engine;
 pub mod manifest;
 pub mod namespace;
+mod parallelism;
 pub mod process;
 pub mod project;
 pub mod registry;
@@ -42,7 +44,7 @@ mod shutdown;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
+pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
@@ -109,6 +111,10 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
+        ComposeCommand::Build { file } => match build::build(&file).await {
+            Ok(_) => 0,
+            Err(err) => report_error(&err),
+        },
         ComposeCommand::Serve {
             explicit_engine_url,
             explicit_daemon_namespace,

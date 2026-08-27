@@ -20,6 +20,9 @@
 //! Argument parsing stays separated from execution
 //! ([`ComposeCli::plan`]) so the resolved invocation is testable without
 //! touching a socket.
+//!
+//! `iii compose build` is the one local action. It reads a compose file and
+//! prepares its registry packages without connecting to or starting an engine.
 
 use std::path::PathBuf;
 
@@ -75,8 +78,22 @@ pub struct ComposeCli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ComposeSubcommand {
+    /// Download every registry package declared by the compose file.
+    Build(BuildCli),
     /// Read retained worker stdout and stderr from a running Compose daemon.
     Logs(ComposeLogsCli),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BuildCli {
+    /// Compose file whose registry packages should be downloaded.
+    #[arg(
+        short = 'f',
+        long,
+        value_name = "PATH",
+        default_value = DEFAULT_COMPOSE_FILE
+    )]
+    pub file: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -128,6 +145,8 @@ fn parse_tail(value: &str) -> std::result::Result<usize, String> {
 /// What an invocation resolved to, after the flag combination is checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeCommand {
+    /// Download registry packages without starting an engine or a worker.
+    Build { file: PathBuf },
     /// Serve `compose::*` in the foreground.
     Serve {
         explicit_engine_url: Option<String>,
@@ -155,16 +174,27 @@ pub enum ComposeCommand {
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
-        if let Some(ComposeSubcommand::Logs(logs)) = &self.command {
-            return Ok(ComposeCommand::Logs {
-                explicit_engine_url: logs.engine.clone().filter(|url| !url.trim().is_empty()),
-                explicit_daemon_namespace: validated_namespace(logs.namespace.as_deref())?,
-                file: logs.file.clone(),
-                container: logs.worker.clone(),
-                tail: logs.tail.min(crate::logs::MAX_TAIL_LINES),
-                follow: logs.follow,
-                stream: logs.stream,
-            });
+        if let Some(command) = &self.command {
+            return match command {
+                ComposeSubcommand::Build(args) => {
+                    if self.engine.is_some() || self.ns.is_some() || self.up || self.file.is_some()
+                    {
+                        return Err(ComposeError::BuildConflictsWithServeOptions);
+                    }
+                    Ok(ComposeCommand::Build {
+                        file: args.file.clone(),
+                    })
+                }
+                ComposeSubcommand::Logs(logs) => Ok(ComposeCommand::Logs {
+                    explicit_engine_url: logs.engine.clone().filter(|url| !url.trim().is_empty()),
+                    explicit_daemon_namespace: validated_namespace(logs.namespace.as_deref())?,
+                    file: logs.file.clone(),
+                    container: logs.worker.clone(),
+                    tail: logs.tail.min(crate::logs::MAX_TAIL_LINES),
+                    follow: logs.follow,
+                    stream: logs.stream,
+                }),
+            };
         }
 
         if !self.up && self.file.is_some() {

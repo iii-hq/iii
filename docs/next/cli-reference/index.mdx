@@ -28,7 +28,7 @@ iii [OPTIONS] [COMMAND]
 | Command | Description |
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
-| [`compose`](#iii-compose) | Serve worker-compose projects: supervise each one's workers as a graph |
+| [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
 | [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
@@ -36,9 +36,9 @@ iii [OPTIONS] [COMMAND]
 
 ### `iii compose`
 
-Serve worker-compose projects: supervise each one's workers as a graph.
+Serve worker-compose projects or prepare their registry packages.
 
-Without `--up`, worker-compose.yaml supplies daemon defaults but no project starts. Projects are then managed through `compose::*` calls. With `--up`, the initial project also starts, together with its declared engine unless `--engine` selects an existing one.
+Without `--up`, worker-compose.yaml supplies daemon defaults but no project starts. Projects are then managed through `compose::*` calls. With `--up`, the initial project also starts, together with its declared engine unless `--engine` selects an existing one. `build` downloads packages without starting an engine or worker.
 
 ```text
 iii compose [OPTIONS]
@@ -51,6 +51,18 @@ iii compose <COMMAND>
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
+
+#### `iii compose build`
+
+Download every registry package declared by the compose file
+
+```text
+iii compose build [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
 
 #### `iii compose logs`
 

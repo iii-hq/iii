@@ -184,6 +184,12 @@ impl StateStore {
         }
     }
 
+    /// Registry packages are shared by every Compose daemon and project on
+    /// this machine.
+    pub fn package_cache() -> Result<PathBuf> {
+        Ok(Self::root()?.join("packages"))
+    }
+
     /// Where one project's state lives:
     /// `~/.iii/compose/<daemon-namespace>/<project-slug>`, or under
     /// `$III_COMPOSE_STATE_DIR` when the operator relocates it (a read-only

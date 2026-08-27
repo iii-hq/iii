@@ -101,6 +101,14 @@ pub enum Payload {
     Bundle(PathBuf),
 }
 
+/// Whether this invocation downloaded an artefact or reused one already on
+/// disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallStatus {
+    Downloaded,
+    Cached,
+}
+
 /// A package resolved and installed locally.
 #[derive(Debug, Clone)]
 pub struct InstalledPackage {
@@ -110,6 +118,7 @@ pub struct InstalledPackage {
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
+    pub status: InstallStatus,
 }
 
 /// The rust target triple this daemon is running on, which is the one its
@@ -160,13 +169,25 @@ pub async fn install(
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
     let (registry, name) = split_reference(reference);
+    install_from_registry(container, &registry, &name, version_range, cache_root).await
+}
+
+async fn install_from_registry(
+    container: &str,
+    registry: &str,
+    name: &str,
+    version_range: &str,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
     let target = host_target();
 
-    let resolved = resolve(container, &registry, &name, version_range, target).await?;
+    let resolved = resolve(container, registry, name, version_range, target).await?;
 
-    let payload = match resolved.kind.as_str() {
+    let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
-            Payload::Binary(install_binary(container, &resolved, target, cache_root).await?)
+            let (program, status) =
+                install_binary(container, &resolved, target, cache_root).await?;
+            (Payload::Binary(program), status)
         }
         // Refused before the download on a platform that could not start it:
         // the archive is megabytes, and an operator learns nothing from having
@@ -179,7 +200,10 @@ pub async fn install(
             });
         }
         #[cfg(unix)]
-        "bundle" => Payload::Bundle(install_bundle(container, &resolved, cache_root).await?),
+        "bundle" => {
+            let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
+            (Payload::Bundle(install_dir), status)
+        }
         // `engine` workers are compiled into the engine itself: there is no
         // artefact to install and nothing for compose to start. `image` workers
         // have one, but running it needs the OCI runtime.
@@ -202,6 +226,7 @@ pub async fn install(
         version: resolved.version,
         payload,
         default_config,
+        status,
     })
 }
 
@@ -265,7 +290,7 @@ async fn install_binary(
     resolved: &ResolvedWorker,
     target: &str,
     cache_root: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, InstallStatus)> {
     let artifact =
         resolved
             .binaries
@@ -284,14 +309,16 @@ async fn install_binary(
 
     let install_dir = cache_root.join(format!("{}-{}-{}", resolved.name, resolved.version, target));
     if let Some(existing) = installed_binary(&install_dir) {
-        return Ok(existing);
+        return Ok((existing, InstallStatus::Cached));
     }
     download_and_extract(container, artifact, &install_dir).await?;
-    installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
-        container: container.to_string(),
-        name: resolved.name.clone(),
-        path: install_dir.clone(),
-    })
+    let program =
+        installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
+            container: container.to_string(),
+            name: resolved.name.clone(),
+            path: install_dir.clone(),
+        })?;
+    Ok((program, InstallStatus::Downloaded))
 }
 
 /// Installs a bundle: one archive, no target in its identity.
@@ -307,7 +334,7 @@ async fn install_bundle(
     container: &str,
     resolved: &ResolvedWorker,
     cache_root: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, InstallStatus)> {
     // The registry sends both or neither. Without the digest the archive cannot
     // be verified, and an unverifiable artefact is not installed.
     let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
@@ -329,7 +356,7 @@ async fn install_bundle(
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
     if install_dir.join(BUNDLE_MANIFEST).is_file() {
-        return Ok(install_dir);
+        return Ok((install_dir, InstallStatus::Cached));
     }
 
     let artifact = Artifact {
@@ -345,7 +372,7 @@ async fn install_bundle(
             path: install_dir.clone(),
         });
     }
-    Ok(install_dir)
+    Ok((install_dir, InstallStatus::Downloaded))
 }
 
 /// The raw `/resolve` answer: the worker and everything it depends on.
@@ -561,28 +588,42 @@ async fn download_and_extract(
     // Extract beside the destination and rename: a crash mid-extraction must
     // not leave a half-unpacked directory that the next run treats as a cache
     // hit.
-    let staging = install_dir.with_extension("unpacking");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging).map_err(|source| ComposeError::Io {
-        path: staging.clone(),
-        source,
-    })?;
+    // Each writer needs its own staging directory. Two containers can resolve
+    // to the same artefact and download it at the same time; sharing one
+    // `.unpacking` path would let either writer remove files under the other.
+    let staging = install_dir.with_extension(format!("unpacking-{}", uuid::Uuid::new_v4()));
+    if let Err(source) = std::fs::create_dir_all(&staging) {
+        return Err(ComposeError::Io {
+            path: staging,
+            source,
+        });
+    }
 
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
-    tar::Archive::new(decoder)
-        .unpack(&staging)
-        .map_err(|source| ComposeError::Io {
+    if let Err(source) = tar::Archive::new(decoder).unpack(&staging) {
+        let error = ComposeError::Io {
             path: staging.clone(),
             source,
-        })?;
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
 
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
+    if let Some(parent) = install_dir.parent()
+        && let Err(source) = std::fs::create_dir_all(parent)
+    {
+        let error = ComposeError::Io {
             path: parent.to_path_buf(),
             source,
-        })?;
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
     }
-    publish(&staging, install_dir)
+    let result = publish(&staging, install_dir);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
 }
 
 /// Moves a verified install into place without ever unmaking one.
@@ -695,6 +736,20 @@ mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
+    fn executable_archive() -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let body = b"#!/bin/sh\nexit 0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        let name = format!("worker{}", std::env::consts::EXE_SUFFIX);
+        archive.append_data(&mut header, name, &body[..]).unwrap();
+        let encoder = archive.into_inner().unwrap();
+        encoder.finish().unwrap()
+    }
+
     #[test]
     fn a_reference_without_a_host_uses_the_default_registry() {
         let (registry, name) = split_reference("state");
@@ -763,6 +818,53 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
+    }
+
+    #[tokio::test]
+    async fn a_second_install_reuses_the_downloaded_artefact() {
+        let server = MockServer::start().await;
+        let archive = executable_archive();
+        let digest = hex::encode(Sha256::digest(&archive));
+        let target = host_target();
+        let artifact_url = format!("{}/artifact", server.uri());
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "state",
+                    "version": "1.0.0",
+                    "type": "binary",
+                    "binaries": {
+                        (target): {
+                            "sha256": digest,
+                            "url": artifact_url,
+                        }
+                    },
+                    "config": {"prefix": "state"}
+                }]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+
+        assert_eq!(first.status, InstallStatus::Downloaded);
+        assert_eq!(second.status, InstallStatus::Cached);
+        assert_eq!(first.default_config, second.default_config);
     }
 
     #[test]

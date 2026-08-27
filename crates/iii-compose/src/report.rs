@@ -80,7 +80,10 @@ enum RowState {
     /// Declared, and waiting on something earlier in the graph.
     Waiting,
     Starting,
-    Ready(Duration),
+    Ready {
+        what: String,
+        elapsed: Duration,
+    },
     Failed,
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
@@ -175,10 +178,11 @@ fn render_row(row: &Row, frame: usize) -> String {
             FRAMES[frame % FRAMES.len()].cyan(),
             row.key.bold()
         ),
-        RowState::Ready(elapsed) => format!(
-            "{indent}{} {} {}",
+        RowState::Ready { what, elapsed } => format!(
+            "{indent}{} {} {} {}",
             OK.green(),
             row.key.bold(),
+            what.green(),
             format!("({})", format_elapsed(*elapsed)).dimmed()
         ),
         RowState::Failed => format!("{indent}{} {}", FAILED.red(), row.key.bold().red()),
@@ -281,14 +285,24 @@ pub fn starting(key: &str, what: &str) {
 }
 
 pub fn ready(key: &str, elapsed: Duration) {
-    if set(key, RowState::Ready(elapsed)) {
+    completed(key, "ready", elapsed);
+}
+
+pub fn completed(key: &str, what: &str, elapsed: Duration) {
+    if set(
+        key,
+        RowState::Ready {
+            what: what.to_string(),
+            elapsed,
+        },
+    ) {
         return;
     }
     line(&format!(
         "{} {} {} {}",
         OK.green(),
         key.bold(),
-        "ready".green(),
+        what.green(),
         format!("({})", format_elapsed(elapsed)).dimmed()
     ));
 }
@@ -531,12 +545,18 @@ mod tests {
         let parent = Row {
             key: "harness".to_string(),
             depth: 0,
-            state: RowState::Ready(Duration::from_millis(10)),
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(10),
+            },
         };
         let child = Row {
             key: "queue".to_string(),
             depth: 1,
-            state: RowState::Ready(Duration::from_millis(10)),
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(10),
+            },
         };
         let drawn_parent = render_row(&parent, 0);
         let drawn_child = render_row(&child, 0);
