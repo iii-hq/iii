@@ -59,7 +59,9 @@ if [[ -n "$COMPOSE_FILE" ]]; then
     compose_args+=(--namespace "$COMPOSE_NAMESPACE")
   fi
   compose_args+=(--up --file "$COMPOSE_FILE")
-  "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
+  compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
+  III_COMPOSE_STATE_DIR="$compose_state_dir" \
+    "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
 else
   "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
 fi
