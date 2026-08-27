@@ -51,20 +51,15 @@ if [[ -n "$COMPOSE_FILE" ]]; then
     echo "Compose file not found: $COMPOSE_FILE" >&2
     exit 1
   fi
-  if [[ -z "$COMPOSE_NAMESPACE" ]]; then
-    config_name="$(basename "${CONFIG%.*}")"
-    COMPOSE_NAMESPACE="sdk-${config_name//[^a-zA-Z0-9_-]/-}"
-  fi
+  compose_args=(compose)
   if [[ -n "$ENGINE_URL" ]]; then
-    "$BINARY" compose \
-      --engine "$ENGINE_URL" \
-      --namespace "$COMPOSE_NAMESPACE" \
-      --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
-  else
-    "$BINARY" compose \
-      --namespace "$COMPOSE_NAMESPACE" \
-      --up --file "$COMPOSE_FILE" > "$LOG_FILE" 2>&1 &
+    compose_args+=(--engine "$ENGINE_URL")
   fi
+  if [[ -n "$COMPOSE_NAMESPACE" ]]; then
+    compose_args+=(--namespace "$COMPOSE_NAMESPACE")
+  fi
+  compose_args+=(--up --file "$COMPOSE_FILE")
+  "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
 else
   "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
 fi
