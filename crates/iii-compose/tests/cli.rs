@@ -5,7 +5,10 @@
 //! starts holding a project or holding nothing.
 
 use clap::Parser;
-use iii_compose::{ComposeCli, ComposeCommand, ComposeFile, EngineMode, resolve_engine_mode};
+use iii_compose::{
+    BuildCli, ComposeCli, ComposeCommand, ComposeFile, ComposeSubcommand, EngineMode,
+    resolve_engine_mode,
+};
 
 /// Mirrors how the engine mounts the subcommand, so parsing is exercised
 /// through the same shape the real binary uses.
@@ -177,6 +180,50 @@ fn logs_rejects_an_unbounded_initial_tail() {
         .expect_err("the CLI should bound one log response");
 
     assert!(error.to_string().contains("tail must not exceed 1000"));
+}
+
+#[test]
+fn build_uses_the_default_compose_file() {
+    let ComposeCommand::Build { file } = parse(&["iii", "compose", "build"]).plan().unwrap() else {
+        panic!("expected build command");
+    };
+    assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
+}
+
+#[test]
+fn build_accepts_its_own_file() {
+    let ComposeCommand::Build { file } =
+        parse(&["iii", "compose", "build", "--file", "other.yaml"])
+            .plan()
+            .unwrap()
+    else {
+        panic!("expected build command");
+    };
+    assert_eq!(file, std::path::Path::new("other.yaml"));
+}
+
+#[test]
+fn build_conflicts_with_daemon_options() {
+    for args in [
+        &["iii", "compose", "--up", "build"][..],
+        &["iii", "compose", "--engine", "ws://host:1", "build"][..],
+        &["iii", "compose", "--namespace", "dev", "build"][..],
+    ] {
+        assert!(Wrapper::try_parse_from(args).is_err(), "{args:?} must fail");
+    }
+
+    let error = ComposeCli {
+        engine: None,
+        ns: None,
+        up: true,
+        file: None,
+        command: Some(ComposeSubcommand::Build(BuildCli {
+            file: "worker-compose.yaml".into(),
+        })),
+    }
+    .plan()
+    .unwrap_err();
+    assert_eq!(error.code(), "BUILD_CONFLICTS_WITH_SERVE_OPTIONS");
 }
 
 #[test]

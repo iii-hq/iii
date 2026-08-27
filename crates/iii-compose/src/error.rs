@@ -49,6 +49,9 @@ pub enum ComposeError {
     #[error("--file requires --up")]
     FileRequiresUp,
 
+    #[error("`iii compose build` cannot be combined with daemon options")]
+    BuildConflictsWithServeOptions,
+
     #[error(
         "{path} declares engine:, but this Compose daemon is connected to an external engine. \
          Start the file in a separate `iii compose --up` invocation without --engine"
@@ -497,6 +500,7 @@ impl ComposeError {
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::FileRequiresUp => "FILE_REQUIRES_UP",
+            Self::BuildConflictsWithServeOptions => "BUILD_CONFLICTS_WITH_SERVE_OPTIONS",
             Self::EngineSectionRequiresManagedStart { .. } => {
                 "ENGINE_SECTION_REQUIRES_MANAGED_START"
             }

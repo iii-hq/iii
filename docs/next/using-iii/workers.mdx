@@ -44,8 +44,12 @@ file or `scripts.start` from their `iii.worker.yaml` manifest.
 Start a project and keep its daemon in the foreground:
 
 ```bash
+iii compose build --file worker-compose.yaml
 iii compose --namespace dev --up --file worker-compose.yaml
 ```
+
+`build` downloads all declared `package://` workers before startup. `--up` then reuses the shared
+package cache. The command skips local `path://` workers.
 
 The presence of `engine:` makes the daemon own and stop the engine. Without it, pass `--engine` or
 set `III_URL` to connect to an engine managed elsewhere.

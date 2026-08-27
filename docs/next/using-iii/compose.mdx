@@ -18,7 +18,29 @@ exposes the `compose::*` functions there, so every project operation is a normal
 Bare `iii compose` is the daemon command. It reads `worker-compose.yaml` when the file exists so
 the namespace and engine URL can configure the daemon. The `--up` flag also loads the file as a
 project and starts its containers. `iii compose logs` is a read-only client for a daemon that is
-already running.
+already running. `iii compose build` is a local action that prepares registry packages without
+starting the daemon.
+
+## Build registry packages
+
+```text
+iii compose build [-f, --file <PATH>]
+```
+
+`build` reads and validates the compose file, then downloads every `package://` container into the
+same cache used by `compose::up`. The file defaults to `./worker-compose.yaml`. The command does not
+connect to an engine, start a worker, or run lifecycle hooks. Local `path://` workers and built-in
+engine workers need no registry download and are skipped.
+
+```bash
+iii compose build --file worker-compose.yaml
+iii compose --up --file worker-compose.yaml
+```
+
+The cache is shared under `~/.iii/compose/packages`, or under `III_COMPOSE_STATE_DIR` when that
+variable is set. A later `compose::up` still resolves package metadata, but it reuses a valid cached
+artefact and does not download its bytes again. If the cache is missing, `up` keeps its existing
+download fallback.
 
 ## The daemon
 
