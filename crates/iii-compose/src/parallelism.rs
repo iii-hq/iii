@@ -1,8 +1,5 @@
-// Copyright Motia LLC and/or licensed to Motia LLC under one or more
-// contributor license agreements. Licensed under the Elastic License 2.0;
-// you may not use this file except in compliance with the Elastic License 2.0.
-// This software is patent protected. We welcome discussions - reach out at team@iii.dev
-// See LICENSE and PATENTS files for details.
+// Copyright 2025 Motia LLC. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 /// Environment variable that limits concurrent package work and container starts.
 const MAX_PARALLEL_WORKERS_ENV: &str = "III_COMPOSE_MAX_PARALLEL_WORKERS";

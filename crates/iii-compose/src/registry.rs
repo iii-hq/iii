@@ -15,9 +15,9 @@
 //!    process will run it. A download that does not match its digest is not a
 //!    slow download or a corrupt one — it is a different artefact than the
 //!    registry promised, and it never reaches disk.
-//! 3. **Cache.** Installs are keyed by `(name, version, target)`, which is the
-//!    artefact's whole identity, so a second `up` reuses the first one's work
-//!    and two projects on one machine share it.
+//! 3. **Cache.** Installs are keyed by package metadata, target, and SHA-256,
+//!    so only the exact verified artefact is reused across registries and
+//!    projects.
 
 use std::{
     path::{Path, PathBuf},
@@ -307,10 +307,15 @@ async fn install_binary(
                 },
             })?;
 
-    let install_dir = cache_root.join(format!("{}-{}-{}", resolved.name, resolved.version, target));
+    let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
+    let install_dir = cache_root.join(format!(
+        "{}-{}-{}-{digest}",
+        resolved.name, resolved.version, target
+    ));
     if let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
     }
+    remove_invalid_install(&install_dir)?;
     download_and_extract(container, artifact, &install_dir).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
@@ -351,13 +356,18 @@ async fn install_bundle(
         }
     };
 
-    let install_dir = cache_root.join(format!("{}-{}-bundle", resolved.name, resolved.version));
+    let digest = validated_cache_digest(container, resolved, sha256)?;
+    let install_dir = cache_root.join(format!(
+        "{}-{}-bundle-{digest}",
+        resolved.name, resolved.version
+    ));
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
     if install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Ok((install_dir, InstallStatus::Cached));
     }
+    remove_invalid_install(&install_dir)?;
 
     let artifact = Artifact {
         sha256: sha256.clone(),
@@ -373,6 +383,48 @@ async fn install_bundle(
         });
     }
     Ok((install_dir, InstallStatus::Downloaded))
+}
+
+/// Returns the normalized digest used as the immutable part of a cache key.
+fn validated_cache_digest(
+    container: &str,
+    resolved: &ResolvedWorker,
+    sha256: &str,
+) -> Result<String> {
+    if sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(sha256.to_ascii_lowercase());
+    }
+
+    Err(ComposeError::PackageNotResolved {
+        container: container.to_string(),
+        name: resolved.name.clone(),
+        range: resolved.version.clone(),
+        message: "the registry returned an invalid SHA-256 digest".to_string(),
+    })
+}
+
+/// Removes a stale cache entry that cannot be used as an installed package.
+fn remove_invalid_install(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(ComposeError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    let result = if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    result.map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// The raw `/resolve` answer: the worker and everything it depends on.
@@ -736,16 +788,15 @@ mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
-    fn executable_archive() -> Vec<u8> {
+    fn executable_archive(body: &[u8]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
-        let body = b"#!/bin/sh\nexit 0\n";
         let mut header = tar::Header::new_gnu();
         header.set_size(body.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
         let name = format!("worker{}", std::env::consts::EXE_SUFFIX);
-        archive.append_data(&mut header, name, &body[..]).unwrap();
+        archive.append_data(&mut header, name, body).unwrap();
         let encoder = archive.into_inner().unwrap();
         encoder.finish().unwrap()
     }
@@ -823,7 +874,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_install_reuses_the_downloaded_artefact() {
         let server = MockServer::start().await;
-        let archive = executable_archive();
+        let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
         let digest = hex::encode(Sha256::digest(&archive));
         let target = host_target();
         let artifact_url = format!("{}/artifact", server.uri());
@@ -865,6 +916,71 @@ mod tests {
         assert_eq!(first.status, InstallStatus::Downloaded);
         assert_eq!(second.status, InstallStatus::Cached);
         assert_eq!(first.default_config, second.default_config);
+    }
+
+    #[tokio::test]
+    async fn same_name_and_version_with_a_different_digest_is_downloaded_again() {
+        let server = MockServer::start().await;
+        let first_archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let second_archive = executable_archive(b"#!/bin/sh\nexit 1\n");
+        let first_digest = hex::encode(Sha256::digest(&first_archive));
+        let second_digest = hex::encode(Sha256::digest(&second_archive));
+        let first_url = format!("{}/artifact-first", server.uri());
+        let second_url = format!("{}/artifact-second", server.uri());
+        let target = host_target();
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let responder_resolutions = Arc::clone(&resolutions);
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                let (digest, url) = if responder_resolutions.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (&first_digest, &first_url)
+                } else {
+                    (&second_digest, &second_url)
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "state",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "binaries": {
+                            (target): {
+                                "sha256": digest,
+                                "url": url,
+                            }
+                        }
+                    }]
+                }))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact-first"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(first_archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact-second"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(second_archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            [first.status, second.status],
+            [InstallStatus::Downloaded, InstallStatus::Downloaded]
+        );
     }
 
     #[test]
