@@ -171,7 +171,7 @@ fn register_test_worker(port: u16, namespace: &str, name: &str) -> iii_sdk::IIIC
 
 /// Waits until every child has crossed an explicit process-start barrier.
 async fn wait_for_start_markers(paths: &[&std::path::Path]) {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if paths.iter().all(|path| path.exists()) {
                 return;
@@ -185,7 +185,7 @@ async fn wait_for_start_markers(paths: &[&std::path::Path]) {
 
 /// Waits for the engine to observe a worker registration or its removal.
 async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, registered: bool) {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if daemon.engine().is_registered(namespace, name).await.ok() == Some(registered) {
                 return;

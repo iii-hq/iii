@@ -180,7 +180,8 @@ class III:
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
-            When omitted, resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
+            The constructor requires this value. ``register_worker`` can resolve it from
+            ``III_URL`` or ``DEFAULT_ENGINE_URL``.
         options: Optional configuration. See ``InitOptions``.
 
     Examples:

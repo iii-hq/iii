@@ -9,8 +9,8 @@
 //! `pre_run` blocks the container's start and is budgeted: a hung migration
 //! must fail the container instead of holding the whole graph. `post_run` fires
 //! after the container's exit is confirmed and is not awaited by teardown. A
-//! project supervisor still owns it, so shutdown and timeout both kill and
-//! reap a cleanup script that hangs.
+//! project supervisor still owns it, so shutdown waits for supervised hooks
+//! and their timeout kills and reaps a cleanup script that hangs.
 //!
 //! Both run with the same environment and working directory as the container
 //! itself, and both get their own process group so a timeout can take their
@@ -20,7 +20,7 @@ use std::{process::Stdio, time::Duration};
 
 use colored::Colorize;
 use tokio::io::AsyncReadExt;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
 
 use crate::{
     manifest::StartSpec,
@@ -65,7 +65,6 @@ impl HookError {
 #[derive(Default)]
 pub struct PostRunSupervisor {
     state: Mutex<PostRunState>,
-    shutdown: watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -97,8 +96,6 @@ impl PostRunSupervisor {
                 return;
             }
         };
-        let mut shutdown = self.shutdown.subscribe();
-
         state.tasks.push(tokio::spawn(async move {
             let child = &mut hook.child;
             let mut stdout = child.stdout.take();
@@ -112,7 +109,6 @@ impl PostRunSupervisor {
             enum PostRunOutcome {
                 Finished((std::io::Result<std::process::ExitStatus>, String, String)),
                 TimedOut,
-                ShuttingDown,
             }
 
             let outcome = {
@@ -120,8 +116,6 @@ impl PostRunSupervisor {
                 let timer = tokio::time::sleep(timeout);
                 tokio::pin!(timer);
                 tokio::select! {
-                    biased;
-                    _ = shutdown.changed() => PostRunOutcome::ShuttingDown,
                     result = &mut run => PostRunOutcome::Finished(result),
                     _ = &mut timer => PostRunOutcome::TimedOut,
                 }
@@ -153,20 +147,15 @@ impl PostRunSupervisor {
                         format!("timed out after {}s", timeout.as_secs_f64()).yellow()
                     ));
                 }
-                PostRunOutcome::ShuttingDown => {
-                    hook.kill_tree();
-                    let _ = hook.child.wait().await;
-                }
             }
         }));
     }
 
-    /// Stops and reaps every cleanup hook that is still active.
+    /// Waits for every supervised cleanup hook to finish or reach its timeout.
     pub async fn shutdown(&self) {
         let tasks = {
             let mut state = self.state.lock().await;
             state.shutting_down = true;
-            self.shutdown.send_replace(true);
             std::mem::take(&mut state.tasks)
         };
 

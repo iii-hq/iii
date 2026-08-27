@@ -3418,13 +3418,14 @@ mod tests {
             "function_id": "fn-1",
             "error": {
                 "code": "trigger_type_not_found",
-                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n default compose::add worker=http",
+                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n <compose-daemon-namespace> compose::add worker=http",
             },
         })
         .to_string();
 
         iii.handle_message(&payload).unwrap();
 
+        assert!(logs_contain("<compose-daemon-namespace>"));
         assert!(logs_contain("compose::add worker=http"));
         assert!(logs_contain("trig-1"));
     }

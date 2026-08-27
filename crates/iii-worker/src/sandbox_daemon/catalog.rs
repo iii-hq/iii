@@ -89,8 +89,8 @@ pub struct CatalogEntry {
 pub enum CatalogEntryKind {
     /// Bundled with the daemon binary. Stable identifier across releases.
     Preset,
-    /// Operator-registered under `sandbox.custom_images` in
-    /// `iii.config.yaml`. Specific to this deployment.
+    /// Operator-registered under
+    /// `engine.workers.iii-sandbox.custom_images`. Specific to this deployment.
     Custom,
 }
 

@@ -152,6 +152,26 @@ async fn a_failing_post_run_is_not_an_error() {
 }
 
 #[tokio::test]
+async fn shutdown_waits_for_a_running_post_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("drained.txt");
+    let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
+
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            &format!("sleep 0.1; echo drained > {}", marker.display()),
+            Duration::from_secs(5),
+        )
+        .await;
+
+    post_runs.shutdown().await;
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "drained");
+}
+
+#[tokio::test]
 async fn shutdown_stops_and_reaps_a_running_post_run() {
     let tmp = tempfile::tempdir().unwrap();
     let pid_file = tmp.path().join("post-run.pid");
@@ -162,7 +182,7 @@ async fn shutdown_stops_and_reaps_a_running_post_run() {
         .fire(
             &ctx(tmp.path(), &start, None),
             &format!("echo $$ > {}; sleep 999", pid_file.display()),
-            Duration::from_secs(30),
+            Duration::from_millis(400),
         )
         .await;
     let hook_pid = wait_for_file(&pid_file)

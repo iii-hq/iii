@@ -254,7 +254,8 @@ fn register_sandbox_create(
         })
         .description(
             "Create an ephemeral sandbox VM. `image` must be a preset \
-             (`\"python\"`, `\"node\"`) or a `custom_images` key from iii.config.yaml; \
+             (`\"python\"`, `\"node\"`) or a key from \
+             `engine.workers.iii-sandbox.custom_images`; \
              OCI refs are NOT accepted unless they match a catalog key. \
              `env` accepts both `Vec<\"K=V\">` and `{ K: V }` map shapes.",
         ),

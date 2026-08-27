@@ -101,6 +101,7 @@ fn managed_worker_fixture() {
 }
 
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     let project = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
@@ -179,6 +180,7 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
 }
 
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
     let project = tempfile::tempdir().unwrap();
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -245,6 +247,7 @@ fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
 }
 
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn cli_engine_overrides_file_engine_and_preserves_the_external_engine() {
     let project = tempfile::tempdir().unwrap();
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -350,6 +353,7 @@ fn compose_up_rejects_an_occupied_managed_engine_listener() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn signal_during_managed_engine_startup_stops_the_engine() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -399,6 +403,7 @@ fn signal_during_managed_engine_startup_stops_the_engine() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn signal_during_dependent_startup_rolls_back_every_started_process() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -534,6 +539,7 @@ fn signal_during_dependent_startup_rolls_back_every_started_process() {
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(managed_engine_port)]
 fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     use std::os::unix::fs::PermissionsExt;
 

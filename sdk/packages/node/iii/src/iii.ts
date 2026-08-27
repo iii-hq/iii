@@ -85,8 +85,8 @@ function getOsInfo(): string {
 }
 
 function resolveWorkerName(explicitName?: string): string {
-  // III_WORKER_NAME carries the orchestrator-assigned name (set by iii-worker
-  // for engine-managed workers). The engine matches live registrations by
+  // III_WORKER_NAME carries the orchestrator-assigned name (set by the supervisor
+  // for Compose-managed workers). The engine matches live registrations by
   // name, so that identity must win over a name embedded in worker code.
   const managedName = process.env.III_WORKER_NAME
   if (managedName) {

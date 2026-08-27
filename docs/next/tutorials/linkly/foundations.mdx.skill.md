@@ -251,7 +251,7 @@ On the Compose/engine output you will see the `link` worker register `link::crea
 `iii trigger` invokes a function on the running engine. Create a link with a custom code:
 
 ```bash
-iii trigger link::create url=https://iii.dev code=iii
+iii trigger -n linkly link::create url=https://iii.dev code=iii
 ```
 
 ```json
@@ -264,7 +264,7 @@ iii trigger link::create url=https://iii.dev code=iii
 Resolve it back:
 
 ```bash
-iii trigger link::resolve code=iii
+iii trigger -n linkly link::resolve code=iii
 ```
 
 ```json
@@ -276,7 +276,7 @@ iii trigger link::resolve code=iii
 An unknown code resolves to `null`:
 
 ```bash
-iii trigger link::resolve code=nope
+iii trigger -n linkly link::resolve code=nope
 ```
 
 ```json
@@ -357,7 +357,7 @@ worker.registerTrigger({
 Save the file and the worker reloads with the new route registered. In this project,
 `config/http.yaml` configures the `http` container to listen on `127.0.0.1:3111`. This Compose
 setup does not start a separate in-process engine HTTP server. The `http` container provides the
-engine HTTP API and owns the route below. Now try out your new Trigger:
+project HTTP API and owns the route below. Now try out your new Trigger:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \

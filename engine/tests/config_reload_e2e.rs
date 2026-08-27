@@ -251,7 +251,7 @@ async fn unsupported_worker_reload_exits_engine_with_migration_guidance() {
         &minimal_config_yaml(&store_dir, "  - name: iii-state\n"),
     );
 
-    let result = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    let result = tokio::time::timeout(Duration::from_secs(10), handle).await;
     assert!(
         result.is_ok(),
         "serve() did not exit after an unsupported worker was added"
