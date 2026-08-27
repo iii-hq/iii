@@ -98,9 +98,10 @@ the engine output.
 
 ### Reading worker output
 
-Compose keeps each worker's complete stdout and stderr, including output written after the worker
-becomes ready. The active file rotates at 10 MiB and keeps three archives, so one worker uses at
-most about 40 MiB. Terminal control sequences are removed before output is stored or returned.
+Compose captures each worker's stdout and stderr until the worker exits, including output written
+after it becomes ready. Retained history is bounded: the active file rotates at 10 MiB and keeps
+three archives, so one worker uses at most about 40 MiB. Older output can be truncated or deleted
+after rotation. Terminal control sequences are removed before output is stored or returned.
 
 Use the logs client for a recent snapshot or a live view:
 

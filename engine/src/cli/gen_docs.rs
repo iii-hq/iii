@@ -47,6 +47,16 @@ fn delegated() -> BTreeMap<String, Delegated> {
 fn mdx_only_notes() -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert(
+        "iii compose logs".to_string(),
+        "<Note>\n  Without `--follow`, this command prints a recent snapshot and exits. With \
+         `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB \
+         active file and three archives; older output is deleted after rotation, and a cursor older \
+         than the retained history resumes from the most recent retained lines with a warning. See \
+         [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote \
+         `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.\n</Note>"
+            .to_string(),
+    );
+    map.insert(
         "iii trigger".to_string(),
         "<Note>\n  `iii trigger <function> --help` additionally queries a running engine for \
          the function's description and request schema. That output depends on which workers \

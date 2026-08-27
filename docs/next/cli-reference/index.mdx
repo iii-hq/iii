@@ -73,6 +73,10 @@ iii compose logs [OPTIONS] [WORKER]
 | `-F, --follow` | Continue waiting for new output until interrupted |
 | `--stream <STREAM>` | Restrict output to one process stream [possible values: stdout, stderr] |
 
+<Note>
+  Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
+</Note>
+
 ### `iii project`
 
 Manage iii projects (init, generate-docker)
