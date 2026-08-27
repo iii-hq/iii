@@ -57,9 +57,8 @@ cd click-streamer && pnpm install && cd ..
 
 ## Broadcast clicks in real time
 
-We'll continue to keep `link` decoupled by having it announce that a click happened, and
-`click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
-dropped event, so a regular `pubsub` event is the right tool here.
+Have `link` announce each click with a `pubsub` event. Then, have `click-streamer` push the event
+onto the live feed.
 
 ### Add a `link.clicked` event to the `link` worker
 
