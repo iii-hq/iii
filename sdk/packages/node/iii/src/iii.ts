@@ -84,15 +84,15 @@ function getOsInfo(): string {
   return `${os.platform()} ${os.release()} (${os.arch()})`
 }
 
-function getDefaultWorkerName(): string {
+function resolveWorkerName(explicitName?: string): string {
   // III_WORKER_NAME carries the orchestrator-assigned name (set by iii-worker
   // for engine-managed workers). The engine matches live registrations by
-  // name, so that identity must win over the hostname:pid fallback.
+  // name, so that identity must win over a name embedded in worker code.
   const managedName = process.env.III_WORKER_NAME
   if (managedName) {
     return managedName
   }
-  return `${os.hostname()}:${process.pid}`
+  return explicitName ?? `${os.hostname()}:${process.pid}`
 }
 
 /**
@@ -207,7 +207,7 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
-  /** Display name for this worker. Defaults to `hostname:pid`. */
+  /** Display name for this worker. A non-empty `III_WORKER_NAME` overrides it. Defaults to `hostname:pid`. */
   workerName?: string
   /**
    * Namespace this worker belongs to. Resolution order:
@@ -278,7 +278,7 @@ class Sdk implements IIIClient {
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
-    this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.workerName = resolveWorkerName(options?.workerName)
     this.namespace = resolveNamespace(options?.namespace)
     this.workerDescription = options?.workerDescription
     this.metricsReportingEnabled = options?.enableMetricsReporting ?? true

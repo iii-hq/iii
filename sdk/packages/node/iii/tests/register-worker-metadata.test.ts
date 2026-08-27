@@ -89,8 +89,20 @@ describe('registerWorkerMetadata — worker name', () => {
     expect(call.payload.name).toBe('managed-worker')
   })
 
-  it('explicit workerName option wins over III_WORKER_NAME', () => {
+  it('III_WORKER_NAME wins over an explicit workerName option', () => {
     process.env.III_WORKER_NAME = 'managed-worker'
+    const sdk = registerWorker('ws://127.0.0.1:0', {
+      workerName: 'explicit-name',
+    }) as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.name).toBe('managed-worker')
+  })
+
+  it('uses the explicit workerName when III_WORKER_NAME is unset', () => {
     const sdk = registerWorker('ws://127.0.0.1:0', {
       workerName: 'explicit-name',
     }) as unknown as InternalSdk

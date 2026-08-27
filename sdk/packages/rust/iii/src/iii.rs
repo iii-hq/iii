@@ -258,6 +258,8 @@ pub struct TelemetryOptions {
 pub struct WorkerMetadata {
     pub runtime: String,
     pub version: String,
+    /// Worker name reported to the engine. A non-empty `III_WORKER_NAME`
+    /// overrides this value when the client is created.
     pub name: String,
     pub os: String,
     /// One-line, human/LLM-readable summary of what this worker does.
@@ -306,10 +308,7 @@ impl Default for WorkerMetadata {
             // iii-worker for engine-managed workers). The engine matches live
             // registrations by name, so that identity must win over the
             // hostname:pid fallback.
-            name: std::env::var("III_WORKER_NAME")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("{}:{}", hostname, pid)),
+            name: worker_name_from_env().unwrap_or_else(|| format!("{}:{}", hostname, pid)),
             os: os_info,
             description: None,
             pid: Some(pid),
@@ -332,9 +331,21 @@ impl Default for WorkerMetadata {
     }
 }
 
+fn worker_name_from_env() -> Option<String> {
+    std::env::var("III_WORKER_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+fn apply_worker_name_from_env(metadata: &mut WorkerMetadata) {
+    if let Some(managed_name) = worker_name_from_env() {
+        metadata.name = managed_name;
+    }
+}
+
 /// Resolve the effective worker namespace: an explicit `InitOptions.namespace`
 /// wins, then the `III_NAMESPACE` env var, then `None` (the engine applies its
-/// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+/// default namespace).
 /// `namespace` option > `III_NAMESPACE` > `None` (the engine then applies its
 /// `default` namespace).
 ///
@@ -938,8 +949,12 @@ impl IIIClient {
         Self::with_metadata(address, WorkerMetadata::default())
     }
 
-    /// Create a new III with custom worker metadata
-    pub fn with_metadata(address: &str, metadata: WorkerMetadata) -> Self {
+    /// Create a new III with custom worker metadata.
+    ///
+    /// A non-empty `III_WORKER_NAME` overrides `metadata.name` so an
+    /// orchestrator can assign the worker identity.
+    pub fn with_metadata(address: &str, mut metadata: WorkerMetadata) -> Self {
+        apply_worker_name_from_env(&mut metadata);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = IIIInner {
             address: address.into(),
@@ -971,8 +986,11 @@ impl IIIClient {
         &self.inner.address
     }
 
-    /// Set custom worker metadata (call before connect)
-    pub fn set_metadata(&self, metadata: WorkerMetadata) {
+    /// Set custom worker metadata (call before connect).
+    ///
+    /// A non-empty `III_WORKER_NAME` overrides `metadata.name`.
+    pub fn set_metadata(&self, mut metadata: WorkerMetadata) {
+        apply_worker_name_from_env(&mut metadata);
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
     }
 
@@ -3080,7 +3098,7 @@ mod tests {
     // Single test covers both branches so the env var mutation is serialized
     // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
-    fn worker_metadata_default_reads_iii_worker_name_env_var() {
+    fn worker_name_resolution_prefers_iii_worker_name_env_var() {
         let previous = std::env::var("III_WORKER_NAME").ok();
 
         // SAFETY: env mutations are serialized within this test and restored at the end.
@@ -3094,9 +3112,57 @@ mod tests {
         );
 
         unsafe {
+            std::env::set_var("III_WORKER_NAME", "");
+        }
+        let metadata = WorkerMetadata {
+            name: "explicit-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", metadata);
+        let explicit_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(explicit_name, "explicit-worker");
+
+        unsafe {
             std::env::set_var("III_WORKER_NAME", "managed-worker");
         }
         assert_eq!(WorkerMetadata::default().name, "managed-worker");
+
+        let metadata = WorkerMetadata {
+            name: "explicit-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", metadata);
+        let resolved_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(resolved_name, "managed-worker");
+
+        let replacement = WorkerMetadata {
+            name: "replacement-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        iii.set_metadata(replacement);
+        let replaced_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(replaced_name, "managed-worker");
 
         unsafe {
             match previous {
