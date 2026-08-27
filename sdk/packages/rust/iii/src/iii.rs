@@ -2532,6 +2532,7 @@ pub(crate) async fn internal_create_channel(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::ffi::OsString;
 
     use serde_json::json;
 
@@ -2542,6 +2543,55 @@ mod tests {
     use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
 
     use std::sync::atomic::AtomicUsize;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ScopedEnvVar {
+        fn new(key: &'static str) -> Self {
+            let lock = ENV_MUTEX.lock_or_recover();
+            let previous = std::env::var_os(key);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+
+        fn set(&self, value: &str) {
+            // SAFETY: this guard holds the shared test mutex until the
+            // original environment value is restored.
+            unsafe {
+                std::env::set_var(self.key, value);
+            }
+        }
+
+        fn remove(&self) {
+            // SAFETY: this guard holds the shared test mutex until the
+            // original environment value is restored.
+            unsafe {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            // SAFETY: restoration happens while this guard still holds the
+            // shared test mutex, including when a test unwinds after a panic.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     /// Raw TCP listener that accepts and then holds sockets open without
     /// ever answering (or even reading) the WS handshake — the stalled /
@@ -3067,53 +3117,32 @@ mod tests {
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
-    // Single test covers both branches so the env var mutation is serialized
-    // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
     fn worker_metadata_default_reads_iii_isolation_env_var() {
-        let previous = std::env::var("III_ISOLATION").ok();
+        let env = ScopedEnvVar::new("III_ISOLATION");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_ISOLATION");
-        }
+        env.remove();
         assert!(WorkerMetadata::default().isolation.is_none());
 
-        unsafe {
-            std::env::set_var("III_ISOLATION", "docker");
-        }
+        env.set("docker");
         assert_eq!(
             WorkerMetadata::default().isolation.as_deref(),
             Some("docker")
         );
-
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_ISOLATION", val),
-                None => std::env::remove_var("III_ISOLATION"),
-            }
-        }
     }
 
-    // Single test covers both branches so the env var mutation is serialized
-    // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
     fn worker_name_resolution_prefers_iii_worker_name_env_var() {
-        let previous = std::env::var("III_WORKER_NAME").ok();
+        let env = ScopedEnvVar::new("III_WORKER_NAME");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_WORKER_NAME");
-        }
+        env.remove();
         let fallback = WorkerMetadata::default().name;
         assert!(
             fallback.ends_with(&format!(":{}", std::process::id())),
             "expected hostname:pid fallback, got {fallback}"
         );
 
-        unsafe {
-            std::env::set_var("III_WORKER_NAME", "");
-        }
+        env.set("");
         let metadata = WorkerMetadata {
             name: "explicit-worker".to_string(),
             ..WorkerMetadata::default()
@@ -3129,9 +3158,7 @@ mod tests {
             .clone();
         assert_eq!(explicit_name, "explicit-worker");
 
-        unsafe {
-            std::env::set_var("III_WORKER_NAME", "managed-worker");
-        }
+        env.set("managed-worker");
         assert_eq!(WorkerMetadata::default().name, "managed-worker");
 
         let metadata = WorkerMetadata {
@@ -3163,13 +3190,6 @@ mod tests {
             .name
             .clone();
         assert_eq!(replaced_name, "managed-worker");
-
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_WORKER_NAME", val),
-                None => std::env::remove_var("III_WORKER_NAME"),
-            }
-        }
     }
 
     #[test]
@@ -3426,17 +3446,11 @@ mod tests {
         assert!(!logs_contain("Trigger registration failed"));
     }
 
-    // Single test covers every namespace-resolution branch so the env var
-    // mutation is serialized within one function (env vars are process-global
-    // and cargo runs tests in parallel).
     #[test]
     fn namespace_resolution_reads_env_and_prefers_explicit_option() {
-        let previous = std::env::var("III_NAMESPACE").ok();
+        let env = ScopedEnvVar::new("III_NAMESPACE");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_NAMESPACE");
-        }
+        env.remove();
         // Absent everywhere -> None (engine applies its default namespace).
         assert!(WorkerMetadata::default().namespace.is_none());
         assert!(resolve_namespace(None).is_none());
@@ -3446,9 +3460,7 @@ mod tests {
             Some("payments")
         );
 
-        unsafe {
-            std::env::set_var("III_NAMESPACE", "orders");
-        }
+        env.set("orders");
         // III_NAMESPACE flows into worker metadata, mirroring III_WORKER_NAME.
         assert_eq!(
             WorkerMetadata::default().namespace.as_deref(),
@@ -3461,13 +3473,6 @@ mod tests {
             resolve_namespace(Some("payments".into())).as_deref(),
             Some("payments")
         );
-
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_NAMESPACE", val),
-                None => std::env::remove_var("III_NAMESPACE"),
-            }
-        }
     }
 
     #[tokio::test]
