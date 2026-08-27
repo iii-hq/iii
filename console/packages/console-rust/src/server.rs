@@ -29,6 +29,9 @@ pub struct ServerConfig {
     pub engine_port: u16,
     pub ws_port: u16,
     pub enable_flow: bool,
+    /// Console-event broadcast (trace-change ticks) fanned out on
+    /// `/ws/console-events`.
+    pub events: crate::bridge::ConsoleEvents,
 }
 
 pub struct AppState {
@@ -89,6 +92,40 @@ async fn serve_config(
         "version": env!("CARGO_PKG_VERSION"),
         "enableFlow": config.enable_flow,
     }))
+}
+
+/// Fan console events (trace-change ticks) out to a browser. Send-only from
+/// the browser's perspective; incoming frames are ignored except to detect
+/// close. A lagged receiver just skips ticks — the client refetches on the
+/// next one, and resyncs once per (re)connect anyway.
+async fn console_events_handler(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    let mut events = state.config.events.subscribe();
+    ws.on_upgrade(move |mut socket| async move {
+        loop {
+            tokio::select! {
+                event = events.recv() => match event {
+                    Ok(frame) => {
+                        if socket
+                            .send(axum::extract::ws::Message::Text(frame.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                incoming = socket.recv() => match incoming {
+                    Some(Ok(_)) => continue,
+                    _ => break,
+                },
+            }
+        }
+    })
 }
 
 /// Serve the index.html with runtime config
@@ -214,7 +251,8 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     let mut app = Router::new()
         .route("/", get(serve_index))
-        .route("/api/config", get(serve_config));
+        .route("/api/config", get(serve_config))
+        .route("/ws/console-events", any(console_events_handler));
 
     // IMPORTANT: Call .with_state(proxy) BEFORE merging. This converts
     // Router<Arc<ProxyState>> to Router<()>, which can be merged into
