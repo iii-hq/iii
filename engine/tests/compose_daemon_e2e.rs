@@ -774,6 +774,110 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn logs_continue_from_a_cursor_after_the_worker_is_ready() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("workers/queue/started");
+    let emit = tmp.path().join("workers/queue/emit-after-ready");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: worker-logs
+startup_timeout: 3s
+stop_timeout: 100ms
+containers:
+  queue:
+    worker: path://./workers/queue
+    scripts:
+      run: |
+        touch started
+        printf '%s\n' 'output before ready'
+        while [ ! -f emit-after-ready ]; do sleep 0.02; done
+        printf '%s\n' 'output after ready'
+        printf '%s\n' 'error after ready' >&2
+        sleep 30
+"#,
+        &["queue"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        let worker = register_test_worker(port, "worker-logs", "queue");
+        wait_for_worker_state(&daemon, "worker-logs", "queue", true).await;
+        worker
+    };
+    let (up, worker) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "project did not start: {up}");
+
+    let before = call(
+        port,
+        "compose::logs",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "queue",
+            "tail": 10,
+            "wait_ms": 1_000,
+        }),
+    )
+    .await
+    .expect("compose::logs should return startup output");
+    assert_eq!(
+        before["containers"][0]["entries"][0]["message"], "output before ready",
+        "startup output was not retained: {before}"
+    );
+    let cursor = before["containers"][0]["cursor"].clone();
+
+    std::fs::write(&emit, "now").expect("release worker output");
+    let after = call(
+        port,
+        "compose::logs",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "queue",
+            "cursors": { "queue": cursor },
+            "tail": 10,
+            "wait_ms": 2_000,
+        }),
+    )
+    .await
+    .expect("compose::logs should continue after its cursor");
+    let entries = after["containers"][0]["entries"]
+        .as_array()
+        .expect("log entries");
+    assert!(
+        entries.iter().any(|entry| {
+            entry["stream"] == "stdout" && entry["message"] == "output after ready"
+        }),
+        "stdout after readiness was not returned: {after}"
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry["stream"] == "stderr" && entry["message"] == "error after ready"
+        }),
+        "stderr after readiness was not returned: {after}"
+    );
+
+    worker.shutdown_async().await;
+    call(
+        port,
+        "compose::down",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::down should stop the fixture");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_second_daemon_on_one_engine_is_refused() {
     isolate_state();
     let port = spawn_engine().await;

@@ -215,8 +215,10 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
-        // One command now: what used to be subcommands are `compose::*` calls.
-        Some(Commands::Compose(_)) => "compose".to_string(),
+        Some(Commands::Compose(args)) => match &args.command {
+            Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
+            None => "compose".to_string(),
+        },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
@@ -796,7 +798,6 @@ mod tests {
         for removed in [
             ["iii", "compose", "up"],
             ["iii", "compose", "down"],
-            ["iii", "compose", "logs"],
             ["iii", "compose", "validate"],
         ] {
             assert!(

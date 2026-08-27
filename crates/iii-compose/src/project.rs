@@ -30,8 +30,9 @@ use tokio::sync::{Mutex, RwLock};
 use crate::{
     config::ComposeFile,
     engine::EngineClient,
-    error::Result,
+    error::{ComposeError, Result},
     lifecycle::{self, Children, LifecycleCtx, OpResult},
+    logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
 };
@@ -52,6 +53,7 @@ pub struct Project {
     /// projects.
     engine: Arc<EngineClient>,
     post_runs: crate::hooks::PostRunSupervisor,
+    logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
 }
@@ -94,6 +96,11 @@ impl Project {
         let mut state =
             recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
         state.namespace = project_namespace.clone();
+        let log_dir = store.dir().join("logs");
+        let logs = LogStore::open(log_dir.clone()).map_err(|source| ComposeError::Io {
+            path: log_dir,
+            source,
+        })?;
 
         let project = Arc::new(Self {
             file: RwLock::new(file),
@@ -103,6 +110,7 @@ impl Project {
             engine_url,
             engine,
             post_runs: crate::hooks::PostRunSupervisor::default(),
+            logs,
             store,
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
@@ -360,12 +368,6 @@ impl Project {
         self.store.dir().join("config")
     }
 
-    /// Where each container's own output is written. Beside the project's
-    /// state, so a project that is removed takes its logs with it.
-    fn log_dir(&self) -> PathBuf {
-        self.store.dir().join("logs")
-    }
-
     /// Per-container VM state for bundle containers: rootfs, boot script, pid
     /// file. Keyed by project rather than by worker name, so two projects
     /// running the same bundle under the same container key stay apart.
@@ -385,7 +387,6 @@ impl Project {
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -400,7 +401,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -421,7 +422,6 @@ impl Project {
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Option<OpResult> {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -436,7 +436,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -468,7 +468,6 @@ impl Project {
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult) {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -487,7 +486,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -534,7 +533,6 @@ impl Project {
         operation_id: String,
     ) -> (OpResult, OpResult) {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -550,7 +548,7 @@ impl Project {
                 project_namespace: &self.project_namespace,
                 engine_url: &self.engine_url,
                 config_dir: &config_dir,
-                log_dir: &log_dir,
+                logs: &self.logs,
                 package_cache: &package_cache,
                 vm_dir: &vm_dir,
             };
@@ -577,7 +575,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -601,7 +599,6 @@ impl Project {
     /// not take the container's graph with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -616,7 +613,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -632,7 +629,6 @@ impl Project {
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -647,7 +643,7 @@ impl Project {
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -682,10 +678,49 @@ impl Project {
                     },
                     pid: record.map(|r| r.pid),
                     owned: inner.children.contains_key(key),
+                    log_path: self.logs.path(key),
                     last_error: record.and_then(|r| r.last_error.clone()),
                 }
             })
             .collect()
+    }
+
+    /// Reads retained stdout and stderr without exposing arbitrary host paths.
+    pub async fn logs(
+        &self,
+        container: Option<&str>,
+        cursors: BTreeMap<String, LogCursor>,
+        tail: usize,
+        stream: Option<LogStream>,
+        wait_ms: u64,
+    ) -> Result<LogsOutcome> {
+        let file = self.file.read().await;
+        let containers = match container {
+            Some(container) if file.containers.contains_key(container) => {
+                vec![container.to_string()]
+            }
+            Some(container) => {
+                return Err(ComposeError::UnknownContainer {
+                    container: container.to_string(),
+                });
+            }
+            None => file.containers.keys().cloned().collect(),
+        };
+        drop(file);
+
+        self.logs
+            .query(
+                containers,
+                cursors,
+                tail,
+                stream,
+                Duration::from_millis(wait_ms.min(crate::logs::MAX_WAIT_MS)),
+            )
+            .await
+            .map_err(|source| ComposeError::Io {
+                path: self.logs.dir().to_path_buf(),
+                source,
+            })
     }
 
     /// Leaves without touching what was not started here.
@@ -739,6 +774,8 @@ pub struct ContainerStatus {
     pub pid: Option<u32>,
     /// Whether this daemon owns the process (started it and can stop it).
     pub owned: bool,
+    /// Rotating stdout and stderr file on the daemon host.
+    pub log_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }

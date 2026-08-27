@@ -224,13 +224,15 @@ restart, update, and shutdown lifecycle:
 ```bash
 iii trigger -n dev compose::add worker=state
 iii trigger -n dev compose::status file=worker-compose.yaml
+iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
 iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
 iii trigger -n dev compose::update file=worker-compose.yaml worker=state
 iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 
 `iii worker` and `worker::*` were removed. Use `engine::workers::list` for live registrations and
-`compose::status` for the supervisor's process state.
+`compose::status` for the supervisor's process state. Use `compose::logs` for raw worker stdout and
+stderr.
 
 ## Discovery surface
 
@@ -243,6 +245,7 @@ iii trigger -n dev compose::down file=worker-compose.yaml
 | `engine::triggers::info { id }` | One trigger type's config / return schema + provider. |
 | `engine::registered-triggers::list` | Every trigger INSTANCE bound. Filter `function_id` / `worker`. |
 | `compose::status` | Declared containers, process state, PID, ownership, and last error. |
+| `compose::logs` | Bounded worker stdout/stderr entries and continuation cursors. |
 | `compose::list` | Projects held by one Compose daemon. |
 | `directory::registry::workers::list` | Workers published in the public registry. Filter `search`. |
 | `directory::registry::workers::info { name }` | A registry worker's README, config, API reference, and skills. |

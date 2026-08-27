@@ -27,7 +27,9 @@ fn bare_compose_serves_in_the_foreground() {
     // The address is asserted in the III_URL test and nowhere else: it reads
     // process-wide state, and two tests reading it while one writes it is a
     // flake waiting for a loaded machine.
-    let ComposeCommand::Serve { .. } = parse(&["iii", "compose"]).plan().unwrap();
+    let ComposeCommand::Serve { .. } = parse(&["iii", "compose"]).plan().unwrap() else {
+        panic!("expected serve command");
+    };
 }
 
 #[test]
@@ -48,7 +50,10 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
         ..
     } = parse(&["iii", "compose", "--namespace", "pc-da-xuxa"])
         .plan()
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("expected serve command");
+    };
     assert_eq!(explicit_daemon_namespace.as_deref(), Some("pc-da-xuxa"));
 }
 
@@ -102,7 +107,6 @@ fn the_project_flags_are_gone_rather_than_ignored() {
         &["iii", "compose", "--file", "c.yaml"][..],
         &["iii", "compose", "--id", "a"][..],
         &["iii", "compose", "down"][..],
-        &["iii", "compose", "logs"][..],
         &["iii", "compose", "stop"][..],
         // Backgrounding is the supervisor's job, not compose's: it never
         // daemonises itself, so there is nothing to attach back to.
@@ -126,11 +130,53 @@ fn a_programmatic_file_without_up_is_refused() {
         ns: None,
         up: false,
         file: Some("other.yaml".into()),
+        command: None,
     }
     .plan()
     .expect_err("a public ComposeCli must enforce the same rule as clap");
 
     assert_eq!(err.code(), "FILE_REQUIRES_UP");
+}
+
+#[test]
+fn logs_resolves_to_a_remote_read_without_starting_a_daemon() {
+    let ComposeCommand::Logs {
+        container,
+        tail,
+        follow,
+        stream,
+        ..
+    } = parse(&[
+        "iii",
+        "compose",
+        "logs",
+        "queue",
+        "--namespace",
+        "dev",
+        "--tail",
+        "50",
+        "--follow",
+        "--stream",
+        "stderr",
+    ])
+    .plan()
+    .unwrap()
+    else {
+        panic!("expected logs command");
+    };
+
+    assert_eq!(container.as_deref(), Some("queue"));
+    assert_eq!(tail, 50);
+    assert!(follow);
+    assert_eq!(stream, Some(iii_compose::logs::LogStream::Stderr));
+}
+
+#[test]
+fn logs_rejects_an_unbounded_initial_tail() {
+    let error = Wrapper::try_parse_from(["iii", "compose", "logs", "--tail", "1001"])
+        .expect_err("the CLI should bound one log response");
+
+    assert!(error.to_string().contains("tail must not exceed 1000"));
 }
 
 #[test]
@@ -167,7 +213,10 @@ fn bare_compose_starts_holding_nothing() {
     let ComposeCommand::Serve { file, start, .. } =
         parse(&["iii", "compose", "--engine", "ws://shared:49134"])
             .plan()
-            .unwrap();
+            .unwrap()
+    else {
+        panic!("expected serve command");
+    };
     assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
     assert!(!start, "a bare daemon must not start the default file");
 }
@@ -176,7 +225,10 @@ fn bare_compose_starts_holding_nothing() {
 fn up_names_the_file_in_the_current_directory() {
     // The point of the flag: in a project directory, one option starts it.
     let ComposeCommand::Serve { file, start, .. } =
-        parse(&["iii", "compose", "--up"]).plan().unwrap();
+        parse(&["iii", "compose", "--up"]).plan().unwrap()
+    else {
+        panic!("expected serve command");
+    };
     assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
     assert!(start);
 }
@@ -201,7 +253,10 @@ fn production_docker_compose_command_matches_the_cli() {
         file,
         start,
         ..
-    } = cli.plan().unwrap();
+    } = cli.plan().unwrap()
+    else {
+        panic!("expected serve command");
+    };
 
     assert_eq!(explicit_daemon_namespace.as_deref(), Some("production"));
     assert_eq!(file, std::path::Path::new("/app/worker-compose.yaml"));
@@ -214,7 +269,10 @@ fn up_without_a_cli_namespace_defers_to_the_compose_file() {
         explicit_daemon_namespace,
         start,
         ..
-    } = parse(&["iii", "compose", "--up"]).plan().unwrap();
+    } = parse(&["iii", "compose", "--up"]).plan().unwrap()
+    else {
+        panic!("expected serve command");
+    };
 
     assert_eq!(explicit_daemon_namespace, None);
     assert!(start);
@@ -316,7 +374,10 @@ fn up_takes_a_file_of_its_own() {
     let ComposeCommand::Serve { file, start, .. } =
         parse(&["iii", "compose", "--up", "-f", "./other.yaml"])
             .plan()
-            .unwrap();
+            .unwrap()
+    else {
+        panic!("expected serve command");
+    };
     assert_eq!(file, std::path::Path::new("./other.yaml"));
     assert!(start);
 }
@@ -335,7 +396,10 @@ fn the_namespace_reads_the_same_on_either_side_of_the_up_flag() {
             explicit_daemon_namespace,
             start,
             ..
-        } = cli.plan().unwrap();
+        } = cli.plan().unwrap()
+        else {
+            panic!("expected serve command");
+        };
         assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
         assert!(start, "{args:?} should still enable --up");
     }

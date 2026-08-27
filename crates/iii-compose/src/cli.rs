@@ -23,9 +23,12 @@
 
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 
-use crate::error::{ComposeError, Result};
+use crate::{
+    error::{ComposeError, Result},
+    logs::LogStream,
+};
 
 /// Compose file used when `--file` is not given: the one in the current
 /// directory. Running compose from inside a project should not require naming
@@ -33,6 +36,7 @@ use crate::error::{ComposeError, Result};
 pub const DEFAULT_COMPOSE_FILE: &str = "worker-compose.yaml";
 
 #[derive(Args, Debug, Clone)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct ComposeCli {
     /// Existing engine WebSocket address. Overrides the compose file and
     /// III_URL. The local default is used when none of them supplies a URL.
@@ -64,6 +68,61 @@ pub struct ComposeCli {
     /// call names no file.
     #[arg(short = 'f', long, value_name = "PATH", requires = "up")]
     pub file: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: Option<ComposeSubcommand>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ComposeSubcommand {
+    /// Read retained worker stdout and stderr from a running Compose daemon.
+    Logs(ComposeLogsCli),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ComposeLogsCli {
+    /// Worker to read. Omit to read every worker in the project.
+    #[arg(value_name = "WORKER")]
+    pub worker: Option<String>,
+
+    /// Existing engine WebSocket address. The compose file and III_URL are
+    /// used when omitted.
+    #[arg(long, value_name = "URL")]
+    pub engine: Option<String>,
+
+    /// Namespace of the Compose daemon that owns the project.
+    #[arg(short = 'n', long = "namespace", value_name = "NS")]
+    pub namespace: Option<String>,
+
+    /// Compose file path on the daemon host. The daemon's default file is used
+    /// when omitted.
+    #[arg(short = 'f', long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
+
+    /// Number of recent lines to show before following new output.
+    #[arg(long, default_value_t = crate::logs::DEFAULT_TAIL_LINES, value_parser = parse_tail)]
+    pub tail: usize,
+
+    /// Continue waiting for new output until interrupted.
+    #[arg(short = 'F', long)]
+    pub follow: bool,
+
+    /// Restrict output to one process stream.
+    #[arg(long, value_enum)]
+    pub stream: Option<LogStream>,
+}
+
+fn parse_tail(value: &str) -> std::result::Result<usize, String> {
+    let tail = value
+        .parse::<usize>()
+        .map_err(|_| "tail must be a non-negative integer".to_string())?;
+    if tail > crate::logs::MAX_TAIL_LINES {
+        return Err(format!(
+            "tail must not exceed {}",
+            crate::logs::MAX_TAIL_LINES
+        ));
+    }
+    Ok(tail)
 }
 
 /// What an invocation resolved to, after the flag combination is checked.
@@ -81,11 +140,33 @@ pub enum ComposeCommand {
         /// Whether to bring `file` up before the first call arrives.
         start: bool,
     },
+    /// Read process output through the already-running daemon.
+    Logs {
+        explicit_engine_url: Option<String>,
+        explicit_daemon_namespace: Option<String>,
+        file: Option<PathBuf>,
+        container: Option<String>,
+        tail: usize,
+        follow: bool,
+        stream: Option<LogStream>,
+    },
 }
 
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
+        if let Some(ComposeSubcommand::Logs(logs)) = &self.command {
+            return Ok(ComposeCommand::Logs {
+                explicit_engine_url: logs.engine.clone().filter(|url| !url.trim().is_empty()),
+                explicit_daemon_namespace: validated_namespace(logs.namespace.as_deref())?,
+                file: logs.file.clone(),
+                container: logs.worker.clone(),
+                tail: logs.tail.min(crate::logs::MAX_TAIL_LINES),
+                follow: logs.follow,
+                stream: logs.stream,
+            });
+        }
+
         if !self.up && self.file.is_some() {
             return Err(ComposeError::FileRequiresUp);
         }
@@ -125,28 +206,7 @@ impl ComposeCli {
     /// `--namespace` as given, checked. `None` when it was not given — the caller
     /// decides whether to inherit the compose file namespace or use `default`.
     pub fn validated_namespace(&self) -> Result<Option<String>> {
-        let Some(namespace) = &self.ns else {
-            return Ok(None);
-        };
-
-        let namespace = namespace.trim();
-        // The same rule `name:` is held to. It used to be looser here — a path
-        // separator was refused but a space was not — while `name:` was
-        // silently rewritten, so one string meant two different namespaces
-        // depending on which of the two the operator used to say it.
-        let reason = if namespace.is_empty() {
-            Some("it is empty")
-        } else {
-            crate::namespace::check(namespace).err()
-        };
-
-        match reason {
-            Some(reason) => Err(ComposeError::InvalidNamespace {
-                namespace: namespace.to_string(),
-                reason,
-            }),
-            None => Ok(Some(namespace.to_string())),
-        }
+        validated_namespace(self.ns.as_deref())
     }
 
     /// Returns the explicit process-level engine selection. File and default
@@ -156,5 +216,30 @@ impl ComposeCli {
             .clone()
             .filter(|url| !url.trim().is_empty())
             .or_else(|| std::env::var("III_URL").ok().filter(|url| !url.is_empty()))
+    }
+}
+
+fn validated_namespace(namespace: Option<&str>) -> Result<Option<String>> {
+    let Some(namespace) = namespace else {
+        return Ok(None);
+    };
+
+    let namespace = namespace.trim();
+    // The same rule `name:` is held to. It used to be looser here — a path
+    // separator was refused but a space was not — while `name:` was
+    // silently rewritten, so one string meant two different namespaces
+    // depending on which of the two the operator used to say it.
+    let reason = if namespace.is_empty() {
+        Some("it is empty")
+    } else {
+        crate::namespace::check(namespace).err()
+    };
+
+    match reason {
+        Some(reason) => Err(ComposeError::InvalidNamespace {
+            namespace: namespace.to_string(),
+            reason,
+        }),
+        None => Ok(Some(namespace.to_string())),
     }
 }

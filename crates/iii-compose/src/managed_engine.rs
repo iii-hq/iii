@@ -538,14 +538,14 @@ enum TerminalState {
 /// suppressed, which fails closed instead of letting their payload reach a
 /// terminal through `tail -f` or an error summary.
 #[derive(Debug, Default)]
-struct TerminalSanitizer {
+pub(crate) struct TerminalSanitizer {
     state: TerminalState,
     utf8: Vec<u8>,
     utf8_expected: usize,
 }
 
 impl TerminalSanitizer {
-    fn sanitize(&mut self, bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn sanitize(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut clean = Vec::with_capacity(bytes.len());
 
         for &input in bytes {

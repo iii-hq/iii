@@ -34,6 +34,7 @@ use crate::{
     engine::EngineClient,
     error::{ComposeError, Result},
     hooks,
+    logs::LogStore,
     manifest::{StartSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report,
@@ -99,10 +100,8 @@ pub struct LifecycleCtx<'a> {
     pub config_dir: &'a std::path::Path,
     /// Where installed packages live, shared across projects on this machine.
     pub package_cache: &'a std::path::Path,
-    /// Where a child's own output is written. Compose neither prints nor
-    /// serves it — this is the record for a worker that dies before it can
-    /// tell the engine anything.
-    pub log_dir: &'a std::path::Path,
+    /// Persistent, bounded stdout and stderr for every project worker.
+    pub logs: &'a LogStore,
     /// Root of the per-container VM state for bundle containers.
     pub vm_dir: &'a std::path::Path,
 }
@@ -747,7 +746,7 @@ async fn start_one_until_shutdown(
         })?;
     // Capture before waiting on readiness: whatever the child prints while
     // starting is exactly what an operator needs when it does not.
-    let capture = report::capture_output(key, output.stdout, output.stderr, ctx.log_dir);
+    ctx.logs.capture(key, output.stdout, output.stderr);
 
     let readiness = if let Some(signal) = shutdown.as_mut() {
         tokio::select! {
@@ -763,7 +762,7 @@ async fn start_one_until_shutdown(
                 &child,
                 container.startup_timeout,
                 &baseline,
-                ctx.log_dir,
+                ctx.logs.dir(),
             ) => readiness,
         }
     } else {
@@ -774,7 +773,7 @@ async fn start_one_until_shutdown(
                 &child,
                 container.startup_timeout,
                 &baseline,
-                ctx.log_dir,
+                ctx.logs.dir(),
             )
             .await
     };
@@ -786,11 +785,6 @@ async fn start_one_until_shutdown(
         fire_post_run(ctx, &spawn_ctx, container).await;
         return Err(StartFailure::Failed(error));
     }
-
-    // Registered: the engine can hear it now, so its own logging is the record
-    // and compose stops keeping a second one. What stays on disk is the boot,
-    // which is the part the engine never saw.
-    capture.stop();
 
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
     Ok((record, child))
