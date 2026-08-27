@@ -67,6 +67,7 @@ before adding it.
 
 ```bash
 iii trigger -n dev compose::status file=worker-compose.yaml
+iii compose logs state --follow --namespace dev
 iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
 iii trigger -n dev compose::update file=worker-compose.yaml worker=state
 iii trigger -n dev compose::down file=worker-compose.yaml
@@ -77,6 +78,7 @@ and restarts the project. `compose::down` stops containers in reverse dependency
 
 Use `engine::workers::list` and `engine::workers::info` for the engine's live connection view. Use
 `compose::status` for process ownership, PID, and the last supervisor error.
+Use `iii compose logs <worker> --follow --namespace <daemon>` for live raw stdout and stderr.
 
 ## Configuration
 

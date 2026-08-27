@@ -21,7 +21,7 @@
 //! fall back to `worker-compose.yaml` in the daemon's own directory, and say
 //! so when there is none.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use iii_sdk::{Error, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
@@ -32,6 +32,7 @@ use crate::{
     daemon::Daemon,
     error::ComposeError,
     lifecycle::{OpResult, OpStatus},
+    logs::{LogCursor, LogStream, LogsOutcome},
     project::ContainerStatus,
 };
 
@@ -66,6 +67,14 @@ pub struct ComposeRequest {
     /// This is the canonical `compose::add` JSON field. The singular `worker`
     /// field remains accepted for clients that used the old contract.
     pub workers: Option<Vec<String>>,
+    /// Last cursor returned for each selected worker.
+    pub cursors: Option<BTreeMap<String, LogCursor>>,
+    /// Number of recent lines returned when no cursor is supplied.
+    pub tail: Option<usize>,
+    /// Restrict logs to stdout or stderr.
+    pub stream: Option<LogStream>,
+    /// Long-poll budget. Bounded by the daemon.
+    pub wait_ms: Option<u64>,
     /// Function or file contract requested by `compose::schema`.
     pub function_id: Option<String>,
 }
@@ -146,6 +155,29 @@ struct RestartOptions {
     container: Option<String>,
     /// Alias for `container`.
     worker: Option<String>,
+}
+
+/// Request fields used by `compose::logs`.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct LogsOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
+    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
+    /// the daemon working directory.
+    file: Option<String>,
+    /// Container whose process output should be read. Omit for every worker.
+    container: Option<String>,
+    /// Alias for `container`.
+    worker: Option<String>,
+    /// Last cursor returned for each selected worker.
+    cursors: Option<BTreeMap<String, LogCursor>>,
+    /// Recent line count for the first request. Default 100, maximum 1000.
+    tail: Option<usize>,
+    /// Restrict output to stdout or stderr.
+    stream: Option<LogStream>,
+    /// Wait this many milliseconds for new output. Maximum 5000.
+    wait_ms: Option<u64>,
 }
 
 /// `compose::schema` request. Omit `function_id` to return every contract.
@@ -297,6 +329,7 @@ enum Operation {
     Down,
     List,
     Status,
+    Logs,
     Stop,
     Validate,
     Add,
@@ -312,6 +345,7 @@ const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("down", Operation::Down),
     ("list", Operation::List),
     ("status", Operation::Status),
+    ("logs", Operation::Logs),
     ("stop", Operation::Stop),
     ("validate", Operation::Validate),
     ("add", Operation::Add),
@@ -438,6 +472,20 @@ async fn dispatch(
             })),
             Err(err) => Err(compose_error(&err)),
         },
+        Operation::Logs => match daemon
+            .logs(
+                file.as_deref(),
+                request.container.as_deref().or(request.worker.as_deref()),
+                request.cursors.unwrap_or_default(),
+                request.tail.unwrap_or(crate::logs::DEFAULT_TAIL_LINES),
+                request.stream,
+                request.wait_ms.unwrap_or_default(),
+            )
+            .await
+        {
+            Ok(logs) => Ok(to_value(&logs)),
+            Err(err) => Err(compose_error(&err)),
+        },
         // Answers first, exits after: the serve loop picks the request up and
         // runs the same teardown a signal would.
         Operation::Stop => Ok(daemon.request_stop().await),
@@ -513,6 +561,10 @@ fn op_description(function_id: &str) -> &'static str {
             "Report the project namespace, state directory, daemon pid, and \
              current state of every declared container."
         }
+        "compose::logs" => {
+            "Read bounded worker stdout and stderr. A cursor continues from the last response; \
+             callers may long-poll for new output."
+        }
         "compose::stop" => {
             "Ask this compose daemon to stop every project and exit after it \
              answers the caller."
@@ -557,6 +609,7 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
         "compose::down" => (60_000, true),
         "compose::list" => (10_000, true),
         "compose::status" => (10_000, true),
+        "compose::logs" => (10_000, true),
         "compose::stop" => (30_000, false),
         "compose::validate" => (10_000, true),
         "compose::add" => (600_000, false),
@@ -594,6 +647,11 @@ fn schema_table() -> &'static [SchemaTriple] {
                 "compose::status",
                 schema_for_value::<ProjectOptions>(),
                 schema_for_value::<StatusOutcome>(),
+            ),
+            (
+                "compose::logs",
+                schema_for_value::<LogsOptions>(),
+                schema_for_value::<LogsOutcome>(),
             ),
             (
                 "compose::stop",
@@ -806,6 +864,22 @@ mod tests {
         let (_, list, _) = schema_entry("compose::list");
         let list = list.as_ref().unwrap()["properties"].as_object().unwrap();
         assert_eq!(list.keys().collect::<Vec<_>>(), vec!["namespace"]);
+
+        let (_, logs, _) = schema_entry("compose::logs");
+        let logs = logs.as_ref().unwrap()["properties"].as_object().unwrap();
+        for field in [
+            "namespace",
+            "file",
+            "container",
+            "worker",
+            "cursors",
+            "tail",
+            "stream",
+            "wait_ms",
+        ] {
+            assert!(logs.contains_key(field), "compose::logs is missing {field}");
+        }
+        assert!(!logs.contains_key("workers"));
     }
 
     #[test]

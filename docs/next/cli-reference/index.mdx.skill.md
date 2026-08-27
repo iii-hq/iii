@@ -40,6 +40,7 @@ Without `--up`, worker-compose.yaml supplies daemon defaults but no project star
 
 ```text
 iii compose [OPTIONS]
+iii compose <COMMAND>
 ```
 
 | Option | Description |
@@ -48,6 +49,31 @@ iii compose [OPTIONS]
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
+
+#### `iii compose logs`
+
+Read retained worker stdout and stderr from a running Compose daemon
+
+```text
+iii compose logs [OPTIONS] [WORKER]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[WORKER]` | Worker to read. Omit to read every worker in the project |
+
+| Option | Description |
+| ------ | ----------- |
+| `--engine <URL>` | Existing engine WebSocket address. The compose file and III_URL are used when omitted |
+| `-n, --namespace <NS>` | Namespace of the Compose daemon that owns the project |
+| `-f, --file <PATH>` | Compose file path on the daemon host. The daemon's default file is used when omitted |
+| `--tail <TAIL>` | Number of recent lines to show before following new output [default: 100] |
+| `-F, --follow` | Continue waiting for new output until interrupted |
+| `--stream <STREAM>` | Restrict output to one process stream [possible values: stdout, stderr] |
+
+<Note>
+  Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
+</Note>
 
 ### `iii project`
 

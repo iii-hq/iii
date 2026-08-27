@@ -29,6 +29,7 @@ pub mod error;
 pub mod hooks;
 pub mod interpolate;
 pub mod lifecycle;
+pub mod logs;
 mod managed_engine;
 pub mod manifest;
 pub mod namespace;
@@ -41,7 +42,7 @@ mod shutdown;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand};
+pub use cli::{ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
@@ -117,7 +118,216 @@ pub async fn run(cli: ComposeCli) -> i32 {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
+        ComposeCommand::Logs {
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            container,
+            tail,
+            follow,
+            stream,
+        } => match follow_worker_logs(
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            container,
+            tail,
+            follow,
+            stream,
+        )
+        .await
+        {
+            Ok(()) => 0,
+            Err(err) => report_error(&err),
+        },
     }
+}
+
+async fn follow_worker_logs(
+    explicit_engine_url: Option<String>,
+    explicit_daemon_namespace: Option<String>,
+    file: Option<std::path::PathBuf>,
+    container: Option<String>,
+    tail: usize,
+    follow: bool,
+    stream: Option<logs::LogStream>,
+) -> Result<()> {
+    use iii_sdk::{InitOptions, protocol::TriggerRequest, register_worker};
+
+    let local_config_path = file
+        .as_deref()
+        .unwrap_or_else(|| std::path::Path::new(cli::DEFAULT_COMPOSE_FILE));
+    let local_file = load_invocation_file(local_config_path, false)?;
+    let daemon_namespace = resolve_daemon_namespace(explicit_daemon_namespace, local_file.as_ref());
+    let environment_engine_url = std::env::var("III_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty());
+    let engine_url = match resolve_engine_mode(
+        local_file.as_ref(),
+        false,
+        explicit_engine_url.as_deref(),
+        environment_engine_url.as_deref(),
+    ) {
+        EngineMode::Managed { url } | EngineMode::External { url } => url,
+    };
+
+    let client = register_worker(
+        &engine_url,
+        InitOptions {
+            metadata: Some(iii_sdk::iii::WorkerMetadata {
+                name: format!(
+                    "compose-logs:{}:{}",
+                    std::process::id(),
+                    uuid::Uuid::new_v4()
+                ),
+                description: Some("Read retained Compose worker output".to_string()),
+                ..Default::default()
+            }),
+            // Environment namespace belongs to managed workers, not to this
+            // short-lived operator client. Every call below routes explicitly.
+            namespace: Some(namespace::DEFAULT_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+    );
+    let mut cursors = std::collections::BTreeMap::new();
+    let mut first = true;
+
+    loop {
+        let mut payload = serde_json::Map::new();
+        if let Some(file) = &file {
+            payload.insert(
+                "file".to_string(),
+                serde_json::Value::String(file.to_string_lossy().into_owned()),
+            );
+        }
+        if let Some(container) = &container {
+            payload.insert(
+                "container".to_string(),
+                serde_json::Value::String(container.clone()),
+            );
+        }
+        if let Some(stream) = stream {
+            payload.insert(
+                "stream".to_string(),
+                serde_json::Value::String(match stream {
+                    logs::LogStream::Stdout => "stdout".to_string(),
+                    logs::LogStream::Stderr => "stderr".to_string(),
+                }),
+            );
+        }
+        payload.insert("tail".to_string(), serde_json::json!(tail));
+        if !cursors.is_empty() {
+            let values = cursors
+                .iter()
+                .map(|(container, cursor): (&String, &logs::LogCursor)| {
+                    (
+                        container.clone(),
+                        serde_json::json!({
+                            "generation": cursor.generation,
+                            "offset": cursor.offset,
+                        }),
+                    )
+                })
+                .collect();
+            payload.insert("cursors".to_string(), serde_json::Value::Object(values));
+        }
+        if follow {
+            payload.insert("wait_ms".to_string(), serde_json::json!(logs::MAX_WAIT_MS));
+        }
+
+        let request = TriggerRequest {
+            function_id: "compose::logs".to_string(),
+            payload: serde_json::Value::Object(payload),
+            action: None,
+            timeout_ms: Some(10_000),
+        }
+        .namespace(&daemon_namespace);
+
+        let result = tokio::select! {
+            result = client.trigger(request) => Some(result),
+            _ = tokio::signal::ctrl_c(), if follow => None,
+        };
+        let Some(result) = result else {
+            client.shutdown_async().await;
+            return Ok(());
+        };
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                client.shutdown_async().await;
+                return Err(ComposeError::EngineCallFailed {
+                    function: "compose::logs".to_string(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        let outcome: logs::LogsOutcome = match serde_json::from_value(value) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                client.shutdown_async().await;
+                return Err(ComposeError::EngineCallFailed {
+                    function: "compose::logs".to_string(),
+                    message: format!("daemon returned an invalid log response: {error}"),
+                });
+            }
+        };
+
+        if let Err(source) = print_worker_logs(outcome, &mut cursors) {
+            client.shutdown_async().await;
+            if source.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(ComposeError::Io {
+                path: std::path::PathBuf::from("<stdout>"),
+                source,
+            });
+        }
+
+        if !follow {
+            client.shutdown_async().await;
+            return Ok(());
+        }
+        if first && cursors.is_empty() {
+            // A project can be declared before any worker has produced output.
+            // Avoid a hot loop until the daemon has a file it can long-poll.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        first = false;
+    }
+}
+
+fn print_worker_logs(
+    outcome: logs::LogsOutcome,
+    cursors: &mut std::collections::BTreeMap<String, logs::LogCursor>,
+) -> std::io::Result<()> {
+    use colored::Colorize;
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout().lock();
+    for batch in outcome.containers {
+        let color = report::container_color(&batch.container);
+        for entry in batch.entries {
+            let tag = match entry.stream {
+                logs::LogStream::Stdout => format!("[{}]", batch.container).color(color),
+                logs::LogStream::Stderr => format!("[{}]", batch.container).color(color).bold(),
+            };
+            writeln!(stdout, "{tag} {}", entry.message)?;
+        }
+        if batch.truncated {
+            eprintln!(
+                "{}",
+                format!(
+                    "[{}] older output is no longer retained; showing the most recent retained lines",
+                    batch.container
+                )
+                .yellow()
+            );
+        }
+        if let Some(cursor) = batch.cursor {
+            cursors.insert(batch.container, cursor);
+        }
+    }
+    stdout.flush()
 }
 
 /// Serves `compose::*` until asked to stop.

@@ -15,9 +15,10 @@ The daemon is itself a worker. It registers under the name `compose` in a namesp
 exposes the `compose::*` functions there, so every project operation is a normal
 [trigger](./triggers), addressed to one daemon with `--namespace`.
 
-`iii compose` is intentionally a verbless top-level daemon command, analogous to `iii console`.
-It reads `worker-compose.yaml` when the file exists so the namespace and engine URL can configure
-the daemon. The `--up` flag also loads the file as a project and starts its containers.
+Bare `iii compose` is the daemon command. It reads `worker-compose.yaml` when the file exists so
+the namespace and engine URL can configure the daemon. The `--up` flag also loads the file as a
+project and starts its containers. `iii compose logs` is a read-only client for a daemon that is
+already running.
 
 ## The daemon
 
@@ -101,6 +102,27 @@ namespace uses at most about 40 MiB for engine logs. The printed follow command 
 active `engine.log` across rotations. Compose strips terminal control sequences before persisting
 the engine output.
 
+### Reading worker output
+
+Compose captures each worker's stdout and stderr until the worker exits, including output written
+after it becomes ready. Retained history is bounded: the active file rotates at 10 MiB and keeps
+three archives, so one worker uses at most about 40 MiB. Older output can be truncated or deleted
+after rotation. Terminal control sequences are removed before output is stored or returned.
+
+Use the logs client for a recent snapshot or a live view:
+
+```bash
+iii compose logs                         # last 100 lines from every worker
+iii compose logs queue --tail 200        # one worker
+iii compose logs queue --follow          # keep waiting for new output
+iii compose logs queue --stream stderr   # only stderr
+iii compose logs queue --namespace dev --engine ws://127.0.0.1:49134
+```
+
+Options for the logs client come after `logs`. `--file` names a compose file on the daemon host;
+when it is omitted, the daemon uses `worker-compose.yaml` in its own working directory. Each line
+is prefixed with the worker name, and stderr uses a bold prefix on a terminal.
+
 A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
 stopped whatever came up, so there is nothing left to supervise.
 
@@ -158,6 +180,10 @@ All functions accept the same payload.
 | `worker`    | string | A repeatable CLI argument for `add`; one worker for `remove`, `restart`, and `update`. |
 | `workers`   | string[] | The canonical JSON list used by `add`.                                          |
 | `function_id` | string | The function or file contract requested by `compose::schema`.                  |
+| `cursors`   | object | Last cursor returned for each worker by `compose::logs`.                          |
+| `tail`      | number | Recent lines returned by the first `compose::logs` call. Maximum 1000.             |
+| `stream`    | string | Optional `stdout` or `stderr` filter for `compose::logs`.                          |
+| `wait_ms`   | number | Long-poll budget for `compose::logs`. Maximum 5000 milliseconds.                   |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
 project however it was spelled, so there is no second identity to keep in sync and no way to point
@@ -175,6 +201,7 @@ one at the wrong file.
 | `compose::up`       | `file`    | An operation result.                                                           |
 | `compose::down`     | `file`    | An operation result.                                                           |
 | `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
+| `compose::logs`     | `file`, `worker` | Bounded stdout/stderr entries and one cursor per worker.                  |
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
 | `compose::add`      | `file`, `workers` | What the edit did, changed workers restarted, and new workers started.  |
@@ -241,6 +268,7 @@ answer.
 iii trigger compose::up     --namespace dev file=./worker-compose.yaml
 iii trigger compose::up     --namespace dev file=./worker-compose.yaml container=api
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
+iii trigger compose::logs   --namespace dev file=./worker-compose.yaml worker=api tail=100
 iii trigger compose::down   --namespace dev file=./worker-compose.yaml
 iii trigger compose::list   --namespace dev
 iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=database worker=web
@@ -342,9 +370,9 @@ operation are left alone.
 | `failed`   | Exited without being asked to, or one of its hooks failed. |
 | `stopped`  | Stopped by this daemon.                                    |
 
-`compose::status` reports each declared container with its `state`, its `pid`, an `owned` flag, and
-`last_error` when there is one. `owned` is `false` for a container this daemon can see but did not
-start.
+`compose::status` reports each declared container with its `state`, its `pid`, an `owned` flag, its
+rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a container this
+daemon can see but did not start.
 
 ### Validation reports
 
@@ -614,14 +642,14 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | --------------------------- | ---------------------------------------------------- |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
 | `<ns>/<project>/config/`    | Resolved configuration files.                        |
-| `<ns>/<project>/logs/`      | What each container printed while starting.          |
+| `<ns>/<project>/logs/`      | Rotating stdout and stderr for every project worker.  |
 | `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each, plus the config each one publishes into its guest. |
 | `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay
-apart. Because it is derived, it cannot be guessed. `compose::status` reports it as `state_dir`,
-which is how a container's startup output is located:
+apart. Because it is derived, it cannot be guessed. `compose::status` reports it as `state_dir`
+and reports the exact `log_path` for each worker:
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
@@ -634,11 +662,10 @@ ls /home/you/.iii/compose/dev/shop-3f2a1b9c/logs/
   [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
 
-Capture stops when a container becomes ready. Up to that point a worker has no connection and its
-own output is the only account of itself, which is what the file keeps; once the engine can hear it,
-the worker's logging is the record and compose keeps no second copy. So a container that fails at
-boot leaves its reason on disk, and one that runs for a month does not leave a file that grew all
-month.
+Capture continues until the worker exits. Rotation bounds disk use while keeping raw `print`,
+`console.log`, `println!`, stdout, and stderr output available even when the worker does not use the
+structured logger. Use `engine::logs::list` when structured OpenTelemetry fields and trace
+correlation are required.
 
 A clean shutdown clears the state file. After an unclean exit, the daemon compares each record
 against the live process: a match is adopted, a dead process is recorded `failed`, and a live pid it

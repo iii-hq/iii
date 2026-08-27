@@ -31,6 +31,7 @@ use crate::{
     engine::EngineClient,
     error::{ComposeError, Result},
     lifecycle::{OpResult, OpStatus},
+    logs::{LogCursor, LogStream, LogsOutcome},
     project::Project,
 };
 
@@ -820,6 +821,21 @@ impl Daemon {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         self.project(path).await
+    }
+
+    pub async fn logs(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        cursors: BTreeMap<String, LogCursor>,
+        tail: usize,
+        stream: Option<LogStream>,
+        wait_ms: u64,
+    ) -> Result<LogsOutcome> {
+        let project = self.status(file).await?;
+        project
+            .logs(container, cursors, tail, stream, wait_ms)
+            .await
     }
 
     fn validate_engine_policy_file(&self, path: &Path) -> Result<()> {
