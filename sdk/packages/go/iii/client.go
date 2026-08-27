@@ -164,7 +164,8 @@ func WithDescription(description string) Option {
 	return func(c *Client) { c.description = description }
 }
 
-// WithName sets the worker name reported to the engine (default: "hostname:pid").
+// WithName sets the worker name reported to the engine. A non-empty
+// III_WORKER_NAME takes precedence. The default is "hostname:pid".
 func WithName(name string) Option {
 	return func(cl *Client) { cl.name = name }
 }
@@ -209,6 +210,11 @@ func New(url string, opts ...Option) *Client {
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+	// The supervisor owns the managed identity. Apply it after options so a
+	// name embedded in worker code cannot hide the process from the supervisor.
+	if managedName := os.Getenv("III_WORKER_NAME"); managedName != "" {
+		c.name = managedName
 	}
 	if c.namespaceSet {
 		// Refused rather than read as absent, and refused here so nothing is

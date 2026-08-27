@@ -1554,11 +1554,11 @@ class III:
 
         # III_WORKER_NAME carries the orchestrator-assigned name (set by
         # iii-worker for engine-managed workers). The engine matches live
-        # registrations by name, so that identity must win over the
-        # hostname:pid fallback.
+        # registrations by name, so that identity must win over a name
+        # embedded in worker code.
         worker_name = (
-            self._options.worker_name
-            or os.environ.get("III_WORKER_NAME")
+            os.environ.get("III_WORKER_NAME")
+            or self._options.worker_name
             or f"{platform.node()}:{os.getpid()}"
         )
 

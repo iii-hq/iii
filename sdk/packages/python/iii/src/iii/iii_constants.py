@@ -56,7 +56,8 @@ class InitOptions:
     """Configuration options passed to ``register_worker``.
 
     Attributes:
-        worker_name: Display name for this worker. Defaults to ``hostname:pid``.
+        worker_name: Display name for this worker. A non-empty
+            ``III_WORKER_NAME`` overrides it. Defaults to ``hostname:pid``.
         worker_description: One-line, human/LLM-readable summary of what this
             worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``.
         namespace: Namespace this worker belongs to. Falls back to the
