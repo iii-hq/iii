@@ -95,7 +95,7 @@ functionality yet, so we'll add that and an HTTP endpoint for it too.
 ### Publish on link.created
 
 Publish an event whenever a link is created or its target changes. Inside `link::create`, after the
-database write and `state::set`, trigger the built-in `publish` function:
+database write and `state::set`, trigger the `publish` function:
 
 ```typescript {3-6} src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
