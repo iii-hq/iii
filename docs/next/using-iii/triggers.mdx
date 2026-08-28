@@ -158,11 +158,12 @@ registration and stores it:
 </Tabs>
 
 Start the http worker afterward. The engine activates the stored binding automatically, and the
-endpoint serves requests without re-registering:
+endpoint serves requests without re-registering. The `-n` flag is the documented short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger):
 
 ```bash
 # http worker started after registration
-iii worker add http
+iii trigger -n dev compose::add worker=http
 
 # the stored binding is now live on the http worker's default port (3111)
 curl -X POST http://localhost:3111/math/add \
@@ -172,8 +173,9 @@ curl -X POST http://localhost:3111/math/add \
 ```
 
 For known trigger types (ex. `http`, `state`, `durable:subscriber`, `stream`), the pending notice
-includes the install command for the worker that provides the type. For other types, find the worker
-that exposes the needed type at [workers.iii.dev](https://workers.iii.dev).
+includes the Compose command for the worker that provides the type. Replace `dev` with the
+namespace of the running Compose daemon. For other types, find the worker that exposes the needed
+type at [workers.iii.dev](https://workers.iii.dev).
 
 A registration fails when an active provider rejects the config it was given (for example, an
 invalid trigger config). The engine then sends a `TriggerRegistrationResult` with an `error` body

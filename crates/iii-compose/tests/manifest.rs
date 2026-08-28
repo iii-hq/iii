@@ -177,7 +177,7 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - queue
   queue:
     worker: package://workers.iii.dev/queue
@@ -348,7 +348,7 @@ containers:
   hub:
     worker: package://workers.iii.dev/hub
     version: "1.0.0"
-    depends_on: [a, b, c]
+    start_after: [a, b, c]
 "#,
         &[],
     );
@@ -375,11 +375,11 @@ containers:
   second:
     worker: package://workers.iii.dev/second
     version: "1.0.0"
-    depends_on: [first]
+    start_after: [first]
   third:
     worker: package://workers.iii.dev/third
     version: "1.0.0"
-    depends_on: [second]
+    start_after: [second]
 "#,
         &[],
     );
@@ -409,7 +409,7 @@ containers:
   api:
     worker: package://workers.iii.dev/api
     version: "1.0.0"
-    depends_on: [database]
+    start_after: [database]
 "#,
         &[],
     );

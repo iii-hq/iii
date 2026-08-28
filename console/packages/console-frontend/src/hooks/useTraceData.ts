@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { fetchTraces } from '@/api'
+import { createConsoleEventsSubscription } from '@/api/consoleEvents'
 import type { TracesFilterParams } from '@/api/observability/traces'
 import { buildTraceGroups, type TraceGroup, traceGroupsFingerprint } from '@/lib/traceGroups'
 
@@ -13,6 +14,9 @@ export interface UseTraceDataOptions {
   showSystem: boolean
   debouncedSearch: string
   isPaused: boolean
+  /** Called on every trace-change tick (even while paused) with the touched
+   * trace ids, so the detail view can refresh an open trace. */
+  onTracesChanged?: (traceIds: string[]) => void
 }
 
 export interface UseTraceDataReturn {
@@ -31,6 +35,7 @@ export function useTraceData({
   showSystem,
   debouncedSearch,
   isPaused,
+  onTracesChanged,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceGroups] = useState<TraceGroup[]>([])
   const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
@@ -58,12 +63,29 @@ export function useTraceData({
         limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
       }),
-    // Interim: poll every 1s (was 3s) so freshly emitted spans surface sooner.
-    // The real fix is to subscribe to the engine's reactive trace-rows feed
-    // over the existing streams WebSocket instead of polling at all.
-    refetchInterval: isPaused ? false : 1000,
-    staleTime: 1000,
   })
+
+  // Notify-then-query: the console worker owns a `trace` trigger on the
+  // engine and forwards its coalesced `{trace_ids}` ticks over
+  // /ws/console-events; each tick re-runs the filtered query above. No
+  // polling — an idle engine produces zero traffic — and every (re)connect
+  // resyncs with one refetch, covering ticks missed while disconnected.
+  const isPausedRef = useRef(isPaused)
+  isPausedRef.current = isPaused
+  const refetchRef = useRef(refetch)
+  refetchRef.current = refetch
+  const onTracesChangedRef = useRef(onTracesChanged)
+  onTracesChangedRef.current = onTracesChanged
+
+  useEffect(() => {
+    return createConsoleEventsSubscription({
+      onConnect: () => refetchRef.current(),
+      onTracesChanged: (traceIds) => {
+        if (!isPausedRef.current) refetchRef.current()
+        onTracesChangedRef.current?.(traceIds)
+      },
+    })
+  }, [])
 
   useEffect(() => {
     if (!tracesData) return

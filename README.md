@@ -46,10 +46,10 @@ state, observability, agents, and sandboxes each usually bring their own integra
 collapses that into one live system surface.
 
 ```bash
-iii worker add queue
-iii worker add agent
-iii worker add sandbox
-iii worker add <anything>
+iii compose --namespace dev --up
+iii trigger -n dev compose::add worker=queue
+iii trigger -n dev compose::add worker=agent
+iii trigger -n dev compose::add worker=<anything>
 ```
 
 Each worker joins the live catalog. Every other worker is notified and can call it immediately.
@@ -66,8 +66,8 @@ Worker _ Function _ Trigger is the entire mental model.
 **Workers** are processes that register with the iii engine and then register triggers and
 functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
 microservice is a worker. Any functionality can be transformed into a worker with a few lines of
-code. Workers can also create other workers at runtime, so agents and applications can extend the
-system while it is running.
+code. Compose can also add workers at runtime, so agents and applications can extend the system
+while it is running.
 
 **Triggers** are anything that causes a function to run. A trigger can be a direct call to a
 function, an HTTP endpoint, a cron schedule, a queue subscription, a state change, a stream event,
@@ -91,15 +91,15 @@ Before iii:
 
 After iii:
 
-- `iii worker add observability`
-- `iii worker add queue`
+- Declare workers in `worker-compose.yaml`
+- Run them with `iii compose --up`
 - Done. It is in the system, traceable, and callable.
 
 Platform teams publish workers. Application teams register functions and declare triggers. Agents
 use the same catalog and the same function calls.
 
-Extending iii is `iii worker add`. Composing iii is calling functions. Observing iii is opening the
-trace.
+Extending iii is adding a Compose worker. Composing iii is calling functions. Observing iii is
+opening the trace.
 
 ## Quick Start
 
@@ -118,16 +118,22 @@ Then scaffold and start a project:
 ```bash
 iii project init myapp    # scaffold a project
 cd myapp
-iii                       # start the engine
+# declare project workers in worker-compose.yaml
+iii compose --up          # start the engine and project workers
 ```
 
 Full walkthrough at the [Quickstart guide](https://iii.dev/docs/quickstart).
 
 ## Add Workers
 
-Install new capabilities into a project with `iii worker add`:
+Declare project workers in `worker-compose.yaml`, or add them through a running Compose daemon:
 
-[![Adding a worker with iii worker add](.github/assets/workers-add.gif)](https://workers.iii.dev/)
+```bash
+iii trigger -n dev compose::add worker=queue
+```
+
+Browse packages at [workers.iii.dev](https://workers.iii.dev/) and see the
+[Compose documentation](https://iii.dev/docs/using-iii/compose).
 
 ## SDKs
 
@@ -158,10 +164,12 @@ npx skills add iii-hq/workers --skill database # one worker
 npx skills add iii-hq/workers --all         # every worker skill
 ```
 
-The engine's built-in workers (`iii-queue`, `iii-state`, `iii-pubsub`, `iii-stream`, `iii-cron`,
-`iii-http`, `iii-observability`, `iii-bridge`, `iii-exec`, `configuration`) ship their skills in
-this repo. Install one with `npx skills add iii-hq/iii --full-depth --skill <name>`; each worker's README under
-[`engine/src/workers/`](engine/src/workers/) lists the exact `iii worker add` and skill command.
+The engine-owned workers (`configuration`, `iii-worker-manager`, `iii-http-functions`,
+`iii-stream`, and `iii-sandbox`) and the automatically supplied engine functions, telemetry, and
+observability workers live in this repo. HTTP, cron, queue, state, pubsub, and bridge are standalone
+Compose workers. Install an engine skill with
+`npx skills add iii-hq/iii --full-depth --skill <name>`; standalone workers ship their own skills in
+[iii-hq/workers](https://github.com/iii-hq/workers).
 
 ## Console
 

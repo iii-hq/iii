@@ -19,6 +19,12 @@ fn project(tmp: &Path, compose: &str, files: &[(&str, &str)]) -> ComposeFile {
     ComposeFile::load(&path).expect("compose file should parse")
 }
 
+fn normalize_path(path: &Path) -> std::path::PathBuf {
+    path.canonicalize()
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
 const COMPOSE: &str = r#"
 namespace: orders
 containers:
@@ -171,6 +177,8 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
     let plan = spawn_plan(&SpawnCtx {
         engine_url: "ws://127.0.0.1:49134",
         namespace: "finance",
+        compose_namespace: "compose-finance",
+        compose_file: std::path::Path::new("/srv/finance/worker-compose.yaml"),
         container_key: "state",
         start: &start,
         config_path: Some(std::path::Path::new("/run/state.yaml")),
@@ -180,6 +188,21 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
     });
 
     assert_eq!(plan.env["III_CONFIG_NAME"], "state-finance");
+    assert_eq!(plan.env["III_COMPOSE_NAMESPACE"], "compose-finance");
+    let expected_compose_file =
+        normalize_path(std::path::Path::new("/srv/finance/worker-compose.yaml"));
+    let expected_compose_dir = expected_compose_file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    assert_eq!(
+        std::path::Path::new(&plan.env["III_COMPOSE_FILE"]),
+        expected_compose_file
+    );
+    assert_eq!(
+        std::path::Path::new(&plan.env["III_COMPOSE_DIR"]),
+        expected_compose_dir
+    );
     // The container key still names the worker. They are different questions:
     // one is what the engine routes to, the other is where the configuration
     // lives — and it is exactly their conflation that made the id global.
@@ -198,6 +221,8 @@ fn a_container_without_configuration_is_told_nothing_about_one() {
     let plan = spawn_plan(&SpawnCtx {
         engine_url: "ws://127.0.0.1:49134",
         namespace: "finance",
+        compose_namespace: "compose-finance",
+        compose_file: std::path::Path::new("/srv/finance/worker-compose.yaml"),
         container_key: "plain",
         start: &start,
         config_path: None,

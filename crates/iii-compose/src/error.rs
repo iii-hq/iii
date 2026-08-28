@@ -27,6 +27,50 @@ pub enum ComposeError {
     #[error("containers must declare at least one worker")]
     EmptyContainers,
 
+    #[error(
+        "engine worker '{worker}' is not configurable inside worker-compose.yaml. Move project \
+         workers under containers; engine.workers accepts configuration, iii-worker-manager, \
+         iii-http-functions, iii-stream, and iii-sandbox"
+    )]
+    UnsupportedEngineWorker { worker: String },
+
+    #[error(
+        "engine worker '{worker}' is injected automatically and must not be declared under \
+         engine.workers"
+    )]
+    EngineWorkerIsInjected { worker: String },
+
+    #[error("engine.workers.{worker} must be a YAML mapping. Use {{}} to keep the worker defaults")]
+    InvalidEngineWorkerConfig { worker: String },
+
+    #[error("engine.url must not be blank when it is set")]
+    InvalidManagedEngineUrl,
+
+    #[error("--file requires --up")]
+    FileRequiresUp,
+
+    #[error("`iii compose build` cannot be combined with daemon options")]
+    BuildConflictsWithServeOptions,
+
+    #[error(
+        "{path} declares engine:, but this Compose daemon is connected to an external engine. \
+         Start the file in a separate `iii compose --up` invocation without --engine"
+    )]
+    EngineSectionRequiresManagedStart { path: PathBuf },
+
+    #[error(
+        "the engine section in {path} changed. Restart this Compose invocation to apply the new \
+         managed-engine configuration"
+    )]
+    EngineRestartRequired { path: PathBuf },
+
+    #[error(
+        "{path} declares engine:, but this daemon's engine is already owned by {owner}. Start the \
+         second file in a separate Compose invocation, or remove its engine section and pass the \
+         first engine's URL"
+    )]
+    EngineAlreadyOwned { owner: PathBuf, path: PathBuf },
+
     #[error("container '{container}' depends on '{dependency}', which is not declared")]
     UnknownDependency {
         container: String,
@@ -118,6 +162,16 @@ pub enum ComposeError {
         kind: String,
     },
 
+    #[error(
+        "container '{container}': '{name}' is supplied by the engine and must not be declared \
+         under containers. {guidance}"
+    )]
+    EngineWorkerIsBuiltin {
+        container: String,
+        name: String,
+        guidance: String,
+    },
+
     /// `compose::add` would turn a declaration into a different kind of thing.
     /// A registry package and a local directory are not two versions of one
     /// worker, and replacing one with the other loses whatever the operator
@@ -133,7 +187,7 @@ pub enum ComposeError {
         to: String,
     },
 
-    /// `iii compose up` could not bring its project up. The container that
+    /// `iii compose --up` could not bring its project up. The container that
     /// failed has already reported itself; this is the command saying so with
     /// an exit code.
     #[error("{path} did not start")]
@@ -249,6 +303,43 @@ pub enum ComposeError {
 
     #[error("engine call {function} failed: {message}")]
     EngineCallFailed { function: String, message: String },
+
+    #[error("managed engine could not start: {message}")]
+    EngineSpawnFailed { message: String },
+
+    #[error("managed engine cannot listen at {listener}: {source}")]
+    ManagedEngineListenerUnavailable {
+        listener: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "engine.url uses port {url_port}, but iii-worker-manager listens on port {listener_port}"
+    )]
+    ManagedEngineEndpointMismatch { url_port: u16, listener_port: u16 },
+
+    #[error(
+        "managed engine exited with {code}{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineExited { code: i32, tail: Option<String> },
+
+    #[error(
+        "managed engine at {engine_url} was not ready after {seconds}s{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineReadinessTimeout {
+        engine_url: String,
+        seconds: u64,
+        tail: Option<String>,
+    },
 
     #[error(
         "container '{container}' registered in '{expected}', but its function '{function}' \
@@ -366,6 +457,12 @@ pub enum ComposeError {
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },
 
+    #[error(
+        "another managed compose invocation already owns namespace '{namespace}'. \
+         Stop it, wait for it to finish, or choose a different --namespace"
+    )]
+    DaemonNamespaceTaken { namespace: String },
+
     /// The id is the daemon's namespace *and* its state directory, so it is
     /// checked at parse time: the alternative is a daemon that starts, answers
     /// nothing an operator can address, and fails at its first write.
@@ -398,6 +495,17 @@ impl ComposeError {
             Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
+            Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
+            Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
+            Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
+            Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
+            Self::FileRequiresUp => "FILE_REQUIRES_UP",
+            Self::BuildConflictsWithServeOptions => "BUILD_CONFLICTS_WITH_SERVE_OPTIONS",
+            Self::EngineSectionRequiresManagedStart { .. } => {
+                "ENGINE_SECTION_REQUIRES_MANAGED_START"
+            }
+            Self::EngineRestartRequired { .. } => "ENGINE_RESTART_REQUIRED",
+            Self::EngineAlreadyOwned { .. } => "ENGINE_ALREADY_OWNED",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
@@ -414,6 +522,7 @@ impl ComposeError {
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::RegistryNameRefused { .. } => "REGISTRY_NAME_REFUSED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
+            Self::EngineWorkerIsBuiltin { .. } => "ENGINE_WORKER_IS_BUILTIN",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
             Self::UndefinedVariable { .. } => "UNDEFINED_VARIABLE",
@@ -431,6 +540,11 @@ impl ComposeError {
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
+            Self::EngineSpawnFailed { .. } => "ENGINE_SPAWN_FAILED",
+            Self::ManagedEngineListenerUnavailable { .. } => "MANAGED_ENGINE_LISTENER_UNAVAILABLE",
+            Self::ManagedEngineEndpointMismatch { .. } => "MANAGED_ENGINE_ENDPOINT_MISMATCH",
+            Self::EngineExited { .. } => "ENGINE_EXITED",
+            Self::EngineReadinessTimeout { .. } => "ENGINE_STARTUP_TIMEOUT",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
             Self::WorkerIgnoredNamespace { .. } => "WORKER_IGNORED_NAMESPACE",
@@ -444,6 +558,7 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
+            Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",

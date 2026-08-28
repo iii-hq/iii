@@ -177,8 +177,8 @@ fn format_target_human(target: &str) -> String {
 /// Returns the path to the binary if found, or None.
 ///
 /// This is the single shared *execution* resolver: the CLI dispatcher
-/// (`mod.rs`) and the engine's worker spawners (`workers::registry_worker`,
-/// `workers::external`) all route through it so they can never disagree on
+/// (`mod.rs`) and the engine's known-external spawner (`workers::external`)
+/// both route through it so they can never disagree on
 /// which copy runs. The install/update lifecycle (`update.rs`) deliberately
 /// probes `binary_path()` — the managed `~/.local/bin` copy — first, because
 /// it manages that specific file regardless of what's on PATH.
@@ -285,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_data_dir_opt_agrees_with_data_dir() {
         // Wherever the platform dirs resolve, the option-returning variant
         // must agree with data_dir(). When they don't resolve it is None,

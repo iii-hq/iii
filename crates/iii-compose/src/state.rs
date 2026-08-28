@@ -57,7 +57,7 @@ pub fn project_slug(compose_path: &Path) -> String {
     format!("{readable}-{}", &digest[..8])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildStatus {
     /// Spawned, not yet visible in the engine.
@@ -182,6 +182,12 @@ impl StateStore {
                 .join(".iii")
                 .join("compose")),
         }
+    }
+
+    /// Registry packages are shared by every Compose daemon and project on
+    /// this machine.
+    pub fn package_cache() -> Result<PathBuf> {
+        Ok(Self::root()?.join("packages"))
     }
 
     /// Where one project's state lives:

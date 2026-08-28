@@ -1213,17 +1213,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cron"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5877d3fbf742507b66bc2a1945106bd30dd8504019d596901ddd012a4dd01740"
-dependencies = [
- "chrono",
- "once_cell",
- "winnow 0.6.26",
-]
-
-[[package]]
 name = "crossbeam"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2710,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2722,7 +2711,6 @@ dependencies = [
  "colored",
  "console 0.15.11",
  "criterion",
- "cron",
  "ctrlc",
  "dashmap",
  "dirs 6.0.0",
@@ -2741,7 +2729,6 @@ dependencies = [
  "iii-compose",
  "iii-helpers",
  "iii-sdk",
- "iii-worker",
  "indexmap 2.14.0",
  "indicatif 0.17.11",
  "inventory",
@@ -2779,7 +2766,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.28.0",
- "toml",
  "tower",
  "tower-http",
  "tracing",
@@ -2809,10 +2795,12 @@ dependencies = [
  "colored",
  "dirs 6.0.0",
  "flate2",
+ "fslock",
  "futures",
  "hex",
  "iii-sdk",
  "indexmap 2.14.0",
+ "jsonschema",
  "nix 0.31.2",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -2824,13 +2812,15 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "uuid",
  "windows-sys 0.60.2",
+ "wiremock",
 ]
 
 [[package]]
 name = "iii-console"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -2876,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -2929,14 +2919,14 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "iii-helpers",
 ]
 
 [[package]]
 name = "iii-sdk"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "async-trait",
  "ctor",
@@ -2998,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3740,7 +3730,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -5467,7 +5457,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.23.0-rc.4"
+version = "0.23.0-rc.5"
 dependencies = [
  "anyhow",
  "cliclack",
@@ -5684,15 +5674,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "serde_spanned"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
-dependencies = [
- "serde_core",
 ]
 
 [[package]]
@@ -6444,45 +6425,6 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
-
-[[package]]
-name = "toml"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
-dependencies = [
- "indexmap 2.14.0",
- "serde_core",
- "serde_spanned",
- "toml_datetime",
- "toml_parser",
- "toml_writer",
- "winnow 1.0.2",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_parser"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
-dependencies = [
- "winnow 1.0.2",
-]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "tonic"
@@ -7615,21 +7557,6 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
-
-[[package]]
-name = "winnow"
-version = "0.6.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e90edd2ac1aa278a5c4599b1d89cf03074b610800f866d4026dc199d7929a28"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "winnow"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
 
 [[package]]
 name = "winreg"

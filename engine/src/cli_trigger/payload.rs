@@ -7,6 +7,10 @@
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
+fn decode_value(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
+}
+
 /// Resolve a payload from CLI tokens and an optional `--json` value.
 ///
 /// Resolution order:
@@ -33,7 +37,7 @@ pub fn parse(kv_tokens: &[String], json_override: Option<&str>) -> Result<Value>
             if k.is_empty() {
                 bail!("payload key must not be empty (got `{}`)", token);
             }
-            let value = serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string()));
+            let value = decode_value(v);
             obj.insert(k.to_string(), value);
         }
         Some(obj)
@@ -61,6 +65,42 @@ pub fn parse(kv_tokens: &[String], json_override: Option<&str>) -> Result<Value>
             bail!("--json must be an object when combined with kv pairs")
         }
     }
+}
+
+/// Resolve a payload while collecting repeated singular arguments into one
+/// plural array field.
+///
+/// This is the CLI adapter for functions whose JSON contract takes a list but
+/// whose shell syntax repeats a readable singular key. Other keys keep the
+/// normal [`parse`] rules. Collected key-value arguments override either the
+/// singular compatibility field or the plural field from `--json`.
+pub fn parse_collecting(
+    kv_tokens: &[String],
+    json_override: Option<&str>,
+    singular: &str,
+    plural: &str,
+) -> Result<Value> {
+    let mut remaining = Vec::with_capacity(kv_tokens.len());
+    let mut collected = Vec::new();
+
+    for token in kv_tokens {
+        match token.split_once('=') {
+            Some((key, value)) if key == singular => collected.push(decode_value(value)),
+            _ => remaining.push(token.clone()),
+        }
+    }
+
+    let mut payload = parse(&remaining, json_override)?;
+    if collected.is_empty() {
+        return Ok(payload);
+    }
+
+    let object = payload
+        .as_object_mut()
+        .context("--json must be an object when combined with kv pairs")?;
+    object.remove(singular);
+    object.insert(plural.to_string(), Value::Array(collected));
+    Ok(payload)
 }
 
 #[cfg(test)]
@@ -135,5 +175,47 @@ mod tests {
     fn kv_empty_key_errors() {
         let err = parse(&[s("=value")], None).unwrap_err().to_string();
         assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn collecting_repeated_singular_values_builds_a_plural_array() {
+        let got = parse_collecting(
+            &[
+                s("file=worker-compose.yaml"),
+                s("worker=database"),
+                s("worker=web"),
+            ],
+            None,
+            "worker",
+            "workers",
+        )
+        .unwrap();
+
+        assert_eq!(
+            got,
+            json!({
+                "file": "worker-compose.yaml",
+                "workers": ["database", "web"],
+            })
+        );
+    }
+
+    #[test]
+    fn collecting_one_singular_value_still_builds_an_array() {
+        let got = parse_collecting(&[s("worker=database")], None, "worker", "workers").unwrap();
+        assert_eq!(got, json!({"workers": ["database"]}));
+    }
+
+    #[test]
+    fn collected_values_override_json_worker_fields() {
+        let got = parse_collecting(
+            &[s("worker=web")],
+            Some(r#"{"worker":"old","workers":["old"]}"#),
+            "worker",
+            "workers",
+        )
+        .unwrap();
+
+        assert_eq!(got, json!({"workers": ["web"]}));
     }
 }

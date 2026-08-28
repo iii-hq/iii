@@ -19,16 +19,13 @@ use serde_json::Value;
 
 use notify::Watcher;
 
+pub use iii_compose::config::CONFIGURABLE_ENGINE_WORKERS;
+use iii_compose::config::{engine_worker_type, valid_engine_worker_name};
+
 use super::{registry::WorkerRegistration, traits::Worker};
 use crate::engine::Engine;
 
-const MIGRATED_BUILTIN_WORKERS: &[(&str, &str)] = &[
-    ("iii-http", "http"),
-    ("iii-cron", "cron"),
-    ("iii-queue", "queue"),
-    ("iii-state", "state"),
-    ("iii-pubsub", "pubsub"),
-];
+const WORKER_COMPOSE_MIGRATION_GUIDE: &str = "https://iii.dev/docs/upgrading/workers-to-compose";
 
 /// The config watcher observes the parent directory so atomic editor writes
 /// (`tmp` + rename) are visible. Only reload when the configured file itself
@@ -147,36 +144,30 @@ impl EngineConfig {
             }
         })?;
         let yaml_content = Self::expand_env_vars(&yaml_content);
-        let mut cfg: Self = serde_yaml::from_str(&yaml_content)
+        let cfg: Self = serde_yaml::from_str(&yaml_content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
-        cfg.validate_migrated_worker_duplicates()?;
-        cfg.ensure_builtin_daemons();
+        cfg.validate_declared_workers()?;
         Ok(cfg)
     }
 
-    fn validate_migrated_worker_duplicates(&self) -> anyhow::Result<()> {
-        let worker_names: HashSet<&str> = self
+    fn validate_declared_workers(&self) -> anyhow::Result<()> {
+        let invalid: Vec<String> = self
             .workers
             .iter()
             .chain(self.modules.iter())
-            .map(|entry| entry.name.as_str())
+            .filter(|entry| {
+                !valid_engine_worker_name(&entry.name)
+                    || !CONFIGURABLE_ENGINE_WORKERS.contains(&entry.worker_type())
+            })
+            .map(|entry| migration_guidance(&entry.name))
             .collect();
 
-        let conflicts: Vec<String> = MIGRATED_BUILTIN_WORKERS
-            .iter()
-            .filter(|(deprecated, replacement)| {
-                worker_names.contains(deprecated) && worker_names.contains(replacement)
-            })
-            .map(|(deprecated, replacement)| {
-                format!(
-                    "- '{}' is the deprecated name for '{}', but both are present. Remove '{}' from your configuration.",
-                    deprecated, replacement, deprecated
-                )
-            })
-            .collect();
-
-        if !conflicts.is_empty() {
-            anyhow::bail!("Duplicate worker configurations:\n{}", conflicts.join("\n"));
+        if !invalid.is_empty() {
+            anyhow::bail!(
+                "[UNSUPPORTED_CONFIG_WORKERS] Workers in config.yaml are no longer supported:\n{}\n\nSee: {}",
+                invalid.join("\n"),
+                WORKER_COMPOSE_MIGRATION_GUIDE
+            );
         }
 
         Ok(())
@@ -186,68 +177,48 @@ impl EngineConfig {
     /// Use this when explicitly opting in to run without a config file.
     pub fn default_config() -> Self {
         tracing::info!("Using default config (no config file)");
-        let mut cfg = Self {
+        Self {
             modules: default_worker_entries(),
             ..Default::default()
-        };
-        cfg.ensure_builtin_daemons();
-        cfg
+        }
     }
 
     /// YAML content written when `iii` starts in a directory that has no
     /// config file yet. Deliberately minimal: an EMPTY `workers:` list.
     /// Mandatory engine workers (configuration, iii-worker-manager, …) are
-    /// always injected by `build()` and never need an entry; everything
-    /// else is opt-in via `iii worker add <name>`, which appends entries
-    /// here. Written as `workers: []` (not a bare `workers:` key) because
-    /// the strict EngineConfig parser rejects a null list; the worker-add
-    /// append path normalizes the `[]` away before inserting entries.
+    /// always injected by `build()` and never need an entry. Project workers
+    /// belong in `worker-compose.yaml`. Written as `workers: []` (not a bare
+    /// `workers:` key) because the strict EngineConfig parser rejects a null
+    /// list.
     pub fn starter_config_yaml() -> String {
         "# iii engine configuration.\n\
-         # Add workers with `iii worker add <name>`; a running engine reloads on save.\n\
-         # Configure workers at runtime through the configuration worker (configuration::set).\n\
+         # Declare project workers in worker-compose.yaml and run `iii compose --up`.\n\
+         # Configure engine workers at runtime through the configuration worker (configuration::set).\n\
          workers: []\n"
             .to_string()
     }
+}
 
-    /// Inject KNOWN_EXTERNAL daemons (e.g. `iii-worker-ops` for the
-    /// `worker::*` SDK triggers) so they ship without requiring a
-    /// `iii.config.yaml` entry. Idempotent.
-    ///
-    /// Injection is gated on `super::external::resolve_external_module`
-    /// being able to find the backing binary — promising a worker we can't
-    /// actually spawn would fail the engine boot on every host that ships
-    /// without `iii-worker` (CI SDK runners that download only the `iii`
-    /// binary, minimal install paths, etc.). Set
-    /// `IIIWORKER_DISABLE_BUILTIN_DAEMONS=1` to opt out explicitly
-    /// regardless of binary availability (used by engine reload tests that
-    /// spawn back-to-back `serve()` instances and need to avoid the
-    /// daemon's lingering listener).
-    pub fn ensure_builtin_daemons(&mut self) {
-        if std::env::var_os("IIIWORKER_DISABLE_BUILTIN_DAEMONS").is_some() {
-            return;
+fn worker_type_of(name: &str) -> &str {
+    engine_worker_type(name)
+}
+
+fn migration_guidance(name: &str) -> String {
+    let guidance = match worker_type_of(name) {
+        "iii-http" | "http" => "move to worker-compose.yaml as 'http'",
+        "iii-cron" | "cron" => "move to worker-compose.yaml as 'cron'",
+        "iii-queue" | "queue" => "move to worker-compose.yaml as 'queue'",
+        "iii-state" | "state" => "move to worker-compose.yaml as 'state'",
+        "iii-pubsub" | "pubsub" => "move to worker-compose.yaml as 'pubsub'",
+        "iii-bridge" => "move to worker-compose.yaml as 'bridge'",
+        "iii-exec" => "translate to Compose lifecycle scripts",
+        "iii-engine-functions" | "iii-telemetry" | "iii-observability" => {
+            "remove this redundant entry; the engine provides it automatically"
         }
-        const ALWAYS_ON: &[&str] = &["iii-worker-ops"];
-        for name in ALWAYS_ON {
-            let already_listed = self.workers.iter().any(|w| w.name == *name)
-                || self.modules.iter().any(|m| m.name == *name);
-            if already_listed {
-                continue;
-            }
-            if super::external::resolve_external_module(name).is_none() {
-                tracing::debug!(
-                    daemon = name,
-                    "Skipping builtin daemon auto-injection: backing binary not found on PATH"
-                );
-                continue;
-            }
-            self.workers.push(WorkerEntry {
-                name: (*name).to_string(),
-                image: None,
-                config: None,
-            });
-        }
-    }
+        _ => "move this worker to worker-compose.yaml",
+    };
+
+    format!("- '{name}' -> {guidance}")
 }
 
 fn default_worker_entries() -> Vec<WorkerEntry> {
@@ -392,12 +363,13 @@ impl WorkerRegistry {
             .insert(name.to_string(), info);
     }
 
-    /// Creates a module instance using the resolution chain:
+    /// Creates a worker instance using the engine-owned resolution chain:
     /// 1. Validates that built-in workers cannot have an `image` field.
     /// 2. Tries the built-in registry.
-    /// 3. Falls back to legacy external worker resolution via `iii.toml`.
-    /// 4. Delegates to `iii-worker start` (handles registry lookup, binary
-    ///    download, and OCI spawning autonomously).
+    /// 3. Resolves the closed set of engine-owned sibling processes.
+    ///
+    /// Project workers are deliberately not resolved here. Compose owns their
+    /// installation and lifecycle.
     pub async fn create_worker(
         self: &Arc<Self>,
         name: &str,
@@ -432,7 +404,7 @@ impl WorkerRegistry {
             }
         }
 
-        // 3. Legacy: external worker (iii.toml + iii_workers/)
+        // 3. Engine-owned external worker (currently iii-sandbox only).
         if image.is_none()
             && let Some(mut info) = super::external::resolve_external_module(name)
         {
@@ -442,11 +414,9 @@ impl WorkerRegistry {
                 info.name,
                 info.binary_path.display()
             );
-            // Same-file contract: daemons that edit the project config file
-            // (worker-ops) must target the engine's ACTUAL config file —
-            // their built-in ./config.yaml default silently breaks custom
-            // config file names. The engine WS URL travels separately via
-            // III_ENGINE_URL, exported by ExternalWorker::spawn (MOT-3970).
+            // Preserve the actual config path for engine-owned child
+            // processes. The engine WS URL travels separately via
+            // III_ENGINE_URL, exported by ExternalWorker::spawn.
             if let Some(path) = engine.config_path() {
                 info.env
                     .push(("III_CONFIG_PATH".to_string(), path.display().to_string()));
@@ -456,25 +426,12 @@ impl WorkerRegistry {
             return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
         }
 
-        // 4. Delegate to iii-worker start (handles registry lookup, binary
-        //    download, OCI pull, and spawning autonomously). Pass the
-        //    engine's effective `iii-worker-manager` port so the spawned
-        //    VM-based worker connects back to the right place. `EngineBuilder::build`
-        //    pre-resolves this from config; direct `Engine::new` paths fall
-        //    back to DEFAULT_PORT via `worker_manager_port()`.
-        let port = engine.worker_manager_port();
-        tracing::info!(worker = %name, port = port, "Starting external worker via iii-worker");
-        let process = super::registry_worker::ExternalWorkerProcess::spawn(
+        anyhow::bail!(
+            "worker '{}' is not an engine worker. Move it to worker-compose.yaml and start it with \
+             `iii compose --up`. See: {}",
             name,
-            port,
-            config.as_ref(),
-            engine.config_path(),
+            WORKER_COMPOSE_MIGRATION_GUIDE
         )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
-        Ok(Box::new(
-            super::registry_worker::ExternalWorkerWrapper::new(process),
-        ))
     }
 
     // =========================================================================
@@ -499,7 +456,7 @@ impl WorkerEntry {
     /// instance suffixes like `iii-http#1`, this strips the `#N` and returns
     /// the base name `iii-http`.
     pub fn worker_type(&self) -> &str {
-        self.name.split('#').next().unwrap_or(&self.name)
+        worker_type_of(&self.name)
     }
 
     /// Creates a module instance from this entry
@@ -743,13 +700,7 @@ impl EngineBuilder {
 
     /// Builds and initializes all modules
     pub async fn build(mut self) -> anyhow::Result<Self> {
-        let mut config = self.config.take().expect("No worker configs found");
-        // Builder entry points (with_config / add_worker / register_worker) don't
-        // route through config_file()/default_config(), so KNOWN_EXTERNAL
-        // daemons (e.g. iii-worker-ops) would be missing for programmatic
-        // engine construction. Re-apply the invariant at the build boundary;
-        // ensure_builtin_daemons is idempotent so duplicate calls are safe.
-        config.ensure_builtin_daemons();
+        let config = self.config.take().expect("No worker configs found");
 
         self.engine
             .set_registration_namespace_grace_ms(config.registration_namespace_grace_ms);
@@ -777,15 +728,15 @@ impl EngineBuilder {
 
         assign_instance_ids(&mut workers);
 
-        // Resolve the effective `iii-worker-manager` port BEFORE creating
-        // workers so the step-4 delegation path in `WorkerRegistry::create_worker`
-        // can hand it to `ExternalWorkerProcess::spawn`. We pick the first
+        // Resolve the effective `iii-worker-manager` port before creating
+        // workers so an engine-owned external worker such as `iii-sandbox`
+        // connects back to this engine. We pick the first
         // `iii-worker-manager` entry whose config parses -- fixtures like
         // `sdk/fixtures/config-test.yaml` sometimes declare two manager
         // instances on different ports for test isolation, and there's no
         // unambiguous "primary" beyond declaration order. Fall back to
         // DEFAULT_PORT if no entry is present or its config is shaped
-        // unexpectedly; that matches the legacy hardcoded behavior.
+        // unexpectedly.
         let manager_config = workers
             .iter()
             .find(|e| e.worker_type() == "iii-worker-manager")
@@ -1322,33 +1273,60 @@ mod tests {
     }
 
     #[test]
-    fn test_config_file_rejects_duplicate_migrated_workers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.yaml");
-
-        for (deprecated, replacement) in MIGRATED_BUILTIN_WORKERS {
-            std::fs::write(
-                &path,
-                format!("workers:\n  - name: {deprecated}\nmodules:\n  - name: {replacement}\n"),
-            )
-            .unwrap();
-
-            let error = EngineConfig::config_file(path.to_str().unwrap()).unwrap_err();
-            let message = error.to_string();
-
-            assert!(message.contains("Duplicate worker"), "{message}");
-            assert!(message.contains(deprecated), "{message}");
-            assert!(message.contains(replacement), "{message}");
-        }
-    }
-
-    #[test]
-    fn test_config_file_reports_all_duplicate_migrated_workers() {
+    fn test_config_file_accepts_only_engine_owned_worker_declarations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.yaml");
         std::fs::write(
             &path,
-            "workers:\n  - name: iii-cron\n  - name: cron\n  - name: iii-queue\n  - name: queue\n",
+            "workers:\n  - name: configuration\n  - name: iii-worker-manager\n  - name: iii-worker-manager#rbac\n  - name: iii-http-functions\nmodules:\n  - name: iii-stream\n  - name: iii-sandbox\n",
+        )
+        .unwrap();
+
+        let config = EngineConfig::config_file(path.to_str().unwrap()).unwrap();
+        let declared: HashSet<&str> = config
+            .workers
+            .iter()
+            .chain(config.modules.iter())
+            .map(|entry| entry.name.as_str())
+            .collect();
+
+        for allowed in [
+            "configuration",
+            "iii-worker-manager",
+            "iii-http-functions",
+            "iii-stream",
+            "iii-sandbox",
+        ] {
+            assert!(
+                declared.contains(allowed),
+                "missing allowed worker {allowed}"
+            );
+        }
+        assert!(declared.contains("iii-worker-manager#rbac"));
+    }
+
+    #[test]
+    fn test_config_file_rejects_malformed_engine_worker_instance_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        for name in ["iii-stream#", "iii-stream#1#2"] {
+            std::fs::write(&path, format!("workers:\n  - name: {name}\n")).unwrap();
+
+            let error = EngineConfig::config_file(path.to_str().unwrap())
+                .expect_err("malformed instance names must be rejected");
+            let message = error.to_string();
+            assert!(message.contains(name), "{message}");
+        }
+    }
+
+    #[test]
+    fn test_config_file_rejects_all_user_managed_workers_with_migration_guidance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "workers:\n  - name: iii-http\n  - name: iii-http#1\n  - name: state\n  - name: iii-bridge\n  - name: custom-worker\nmodules:\n  - name: iii-exec\n  - name: iii-observability\n",
         )
         .unwrap();
 
@@ -1356,15 +1334,39 @@ mod tests {
         let message = error.to_string();
 
         assert!(
-            message.contains("Duplicate worker configurations:"),
+            message.contains("[UNSUPPORTED_CONFIG_WORKERS]"),
             "{message}"
         );
         assert!(
-            message.contains("Remove 'iii-cron' from your configuration."),
+            message.contains("'iii-http' -> move to worker-compose.yaml as 'http'"),
             "{message}"
         );
         assert!(
-            message.contains("Remove 'iii-queue' from your configuration."),
+            message.contains("'iii-http#1' -> move to worker-compose.yaml as 'http'"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'state' -> move to worker-compose.yaml as 'state'"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'iii-bridge' -> move to worker-compose.yaml as 'bridge'"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'iii-exec' -> translate to Compose lifecycle scripts"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'iii-observability' -> remove this redundant entry"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'custom-worker' -> move this worker to worker-compose.yaml"),
+            "{message}"
+        );
+        assert!(
+            message.contains("https://iii.dev/docs/upgrading/workers-to-compose"),
             "{message}"
         );
     }
@@ -1508,6 +1510,29 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_workers_are_not_registered_in_engine_inventory() {
+        let registered: HashSet<&str> = inventory::iter::<WorkerRegistration>
+            .into_iter()
+            .map(|registration| registration.name)
+            .collect();
+
+        for retired in [
+            "iii-http",
+            "iii-cron",
+            "iii-queue",
+            "iii-state",
+            "iii-pubsub",
+            "iii-bridge",
+            "iii-exec",
+        ] {
+            assert!(
+                !registered.contains(retired),
+                "{retired} must be provided through worker-compose.yaml, not the engine inventory"
+            );
+        }
+    }
+
+    #[test]
     fn test_default_config_includes_otel_module() {
         let config = EngineConfig::default_config();
 
@@ -1532,52 +1557,6 @@ mod tests {
                 .all(|entry| entry.name != "iii-queue"),
             "the standalone queue worker owns queue runtime behavior"
         );
-    }
-
-    #[test]
-    fn test_default_config_auto_injects_iii_worker_ops() {
-        // Injection is now gated on the iii-worker binary being resolvable
-        // via `resolve_external_module`. Skip when the host doesn't ship
-        // the binary (CI SDK runners, lean dev installs) so the test
-        // reflects user-visible behavior instead of false-positive failing
-        // on those hosts.
-        if super::super::external::resolve_external_module("iii-worker-ops").is_none() {
-            eprintln!(
-                "skipping: iii-worker binary not on PATH; auto-injection correctly suppressed"
-            );
-            return;
-        }
-        let config = EngineConfig::default_config();
-        let count = config
-            .workers
-            .iter()
-            .filter(|w| w.name == "iii-worker-ops")
-            .count();
-        assert_eq!(
-            count, 1,
-            "default config must auto-inject iii-worker-ops exactly once when the binary is available"
-        );
-    }
-
-    #[test]
-    fn test_ensure_builtin_daemons_is_idempotent() {
-        let mut config = EngineConfig {
-            registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
-            modules: Vec::new(),
-            workers: vec![WorkerEntry {
-                name: "iii-worker-ops".into(),
-                image: None,
-                config: None,
-            }],
-        };
-        config.ensure_builtin_daemons();
-        config.ensure_builtin_daemons();
-        let count = config
-            .workers
-            .iter()
-            .filter(|w| w.name == "iii-worker-ops")
-            .count();
-        assert_eq!(count, 1, "must not duplicate user-declared entries");
     }
 
     // =========================================================================
@@ -1861,24 +1840,22 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_create_worker_unknown_worker_delegates() {
-        // Unknown workers are now delegated to `iii-worker start` rather than
-        // returning an immediate error, so the result is Ok (an external worker
-        // process wrapper) or an Err from the spawn itself — not an "Unknown
-        // worker" error.
+    async fn test_create_worker_unknown_worker_points_to_compose() {
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = registry
             .create_worker("nonexistent::Module", None, engine, None)
             .await;
-        // If spawn succeeds we get Ok; if iii-worker binary is absent we may
-        // get an Err, but it must NOT contain "Unknown worker".
-        if let Err(e) = &result {
-            assert!(
-                !e.to_string().contains("Unknown worker"),
-                "should not report 'Unknown worker'; got: {e}"
-            );
-        }
+        let error = match result {
+            Ok(_) => panic!("project workers must not be started by the engine"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("worker-compose.yaml"), "{message}");
+        assert!(
+            message.contains(WORKER_COMPOSE_MIGRATION_GUIDE),
+            "{message}"
+        );
     }
 
     #[tokio::test]
@@ -1919,10 +1896,7 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_module_entry_create_unknown_delegates() {
-        // Unknown workers are now delegated to `iii-worker start`.  If spawn
-        // fails (e.g. binary absent in CI) the error is wrapped with the
-        // worker name, but it is no longer an immediate "Unknown worker" error.
+    async fn test_module_entry_create_unknown_points_to_compose() {
         let entry = WorkerEntry {
             name: "unknown::Module".to_string(),
             image: None,
@@ -1931,13 +1905,13 @@ config:
         let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = entry.create_worker(engine, &registry).await;
-        if let Err(e) = &result {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("unknown::Module") || msg.contains("Failed to start"),
-                "unexpected error message: {msg}"
-            );
-        }
+        let error = match result {
+            Ok(_) => panic!("project workers must not be started by the engine"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("unknown::Module"), "{message}");
+        assert!(message.contains("worker-compose.yaml"), "{message}");
     }
 
     // =========================================================================
@@ -2569,11 +2543,9 @@ workers:
     // =========================================================================
     // Engine worker_manager_port resolution
     //
-    // Regression: `ExternalWorkerProcess::spawn` previously hardcoded
-    // DEFAULT_PORT (49134) when invoking `iii-worker start`, silently breaking
-    // auto-spawn for any engine running on a non-default `iii-worker-manager`
-    // port. The fix resolves the effective port at build time and stores it
-    // on `Engine`; these tests pin the resolution behavior.
+    // The external `iii-sandbox` process must connect to the configured
+    // `iii-worker-manager`, including on non-default ports. These tests pin
+    // the value resolved and published by the builder.
     // =========================================================================
 
     #[test]
@@ -2591,10 +2563,9 @@ workers:
 
     #[tokio::test]
     async fn engine_builder_resolves_custom_worker_manager_port_from_config() {
-        // The key regression: when config.yaml sets a non-default port for
-        // `iii-worker-manager`, `EngineBuilder::build` must surface that port
-        // on the Engine so the step-4 delegation path hands it to
-        // `ExternalWorkerProcess::spawn` instead of the hardcoded default.
+        // When config.yaml sets a non-default port for `iii-worker-manager`,
+        // `EngineBuilder::build` must surface it to engine-owned external
+        // workers.
         //
         // Pick a port no one else binds. 49199 matches the value used in
         // `sdk/fixtures/config-test.yaml` -- if that fixture's port ever
@@ -2752,7 +2723,7 @@ workers:
             serde_yaml::from_str(&yaml).expect("starter config must parse as EngineConfig");
 
         // Deliberately empty: mandatory engine workers are injected by
-        // build(), and everything else is opt-in via `iii worker add`.
+        // build(), and project workers belong in worker-compose.yaml.
         assert!(
             cfg.workers.is_empty(),
             "starter file must not pre-list any workers, got {:?}",
@@ -2762,12 +2733,9 @@ workers:
     }
 
     #[tokio::test]
-    async fn starter_config_boots_and_accepts_appended_workers() {
+    async fn starter_config_boots_as_is() {
         // End-to-end shape check on the created file: it must build into a
-        // working engine as-is, and `iii worker add`'s append helper must be
-        // able to turn the empty `workers: []` marker into a real list (the
-        // normalize path in iii-worker's config_file.rs relies on this exact
-        // content shape; this pins the engine side of that contract).
+        // working engine as-is while project workers live in Compose.
         let cfg: EngineConfig = serde_yaml::from_str(&EngineConfig::starter_config_yaml())
             .expect("starter config must parse");
         let (config_entry, _config_dir) = isolated_config_entry();

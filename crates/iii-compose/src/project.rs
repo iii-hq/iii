@@ -25,20 +25,25 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     config::ComposeFile,
     engine::EngineClient,
-    error::Result,
+    error::{ComposeError, Result},
     lifecycle::{self, Children, LifecycleCtx, OpResult},
-    namespace::project_namespace,
+    logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
 };
 
 pub struct Project {
-    pub file: ComposeFile,
+    /// Current parsed compose file. Mutations replace it in place so an add
+    /// can reconcile new declarations without dropping supervision of the
+    /// workers that are already running.
+    file: RwLock<ComposeFile>,
+    file_path: PathBuf,
+    compose_namespace: String,
     /// Namespace the containers register in. Resolved from the file, and
     /// unrelated to `id` — the id addresses the project, the namespace
     /// addresses its workers.
@@ -47,6 +52,8 @@ pub struct Project {
     /// Shared with every other project on this daemon: one socket, many
     /// projects.
     engine: Arc<EngineClient>,
+    post_runs: crate::hooks::PostRunSupervisor,
+    logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
 }
@@ -67,17 +74,17 @@ impl Project {
     /// Loads a project, adopts whatever survived a previous run, and returns
     /// it ready to be operated.
     ///
-    /// A project is its compose file. Its namespace comes from that file's
-    /// `name:` and addresses its workers; the two are different questions and
-    /// nothing else names the project.
+    /// `project_namespace` is already resolved by the daemon so an explicit
+    /// CLI namespace cannot be lost while the project is opened.
     pub async fn open(
         daemon_namespace: &str,
+        project_namespace: String,
         file: ComposeFile,
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
-        let project_namespace = project_namespace(None, file.namespace.as_deref());
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
+        let file_path = file.path.clone();
 
         let recovered = store.load()?;
         if let Some(state) = &recovered {
@@ -89,12 +96,21 @@ impl Project {
         let mut state =
             recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
         state.namespace = project_namespace.clone();
+        let log_dir = store.dir().join("logs");
+        let logs = LogStore::open(log_dir.clone()).map_err(|source| ComposeError::Io {
+            path: log_dir,
+            source,
+        })?;
 
         let project = Arc::new(Self {
-            file,
+            file: RwLock::new(file),
+            file_path,
+            compose_namespace: daemon_namespace.to_string(),
             project_namespace,
             engine_url,
             engine,
+            post_runs: crate::hooks::PostRunSupervisor::default(),
+            logs,
             store,
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
@@ -104,6 +120,12 @@ impl Project {
 
         project.reconcile_recovered().await;
         Ok(project)
+    }
+
+    /// Canonical path that identifies this project. The path never changes
+    /// when the parsed declaration is refreshed.
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
     }
 
     /// Re-checks every ready container against the engine after the connection
@@ -121,24 +143,25 @@ impl Project {
             Tone::Plain,
         );
 
-        let running: Vec<String> = {
+        let running: Vec<(String, Duration)> = {
             let inner = self.inner.lock().await;
+            let file = self.file.read().await;
             inner
                 .children
                 .iter()
                 .filter(|(_, child)| matches!(child.poll(), crate::process::Outcome::Running))
-                .map(|(key, _)| key.clone())
+                .map(|(key, _)| {
+                    let budget = file
+                        .containers
+                        .get(key)
+                        .map(|container| container.startup_timeout)
+                        .unwrap_or(SUPERVISION_INTERVAL);
+                    (key.clone(), budget)
+                })
                 .collect()
         };
 
-        for key in running {
-            let budget = self
-                .file
-                .containers
-                .get(&key)
-                .map(|container| container.startup_timeout)
-                .unwrap_or(SUPERVISION_INTERVAL);
-
+        for (key, budget) in running {
             if self.wait_for_reregistration(&key, budget).await {
                 continue;
             }
@@ -215,7 +238,9 @@ impl Project {
             // the dependents first and ends on the dead container itself, which
             // fires its `post_run` and drops it from the map. Leaving dependents
             // running would leave them talking to something that is gone.
-            let dependents = crate::dag::transitive_dependents(&self.file, &key);
+            let file = self.file.read().await;
+            let dependents = crate::dag::transitive_dependents(&file, &key);
+            drop(file);
             if !dependents.is_empty() {
                 daemon_line(
                     &self.project_namespace,
@@ -343,12 +368,6 @@ impl Project {
         self.store.dir().join("config")
     }
 
-    /// Where each container's own output is written. Beside the project's
-    /// state, so a project that is removed takes its logs with it.
-    fn log_dir(&self) -> PathBuf {
-        self.store.dir().join("logs")
-    }
-
     /// Per-container VM state for bundle containers: rootfs, boot script, pid
     /// file. Keyed by project rather than by worker name, so two projects
     /// running the same bundle under the same container key stay apart.
@@ -361,26 +380,26 @@ impl Project {
     /// deriving this by walking up from the state directory would silently
     /// re-scope it the next time that layout gains a level.
     fn package_cache(&self) -> PathBuf {
-        StateStore::root()
-            .unwrap_or_else(|_| self.store.dir().to_path_buf())
-            .join("packages")
+        StateStore::package_cache().unwrap_or_else(|_| self.store.dir().join("packages"))
     }
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -394,23 +413,205 @@ impl Project {
         result
     }
 
-    /// Bounces one container. See [`lifecycle::restart_one`] for why this does
-    /// not take the container's graph with it.
-    pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
+    pub(crate) async fn up_until_shutdown(
+        &self,
+        target: Option<&str>,
+        operation_id: String,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> Option<OpResult> {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
+
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+
+        let result = lifecycle::up_until_shutdown(
+            &ctx,
+            children,
+            &mut state.containers,
+            target,
+            operation_id,
+            shutdown,
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        result
+    }
+
+    /// Applies a compose-file edit without dropping supervision of unchanged
+    /// containers. Existing containers whose declarations changed are
+    /// restarted in place; then the normal idempotent `up` path starts only
+    /// declarations that are not already running.
+    pub async fn reconcile_file(
+        &self,
+        file: ComposeFile,
+        restart: &[String],
+        operation_id: String,
+    ) -> (Vec<OpResult>, OpResult) {
+        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
 
+        {
+            let mut current = self.file.write().await;
+            *current = file;
+        }
+        let file = self.file.read().await;
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+
+        let mut restarted = Vec::with_capacity(restart.len());
+        for key in restart {
+            restarted.push(
+                lifecycle::restart_one(
+                    &ctx,
+                    children,
+                    &mut state.containers,
+                    key,
+                    format!("{operation_id}-restart-{key}"),
+                )
+                .await,
+            );
+        }
+        let up = lifecycle::up(
+            &ctx,
+            children,
+            &mut state.containers,
+            None,
+            format!("{operation_id}-up"),
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        (restarted, up)
+    }
+
+    /// Applies a removal without dropping supervision of surviving containers.
+    ///
+    /// The removed worker is stopped against the old declaration so its
+    /// cleanup hook and environment are still available. The validated new
+    /// declaration then replaces the held file, and normal idempotent `up`
+    /// starts only anything that was already missing.
+    pub async fn reconcile_removal(
+        &self,
+        file: ComposeFile,
+        removed: &str,
+        operation_id: String,
+    ) -> (OpResult, OpResult) {
+        let config_dir = self.config_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+
+        let stopped = {
+            let current = self.file.read().await;
+            let ctx = LifecycleCtx {
+                file: &current,
+                engine: &self.engine,
+                post_runs: &self.post_runs,
+                compose_namespace: &self.compose_namespace,
+                project_namespace: &self.project_namespace,
+                engine_url: &self.engine_url,
+                config_dir: &config_dir,
+                logs: &self.logs,
+                package_cache: &package_cache,
+                vm_dir: &vm_dir,
+            };
+            lifecycle::remove_one(
+                &ctx,
+                children,
+                &mut state.containers,
+                removed,
+                format!("{operation_id}-down"),
+            )
+            .await
+        };
+
+        {
+            let mut current = self.file.write().await;
+            *current = file;
+        }
+        let file = self.file.read().await;
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+        let up = lifecycle::up(
+            &ctx,
+            children,
+            &mut state.containers,
+            None,
+            format!("{operation_id}-up"),
+        )
+        .await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        (stopped, up)
+    }
+
+    /// Bounces one container. See [`lifecycle::restart_one`] for why this does
+    /// not take the container's graph with it.
+    pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
+        let config_dir = self.config_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
+
+        let ctx = LifecycleCtx {
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -426,19 +627,21 @@ impl Project {
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
-        let log_dir = self.log_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
+        let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
-            file: &self.file,
+            file: &file,
             engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
             config_dir: &config_dir,
-            log_dir: &log_dir,
+            logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
         };
@@ -455,8 +658,8 @@ impl Project {
     /// Current state of every declared container, for `compose::status`.
     pub async fn status(&self) -> Vec<ContainerStatus> {
         let inner = self.inner.lock().await;
-        self.file
-            .containers
+        let file = self.file.read().await;
+        file.containers
             .keys()
             .map(|key| {
                 let record = inner.state.containers.get(key);
@@ -473,10 +676,49 @@ impl Project {
                     },
                     pid: record.map(|r| r.pid),
                     owned: inner.children.contains_key(key),
+                    log_path: self.logs.path(key),
                     last_error: record.and_then(|r| r.last_error.clone()),
                 }
             })
             .collect()
+    }
+
+    /// Reads retained stdout and stderr without exposing arbitrary host paths.
+    pub async fn logs(
+        &self,
+        container: Option<&str>,
+        cursors: BTreeMap<String, LogCursor>,
+        tail: usize,
+        stream: Option<LogStream>,
+        wait_ms: u64,
+    ) -> Result<LogsOutcome> {
+        let file = self.file.read().await;
+        let containers = match container {
+            Some(container) if file.containers.contains_key(container) => {
+                vec![container.to_string()]
+            }
+            Some(container) => {
+                return Err(ComposeError::UnknownContainer {
+                    container: container.to_string(),
+                });
+            }
+            None => file.containers.keys().cloned().collect(),
+        };
+        drop(file);
+
+        self.logs
+            .query(
+                containers,
+                cursors,
+                tail,
+                stream,
+                Duration::from_millis(wait_ms.min(crate::logs::MAX_WAIT_MS)),
+            )
+            .await
+            .map_err(|source| ComposeError::Io {
+                path: self.logs.dir().to_path_buf(),
+                source,
+            })
     }
 
     /// Leaves without touching what was not started here.
@@ -498,14 +740,16 @@ impl Project {
 
         // Anything this process spawned is its own mess to clean up; anything
         // it adopted is dropped, which for an adopted handle signals nothing.
+        let stop_timeout = self.file.read().await.stop_timeout;
         for key in spawned {
             if let Some(child) = inner.children.remove(&key) {
-                child.stop(self.file.stop_timeout).await;
+                child.stop(stop_timeout).await;
             }
         }
         inner.children.clear();
         drop(inner);
 
+        self.post_runs.shutdown().await;
         self.engine.shutdown().await;
     }
 
@@ -514,12 +758,13 @@ impl Project {
     pub async fn shutdown(&self) {
         let operation_id = "shutdown".to_string();
         self.down(None, operation_id).await;
+        self.post_runs.shutdown().await;
         let _ = self.store.clear();
         self.engine.shutdown().await;
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ContainerStatus {
     pub container: String,
     pub state: ChildStatus,
@@ -527,6 +772,8 @@ pub struct ContainerStatus {
     pub pid: Option<u32>,
     /// Whether this daemon owns the process (started it and can stop it).
     pub owned: bool,
+    /// Rotating stdout and stderr file on the daemon host.
+    pub log_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }

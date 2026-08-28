@@ -160,68 +160,74 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-cmd">
       <span className="iii-qs-prompt">$</span>
-      <span>iii</span>
+      <span>iii --config config.yaml</span>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-comment"># New terminal, same folder</div>
+    <div className="iii-qs-cmd">
+      <span className="iii-qs-prompt">$</span>
+      <span>iii compose --namespace dev --engine ws://127.0.0.1:49134</span>
+    </div>
+    <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-comment"># Third terminal, same folder</div>
     <div className="iii-qs-slot" data-qs="none">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add console</span>
+        <span>iii trigger -n dev compose::add worker=console</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openai">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-openai</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openai</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-openai-codex</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openai-codex</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="anthropic">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-anthropic</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-anthropic</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="deepseek">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-deepseek</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-deepseek</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-kimi</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-kimi</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-openrouter</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openrouter</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="xai">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-xai</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-xai</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="zai">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-zai</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-zai</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="github-copilot">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-github-copilot</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-github-copilot</span>
       </div>
       <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
       <div className="iii-qs-cmd">
@@ -232,7 +238,7 @@ agents within your iii system. You can add a provider worker later at any time.
     <div className="iii-qs-slot" data-qs="llamacpp">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii worker add harness console provider-llamacpp</span>
+        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-llamacpp</span>
       </div>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
@@ -241,7 +247,7 @@ agents within your iii system. You can add a provider worker later at any time.
   </div>
 </div>
 
-The panel above is one recipe with a provider picker. Plain form: `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`, then `iii project init iii-app && cd iii-app`, then `iii`; in a second terminal in the same folder `iii worker add harness console provider-<name>`, then open http://localhost:3113. Export the provider credential in the terminal that runs the engine before starting it. Without an llm, drop harness and the provider worker: `iii worker add console`.
+The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init iii-app && cd iii-app`, start `iii --config config.yaml`, and in a second terminal start `iii compose --namespace dev --engine ws://127.0.0.1:49134`. In a third terminal, add `harness`, `console`, and `provider-<name>` one at a time with `iii trigger -n dev compose::add worker=<name>`, then open http://localhost:3113. Export the provider credential in the terminal that runs the engine before starting it. Without an llm, add only `console`.
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 

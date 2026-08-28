@@ -7,7 +7,7 @@ export const FAILURE_SOURCE = { label: 'database', sub: 'crashes post-ready' }
 export const FAILURE_TRIGGER = 'cascade stop'
 
 export const FAILURE_HANDLERS: FanHandler[] = [
-  { id: 'api', label: 'api', desc: 'stopped first — depends_on database' },
+  { id: 'api', label: 'api', desc: 'stopped first — start_after database' },
   { id: 'cron', label: 'cron-reports', desc: 'stopped next — transitive dependent' },
   { id: 'log', label: 'operator log', desc: 'cause recorded · states set to failed' },
 ]

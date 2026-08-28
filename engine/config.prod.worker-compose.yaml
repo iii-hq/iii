@@ -1,0 +1,15 @@
+# namespace: default
+engine:
+  workers: {}
+containers:
+  http:
+    worker: package://api.workers.iii.dev/http
+    version: "0.21.3"
+    config_name: http
+    config_override:
+      host: 0.0.0.0
+      port: 3111
+  cron:
+    worker: package://api.workers.iii.dev/cron
+    version: "0.21.9"
+    config_name: cron

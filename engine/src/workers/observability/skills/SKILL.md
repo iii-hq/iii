@@ -51,8 +51,8 @@ credentials in environment variables or a secret manager, not in config files.
   configured; with `otlp`-only the data lives in your collector.
 - When `logs_enabled` is off the log pipeline is dormant and the `log` trigger never fires; the
   ingest `level` sets the minimum severity stored.
-- This worker observes telemetry — it is not a general event bus (`iii-pubsub`) or durable queue
-  (`iii-queue`).
+- This worker observes telemetry — it is not a general event bus (`pubsub`) or durable queue
+  (`queue`); those are standalone Compose workers.
 
 ## Functions
 

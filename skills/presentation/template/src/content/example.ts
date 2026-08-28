@@ -145,7 +145,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         heading: 'surface',
         items: [
           { name: 'worker::run', desc: 'execute one unit of work to completion.' },
-          { name: 'worker::stop', desc: 'cancel an in-flight run.' },
+          { name: 'compose::down', desc: 'stop a supervised worker graph.' },
         ],
       },
     ],

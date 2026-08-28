@@ -8,7 +8,7 @@
 //!
 //! A child's environment is **built**, not inherited. The daemon composes it
 //! from three layers — a host baseline, the container's declared
-//! `env_file`/`environment`, and four reserved variables the daemon owns — and
+//! `env_file`/`environment`, and eight reserved variables the daemon owns — and
 //! the child is spawned with that map and nothing else. A compose project then
 //! starts the same way regardless of which shell launched the daemon, and a
 //! stale `III_URL` in the operator's environment can never point a child at the
@@ -27,10 +27,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these five
+/// would be the wrong way round for most settings. Because each of these eight
 /// is already declared in the compose file, and a second declaration of the
 /// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding a sixth is a decision, not a habit:
+/// separately, so adding a ninth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -41,13 +41,22 @@ use crate::manifest::StartSpec;
 ///   and `compose::status` before it could work at all; short of that, compose
 ///   waits in one place while the child registers in another. Both are already
 ///   declared, by `namespace:` and by the container key.
+/// - `III_COMPOSE_NAMESPACE`, `III_COMPOSE_FILE`, and `III_COMPOSE_DIR` let a
+///   managed worker reach the daemon and project that started it, and resolve
+///   project-owned paths. The daemon namespace is not the project namespace,
+///   and one daemon may own several compose files, so the namespace and file
+///   are required for an unambiguous control-plane call. The directory is the
+///   canonical parent of that file.
 /// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
 ///   merged value is written to the file and published to the entry. Pointing
 ///   the child at a different file leaves it reading one value while the
 ///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 5] = [
+pub const RESERVED_ENV: [&str; 8] = [
     "III_URL",
     "III_NAMESPACE",
+    "III_COMPOSE_NAMESPACE",
+    "III_COMPOSE_FILE",
+    "III_COMPOSE_DIR",
     "III_CONFIG",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
@@ -89,6 +98,8 @@ pub const BASELINE_ENV: &[&str] = &[
 pub struct SpawnCtx<'a> {
     pub engine_url: &'a str,
     pub namespace: &'a str,
+    pub compose_namespace: &'a str,
+    pub compose_file: &'a Path,
     pub container_key: &'a str,
     pub start: &'a StartSpec,
     /// Path of the resolved configuration file, when the container has config.
@@ -137,6 +148,27 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
 
     env.insert("III_URL".to_string(), ctx.engine_url.to_string());
     env.insert("III_NAMESPACE".to_string(), ctx.namespace.to_string());
+    env.insert(
+        "III_COMPOSE_NAMESPACE".to_string(),
+        ctx.compose_namespace.to_string(),
+    );
+    let compose_file = ctx
+        .compose_file
+        .canonicalize()
+        .or_else(|_| std::path::absolute(ctx.compose_file))
+        .unwrap_or_else(|_| ctx.compose_file.to_path_buf());
+    env.insert(
+        "III_COMPOSE_FILE".to_string(),
+        compose_file.to_string_lossy().to_string(),
+    );
+    let compose_dir = compose_file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    env.insert(
+        "III_COMPOSE_DIR".to_string(),
+        compose_dir.to_string_lossy().to_string(),
+    );
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     match ctx.config_path {
         Some(config_path) => {
@@ -238,6 +270,8 @@ mod tests {
         SpawnCtx {
             engine_url: "ws://127.0.0.1:49134",
             namespace: "orders-1234abcd",
+            compose_namespace: "compose-host",
+            compose_file: Path::new("/srv/app/worker-compose.yaml"),
             container_key: "api",
             start,
             config_path: config,
@@ -254,17 +288,57 @@ mod tests {
             .collect()
     }
 
+    fn normalize_path(path: &Path) -> PathBuf {
+        path.canonicalize()
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
     #[test]
     fn injects_the_full_contract() {
         let start = StartSpec::Shell("cargo run".to_string());
         let user_env = BTreeMap::new();
         let plan = spawn_plan(&ctx(&start, None, &user_env));
+        let expected_compose_file = normalize_path(Path::new("/srv/app/worker-compose.yaml"));
+        let expected_compose_dir = expected_compose_file
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
         assert_eq!(plan.env["III_URL"], "ws://127.0.0.1:49134");
         assert_eq!(plan.env["III_NAMESPACE"], "orders-1234abcd");
+        assert_eq!(plan.env["III_COMPOSE_NAMESPACE"], "compose-host");
+        assert_eq!(
+            Path::new(&plan.env["III_COMPOSE_FILE"]),
+            expected_compose_file.as_path()
+        );
+        assert_eq!(
+            Path::new(&plan.env["III_COMPOSE_DIR"]),
+            expected_compose_dir
+        );
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));
+    }
+
+    #[test]
+    fn relative_compose_file_contract_is_canonical() {
+        let canonical_cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let temp = tempfile::tempdir_in(&canonical_cwd).unwrap();
+        let absolute_file = temp.path().join("worker-compose.yaml");
+        std::fs::write(&absolute_file, "containers: {}").unwrap();
+        let relative_file = absolute_file.strip_prefix(&canonical_cwd).unwrap();
+        let expected_file = absolute_file.canonicalize().unwrap();
+        let expected_dir = expected_file.parent().unwrap();
+
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = BTreeMap::new();
+        let mut context = ctx(&start, None, &user_env);
+        context.compose_file = relative_file;
+        let plan = spawn_plan(&context);
+
+        assert_eq!(Path::new(&plan.env["III_COMPOSE_FILE"]), expected_file);
+        assert_eq!(Path::new(&plan.env["III_COMPOSE_DIR"]), expected_dir);
     }
 
     #[test]

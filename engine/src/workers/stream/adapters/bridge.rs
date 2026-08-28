@@ -10,24 +10,33 @@ use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, register_worker};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
     builtins::pubsub_lite::BuiltInPubSubLite,
     engine::Engine,
-    workers::{
-        pubsub::{PubSubInput, SubscribeTrigger},
-        stream::{
-            StreamMetadata, StreamWrapperMessage,
-            adapters::{StreamAdapter, StreamConnection},
-            registry::{StreamAdapterFuture, StreamAdapterRegistration},
-            structs::{
-                StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput,
-                StreamSetInput, StreamUpdateInput,
-            },
+    workers::stream::{
+        StreamMetadata, StreamWrapperMessage,
+        adapters::{StreamAdapter, StreamConnection},
+        registry::{StreamAdapterFuture, StreamAdapterRegistration},
+        structs::{
+            StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput,
+            StreamSetInput, StreamUpdateInput,
         },
     },
 };
+
+#[derive(Clone, Debug, Serialize)]
+struct PubSubInput {
+    topic: String,
+    data: Value,
+}
+
+#[derive(Serialize)]
+struct SubscribeTrigger {
+    topic: String,
+}
 
 pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 
@@ -43,7 +52,7 @@ impl BridgeAdapter {
 
         let bridge = Arc::new(register_worker(
             &bridge_url,
-            crate::workers::bridge_client::bridge_init_options("iii-stream-bridge"),
+            crate::workers::bridge::bridge_init_options("iii-stream-bridge"),
         ));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
 

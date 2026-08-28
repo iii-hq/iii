@@ -8,7 +8,7 @@
     {"code": "S003", "type": "validation", "retryable": false, "rust_variant": "ConcurrentExec", "summary": "sandbox is at its exec concurrency cap (max_concurrent_exec_per_sandbox, default 4); a slot frees when any in-flight exec finishes, but detach foreground processes rather than waiting on them"},
     {"code": "S004", "type": "validation", "retryable": false, "rust_variant": "AlreadyStopped", "summary": "sandbox already stopped; create a new one"},
     {"code": "S100", "type": "config", "retryable": false, "rust_variant": "ImageNotInCatalog", "summary": "image not in catalog or allowlist"},
-    {"code": "S101", "type": "internal", "retryable": false, "rust_variant": "RootfsMissing", "summary": "rootfs missing on disk; run iii worker add"},
+    {"code": "S101", "type": "internal", "retryable": false, "rust_variant": "RootfsMissing", "summary": "rootfs missing on disk; enable auto_install or pre-provision cache"},
     {"code": "S102", "type": "transient", "retryable": true, "rust_variant": "AutoInstallFailed", "summary": "auto-install pull/extract failed; retry"},
     {"code": "S200", "type": "execution", "retryable": false, "rust_variant": "ExecTimedOut", "summary": "exec exceeded timeout_ms"},
     {"code": "S210", "type": "filesystem", "retryable": false, "rust_variant": "FsInvalidRequest", "summary": "fs op rejected by supervisor as invalid"},

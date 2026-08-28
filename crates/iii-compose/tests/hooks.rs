@@ -5,7 +5,7 @@
 use std::{path::Path, time::Duration};
 
 use iii_compose::{
-    hooks::{await_pre_run, fire_post_run},
+    hooks::{PostRunSupervisor, await_pre_run},
     manifest::StartSpec,
     spawn::SpawnCtx,
 };
@@ -23,6 +23,8 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
     SpawnCtx {
         engine_url: "ws://engine.test:49134",
         namespace: "orders-test",
+        compose_namespace: "compose-test",
+        compose_file: cwd,
         container_key: "api",
         start,
         config_path: config,
@@ -114,11 +116,15 @@ async fn post_run_fires_without_being_awaited() {
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("drained.txt");
     let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
 
-    fire_post_run(
-        &ctx(tmp.path(), &start, None),
-        &format!("sleep 0.1; echo $III_WORKER_NAME > {}", marker.display()),
-    );
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            &format!("sleep 0.1; echo $III_WORKER_NAME > {}", marker.display()),
+            Duration::from_secs(5),
+        )
+        .await;
 
     assert!(
         !marker.exists(),
@@ -131,9 +137,94 @@ async fn post_run_fires_without_being_awaited() {
 async fn a_failing_post_run_is_not_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
 
     // Nothing to assert beyond "this returns and does not panic": a broken
     // cleanup script must never propagate into teardown.
-    fire_post_run(&ctx(tmp.path(), &start, None), "exit 9");
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            "exit 9",
+            Duration::from_secs(5),
+        )
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_a_running_post_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("drained.txt");
+    let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
+
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            &format!("sleep 0.1; echo drained > {}", marker.display()),
+            Duration::from_secs(5),
+        )
+        .await;
+
+    post_runs.shutdown().await;
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "drained");
+}
+
+#[tokio::test]
+async fn shutdown_stops_and_reaps_a_running_post_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pid_file = tmp.path().join("post-run.pid");
+    let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
+
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            &format!("echo $$ > {}; sleep 999", pid_file.display()),
+            Duration::from_millis(400),
+        )
+        .await;
+    let hook_pid = wait_for_file(&pid_file)
+        .await
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+
+    post_runs.shutdown().await;
+
+    assert!(
+        !is_alive(hook_pid),
+        "post_run process {hook_pid} survived project shutdown"
+    );
+}
+
+#[tokio::test]
+async fn a_hung_post_run_times_out_and_leaves_nothing_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pid_file = tmp.path().join("post-run.pid");
+    let start = IDLE;
+    let post_runs = PostRunSupervisor::default();
+
+    post_runs
+        .fire(
+            &ctx(tmp.path(), &start, None),
+            &format!("echo $$ > {}; sleep 999", pid_file.display()),
+            Duration::from_millis(400),
+        )
+        .await;
+    let hook_pid = wait_for_file(&pid_file)
+        .await
+        .trim()
+        .parse::<u32>()
+        .unwrap();
+
+    for _ in 0..100 {
+        if !is_alive(hook_pid) {
+            post_runs.shutdown().await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("post_run process {hook_pid} survived its timeout");
 }

@@ -16,7 +16,8 @@
 //!    already running untouched.
 //! 3. **Teardown follows the graph backwards.** Dependents stop before the
 //!    things they depend on, so nothing is talking to a worker that just went
-//!    away.
+//!    away. Removal is the explicit exception: its validated new graph first
+//!    drops those edges, then only the deleted container stops.
 
 use std::{
     collections::BTreeMap,
@@ -33,6 +34,7 @@ use crate::{
     engine::EngineClient,
     error::{ComposeError, Result},
     hooks,
+    logs::LogStore,
     manifest::{StartSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report,
@@ -42,7 +44,7 @@ use crate::{
 
 /// Outcome of one `up` or `down`. The shape is the JSON that `compose::*`
 /// returns, so it is a contract: fields are added, never repurposed.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpResult {
     pub operation_id: String,
     pub status: OpStatus,
@@ -52,14 +54,14 @@ pub struct OpResult {
     pub containers: Vec<ContainerResult>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpStatus {
     Ok,
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ContainerResult {
     pub container: String,
     pub state: ChildStatus,
@@ -68,7 +70,7 @@ pub struct ContainerResult {
     pub error: Option<OpError>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpError {
     pub code: String,
     pub message: String,
@@ -87,6 +89,10 @@ impl From<&ComposeError> for OpError {
 pub struct LifecycleCtx<'a> {
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
+    pub post_runs: &'a hooks::PostRunSupervisor,
+    /// Namespace of the compose daemon that owns this project. Children use
+    /// it for explicit per-call routing to `compose::*`.
+    pub compose_namespace: &'a str,
     /// Namespace the *children* register in — not the daemon's own.
     pub project_namespace: &'a str,
     pub engine_url: &'a str,
@@ -94,23 +100,32 @@ pub struct LifecycleCtx<'a> {
     pub config_dir: &'a std::path::Path,
     /// Where installed packages live, shared across projects on this machine.
     pub package_cache: &'a std::path::Path,
-    /// Where a child's own output is written. Compose neither prints nor
-    /// serves it — this is the record for a worker that dies before it can
-    /// tell the engine anything.
-    pub log_dir: &'a std::path::Path,
+    /// Persistent, bounded stdout and stderr for every project worker.
+    pub logs: &'a LogStore,
     /// Root of the per-container VM state for bundle containers.
     pub vm_dir: &'a std::path::Path,
 }
 
 /// What one container's start produced: which one, how long it took, and
 /// whether it came up.
-type StartOutcome = (String, Duration, Result<(ChildRecord, Supervised)>);
+type StartOutcome = (String, Duration, StartAttempt);
 
-/// How many containers may start at once inside one wave.
-///
-/// Not unbounded: a wave can be the whole file, and each start may download an
-/// artefact, spawn a process, or boot a VM.
-const STARTS_AT_ONCE: usize = 8;
+enum StartAttempt {
+    Ready(ChildRecord, Supervised),
+    Failed(ComposeError),
+    Interrupted,
+}
+
+enum StartFailure {
+    Failed(ComposeError),
+    Interrupted,
+}
+
+impl From<ComposeError> for StartFailure {
+    fn from(error: ComposeError) -> Self {
+        Self::Failed(error)
+    }
+}
 
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Supervised>;
@@ -126,18 +141,45 @@ pub async fn up(
     target: Option<&str>,
     operation_id: String,
 ) -> OpResult {
+    up_inner(ctx, children, records, target, operation_id, None)
+        .await
+        .expect("up without a shutdown signal cannot be interrupted")
+}
+
+/// Starts the foreground project's graph, rolling back this operation when an
+/// OS shutdown signal arrives.
+pub(crate) async fn up_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    target: Option<&str>,
+    operation_id: String,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<OpResult> {
+    up_inner(ctx, children, records, target, operation_id, Some(shutdown)).await
+}
+
+async fn up_inner(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    target: Option<&str>,
+    operation_id: String,
+    shutdown: Option<crate::shutdown::ShutdownSignal>,
+) -> Option<OpResult> {
     let began = Instant::now();
     let order = match plan_targets(ctx.file, target) {
         Ok(order) => order,
         Err(error) => {
             report::summary_failed("up", error.code(), began.elapsed());
-            return failed_op(operation_id, target, &error);
+            return Some(failed_op(operation_id, target, &error));
         }
     };
 
     let mut results: Vec<ContainerResult> = Vec::new();
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
+    let max_parallel_workers = crate::parallelism::max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
     // operator sees the shape rather than a line at a time.
@@ -147,6 +189,12 @@ pub async fn up(
     // in a project of fourteen where one worker calls the other thirteen, the
     // thirteen have nothing to wait for.
     for wave in dag::waves(ctx.file, &order) {
+        if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+            report::plan_done();
+            rollback(ctx, children, records, &started, &mut results).await;
+            return None;
+        }
+
         let mut starting: Vec<String> = Vec::new();
         for key in &wave {
             if is_running(children, key) {
@@ -169,25 +217,28 @@ pub async fn up(
         // Bounded: a wave may hold every container in the file, and each one
         // can be a download, a process, or a VM. An operator's machine should
         // not have to survive all of them at once.
-        let outcomes: Vec<StartOutcome> =
-            futures::stream::iter(starting.into_iter().map(|key| async move {
+        let outcomes: Vec<StartOutcome> = futures::stream::iter(starting.into_iter().map(|key| {
+            let shutdown = shutdown.clone();
+            async move {
                 let began = Instant::now();
-                let outcome = start_one(ctx, &key).await;
+                let outcome = start_one_attempt(ctx, &key, shutdown).await;
                 (key, began.elapsed(), outcome)
-            }))
-            .buffer_unordered(STARTS_AT_ONCE)
-            .collect()
-            .await;
+            }
+        }))
+        .buffer_unordered(max_parallel_workers)
+        .collect()
+        .await;
 
         // The whole wave is awaited before a failure is acted on. Stopping
         // early would leave containers half-started, which is a worse state to
         // describe than one more container that came up and is then rolled
         // back.
         let mut failure: Option<(String, ComposeError)> = None;
+        let mut interrupted = false;
         for (key, took, outcome) in outcomes {
             let key = &key;
             match outcome {
-                Ok((record, child)) => {
+                StartAttempt::Ready(record, child) => {
                     report::ready(key, took);
                     records.insert(key.clone(), record);
                     children.insert(key.clone(), child);
@@ -199,7 +250,7 @@ pub async fn up(
                         error: None,
                     });
                 }
-                Err(error) => {
+                StartAttempt::Failed(error) => {
                     report::failed(
                         key,
                         error.code(),
@@ -215,19 +266,26 @@ pub async fn up(
                         failure = Some((key.clone(), error));
                     }
                 }
+                StartAttempt::Interrupted => interrupted = true,
             }
+        }
+
+        if interrupted {
+            report::plan_done();
+            rollback(ctx, children, records, &started, &mut results).await;
+            return None;
         }
 
         if let Some((_, error)) = failure {
             report::plan_done();
             rollback(ctx, children, records, &started, &mut results).await;
             report::summary_failed("up", error.code(), began.elapsed());
-            return OpResult {
+            return Some(OpResult {
                 operation_id,
                 status: OpStatus::Failed,
                 changed: !started.is_empty(),
                 containers: results,
-            };
+            });
         }
     }
 
@@ -244,12 +302,12 @@ pub async fn up(
     report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
     report::summary_ok("up", changed, results.len(), began.elapsed());
-    OpResult {
+    Some(OpResult {
         operation_id,
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
-    }
+    })
 }
 
 /// Drops a leading `container '<name>': ` from a message that is already being
@@ -347,6 +405,55 @@ pub async fn restart_one(
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
+    }
+}
+
+/// Stops one container because its declaration is being removed.
+///
+/// This path is intentionally narrower than targeted `down`: dependency edges
+/// pointing at the container are removed from the new declaration, so stopping
+/// dependents would discard healthy processes that the following idempotent
+/// `up` is expected to preserve. The old declaration remains available here so
+/// the removed container can still run its `post_run` hook.
+pub async fn remove_one(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+) -> OpResult {
+    let began = Instant::now();
+    if !ctx.file.containers.contains_key(key) {
+        let error = ComposeError::UnknownContainer {
+            container: key.to_string(),
+        };
+        report::summary_failed("remove", error.code(), began.elapsed());
+        return failed_op(operation_id, Some(key), &error);
+    }
+
+    report::plan(&[(key.to_string(), 0)]);
+    let changed = children.contains_key(key);
+    if changed {
+        report::starting(key, "stopping");
+        stop_one(ctx, children, records, key).await;
+        report::stopped(key);
+    } else {
+        report::unchanged(key, "not running");
+    }
+    records.remove(key);
+    report::plan_done();
+    report::summary_ok("remove", usize::from(changed), 1, began.elapsed());
+
+    OpResult {
+        operation_id,
+        status: OpStatus::Ok,
+        changed,
+        containers: vec![ContainerResult {
+            container: key.to_string(),
+            state: ChildStatus::Stopped,
+            changed,
+            error: None,
+        }],
     }
 }
 
@@ -450,6 +557,46 @@ pub async fn down(
 /// start together and a shared `&mut` would serialise exactly what this exists
 /// to overlap.
 async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Supervised)> {
+    match start_one_attempt(ctx, key, None).await {
+        StartAttempt::Ready(record, child) => Ok((record, child)),
+        StartAttempt::Failed(error) => Err(error),
+        StartAttempt::Interrupted => {
+            unreachable!("a start without a shutdown signal cannot be interrupted")
+        }
+    }
+}
+
+async fn start_one_attempt(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    shutdown: Option<crate::shutdown::ShutdownSignal>,
+) -> StartAttempt {
+    match start_one_until_shutdown(ctx, key, shutdown).await {
+        Ok((record, child)) => StartAttempt::Ready(record, child),
+        Err(StartFailure::Failed(error)) => StartAttempt::Failed(error),
+        Err(StartFailure::Interrupted) => StartAttempt::Interrupted,
+    }
+}
+
+async fn start_one_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    mut shutdown: Option<crate::shutdown::ShutdownSignal>,
+) -> std::result::Result<(ChildRecord, Supervised), StartFailure> {
+    macro_rules! wait_or_interrupt {
+        ($future:expr) => {{
+            if let Some(signal) = shutdown.as_mut() {
+                tokio::select! {
+                    biased;
+                    _ = signal.wait() => return Err(StartFailure::Interrupted),
+                    result = $future => result,
+                }
+            } else {
+                $future.await
+            }
+        }};
+    }
+
     let container = ctx
         .file
         .containers
@@ -463,21 +610,19 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     // the container would be reported ready in milliseconds while the process
     // we started loses the `(namespace, worker_name)` lease and dies rejected.
     // Refuse instead, and say who is holding the name.
-    if ctx.engine.is_registered(ctx.project_namespace, key).await? {
+    if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))? {
         return Err(ComposeError::ContainerNameTaken {
             container: key.to_string(),
             namespace: ctx.project_namespace.to_string(),
-        });
+        }
+        .into());
     }
 
     // Taken here, at the last moment nothing of ours is running yet. Readiness
     // reports differences against it, and a package install below can take
     // seconds — long enough for an unrelated worker to arrive and be mistaken
     // for the child we are about to start.
-    let baseline = ctx
-        .engine
-        .readiness_baseline(ctx.project_namespace, key)
-        .await?;
+    let baseline = wait_or_interrupt!(ctx.engine.readiness_baseline(ctx.project_namespace, key))?;
 
     // A package is fetched here rather than at validation time: resolving it
     // needs the registry, and `validate` is offline by contract.
@@ -485,8 +630,12 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
         crate::config::WorkerSource::Package { reference } => {
             let range = container.version.as_deref().unwrap_or("*");
             report::starting(key, &format!("installing {reference}@{range}"));
-            let installed =
-                crate::registry::install(key, reference, range, ctx.package_cache).await?;
+            let installed = wait_or_interrupt!(crate::registry::install(
+                key,
+                reference,
+                range,
+                ctx.package_cache,
+            ))?;
             report::starting(
                 key,
                 &format!("starting {} {}", installed.name, installed.version),
@@ -510,7 +659,7 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     };
 
     let user_env = container.resolve_user_env(key)?;
-    let config = resolve_config(ctx, container, key, shipped_config).await?;
+    let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
     let worker_dir = container.worker_dir();
     let working_dir = resolve_working_dir(
         container.working_dir.as_deref(),
@@ -521,6 +670,8 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     let spawn_ctx = SpawnCtx {
         engine_url: ctx.engine_url,
         namespace: ctx.project_namespace,
+        compose_namespace: ctx.compose_namespace,
+        compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
         config_path: config.as_ref().map(|resolved| resolved.file.path()),
@@ -532,13 +683,21 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
     };
 
     if let Some(script) = &container.scripts.pre_run {
-        hooks::await_pre_run(&spawn_ctx, script, container.scripts.pre_run_timeout)
-            .await
-            .map_err(|err| ComposeError::HookFailed {
-                container: key.to_string(),
-                hook_code: err.code(),
-                message: err.to_string(),
-            })?;
+        let Some(result) = hooks::await_pre_run_until_shutdown(
+            &spawn_ctx,
+            script,
+            container.scripts.pre_run_timeout,
+            shutdown.as_mut(),
+        )
+        .await
+        else {
+            return Err(StartFailure::Interrupted);
+        };
+        result.map_err(|err| ComposeError::HookFailed {
+            container: key.to_string(),
+            hook_code: err.code(),
+            message: err.to_string(),
+        })?;
     }
 
     let plan = spawn_plan(&spawn_ctx);
@@ -547,13 +706,17 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
         // A bundle: publisher-controlled code, so it is booted in a VM instead
         // of run here. The handle that comes back is an ordinary child, so
         // readiness, stop, crash cascade and log capture below are unchanged.
-        None => vm_command(ctx, key, &start, &plan, config.as_ref())
-            .await
-            .map_err(|message| ComposeError::SpawnFailed {
+        None => wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
+            |message| ComposeError::SpawnFailed {
                 container: key.to_string(),
                 message,
-            })?,
+            },
+        )?,
     };
+
+    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+        return Err(StartFailure::Interrupted);
+    }
 
     let (child, output) =
         spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
@@ -562,32 +725,45 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
         })?;
     // Capture before waiting on readiness: whatever the child prints while
     // starting is exactly what an operator needs when it does not.
-    let capture = report::capture_output(key, output.stdout, output.stderr, ctx.log_dir);
+    ctx.logs.capture(key, output.stdout, output.stderr);
 
-    let readiness = ctx
-        .engine
-        .wait_until_ready(
-            ctx.project_namespace,
-            key,
-            &child,
-            container.startup_timeout,
-            &baseline,
-            ctx.log_dir,
-        )
-        .await;
+    let readiness = if let Some(signal) = shutdown.as_mut() {
+        tokio::select! {
+            biased;
+            _ = signal.wait() => {
+                child.stop(ctx.file.stop_timeout).await;
+                fire_post_run(ctx, &spawn_ctx, container).await;
+                return Err(StartFailure::Interrupted);
+            }
+            readiness = ctx.engine.wait_until_ready(
+                ctx.project_namespace,
+                key,
+                &child,
+                container.startup_timeout,
+                &baseline,
+                ctx.logs.dir(),
+            ) => readiness,
+        }
+    } else {
+        ctx.engine
+            .wait_until_ready(
+                ctx.project_namespace,
+                key,
+                &child,
+                container.startup_timeout,
+                &baseline,
+                ctx.logs.dir(),
+            )
+            .await
+    };
 
     if let Err(error) = readiness {
         // The child is ours whether or not it registered; it must not outlive
         // the failed attempt.
         child.stop(ctx.file.stop_timeout).await;
-        fire_post_run(&spawn_ctx, container);
-        return Err(error);
+        fire_post_run(ctx, &spawn_ctx, container).await;
+        return Err(StartFailure::Failed(error));
     }
-
-    // Registered: the engine can hear it now, so its own logging is the record
-    // and compose stops keeping a second one. What stays on disk is the boot,
-    // which is the part the engine never saw.
-    capture.stop();
 
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
     Ok((record, child))
@@ -696,11 +872,16 @@ struct VmPlan {
 /// Runs `iii-worker __bundle-prepare` and reads the plan back.
 async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, String> {
     let program = worker_binary()?;
-    let mut child = tokio::process::Command::new(&program)
+    let mut command = tokio::process::Command::new(&program);
+    command
         .arg("__bundle-prepare")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // `vm_command` is cancellation-safe: dropping this future after a shutdown
+    // signal must not leave its short-lived helper running.
+    command.kill_on_drop(true);
+    let mut child = command
         .spawn()
         .map_err(|err| format!("cannot run {}: {err}", program.display()))?;
 
@@ -810,6 +991,8 @@ async fn stop_one(
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
             namespace: ctx.project_namespace,
+            compose_namespace: ctx.compose_namespace,
+            compose_file: &ctx.file.path,
             container_key: key,
             start: &start,
             config_path: None,
@@ -817,7 +1000,7 @@ async fn stop_one(
             working_dir: &working_dir,
             user_env: &user_env,
         };
-        fire_post_run(&spawn_ctx, container);
+        fire_post_run(ctx, &spawn_ctx, container).await;
     }
 
     if let Some(record) = records.get_mut(key) {
@@ -915,9 +1098,11 @@ async fn resolve_config(
     }))
 }
 
-fn fire_post_run(spawn_ctx: &SpawnCtx<'_>, container: &Container) {
+async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {
     if let Some(script) = &container.scripts.post_run {
-        hooks::fire_post_run(spawn_ctx, script);
+        ctx.post_runs
+            .fire(spawn_ctx, script, ctx.file.stop_timeout)
+            .await;
     }
 }
 
@@ -973,10 +1158,10 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
   lonely:
@@ -1073,10 +1258,10 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
 "#,
@@ -1111,13 +1296,13 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on: [api]
+    start_after: [api]
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
   reports:
     worker: path://./workers/reports
-    depends_on: [database]
+    start_after: [database]
   database:
     worker: path://./workers/database
 "#,

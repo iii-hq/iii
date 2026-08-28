@@ -20,13 +20,7 @@ async fn boot_bare_engine() -> (iii::EngineBuilder, tempfile::TempDir) {
                 }
             })),
         )
-        .add_worker("iii-engine-functions", None)
-        .add_worker("iii-state", None)
         .add_worker("iii-stream", Some(json!({ "port": 0 })))
-        .add_worker("iii-queue", None)
-        .add_worker("iii-pubsub", None)
-        .add_worker("iii-observability", None)
-        .add_worker("iii-http", Some(json!({ "port": 0 })))
         .add_worker("iii-worker-manager", Some(json!({ "port": 0 })))
         .build()
         .await
@@ -298,7 +292,7 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let result = engine
-        .call("engine::workers::info", json!({ "name": "iii-state" }))
+        .call("engine::workers::info", json!({ "name": "iii-stream" }))
         .await
         .expect("engine::workers::info should succeed")
         .expect("response should not be None");
@@ -306,13 +300,13 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
     let worker = result.get("worker").expect("worker envelope");
     assert_eq!(
         worker.get("name").and_then(|v| v.as_str()),
-        Some("iii-state")
+        Some("iii-stream")
     );
     // description is shared core: builtin workers self-describe via their
     // WorkerRegistration.
     assert_eq!(
         worker.get("description").and_then(|v| v.as_str()),
-        Some("Distributed key-value state management with reactive change triggers.")
+        Some("Build durable streams for real-time data subscriptions.")
     );
     // internal is always present on the info envelope.
     assert!(worker.get("internal").and_then(|v| v.as_bool()).is_some());
@@ -321,7 +315,7 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
         .get("functions")
         .and_then(|v| v.as_array())
         .expect("functions array");
-    assert!(!functions.is_empty(), "iii-state should expose functions");
+    assert!(!functions.is_empty(), "iii-stream should expose functions");
 }
 
 /// In-process workers register `TriggerType` with `worker_id: None`, so the
@@ -329,7 +323,7 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
 /// them. `engine::workers::info` must still roll trigger types up into the
 /// owning runtime worker via the static `BUILTIN_TRIGGER_TYPES` map —
 /// otherwise the publish workflow ships an empty `triggers: []` array to the
-/// registry for iii-http, iii-cron, iii-state, etc.
+/// registry for the engine-resident iii-stream provider.
 #[tokio::test]
 async fn workers_info_attributes_trigger_types_to_in_process_worker() {
     let (builder, _config_dir) = boot_bare_engine().await;
@@ -338,7 +332,7 @@ async fn workers_info_attributes_trigger_types_to_in_process_worker() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let result = engine
-        .call("engine::workers::info", json!({ "name": "iii-http" }))
+        .call("engine::workers::info", json!({ "name": "iii-stream" }))
         .await
         .expect("engine::workers::info should succeed")
         .expect("response should not be None");
@@ -353,16 +347,16 @@ async fn workers_info_attributes_trigger_types_to_in_process_worker() {
         .filter_map(|tt| tt.get("id").and_then(|v| v.as_str()))
         .collect();
     assert!(
-        ids.contains(&"http"),
-        "iii-http workers::info should include the `http` trigger type, got {:?}",
+        ids.contains(&"stream"),
+        "iii-stream workers::info should include the `stream` trigger type, got {:?}",
         ids
     );
 
     for tt in trigger_types {
         assert_eq!(
             tt.get("worker_name").and_then(|v| v.as_str()),
-            Some("iii-http"),
-            "trigger_type {:?} should be attributed to iii-http",
+            Some("iii-stream"),
+            "trigger_type {:?} should be attributed to iii-stream",
             tt.get("id")
         );
     }

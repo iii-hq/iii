@@ -258,6 +258,8 @@ pub struct TelemetryOptions {
 pub struct WorkerMetadata {
     pub runtime: String,
     pub version: String,
+    /// Worker name reported to the engine. A non-empty `III_WORKER_NAME`
+    /// overrides this value when the client is created.
     pub name: String,
     pub os: String,
     /// One-line, human/LLM-readable summary of what this worker does.
@@ -302,14 +304,11 @@ impl Default for WorkerMetadata {
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
-            // III_WORKER_NAME carries the config.yaml entry name for managed
-            // workers (set by iii-worker at spawn). Engine truth (`iii worker
-            // status`/`list`) matches connections by name, so the managed
-            // identity must win over the hostname:pid fallback.
-            name: std::env::var("III_WORKER_NAME")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("{}:{}", hostname, pid)),
+            // III_WORKER_NAME carries the orchestrator-assigned name (set by
+            // iii-worker for engine-managed workers). The engine matches live
+            // registrations by name, so that identity must win over the
+            // hostname:pid fallback.
+            name: worker_name_from_env().unwrap_or_else(|| format!("{}:{}", hostname, pid)),
             os: os_info,
             description: None,
             pid: Some(pid),
@@ -332,9 +331,21 @@ impl Default for WorkerMetadata {
     }
 }
 
+fn worker_name_from_env() -> Option<String> {
+    std::env::var("III_WORKER_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+fn apply_worker_name_from_env(metadata: &mut WorkerMetadata) {
+    if let Some(managed_name) = worker_name_from_env() {
+        metadata.name = managed_name;
+    }
+}
+
 /// Resolve the effective worker namespace: an explicit `InitOptions.namespace`
 /// wins, then the `III_NAMESPACE` env var, then `None` (the engine applies its
-/// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+/// default namespace).
 /// `namespace` option > `III_NAMESPACE` > `None` (the engine then applies its
 /// `default` namespace).
 ///
@@ -938,8 +949,12 @@ impl IIIClient {
         Self::with_metadata(address, WorkerMetadata::default())
     }
 
-    /// Create a new III with custom worker metadata
-    pub fn with_metadata(address: &str, metadata: WorkerMetadata) -> Self {
+    /// Create a new III with custom worker metadata.
+    ///
+    /// A non-empty `III_WORKER_NAME` overrides `metadata.name` so an
+    /// orchestrator can assign the worker identity.
+    pub fn with_metadata(address: &str, mut metadata: WorkerMetadata) -> Self {
+        apply_worker_name_from_env(&mut metadata);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = IIIInner {
             address: address.into(),
@@ -971,8 +986,11 @@ impl IIIClient {
         &self.inner.address
     }
 
-    /// Set custom worker metadata (call before connect)
-    pub fn set_metadata(&self, metadata: WorkerMetadata) {
+    /// Set custom worker metadata (call before connect).
+    ///
+    /// A non-empty `III_WORKER_NAME` overrides `metadata.name`.
+    pub fn set_metadata(&self, mut metadata: WorkerMetadata) {
+        apply_worker_name_from_env(&mut metadata);
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
     }
 
@@ -2514,6 +2532,7 @@ pub(crate) async fn internal_create_channel(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::ffi::OsString;
 
     use serde_json::json;
 
@@ -2524,6 +2543,55 @@ mod tests {
     use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
 
     use std::sync::atomic::AtomicUsize;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ScopedEnvVar {
+        fn new(key: &'static str) -> Self {
+            let lock = ENV_MUTEX.lock_or_recover();
+            let previous = std::env::var_os(key);
+            Self {
+                key,
+                previous,
+                _lock: lock,
+            }
+        }
+
+        fn set(&self, value: &str) {
+            // SAFETY: this guard holds the shared test mutex until the
+            // original environment value is restored.
+            unsafe {
+                std::env::set_var(self.key, value);
+            }
+        }
+
+        fn remove(&self) {
+            // SAFETY: this guard holds the shared test mutex until the
+            // original environment value is restored.
+            unsafe {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            // SAFETY: restoration happens while this guard still holds the
+            // shared test mutex, including when a test unwinds after a panic.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     /// Raw TCP listener that accepts and then holds sockets open without
     /// ever answering (or even reading) the WS handshake — the stalled /
@@ -3049,61 +3117,79 @@ mod tests {
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
-    // Single test covers both branches so the env var mutation is serialized
-    // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
     fn worker_metadata_default_reads_iii_isolation_env_var() {
-        let previous = std::env::var("III_ISOLATION").ok();
+        let env = ScopedEnvVar::new("III_ISOLATION");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_ISOLATION");
-        }
+        env.remove();
         assert!(WorkerMetadata::default().isolation.is_none());
 
-        unsafe {
-            std::env::set_var("III_ISOLATION", "docker");
-        }
+        env.set("docker");
         assert_eq!(
             WorkerMetadata::default().isolation.as_deref(),
             Some("docker")
         );
-
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_ISOLATION", val),
-                None => std::env::remove_var("III_ISOLATION"),
-            }
-        }
     }
 
-    // Single test covers both branches so the env var mutation is serialized
-    // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
-    fn worker_metadata_default_reads_iii_worker_name_env_var() {
-        let previous = std::env::var("III_WORKER_NAME").ok();
+    fn worker_name_resolution_prefers_iii_worker_name_env_var() {
+        let env = ScopedEnvVar::new("III_WORKER_NAME");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_WORKER_NAME");
-        }
+        env.remove();
         let fallback = WorkerMetadata::default().name;
         assert!(
             fallback.ends_with(&format!(":{}", std::process::id())),
             "expected hostname:pid fallback, got {fallback}"
         );
 
-        unsafe {
-            std::env::set_var("III_WORKER_NAME", "managed-worker");
-        }
+        env.set("");
+        let metadata = WorkerMetadata {
+            name: "explicit-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", metadata);
+        let explicit_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(explicit_name, "explicit-worker");
+
+        env.set("managed-worker");
         assert_eq!(WorkerMetadata::default().name, "managed-worker");
 
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_WORKER_NAME", val),
-                None => std::env::remove_var("III_WORKER_NAME"),
-            }
-        }
+        let metadata = WorkerMetadata {
+            name: "explicit-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", metadata);
+        let resolved_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(resolved_name, "managed-worker");
+
+        let replacement = WorkerMetadata {
+            name: "replacement-worker".to_string(),
+            ..WorkerMetadata::default()
+        };
+        iii.set_metadata(replacement);
+        let replaced_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        assert_eq!(replaced_name, "managed-worker");
     }
 
     #[test]
@@ -3332,14 +3418,15 @@ mod tests {
             "function_id": "fn-1",
             "error": {
                 "code": "trigger_type_not_found",
-                "message": "Trigger type \"http\" not found — worker iii-http is missing. Run: iii worker add iii-http",
+                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n <compose-daemon-namespace> compose::add worker=http",
             },
         })
         .to_string();
 
         iii.handle_message(&payload).unwrap();
 
-        assert!(logs_contain("iii worker add iii-http"));
+        assert!(logs_contain("<compose-daemon-namespace>"));
+        assert!(logs_contain("compose::add worker=http"));
         assert!(logs_contain("trig-1"));
     }
 
@@ -3360,17 +3447,11 @@ mod tests {
         assert!(!logs_contain("Trigger registration failed"));
     }
 
-    // Single test covers every namespace-resolution branch so the env var
-    // mutation is serialized within one function (env vars are process-global
-    // and cargo runs tests in parallel).
     #[test]
     fn namespace_resolution_reads_env_and_prefers_explicit_option() {
-        let previous = std::env::var("III_NAMESPACE").ok();
+        let env = ScopedEnvVar::new("III_NAMESPACE");
 
-        // SAFETY: env mutations are serialized within this test and restored at the end.
-        unsafe {
-            std::env::remove_var("III_NAMESPACE");
-        }
+        env.remove();
         // Absent everywhere -> None (engine applies its default namespace).
         assert!(WorkerMetadata::default().namespace.is_none());
         assert!(resolve_namespace(None).is_none());
@@ -3380,9 +3461,7 @@ mod tests {
             Some("payments")
         );
 
-        unsafe {
-            std::env::set_var("III_NAMESPACE", "orders");
-        }
+        env.set("orders");
         // III_NAMESPACE flows into worker metadata, mirroring III_WORKER_NAME.
         assert_eq!(
             WorkerMetadata::default().namespace.as_deref(),
@@ -3395,13 +3474,6 @@ mod tests {
             resolve_namespace(Some("payments".into())).as_deref(),
             Some("payments")
         );
-
-        unsafe {
-            match previous {
-                Some(val) => std::env::set_var("III_NAMESPACE", val),
-                None => std::env::remove_var("III_NAMESPACE"),
-            }
-        }
     }
 
     #[tokio::test]

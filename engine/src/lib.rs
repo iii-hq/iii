@@ -11,6 +11,7 @@ pub mod config;
 pub mod engine;
 pub mod function;
 pub mod invocation;
+mod legacy_worker_functions;
 pub mod logging;
 pub mod protocol;
 pub mod services;
@@ -21,25 +22,21 @@ pub(crate) mod update_ops;
 pub mod worker_connections;
 
 pub mod workers {
-    pub mod bridge_client;
+    pub(crate) mod bridge;
     pub mod config;
     pub mod config_rewrite;
     pub mod configuration;
-    pub mod cron;
     pub mod engine_fn;
     pub mod external;
     pub mod http_functions;
     pub mod observability;
-    pub mod pubsub;
+    /// Compatibility API for downstream custom queue adapters. The legacy
+    /// `iii-queue` worker is no longer registered by the engine.
     pub mod queue;
     pub mod redis;
     pub mod registry;
-    pub mod registry_worker;
     pub mod reload;
-    pub mod rest_api;
     pub mod secure_temp;
-    pub mod shell;
-    pub mod state;
     pub mod stream;
     pub mod telemetry;
     pub mod traits;

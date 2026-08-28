@@ -9,7 +9,10 @@ description: >-
 
 # iii-worker-manager
 
-The `iii-worker-manager` is a mandatory engine worker that opens WebSocket listeners. The first entry in `iii-config.yaml` sets the main engine port (`49134` by default) for trusted internal traffic; additional entries open separate listeners with their own RBAC, middleware, and registration hooks. Channels are mounted on every listener at `/ws/channels/{channel_id}` — RBAC ports keep `engine::channels::create` always-allowed via the infrastructure carve-out so SDK `createChannel()` works without changes.
+The `iii-worker-manager` is a mandatory engine worker that opens WebSocket listeners. The base
+`engine.workers.iii-worker-manager` entry sets the main port (`49134` by default); `#instance`
+entries open separate listeners with their own RBAC, middleware, and registration hooks. Channels
+are mounted on every listener at `/ws/channels/{channel_id}`.
 
 ## When to Use
 
@@ -33,13 +36,12 @@ The `iii-worker-manager` is a mandatory engine worker that opens WebSocket liste
 Two listeners — one internal, one external with RBAC:
 
 ```yaml
-workers:
-  - name: iii-worker-manager
-    config:
+engine:
+  workers:
+    iii-worker-manager:
       port: 49134
 
-  - name: iii-worker-manager
-    config:
+    "iii-worker-manager#rbac":
       host: 0.0.0.0
       port: 49135
       middleware_function_id: my-project::middleware

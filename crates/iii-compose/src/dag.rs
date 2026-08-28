@@ -20,7 +20,7 @@ use crate::{
 /// Rejects dependencies on undeclared containers and any dependency cycle.
 pub fn validate_dependencies(file: &ComposeFile) -> Result<()> {
     for (key, container) in &file.containers {
-        for dependency in &container.depends_on {
+        for dependency in &container.start_after {
             if !file.containers.contains_key(dependency) {
                 return Err(ComposeError::UnknownDependency {
                     container: key.clone(),
@@ -63,7 +63,7 @@ fn visit<'a>(
     // `validate_dependencies` rejects unknown edges before we get here, so a
     // missing entry can only mean the graph was mutated between the two.
     if let Some(container) = file.containers.get(key) {
-        for dependency in &container.depends_on {
+        for dependency in &container.start_after {
             let dependency = file
                 .containers
                 .get_key_value(dependency)
@@ -98,7 +98,7 @@ pub fn outline(file: &ComposeFile, order: &[String]) -> Vec<(String, usize)> {
         if !shown.contains(key.as_str()) {
             continue;
         }
-        for dependency in &container.depends_on {
+        for dependency in &container.start_after {
             if shown.contains(dependency.as_str()) {
                 parent.entry(dependency.as_str()).or_insert(key.as_str());
             }
@@ -137,7 +137,7 @@ pub fn outline(file: &ComposeFile, order: &[String]) -> Vec<(String, usize)> {
 ///
 /// Each wave holds containers whose dependencies are all in earlier waves, so
 /// nothing inside one waits on anything else inside it. A file with no
-/// `depends_on` is a single wave; a chain is one container per wave.
+/// `start_after` is a single wave; a chain is one container per wave.
 ///
 /// The grouping is derived from the order rather than computed again, so the
 /// two cannot disagree about what depends on what.
@@ -151,7 +151,7 @@ pub fn waves(file: &ComposeFile, order: &[String]) -> Vec<Vec<String>> {
             .get(key)
             .map(|container| {
                 container
-                    .depends_on
+                    .start_after
                     .iter()
                     // A dependency outside `order` is one this operation is not
                     // starting — already running, or not targeted — so it does
@@ -177,8 +177,8 @@ pub fn topo_order(file: &ComposeFile) -> Result<Vec<String>> {
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
 
     for (key, container) in &file.containers {
-        pending.insert(key.as_str(), container.depends_on.len());
-        for dependency in &container.depends_on {
+        pending.insert(key.as_str(), container.start_after.len());
+        for dependency in &container.start_after {
             dependents
                 .entry(dependency.as_str())
                 .or_default()
@@ -228,7 +228,7 @@ pub fn dependency_closure(file: &ComposeFile, key: &str) -> HashSet<String> {
             continue;
         }
         if let Some(container) = file.containers.get(&current) {
-            for dependency in &container.depends_on {
+            for dependency in &container.start_after {
                 queue.push_back(dependency.clone());
             }
         }
@@ -251,7 +251,7 @@ pub fn transitive_dependents(file: &ComposeFile, key: &str) -> Vec<String> {
 
     while let Some(current) = queue.pop_front() {
         for (candidate, container) in &file.containers {
-            if !container.depends_on.iter().any(|dep| dep == &current) {
+            if !container.start_after.iter().any(|dep| dep == &current) {
                 continue;
             }
             if discovered.insert(candidate.clone()) {

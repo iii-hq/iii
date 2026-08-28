@@ -12,19 +12,53 @@ links.
 ## Add the workers
 
 `iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
-worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
-`analytics` in Chapter 4:
+worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
+`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in the Compose
+engine configuration:
+
+```yaml worker-compose.yaml
+engine:
+  workers:
+    iii-stream: {}
+```
 
 ```bash
-iii worker add iii-stream
-iii worker init click-streamer --language typescript
+mkdir -p click-streamer/src
+```
+
+Create the worker manifest and package metadata:
+
+```yaml click-streamer/iii.worker.yaml
+name: click-streamer
+scripts:
+  start: pnpm start
+```
+
+```json click-streamer/package.json
+{
+  "name": "click-streamer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.21.4",
+    "@iii-dev/helpers": "0.21.4",
+    "tsx": "^4.22.3"
+  }
+}
+```
+
+```bash
+cd click-streamer && pnpm install && cd ..
 ```
 
 ## Broadcast clicks in real time
 
-We'll continue to keep `link` decoupled by having it announce that a click happened, and
-`click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
-dropped event, so a regular `pubsub` event is the right tool here.
+Have `link` announce each click with a `pubsub` event. Then, have `click-streamer` push the event
+onto the live feed.
 
 ### Add a `link.clicked` event to the `link` worker
 
@@ -62,7 +96,7 @@ worker.registerFunction(
 
 Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
 a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
-WebSocket subscribed to that stream and group. Replace the generated `click-streamer/src/index.ts`:
+WebSocket subscribed to that stream and group. Create `click-streamer/src/index.ts`:
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -101,7 +135,7 @@ logger.info("click-streamer ready");
 Register it with your project:
 
 ```bash
-iii worker add ./click-streamer
+iii trigger -n linkly compose::add worker=./click-streamer
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.

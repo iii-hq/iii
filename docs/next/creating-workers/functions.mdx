@@ -202,10 +202,10 @@ functionality. For example,
 by a `metadata:` selector, so tagging a function `{ public: true }` or `{ tier: "premium" }` lets
 you gate access on the fields you define.
 
-<Warn>
+<Warning>
   All access should be gated system-side. You should never rely on an untrusted worker to define
   what they can or can't have access to.
-</Warn>
+</Warning>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -285,8 +285,12 @@ use this `metadata` object to provide trigger or execution context to the receiv
 
 ## HTTP-invokable functions
 
-You can also register an external HTTP endpoint as a function. The engine makes the HTTP call
-whenever the function is invoked, your worker only declares the endpoint.
+The `iii-http-functions` worker provides this feature. See its
+[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) for its configuration and
+security controls.
+
+You can register an external HTTP endpoint as a function. The engine makes the HTTP call whenever
+the function is invoked; your worker only declares the endpoint.
 
 This is useful for delegating work to your existing API Gateways, webhooks, serverless platforms
 (Lambda, Azure Functions, Google Cloud Functions), or any third-party API you want to surface as a

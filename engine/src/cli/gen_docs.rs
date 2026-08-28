@@ -14,19 +14,12 @@ use std::path::Path;
 
 use iii_clap_docs::{Delegated, PageMeta};
 
-/// The `console`, `cloud`, and `worker` subcommands are passthrough stubs
+/// The `console` and `cloud` subcommands are passthrough stubs
 /// here (a bare `Vec<String>`); their real command trees live in the
 /// dispatched binaries. Link to those binaries' own sections of the
 /// combined page instead of rendering an empty `[ARGS]...` section.
 fn delegated() -> BTreeMap<String, Delegated> {
     let mut map = BTreeMap::new();
-    map.insert(
-        "worker".to_string(),
-        Delegated {
-            link: Some("#iii-worker".to_string()),
-            note: "Manage workers (add, remove, list, info).".to_string(),
-        },
-    );
     map.insert(
         "console".to_string(),
         Delegated {
@@ -54,6 +47,16 @@ fn delegated() -> BTreeMap<String, Delegated> {
 fn mdx_only_notes() -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert(
+        "iii compose logs".to_string(),
+        "<Note>\n  Without `--follow`, this command prints a recent snapshot and exits. With \
+         `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB \
+         active file and three archives; older output is deleted after rotation, and a cursor older \
+         than the retained history resumes from the most recent retained lines with a warning. See \
+         [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote \
+         `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.\n</Note>"
+            .to_string(),
+    );
+    map.insert(
         "iii trigger".to_string(),
         "<Note>\n  `iii trigger <function> --help` additionally queries a running engine for \
          the function's description and request schema. That output depends on which workers \
@@ -68,11 +71,11 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
     let meta = PageMeta {
         title: "CLI reference".to_string(),
         description: "Every flag, argument, and subcommand of the iii CLI, including iii \
-                      worker and iii console, generated from the CLI definitions in source."
+                      console, generated from the CLI definitions in source."
             .to_string(),
         owner: "devrel".to_string(),
-        intro: "Reference for the `iii` binary and the `iii worker` and `iii console` \
-                runtimes it dispatches to. Running `iii` with no subcommand starts the \
+        intro: "Reference for the `iii` binary and the `iii console` runtime it dispatches \
+                to. Running `iii` with no subcommand starts the \
                 engine. The same information is available from the binaries themselves via \
                 `iii --help` and `iii <subcommand> --help`. For a guided overview, see \
                 [CLI](../using-iii/cli)."

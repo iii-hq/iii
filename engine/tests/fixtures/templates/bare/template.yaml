@@ -4,8 +4,8 @@ version: "0.1.0"
 min_iii_version: "0.11.0"
 
 # No language requirements: this template is the bare scaffold used by
-# `iii project init`. Languages are added later via `iii worker add` or by
-# scaffolding from a worker-bearing template like `quickstart`.
+# `iii project init`. Project workers are declared later in
+# `worker-compose.yaml` or supplied by a worker-bearing template like `quickstart`.
 treat_required_as_included: true
 requires: []
 optional: []
@@ -18,6 +18,6 @@ optional: []
 files: []
 
 next_steps:
-  - "Add a worker: iii worker add <package>"
-  - "Start the engine: iii"
+  - "Declare workers: edit worker-compose.yaml"
+  - "Start the engine and workers: iii compose --up"
   - "Docs: https://iii.dev/docs/quickstart"

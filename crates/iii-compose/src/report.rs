@@ -11,9 +11,9 @@
 //! nothing else is being printed.
 //!
 //! Everything the daemon writes goes through [`line`] or [`finish`], and both
-//! take the console lock. That is not tidiness — the children are writing to the
-//! same terminal at the same time, and a spinner that does not clear its own
-//! line before someone else writes leaves the two shredded together.
+//! take the console lock. Worker output is retained by the log store instead
+//! of writing into this terminal, but concurrent lifecycle operations can
+//! still update the same progress block.
 //!
 //! The spinner only exists when stderr is a terminal. Redirected to a file or a
 //! pipe it is replaced by a plain line, because a log full of `⠹⠸⠼` frames is
@@ -36,7 +36,6 @@ use std::{
 };
 
 use colored::{Color, Colorize};
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Marks left of a container name.
 const OK: &str = "✓";
@@ -81,7 +80,10 @@ enum RowState {
     /// Declared, and waiting on something earlier in the graph.
     Waiting,
     Starting,
-    Ready(Duration),
+    Ready {
+        what: String,
+        elapsed: Duration,
+    },
     Failed,
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
@@ -176,10 +178,11 @@ fn render_row(row: &Row, frame: usize) -> String {
             FRAMES[frame % FRAMES.len()].cyan(),
             row.key.bold()
         ),
-        RowState::Ready(elapsed) => format!(
-            "{indent}{} {} {}",
+        RowState::Ready { what, elapsed } => format!(
+            "{indent}{} {} {} {}",
             OK.green(),
             row.key.bold(),
+            what.green(),
             format!("({})", format_elapsed(*elapsed)).dimmed()
         ),
         RowState::Failed => format!("{indent}{} {}", FAILED.red(), row.key.bold().red()),
@@ -282,14 +285,24 @@ pub fn starting(key: &str, what: &str) {
 }
 
 pub fn ready(key: &str, elapsed: Duration) {
-    if set(key, RowState::Ready(elapsed)) {
+    completed(key, "ready", elapsed);
+}
+
+pub fn completed(key: &str, what: &str, elapsed: Duration) {
+    if set(
+        key,
+        RowState::Ready {
+            what: what.to_string(),
+            elapsed,
+        },
+    ) {
         return;
     }
     line(&format!(
         "{} {} {} {}",
         OK.green(),
         key.bold(),
-        "ready".green(),
+        what.green(),
         format!("({})", format_elapsed(elapsed)).dimmed()
     ));
 }
@@ -444,94 +457,6 @@ fn pick_color(taken: &[Color], last: Option<Color>) -> Color {
         .unwrap_or(CONTAINER_COLORS[0])
 }
 
-/// Re-emits a child's output with a `[container]` tag in that container's
-/// colour.
-///
-/// The line itself is never restyled: it belongs to the worker, and a worker
-/// that colours its own logs must keep them. Only the tag is ours.
-///
-/// stderr is tagged the same way but the tag is bold, so a project's error
-/// output is findable in a wall of five workers logging at once. Both streams
-/// go out through [`line`], which is what keeps them from colliding with a
-/// spinner that is turning at the same time.
-/// Keeps a child's startup output in a file beside its project's state, until
-/// the child can speak for itself.
-///
-/// Compose neither prints nor serves a worker's log: that belongs to the
-/// engine, which is where it is read from. The one case the engine cannot
-/// cover is a worker that dies before it ever connects, whose only account of
-/// itself is on its own stderr. That window is what this covers, and
-/// [`Capture::stop`] closes it the moment readiness makes the engine the
-/// better source.
-///
-/// Draining never stops, only writing does. A pipe nobody reads fills at
-/// 64 KiB and the child then blocks forever on its next `println!`, so a
-/// capture that ended by dropping the reader would hang exactly the workers
-/// that log the most.
-pub fn capture_output(
-    key: &str,
-    stdout: Option<tokio::process::ChildStdout>,
-    stderr: Option<tokio::process::ChildStderr>,
-    log_dir: &std::path::Path,
-) -> Capture {
-    let path = log_dir.join(format!("{key}.log"));
-    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    if std::fs::create_dir_all(log_dir).is_err() {
-        return Capture(stopped);
-    }
-
-    for stream in [
-        stdout.map(|out| Box::new(out) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-        stderr.map(|err| Box::new(err) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let path = path.clone();
-        let stopped = std::sync::Arc::clone(&stopped);
-        tokio::spawn(async move {
-            // Appended, never truncated: a container that restarts extends its
-            // account rather than erasing the run that explains why.
-            let Ok(file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            else {
-                return;
-            };
-            let mut lines = BufReader::new(stream).lines();
-            let mut sink = Some(file);
-            while let Ok(Some(text)) = lines.next_line().await {
-                if stopped.load(std::sync::atomic::Ordering::Relaxed) {
-                    // Releases the descriptor and keeps reading: the worker is
-                    // registered, so from here its own logging is the record.
-                    sink = None;
-                    continue;
-                }
-                if let Some(file) = sink.as_mut() {
-                    use std::io::Write;
-                    let _ = writeln!(file, "{text}");
-                }
-            }
-        });
-    }
-    Capture(stopped)
-}
-
-/// Ends a capture without ending the drain.
-///
-/// Dropping it does nothing: the tasks own their own copy of the flag, and a
-/// container whose start failed keeps its output to the end so the error can
-/// carry the last of it.
-pub struct Capture(std::sync::Arc<std::sync::atomic::AtomicBool>);
-
-impl Capture {
-    /// Stop writing the child's output down.
-    pub fn stop(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,12 +545,18 @@ mod tests {
         let parent = Row {
             key: "harness".to_string(),
             depth: 0,
-            state: RowState::Ready(Duration::from_millis(10)),
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(10),
+            },
         };
         let child = Row {
             key: "queue".to_string(),
             depth: 1,
-            state: RowState::Ready(Duration::from_millis(10)),
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(10),
+            },
         };
         let drawn_parent = render_row(&parent, 0);
         let drawn_child = render_row(&child, 0);

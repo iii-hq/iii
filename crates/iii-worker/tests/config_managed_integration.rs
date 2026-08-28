@@ -16,17 +16,17 @@ use common::isolation::in_temp_dir_async;
 #[tokio::test]
 async fn add_many_builtin_workers() {
     in_temp_dir_async(|| async {
-        let names = vec!["iii-http".to_string(), "iii-state".to_string()];
+        let names = vec!["iii-stream".to_string(), "iii-sandbox".to_string()];
         let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_eq!(exit_code, 0, "all builtin workers should succeed");
 
         assert!(
-            iii_worker::cli::config_file::worker_exists("iii-http"),
-            "iii-http should be in config.yaml"
+            iii_worker::cli::config_file::worker_exists("iii-stream"),
+            "iii-stream should be in config.yaml"
         );
         assert!(
-            iii_worker::cli::config_file::worker_exists("iii-state"),
-            "iii-state should be in config.yaml"
+            iii_worker::cli::config_file::worker_exists("iii-sandbox"),
+            "iii-sandbox should be in config.yaml"
         );
     })
     .await;
@@ -36,15 +36,15 @@ async fn add_many_builtin_workers() {
 async fn add_many_with_invalid_worker_returns_nonzero() {
     in_temp_dir_async(|| async {
         let names = vec![
-            "iii-http".to_string(),
+            "iii-stream".to_string(),
             "definitely-not-a-real-worker-xyz".to_string(),
         ];
         let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_ne!(exit_code, 0, "should fail when any worker fails");
 
         assert!(
-            iii_worker::cli::config_file::worker_exists("iii-http"),
-            "iii-http should still be in config.yaml despite other failure"
+            iii_worker::cli::config_file::worker_exists("iii-stream"),
+            "iii-stream should still be in config.yaml despite other failure"
         );
     })
     .await;
@@ -54,7 +54,7 @@ async fn add_many_with_invalid_worker_returns_nonzero() {
 async fn handle_managed_add_builtin_creates_config() {
     in_temp_dir_async(|| async {
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(
             exit_code, 0,
@@ -62,7 +62,7 @@ async fn handle_managed_add_builtin_creates_config() {
         );
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
-        assert!(content.contains("- name: iii-http"));
+        assert!(content.contains("- name: iii-stream"));
         // Bare entry: builtins boot with Rust defaults and are configured
         // through the configuration worker, so `add` must not copy a
         // default config block into config.yaml anymore.
@@ -70,12 +70,12 @@ async fn handle_managed_add_builtin_creates_config() {
             !content.contains("config:"),
             "builtin add must not write a config block, got:\n{content}"
         );
-        assert!(!content.contains("port: 3111"));
+        assert!(!content.contains("port: 3112"));
         let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
             iii_worker::cli::lockfile::lockfile_path(),
         )
         .unwrap();
-        let worker = lockfile.workers.get("iii-http").unwrap();
+        let worker = lockfile.workers.get("iii-stream").unwrap();
         assert!(matches!(
             worker.worker_type,
             iii_worker::cli::lockfile::LockedWorkerType::Engine
@@ -91,7 +91,7 @@ async fn handle_managed_add_builtin_accepts_explicit_version() {
         // The explicit version intentionally differs from the workspace
         // version; this pins that user-supplied registry versions are accepted.
         let exit_code = iii_worker::cli::managed::handle_managed_add(
-            "iii-http@0.10.0",
+            "iii-stream@0.10.0",
             false,
             false,
             false,
@@ -104,12 +104,12 @@ async fn handle_managed_add_builtin_accepts_explicit_version() {
         );
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
-        assert!(content.contains("- name: iii-http"));
+        assert!(content.contains("- name: iii-stream"));
         let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
             iii_worker::cli::lockfile::lockfile_path(),
         )
         .unwrap();
-        assert_eq!(lockfile.workers["iii-http"].version, "0.10.0");
+        assert_eq!(lockfile.workers["iii-stream"].version, "0.10.0");
     })
     .await;
 }
@@ -120,12 +120,12 @@ async fn handle_managed_add_builtin_merges_existing() {
         // Pre-populate with user overrides
         std::fs::write(
             "config.yaml",
-            "workers:\n  - name: iii-http\n    config:\n      port: 9999\n      custom_key: preserved\n",
+            "workers:\n  - name: iii-stream\n    config:\n      port: 9999\n      custom_key: preserved\n",
         )
         .unwrap();
 
         let exit_code =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(exit_code, 0, "expected success exit code for merge");
 
@@ -136,10 +136,9 @@ async fn handle_managed_add_builtin_merges_existing() {
         // Re-adding must NOT inject builtin defaults into the file anymore —
         // defaults live in Rust and flow through the configuration worker.
         assert!(
-            !content.contains("default_timeout"),
+            !content.contains("adapter:"),
             "re-add must not inject builtin defaults, got:\n{content}"
         );
-        assert!(!content.contains("concurrency_request_limit"));
     })
     .await;
 }
@@ -161,7 +160,7 @@ async fn handle_managed_start_builtin_short_circuits() {
     in_temp_dir_async(|| async {
         // Add a builtin to config.yaml first.
         let add_rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(add_rc, 0, "expected add to succeed for builtin");
 
@@ -172,7 +171,7 @@ async fn handle_managed_start_builtin_short_circuits() {
         // valid; what we're really asserting is that we did NOT fall through
         // to the remote registry (which would produce a different error).
         let start_rc = iii_worker::cli::managed::handle_managed_start(
-            "iii-http",
+            "iii-stream",
             false,
             iii_worker::DEFAULT_PORT,
             None,
@@ -196,11 +195,11 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
     in_temp_dir_async(|| async {
         // Do NOT add the builtin. handle_managed_start must refuse.
         assert!(
-            !iii_worker::cli::config_file::worker_exists("iii-http"),
-            "precondition: iii-http must not be in config.yaml"
+            !iii_worker::cli::config_file::worker_exists("iii-stream"),
+            "precondition: iii-stream must not be in config.yaml"
         );
         let start_rc = iii_worker::cli::managed::handle_managed_start(
-            "iii-http",
+            "iii-stream",
             false,
             iii_worker::DEFAULT_PORT,
             None,
@@ -208,29 +207,7 @@ async fn handle_managed_start_unconfigured_builtin_fails() {
         .await;
         assert_ne!(
             start_rc, 0,
-            "handle_managed_start must fail for unconfigured builtin 'iii-http'"
-        );
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn handle_managed_start_unconfigured_optional_builtin_fails() {
-    in_temp_dir_async(|| async {
-        assert!(
-            !iii_worker::cli::config_file::worker_exists("iii-exec"),
-            "precondition: iii-exec must not be in config.yaml"
-        );
-        let start_rc = iii_worker::cli::managed::handle_managed_start(
-            "iii-exec",
-            false,
-            iii_worker::DEFAULT_PORT,
-            None,
-        )
-        .await;
-        assert_ne!(
-            start_rc, 0,
-            "handle_managed_start must fail for unconfigured optional builtin 'iii-exec'"
+            "handle_managed_start must fail for unconfigured builtin 'iii-stream'"
         );
     })
     .await;
@@ -262,7 +239,7 @@ async fn handle_managed_add_all_builtins_succeed() {
 async fn remove_many_workers() {
     in_temp_dir_async(|| async {
         // Add two builtins first.
-        let names = vec!["iii-http".to_string(), "iii-state".to_string()];
+        let names = vec!["iii-stream".to_string(), "iii-sandbox".to_string()];
         let exit_code = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_eq!(exit_code, 0);
 
@@ -271,12 +248,12 @@ async fn remove_many_workers() {
         assert_eq!(exit_code, 0, "all removals should succeed");
 
         assert!(
-            !iii_worker::cli::config_file::worker_exists("iii-http"),
-            "iii-http should be removed"
+            !iii_worker::cli::config_file::worker_exists("iii-stream"),
+            "iii-stream should be removed"
         );
         assert!(
-            !iii_worker::cli::config_file::worker_exists("iii-state"),
-            "iii-state should be removed"
+            !iii_worker::cli::config_file::worker_exists("iii-sandbox"),
+            "iii-sandbox should be removed"
         );
     })
     .await;
@@ -286,20 +263,20 @@ async fn remove_many_workers() {
 async fn remove_many_with_missing_worker_returns_nonzero() {
     in_temp_dir_async(|| async {
         // Add one builtin.
-        let add_names = vec!["iii-http".to_string()];
+        let add_names = vec!["iii-stream".to_string()];
         let exit_code = iii_worker::cli::managed::handle_managed_add_many(&add_names, false).await;
         assert_eq!(exit_code, 0);
 
         // Remove existing + nonexistent.
-        let remove_names = vec!["iii-http".to_string(), "not-a-real-worker".to_string()];
+        let remove_names = vec!["iii-stream".to_string(), "not-a-real-worker".to_string()];
         let exit_code =
             iii_worker::cli::managed::handle_managed_remove_many(&remove_names, true).await;
         assert_ne!(exit_code, 0, "should fail when any removal fails");
 
         // The valid one should still have been removed.
         assert!(
-            !iii_worker::cli::config_file::worker_exists("iii-http"),
-            "iii-http should be removed despite other failure"
+            !iii_worker::cli::config_file::worker_exists("iii-stream"),
+            "iii-stream should be removed despite other failure"
         );
     })
     .await;
@@ -382,10 +359,10 @@ async fn handle_managed_add_builtin_skips_api() {
         // Set III_API_URL to something that will fail — if it tries the API, we'll know
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
         let result =
-            iii_worker::cli::managed::handle_managed_add("iii-http", true, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", true, false, false, false)
                 .await;
         unsafe { std::env::remove_var("III_API_URL") };
-        // Should succeed because iii-http is a builtin — no API call needed
+        // Should succeed because iii-stream is a builtin — no API call needed
         assert_eq!(result, 0);
     })
     .await;
@@ -480,12 +457,12 @@ async fn handle_managed_restart_on_not_running_surfaces_start_rc() {
     in_temp_dir_async(|| async {
         // Add a builtin so start has something valid to resolve.
         let add_rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(add_rc, 0);
 
         let restart_rc = iii_worker::cli::managed::handle_managed_restart(
-            "iii-http",
+            "iii-stream",
             false,
             Some(iii_worker::DEFAULT_PORT),
             None,
@@ -512,7 +489,7 @@ async fn handle_managed_restart_on_not_running_surfaces_start_rc() {
 #[tokio::test]
 async fn handle_managed_remove_many_with_yes_bypasses_prompt() {
     in_temp_dir_async(|| async {
-        let names = vec!["iii-http".to_string(), "iii-state".to_string()];
+        let names = vec!["iii-stream".to_string(), "iii-sandbox".to_string()];
         let add_rc = iii_worker::cli::managed::handle_managed_add_many(&names, false).await;
         assert_eq!(add_rc, 0);
 
@@ -523,7 +500,7 @@ async fn handle_managed_remove_many_with_yes_bypasses_prompt() {
         let home = dirs::home_dir().unwrap();
         let pids = home.join(".iii/pids");
         std::fs::create_dir_all(&pids).unwrap();
-        let pidfile = pids.join("iii-http.pid");
+        let pidfile = pids.join("iii-stream.pid");
         std::fs::write(&pidfile, std::process::id().to_string()).unwrap();
 
         let rc = iii_worker::cli::managed::handle_managed_remove_many(&names, /*yes=*/ true).await;
@@ -531,8 +508,8 @@ async fn handle_managed_remove_many_with_yes_bypasses_prompt() {
         let _ = std::fs::remove_file(&pidfile);
 
         assert_eq!(rc, 0, "--yes must bypass the prompt and succeed");
-        assert!(!iii_worker::cli::config_file::worker_exists("iii-http"));
-        assert!(!iii_worker::cli::config_file::worker_exists("iii-state"));
+        assert!(!iii_worker::cli::config_file::worker_exists("iii-stream"));
+        assert!(!iii_worker::cli::config_file::worker_exists("iii-sandbox"));
     })
     .await;
 }
@@ -559,7 +536,7 @@ async fn handle_managed_add_force_auto_stops_running_worker() {
     in_temp_dir_async(|| async {
         // Seed config.yaml with a builtin.
         let add_rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
                 .await;
         assert_eq!(add_rc, 0);
 
@@ -573,14 +550,14 @@ async fn handle_managed_add_force_auto_stops_running_worker() {
             .arg("60")
             .spawn()
             .expect("spawn sentinel");
-        let pidfile = pids.join("iii-http.pid");
+        let pidfile = pids.join("iii-stream.pid");
         std::fs::write(&pidfile, child.id().to_string()).unwrap();
 
         // --force add: the fix makes this succeed without requiring the
         // user to stop first. Before the fix this returned 1 with the
         // "Stop it first" error.
         let rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, true, false, false)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, true, false, false)
                 .await;
 
         // Always tear down the sentinel regardless of assertion outcome.
@@ -612,7 +589,7 @@ async fn handle_managed_add_wait_on_builtin_returns_without_hanging() {
         // DEFAULT_PORT in the tempdir, but the builtin short-circuit must
         // still return immediately — builtins have no boot to observe.
         let rc =
-            iii_worker::cli::managed::handle_managed_add("iii-http", false, false, false, true)
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, true)
                 .await;
         let elapsed = started.elapsed();
         assert_eq!(rc, 0);

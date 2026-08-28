@@ -75,7 +75,7 @@ impl BridgeAdapter {
 
         let bridge = Arc::new(register_worker(
             &bridge_url,
-            crate::workers::bridge_client::bridge_init_options("iii-queue-bridge"),
+            crate::workers::bridge::bridge_init_options("iii-queue-bridge"),
         ));
 
         Ok(Self {

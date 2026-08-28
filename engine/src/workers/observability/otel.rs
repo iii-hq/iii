@@ -404,7 +404,7 @@ pub struct StoredSpan {
     /// True while the span is in progress — a live snapshot taken by
     /// `LiveSpanProcessor::on_start`, replaced in place by the final span when
     /// it closes (`InMemorySpanStorage::add_spans`). Pending spans exist ONLY
-    /// in the in-memory store and the `iii:devtools:*` streams; they are never
+    /// in the in-memory store (and the query views over it); they are never
     /// exported via OTLP, where `end_time_unix_nano` is semantically required.
     /// By convention `end_time_unix_nano == 0` while pending.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

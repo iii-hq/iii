@@ -9,6 +9,9 @@ import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const pdfPath = path.join(__dirname, '..', '..', '..', '..', 'test-assets', 'handbook.pdf')
+// The standalone HTTP worker accepts request bodies up to 16 MiB. Keep upload
+// fixtures below that limit, including multipart framing overhead.
+const uploadFixtureBytes = 8 * 1024 * 1024
 
 describe('API Triggers', () => {
   it('should register GET endpoint', async () => {
@@ -284,7 +287,7 @@ describe('API Triggers', () => {
   })
 
   it('should upload a PDF file via streaming request', async () => {
-    const originalPdf = fs.readFileSync(pdfPath)
+    const originalPdf = fs.readFileSync(pdfPath).subarray(0, uploadFixtureBytes)
 
     let receivedBuffer: Buffer = null as never
 
@@ -478,7 +481,7 @@ describe('API Triggers', () => {
   })
 
   it('should handle multipart/form-data with file upload', async () => {
-    const originalPdf = fs.readFileSync(pdfPath)
+    const originalPdf = fs.readFileSync(pdfPath).subarray(0, uploadFixtureBytes)
 
     const fn = iii.registerFunction(
       'test.api.form.multipart',

@@ -113,8 +113,7 @@ use crate::sandbox_daemon::errors::SandboxErrorWire;
 pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
     // FIRST statement, before any await: snapshot spawn-time facts for the
     // engine-death watch (see crate::daemon_exit). Without it this daemon had
-    // the same orphan leak as worker-manager-daemon — worse, an orphaned
-    // sandbox-daemon keeps live libkrun VMs around.
+    // An orphaned sandbox-daemon keeps live libkrun VMs around.
     let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
 
     tracing::info!(url = %engine_url, "connecting to III engine");
@@ -255,7 +254,8 @@ fn register_sandbox_create(
         })
         .description(
             "Create an ephemeral sandbox VM. `image` must be a preset \
-             (`\"python\"`, `\"node\"`) or a `custom_images` key from iii.config.yaml; \
+             (`\"python\"`, `\"node\"`) or a key from \
+             `engine.workers.iii-sandbox.custom_images`; \
              OCI refs are NOT accepted unless they match a catalog key. \
              `env` accepts both `Vec<\"K=V\">` and `{ K: V }` map shapes.",
         ),

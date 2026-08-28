@@ -3,9 +3,9 @@
 
 This page covers `iii.worker.yaml` configuration options. `iii.worker.yaml` exists at a worker's
 root and tells iii how to provision the worker's runtime, install its dependencies, start its
-process, and pass through configuration. The engine reads it when starting a worker from
-[`config.yaml`](../using-iii/engine#configuration-file-structure) and when the
-[`iii worker`](../using-iii/workers) CLI starts, stops, or restarts a managed worker.
+process, and pass through configuration. Compose reads it when preparing a `path://` worker or a
+registry package. Project workers are declared and operated through
+[`worker-compose.yaml`](../using-iii/compose), not the engine's `config.yaml`.
 
 For how to connect a worker into a project once its manifest exists, see
 [Creating Workers / Workers](./workers).
@@ -194,8 +194,8 @@ Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 ## Publish metadata: `iii`, `deploy`, `manifest`, `tags`
 
 Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
-accepts these keys (so a manifest published from the workers repo also works with local
-`iii worker add`) but never reads them at runtime.
+accepts these keys (so a manifest published from the workers repo also works with a local Compose
+worker) but never reads them at runtime.
 
 ```yaml
 iii: v1 # manifest format marker

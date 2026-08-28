@@ -4,17 +4,18 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Adding a container to a compose file the operator wrote.
+//! Editing containers in a compose file the operator wrote.
 //!
 //! The file is edited as text, not parsed and re-serialised. A round trip
 //! through serde would return valid YAML and lose everything that is not data:
 //! the comments explaining why a container is pinned where it is, the blank
 //! lines grouping it, the quoting style. That file belongs to whoever wrote it,
-//! and `compose::add` is not entitled to reformat it.
+//! and compose edit operations are not entitled to reformat it.
 //!
-//! So the block is spliced in, matched to the indentation already in use, and
-//! the result is parsed before it is written. A file that would not load is not
-//! written at all.
+//! So each block is spliced in or out and matched to the indentation already in
+//! use. A removal also drops references to the removed key from surviving
+//! `start_after` fields, because a dangling edge would make the file impossible
+//! to start. Every caller parses the result before it is written.
 
 use crate::error::{ComposeError, Result};
 
@@ -54,7 +55,7 @@ pub struct NewContainer {
     pub source: Source,
     /// Containers this one calls. Two workers may need the same one, so the
     /// shared worker is declared once and named here by both.
-    pub depends_on: Vec<String>,
+    pub start_after: Vec<String>,
 }
 
 /// What the edit did, so the caller can report it and decide whether to restart.
@@ -96,7 +97,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
             source: Source::Path {
                 path: spec.to_string(),
             },
-            depends_on: Vec::new(),
+            start_after: Vec::new(),
         });
     }
 
@@ -128,7 +129,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     Ok(NewContainer {
         key: key.to_string(),
         source: Source::Package { reference, version },
-        depends_on: Vec::new(),
+        start_after: Vec::new(),
     })
 }
 
@@ -142,7 +143,7 @@ fn invalid(spec: &str, reason: &str) -> ComposeError {
 /// Splices `new` into the `containers:` mapping of `text`.
 ///
 /// Appended rather than inserted anywhere clever: the order of the mapping does
-/// not affect anything — start order comes from `depends_on` — so the end is
+/// not affect anything — start order comes from `start_after` — so the end is
 /// where it disturbs the smallest part of the file and of its diff.
 pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
     let lines: Vec<&str> = text.lines().collect();
@@ -174,9 +175,9 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             let wanted = wanted_version(new);
             // Version alone is not the whole declaration. An entry written
             // before its dependencies were known carries the right version and
-            // no `depends_on`, and leaving it would start the worker by where
+            // no `start_after`, and leaving it would start the worker by where
             // its line happens to sit rather than after what it calls.
-            let mut needs = new.depends_on.clone();
+            let mut needs = new.start_after.clone();
             needs.sort();
             if existing == wanted && declared_needs(&lines[entry.clone()]) == needs {
                 return Ok(Outcome::Unchanged);
@@ -209,6 +210,181 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             Ok(Outcome::Added(join(&out, text)))
         }
     }
+}
+
+/// Removes one container entry and every dependency edge that points to it.
+///
+/// Unrelated text stays byte-for-byte as the operator wrote it. Dependency
+/// edits preserve block or inline form, quoting, comments, and surviving list
+/// items where possible. An empty `start_after` field is removed with its last
+/// item so the result remains a valid compose declaration.
+pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
+    // Keep terminators in the slices. Rebuilding from `str::lines()` would
+    // silently turn every surviving CRLF into LF.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let containers = find_containers(&lines)?;
+    let indent = entry_indent(&lines, &containers);
+    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
+        return Ok(None);
+    };
+
+    let offsets = line_offsets(&lines);
+    let mut edits = dependency_removals(&lines, &offsets, &containers, &indent, &entry, key);
+    edits.push((offsets[entry.start]..offsets[entry.end], String::new()));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+
+    let mut out = text.to_string();
+    for (range, replacement) in edits {
+        out.replace_range(range, &replacement);
+    }
+    Ok(Some(out))
+}
+
+/// Byte offset of every line boundary, including the end of the document.
+fn line_offsets(lines: &[&str]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(lines.len() + 1);
+    let mut offset = 0;
+    offsets.push(offset);
+    for line in lines {
+        offset += line.len();
+        offsets.push(offset);
+    }
+    offsets
+}
+
+/// Text edits that remove `key` from every surviving container's dependency
+/// field. Ranges use byte offsets into the original document and therefore can
+/// be applied from the end without disturbing one another.
+fn dependency_removals(
+    lines: &[&str],
+    offsets: &[usize],
+    containers: &Block,
+    indent: &str,
+    removed_entry: &Entry,
+    key: &str,
+) -> Vec<(std::ops::Range<usize>, String)> {
+    let heads: Vec<usize> = (containers.start..containers.end)
+        .filter(|index| is_container_head(lines[*index], indent))
+        .collect();
+    let mut edits = Vec::new();
+
+    for (position, head) in heads.iter().copied().enumerate() {
+        let end = heads.get(position + 1).copied().unwrap_or(containers.end);
+        if removed_entry.contains(&head) {
+            continue;
+        }
+
+        let Some(field_indent) = lines[head + 1..end]
+            .iter()
+            .find(|line| line.trim_start().starts_with("worker:"))
+            .map(|line| leading_whitespace(line).to_string())
+        else {
+            continue;
+        };
+
+        let Some(start_after_at) = (head + 1..end).find(|index| {
+            leading_whitespace(lines[*index]) == field_indent
+                && lines[*index].trim_start().starts_with("start_after:")
+        }) else {
+            continue;
+        };
+
+        let line = lines[start_after_at];
+        let body = line
+            .strip_suffix("\r\n")
+            .or_else(|| line.strip_suffix('\n'))
+            .unwrap_or(line);
+        let Some(colon) = body.find("start_after:") else {
+            continue;
+        };
+        let value = &body[colon + "start_after:".len()..];
+
+        if let Some(open_relative) = value.find('[')
+            && let Some(close_relative) = value[open_relative + 1..].find(']')
+        {
+            let open = colon + "start_after:".len() + open_relative;
+            let close = open + 1 + close_relative;
+            let items = &body[open + 1..close];
+            let kept: Vec<&str> = items
+                .split(',')
+                .filter(|item| dependency_name(item) != key)
+                .collect();
+            if kept.len() == items.split(',').count() {
+                continue;
+            }
+            if kept.is_empty() {
+                edits.push((
+                    offsets[start_after_at]..offsets[start_after_at + 1],
+                    String::new(),
+                ));
+            } else {
+                edits.push((
+                    offsets[start_after_at] + open + 1..offsets[start_after_at] + close,
+                    kept.join(","),
+                ));
+            }
+            continue;
+        }
+
+        if !value.trim().is_empty() {
+            continue;
+        }
+
+        let mut matching_items = Vec::new();
+        let mut surviving_items = 0;
+        for (index, candidate) in lines.iter().enumerate().take(end).skip(start_after_at + 1) {
+            let candidate = *candidate;
+            let trimmed = candidate.trim();
+            if !trimmed.is_empty()
+                && !trimmed.starts_with('#')
+                && leading_whitespace(candidate).len() <= field_indent.len()
+            {
+                break;
+            }
+            let Some(item) = trimmed.strip_prefix("- ") else {
+                continue;
+            };
+            if dependency_name(item) == key {
+                matching_items.push(index);
+            } else {
+                surviving_items += 1;
+            }
+        }
+        if matching_items.is_empty() {
+            continue;
+        }
+        if surviving_items == 0 {
+            edits.push((
+                offsets[start_after_at]..offsets[start_after_at + 1],
+                String::new(),
+            ));
+        }
+        edits.extend(
+            matching_items
+                .into_iter()
+                .map(|index| (offsets[index]..offsets[index + 1], String::new())),
+        );
+    }
+    edits
+}
+
+fn is_container_head(line: &str, indent: &str) -> bool {
+    let Some(rest) = line.strip_prefix(indent) else {
+        return false;
+    };
+    !rest.starts_with([' ', '\t', '#']) && rest.trim_end().ends_with(':')
+}
+
+fn leading_whitespace(line: &str) -> &str {
+    &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
+}
+
+fn dependency_name(value: &str) -> &str {
+    value
+        .trim()
+        .split_once(" #")
+        .map_or_else(|| value.trim(), |(name, _)| name.trim())
+        .trim_matches(['"', '\''])
 }
 
 /// Keeps the file's final newline as it was: adding one to a file without it,
@@ -291,17 +467,17 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
 
 type Entry = std::ops::Range<usize>;
 
-/// The `depends_on:` an entry declares, sorted so two lists compare by content
+/// The `start_after:` an entry declares, sorted so two lists compare by content
 /// rather than by the order someone wrote them in.
 fn declared_needs(entry: &[&str]) -> Vec<String> {
     let mut inside = false;
     let mut needs = Vec::new();
     for line in entry {
         let trimmed = line.trim();
-        // `depends_on: [queue, state]` declares the same thing as a block list,
+        // `start_after: [queue, state]` declares the same thing as a block list,
         // and reading it as empty would rewrite an entry that already says what
         // was asked for — and a rewrite is where fields get lost.
-        if let Some(inline) = trimmed.strip_prefix("depends_on:")
+        if let Some(inline) = trimmed.strip_prefix("start_after:")
             && let Some(list) = inline
                 .trim()
                 .strip_prefix('[')
@@ -314,7 +490,7 @@ fn declared_needs(entry: &[&str]) -> Vec<String> {
             );
             continue;
         }
-        if trimmed == "depends_on:" {
+        if trimmed == "start_after:" {
             inside = true;
             continue;
         }
@@ -384,7 +560,7 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
         .skip(1)
     {
         let trimmed = line.trim();
-        // The list items under a `depends_on:` we are replacing.
+        // The list items under a `start_after:` we are replacing.
         if skipping_list {
             if trimmed.starts_with("- ") {
                 continue;
@@ -394,7 +570,7 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
         if trimmed.starts_with("worker:") || trimmed.starts_with("version:") {
             continue;
         }
-        if trimmed.starts_with("depends_on:") {
+        if trimmed.starts_with("start_after:") {
             skipping_list = !trimmed.contains('[');
             continue;
         }
@@ -422,9 +598,9 @@ fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
             out.push_str(&format!("{inner}worker: path://{path}\n"));
         }
     }
-    if !new.depends_on.is_empty() {
-        out.push_str(&format!("{inner}depends_on:\n"));
-        for dependency in &new.depends_on {
+    if !new.start_after.is_empty() {
+        out.push_str(&format!("{inner}start_after:\n"));
+        for dependency in &new.start_after {
             out.push_str(&format!("{inner}{indent}- {dependency}\n"));
         }
     }
@@ -452,9 +628,9 @@ fn render(new: &NewContainer, indent: &str) -> String {
             out.push_str(&format!("{inner}worker: path://{path}\n"));
         }
     }
-    if !new.depends_on.is_empty() {
-        out.push_str(&format!("{inner}depends_on:\n"));
-        for dependency in &new.depends_on {
+    if !new.start_after.is_empty() {
+        out.push_str(&format!("{inner}start_after:\n"));
+        for dependency in &new.start_after {
             out.push_str(&format!("{inner}{indent}- {dependency}\n"));
         }
     }
@@ -606,7 +782,7 @@ containers:
     }
 
     /// An entry written before its dependencies were known has the right
-    /// version and no `depends_on`. Leaving it alone would start the worker by
+    /// version and no `start_after`. Leaving it alone would start the worker by
     /// where its line sits rather than after what it calls — which is how a
     /// worker added by an older build kept starting fourth out of eight.
     #[test]
@@ -617,7 +793,7 @@ containers:
                 reference: "api.workers.iii.dev/state".to_string(),
                 version: Some("0.21.4".to_string()),
             },
-            depends_on: vec!["queue".to_string()],
+            start_after: vec!["queue".to_string()],
         };
 
         let once = added(FILE);
@@ -626,7 +802,7 @@ containers:
             Outcome::Replaced { text, .. } => text,
             other => panic!("expected a rewrite, got {other:?}"),
         };
-        assert!(out.contains("depends_on:"), "{out}");
+        assert!(out.contains("start_after:"), "{out}");
         assert!(out.contains("- queue"), "{out}");
         assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
 
@@ -672,7 +848,7 @@ containers:
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
     }
 
-    /// `depends_on: [queue]` is the same declaration as a block list, so it has
+    /// `start_after: [queue]` is the same declaration as a block list, so it has
     /// to compare equal — otherwise an entry is rewritten for no reason, and a
     /// rewrite is where fields get lost.
     #[test]
@@ -684,10 +860,10 @@ containers:
   api:
     worker: package://api.workers.iii.dev/api
     version: \"1.0.0\"
-    depends_on: [queue, state]
+    start_after: [queue, state]
 ";
         let mut wanted = parse_worker("api@1.0.0").unwrap();
-        wanted.depends_on = vec!["queue".to_string(), "state".to_string()];
+        wanted.start_after = vec!["queue".to_string(), "state".to_string()];
         assert_eq!(
             upsert_container(file, &wanted).unwrap(),
             Outcome::Unchanged,
@@ -714,6 +890,123 @@ containers:
         let out = added(FILE.trim_end());
         assert!(!out.ends_with('\n'), "gained a trailing newline");
     }
+
+    #[test]
+    fn removing_an_entry_keeps_the_rest_of_the_file() {
+        let out = remove_container(FILE, "todo")
+            .unwrap()
+            .expect("todo should be removed");
+
+        assert!(!out.contains("todo:"), "todo survived: {out}");
+        assert!(
+            !out.contains("# the local one"),
+            "its comment survived: {out}"
+        );
+        assert!(
+            !out.contains("run: ./bin/todo-worker"),
+            "its body survived: {out}"
+        );
+        assert!(out.contains("pi:"), "the other worker was removed: {out}");
+        assert!(
+            out.contains("version: \"0.1.12\""),
+            "the other worker changed: {out}"
+        );
+    }
+
+    #[test]
+    fn removing_rewrites_inline_dependency_edges() {
+        let text = r#"containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    start_after: ['queue', database, "state"] # keep this style
+  queue:
+    worker: path://./workers/queue
+  state:
+    worker: path://./workers/state
+"#;
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert!(!out.contains("database:"), "database survived: {out}");
+        assert!(
+            out.contains("start_after: ['queue', \"state\"] # keep this style"),
+            "surviving dependencies changed style: {out}"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    #[test]
+    fn removing_rewrites_block_dependency_edges() {
+        let text = r#"containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    start_after:
+      - queue
+      - database
+      - state # keep this comment
+  queue:
+    worker: path://./workers/queue
+  state:
+    worker: path://./workers/state
+"#;
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert!(!out.contains("      - database"), "edge survived: {out}");
+        assert!(out.contains("      - queue"), "queue edge changed: {out}");
+        assert!(
+            out.contains("      - state # keep this comment"),
+            "state edge changed: {out}"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    #[test]
+    fn removing_the_last_dependency_removes_the_field() {
+        let text = r#"containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    start_after:
+      - database
+    environment:
+      RUST_LOG: info
+"#;
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert!(!out.contains("start_after:"), "empty field survived: {out}");
+        assert!(out.contains("environment:"), "next field changed: {out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    #[test]
+    fn removing_an_unknown_entry_changes_nothing() {
+        assert_eq!(remove_container(FILE, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn removing_preserves_crlf_in_the_surviving_bytes() {
+        let text = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  remove:\r\n    worker: path://./remove\r\n  after:\r\n    worker: path://./after\r\n";
+        let expected = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  after:\r\n    worker: path://./after\r\n";
+
+        assert_eq!(
+            remove_container(text, "remove").unwrap().as_deref(),
+            Some(expected)
+        );
+    }
+
     #[test]
     fn a_package_never_replaces_a_local_worker_of_the_same_name() {
         // The hazard is quiet: `path://` carries no version, so comparing
@@ -727,7 +1020,7 @@ containers:
                 reference: "workers.iii.dev/state".to_string(),
                 version: Some("1.2.3".to_string()),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         let err = upsert_container(text, &new).unwrap_err();
@@ -742,7 +1035,7 @@ containers:
             source: Source::Path {
                 path: "./workers/state".to_string(),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         assert_eq!(
@@ -760,7 +1053,7 @@ containers:
                 reference: "workers.iii.dev/state".to_string(),
                 version: Some("1.2.3".to_string()),
             },
-            depends_on: vec![],
+            start_after: vec![],
         };
 
         assert!(matches!(

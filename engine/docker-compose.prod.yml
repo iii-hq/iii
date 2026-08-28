@@ -17,7 +17,14 @@ services:
   iii:
     image: iiidev/iii:latest
     volumes:
-      - ./config.prod.yaml:/app/config.yaml:ro
+      - ./config.prod.worker-compose.yaml:/app/worker-compose.yaml:ro
+    command:
+      - compose
+      - --namespace
+      - production
+      - --up
+      - --file
+      - /app/worker-compose.yaml
     environment:
       - III_EXECUTION_CONTEXT=docker
     healthcheck:

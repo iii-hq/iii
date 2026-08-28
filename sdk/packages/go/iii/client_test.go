@@ -845,6 +845,7 @@ func TestHandlerInvocationErrorPassthrough(t *testing.T) {
 
 // TestOptionsAndState covers the small accessors.
 func TestOptionsAndState(t *testing.T) {
+	t.Setenv("III_WORKER_NAME", "")
 	m := newMockEngine(t)
 	c := New(m.url, WithName("worker-x"))
 	if c.name != "worker-x" {
@@ -861,6 +862,26 @@ func TestOptionsAndState(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 	if c.State() != StateConnected {
 		t.Errorf("State after Connect = %q, want connected", c.State())
+	}
+}
+
+func TestWorkerNameEnvOverridesExplicitName(t *testing.T) {
+	t.Setenv("III_WORKER_NAME", "managed-worker")
+
+	c := New("ws://127.0.0.1:0", WithName("explicit-worker"))
+
+	if c.name != "managed-worker" {
+		t.Errorf("worker name = %q, want managed-worker", c.name)
+	}
+}
+
+func TestWorkerNameUsesExplicitNameWhenEnvIsEmpty(t *testing.T) {
+	t.Setenv("III_WORKER_NAME", "")
+
+	c := New("ws://127.0.0.1:0", WithName("explicit-worker"))
+
+	if c.name != "explicit-worker" {
+		t.Errorf("worker name = %q, want explicit-worker", c.name)
 	}
 }
 

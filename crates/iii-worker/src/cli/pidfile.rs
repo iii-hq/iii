@@ -15,11 +15,6 @@
 //!     (`worker_manager/libkrun.rs`)
 //!   - `~/.iii/pids/<name>.pid` — binary workers (`managed.rs`)
 //!
-//! Reads in the engine crate (`engine/src/workers/registry_worker.rs`)
-//! are a sibling concern; that crate has no dep on iii-worker, so it
-//! re-implements the same O_NOFOLLOW + uid check inline and tests are
-//! mirrored there.
-//!
 //! A local attacker with write access to any of these directories can
 //! pre-plant the target path as a symlink pointing at a sensitive file
 //! (e.g. `~/.ssh/authorized_keys`); a naive `std::fs::write` follows

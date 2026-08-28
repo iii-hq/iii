@@ -23,6 +23,7 @@ colored = { workspace = true }
 iii-sdk = { workspace = true }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
+url = { workspace = true }
 flate2 = "1"
 tar = "0.4"
 uuid = { workspace = true }
@@ -44,6 +45,9 @@ indexmap = { version = "2", features = ["serde"] }
 # to be stable across machines and rust versions, so DefaultHasher is out.
 sha2 = "0.10"
 hex = "0.4"
+# One managed engine owns a compose namespace at a time. The kernel-backed
+# lock is released automatically if the foreground compose process crashes.
+fslock = "0.2"
 
 # Teardown signals whole process groups, which std cannot express.
 [target.'cfg(unix)'.dependencies]
@@ -63,3 +67,5 @@ windows-sys = { version = "0.60", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonschema = { version = "0.30", default-features = false }
+wiremock = { workspace = true }

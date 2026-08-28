@@ -180,6 +180,13 @@ async fn main() -> Result<()> {
         tracing::warn!("Trigger registration failed: {}", e);
     }
 
+    // Trace-change ticks flow engine trigger -> bridge handler -> this
+    // channel -> every browser on /ws/console-events.
+    let (events, _) = tokio::sync::broadcast::channel::<String>(64);
+    if let Err(e) = bridge::register_trace_events(&bridge, events.clone()) {
+        tracing::warn!("Trace trigger registration failed: {}", e);
+    }
+
     let config = server::ServerConfig {
         port: args.port,
         host: args.host,
@@ -187,6 +194,7 @@ async fn main() -> Result<()> {
         engine_port: args.engine_port,
         ws_port: args.ws_port,
         enable_flow: args.enable_flow,
+        events,
     };
 
     // Run server with graceful shutdown

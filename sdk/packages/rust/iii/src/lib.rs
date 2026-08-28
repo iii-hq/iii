@@ -64,7 +64,8 @@ pub use types::{StreamRequest, StreamResponse};
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
-    /// Custom worker metadata. Auto-detected if `None`.
+    /// Custom worker metadata. Auto-detected if `None`. A non-empty
+    /// `III_WORKER_NAME` overrides `metadata.name`.
     pub metadata: Option<iii::WorkerMetadata>,
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
@@ -72,7 +73,7 @@ pub struct InitOptions {
     pub otel: Option<iii_helpers::observability::OtelConfig>,
     /// Namespace this worker belongs to. Resolution order:
     /// `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its
-    /// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+    /// default namespace).
     ///
     /// It scopes more than the registration. The worker and its functions
     /// register here, and everything the worker does afterwards follows it: a

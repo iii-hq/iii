@@ -113,7 +113,7 @@ pub enum SandboxError {
     ImageNotInCatalog { image: String },
 
     #[error(
-        "rootfs missing on disk for image '{image}'. Run: iii worker add <image-ref> (see S101 docs)"
+        "rootfs missing on disk for image '{image}'. Enable iii-sandbox auto_install or pre-provision the sandbox image cache (see S101 docs)"
     )]
     RootfsMissing { image: String },
 
@@ -302,12 +302,14 @@ impl SandboxError {
             Self::ImageNotInCatalog { .. } => (
                 None,
                 Some(
-                    "set `image` to a value listed in the message or add a custom_images entry in iii.config.yaml",
+                    "set `image` to a listed value or add it under engine.workers.iii-sandbox.custom_images",
                 ),
             ),
             Self::RootfsMissing { .. } => (
                 None,
-                Some("operator action required: run `iii worker add <image-ref>` on the host"),
+                Some(
+                    "operator action required: enable auto_install or pre-provision the sandbox image cache",
+                ),
             ),
             Self::AutoInstallFailed { .. } => (None, Some("transient: retry after a short delay")),
             Self::ExecTimedOut { .. } => (

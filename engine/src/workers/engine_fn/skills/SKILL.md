@@ -7,6 +7,11 @@ description: WebSocket-routed worker mesh — the engine's Function/Trigger/Work
 
 iii is a WebSocket-routed worker mesh. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent OS processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (the events that invoke those Functions). There is no direct worker-to-worker traffic — every call routes through the engine, which makes the language, runtime, and physical location of any worker invisible to its callers.
 
+## When to Use
+
+Use this skill to discover live iii capabilities, call functions, author SDK workers, bind trigger
+types, or operate project workers through Compose.
+
 **You extend yourself by writing iii workers.** A few lines get you on the bus:
 
 ```ts
@@ -72,17 +77,20 @@ If a registered function fits, just call it: `iii.trigger({ function_id, payload
 //   → that worker's README, config keys, API reference, and skills.
 ```
 
-When one fits, install it: `worker::add { source: { kind: 'registry', name: '<worker>' }, wait: true }`.
+When one fits, add it through the project's Compose daemon:
+
+```bash
+iii trigger -n <compose-namespace> compose::add worker=<worker>
+```
 
 `iii-directory` is itself a registry worker, so confirm it is connected before calling `directory::*`:
 
 ```jsonc
 // engine::functions::list { prefix: 'directory::' }
-//   → empty? install it first:
-// worker::add { source: { kind: 'registry', name: 'iii-directory' }, wait: true }
+//   → empty? add it to worker-compose.yaml through compose::add first.
 ```
 
-**3. Build a worker.** Only when steps 1 and 2 both come up empty. Author it with the SDK (below), then deploy it. Discover the deployment/runtime surface the same way as any other capability — `directory::registry::workers::list` / `::info` and its skill — rather than assuming a worker name. (`worker::add { kind: 'local', path }` works over the bus, but `path` resolves on the **engine/daemon host**, not on the caller — so it only helps when your code already lives on that host. For un-published code that lives elsewhere, run it via a runtime/sandbox worker.)
+**3. Build a worker.** Only when steps 1 and 2 both come up empty. Author it with the SDK (below), then deploy it. Discover the deployment/runtime surface the same way as any other capability — `directory::registry::workers::list` / `::info` and its skill — rather than assuming a worker name. Add local code as a `path://` container in `worker-compose.yaml`; relative paths resolve on the Compose daemon host.
 
 > Discover in order. Don't jump to a worker you remember; the registry may hold a better fit, and the right surface is whatever the live engine and registry report — not training-data recall.
 
@@ -208,31 +216,23 @@ function onChange(triggerId: string, path: string) {
 
 From the caller's side, your custom type is indistinguishable from any built-in one.
 
-## Worker lifecycle — `worker::*` ops
+## Worker lifecycle — `compose::*`
 
-Install, run, and remove workers. Each op is also `iii worker <cmd>` on the CLI. Fetch exact request/response shapes from the engine rather than trusting this list:
+Project workers live in `worker-compose.yaml`. The Compose daemon owns their install, startup,
+restart, update, and shutdown lifecycle:
 
-```jsonc
-// engine::functions::info { function_id: 'worker::add' }   → request/response JSON Schema,
-//                            plus metadata { default_timeout_ms, idempotent }
-// worker::schema { function_id: 'worker::add' }            → same data, batched for all worker::* ops
-// On a malformed payload the W105 error envelope's details.hint points back at worker::schema.
+```bash
+iii trigger -n dev compose::add worker=state
+iii trigger -n dev compose::status file=worker-compose.yaml
+iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
+iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
+iii trigger -n dev compose::update file=worker-compose.yaml worker=state
+iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 
-| Op | Does |
-|---|---|
-| `worker::add` | Install from registry or OCI; writes `iii.config.yaml`, caches under `~/.iii/managed/{name}/`, pins `iii.lock`. |
-| `worker::remove` | Drop the config entry (keeps the cache). Requires `yes: true`. |
-| `worker::update` | Re-pin registry workers to latest semver (OCI skipped). |
-| `worker::start` | Spawn a configured worker. `wait: true` (default) blocks until the WS handshake. |
-| `worker::stop` | Graceful shutdown. Requires `yes: true`. |
-| `worker::list` | Installed + running state, including daemon-managed builtins. |
-| `worker::clear` | Delete cached artifacts (keeps config). Requires `yes: true`. |
-| `worker::schema` | JSON Schemas for every op. |
-
-- **`worker::add` source variants:** `{ kind: 'registry', name, version? }`, `{ kind: 'oci', reference }`, and `{ kind: 'local', path }` — `path` is resolved on the **engine/daemon host** (works over the trigger as well as the CLI).
-- **Consent:** `remove`, `stop`, and `clear` require exactly `yes: true` (the boolean, not `"true"`).
-- Reach for `worker::list` before any other op when you don't already know what is installed.
+`iii worker` and `worker::*` were removed. Use `engine::workers::list` for live registrations and
+`compose::status` for the supervisor's process state. Use `compose::logs` for raw worker stdout and
+stderr.
 
 ## Discovery surface
 
@@ -244,12 +244,15 @@ Install, run, and remove workers. Each op is also `iii worker <cmd>` on the CLI.
 | `engine::triggers::list` | Every trigger TYPE published (legal `type:` values). |
 | `engine::triggers::info { id }` | One trigger type's config / return schema + provider. |
 | `engine::registered-triggers::list` | Every trigger INSTANCE bound. Filter `function_id` / `worker`. |
-| `worker::list` | Installed + running workers, including daemon-managed builtins. |
+| `compose::status` | Declared containers, process state, PID, ownership, and last error. |
+| `compose::logs` | Bounded worker stdout/stderr entries and continuation cursors. |
+| `compose::list` | Projects held by one Compose daemon. |
 | `directory::registry::workers::list` | Workers published in the public registry. Filter `search`. |
 | `directory::registry::workers::info { name }` | A registry worker's README, config, API reference, and skills. |
 | `directory::skills::list` / `directory::skills::get { id }` | The markdown how-to a worker shipped — deeper than `engine::functions::info`. |
 
-`engine::workers::list` only sees WS-connected workers; some daemon-managed providers serve traffic without opening an engine WS, so merge it with `worker::list` by `name` for the full picture.
+`engine::workers::list` is the live registration view. `compose::status` is the process-supervisor
+view; consult both when diagnosing a declared container that did not register.
 
 ## Trust runtime probes over introspection
 
@@ -263,3 +266,10 @@ Install, run, and remove workers. Each op is also `iii worker <cmd>` on the CLI.
 - **Side-channel state between workers.** Don't have workers read each other's files or hit each other's endpoints; route every cross-worker call through `iii.trigger`, and use a shared-state worker (discover one in the registry) for shared key/value.
 - **Catching the wrong error type.** `iii.trigger()` throws `InvocationError`; catch that specifically or you lose `code` / `function_id` / `stacktrace`.
 - **Trusting introspection over runtime probes.** An empty `*::list` can mean lag, not absence — a successful `iii.trigger()` is the authoritative signal.
+
+## Boundaries
+
+- Do not put project workers in `config.yaml`; use `worker-compose.yaml`.
+- Do not call removed `iii worker` commands or `worker::*` functions.
+- Do not add registry packages of kind `engine` as Compose roots; the engine supplies them.
+- Treat function ids and trigger schemas from the live engine as authoritative.

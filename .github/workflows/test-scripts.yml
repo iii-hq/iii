@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/**'
       - '.github/workflows/test-scripts.yml'
+      - '.github/workflows/alpha-release.yml'
       - '.github/workflows/release-iii.yml'
       - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'
@@ -17,6 +18,7 @@ on:
     paths:
       - '.github/scripts/**'
       - '.github/workflows/test-scripts.yml'
+      - '.github/workflows/alpha-release.yml'
       - '.github/workflows/release-iii.yml'
       - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'

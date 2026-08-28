@@ -8,8 +8,9 @@
 //!
 //! `pre_run` blocks the container's start and is budgeted: a hung migration
 //! must fail the container instead of holding the whole graph. `post_run` fires
-//! after the container's exit is confirmed and is never awaited — a cleanup
-//! script that hangs cannot be allowed to hold up a teardown.
+//! after the container's exit is confirmed and is not awaited by teardown. A
+//! project supervisor still owns it, so shutdown waits for supervised hooks
+//! and their timeout kills and reaps a cleanup script that hangs.
 //!
 //! Both run with the same environment and working directory as the container
 //! itself, and both get their own process group so a timeout can take their
@@ -19,6 +20,7 @@ use std::{process::Stdio, time::Duration};
 
 use colored::Colorize;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 
 use crate::{
     manifest::StartSpec,
@@ -55,6 +57,114 @@ impl HookError {
     }
 }
 
+/// Owns every detached `post_run` task for one project.
+///
+/// Teardown does not wait for a cleanup hook, but project shutdown does. This
+/// keeps a short hook asynchronous without letting a hung hook outlive the
+/// compose process.
+#[derive(Default)]
+pub struct PostRunSupervisor {
+    state: Mutex<PostRunState>,
+}
+
+#[derive(Default)]
+struct PostRunState {
+    shutting_down: bool,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl PostRunSupervisor {
+    /// Starts one bounded cleanup hook and returns as soon as it is supervised.
+    pub async fn fire(&self, ctx: &SpawnCtx<'_>, script: &str, timeout: Duration) {
+        const HOOK: &str = "post_run";
+
+        let mut state = self.state.lock().await;
+        state.tasks.retain(|task| !task.is_finished());
+        if state.shutting_down {
+            return;
+        }
+
+        let container = ctx.container_key.to_string();
+        let mut hook = match spawn_hook(ctx, script) {
+            Ok(hook) => hook,
+            Err(err) => {
+                report::line(&format!(
+                    "{} {}",
+                    format!("[{HOOK}:{container}]").dimmed(),
+                    format!("could not start: {err}").red()
+                ));
+                return;
+            }
+        };
+        state.tasks.push(tokio::spawn(async move {
+            let child = &mut hook.child;
+            let mut stdout = child.stdout.take();
+            let mut stderr = child.stderr.take();
+            let run = async {
+                let (status, out, err) =
+                    tokio::join!(child.wait(), read_all(&mut stdout), read_all(&mut stderr));
+                (status, out, err)
+            };
+
+            enum PostRunOutcome {
+                Finished((std::io::Result<std::process::ExitStatus>, String, String)),
+                TimedOut,
+            }
+
+            let outcome = {
+                tokio::pin!(run);
+                let timer = tokio::time::sleep(timeout);
+                tokio::pin!(timer);
+                tokio::select! {
+                    result = &mut run => PostRunOutcome::Finished(result),
+                    _ = &mut timer => PostRunOutcome::TimedOut,
+                }
+            };
+
+            match outcome {
+                PostRunOutcome::Finished((status, out, err)) => {
+                    log_output(HOOK, &container, &out, &err);
+                    match status {
+                        Ok(status) if status.success() => {}
+                        Ok(status) => report::line(&format!(
+                            "{} {}",
+                            format!("[{HOOK}:{container}]").dimmed(),
+                            format!("exited with {}", status.code().unwrap_or(-1)).yellow()
+                        )),
+                        Err(err) => report::line(&format!(
+                            "{} {}",
+                            format!("[{HOOK}:{container}]").dimmed(),
+                            format!("could not be waited on: {err}").yellow()
+                        )),
+                    }
+                }
+                PostRunOutcome::TimedOut => {
+                    hook.kill_tree();
+                    let _ = hook.child.wait().await;
+                    report::line(&format!(
+                        "{} {}",
+                        format!("[{HOOK}:{container}]").dimmed(),
+                        format!("timed out after {}s", timeout.as_secs_f64()).yellow()
+                    ));
+                }
+            }
+        }));
+    }
+
+    /// Waits for every supervised cleanup hook to finish or reach its timeout.
+    pub async fn shutdown(&self) {
+        let tasks = {
+            let mut state = self.state.lock().await;
+            state.shutting_down = true;
+            std::mem::take(&mut state.tasks)
+        };
+
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+}
+
 /// Runs `pre_run` to completion. On timeout the hook's whole process group is
 /// killed before the error returns, so nothing survives into the next attempt.
 pub async fn await_pre_run(
@@ -62,10 +172,25 @@ pub async fn await_pre_run(
     script: &str,
     timeout: Duration,
 ) -> Result<(), HookError> {
+    await_pre_run_until_shutdown(ctx, script, timeout, None)
+        .await
+        .expect("a hook without a shutdown signal cannot be interrupted")
+}
+
+/// Runs `pre_run`, killing and reaping its process group if foreground compose
+/// is interrupted while the hook is active.
+pub(crate) async fn await_pre_run_until_shutdown(
+    ctx: &SpawnCtx<'_>,
+    script: &str,
+    timeout: Duration,
+    shutdown: Option<&mut crate::shutdown::ShutdownSignal>,
+) -> Option<Result<(), HookError>> {
     const HOOK: &str = "pre_run";
 
-    let mut hook =
-        spawn_hook(ctx, script).map_err(|source| HookError::Spawn { hook: HOOK, source })?;
+    let mut hook = match spawn_hook(ctx, script) {
+        Ok(hook) => hook,
+        Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+    };
     let child = &mut hook.child;
 
     let mut stdout = child.stdout.take();
@@ -79,71 +204,62 @@ pub async fn await_pre_run(
         (status, out, err)
     };
 
-    match tokio::time::timeout(timeout, run).await {
-        Ok((status, out, err)) => {
+    enum HookOutcome {
+        Finished((std::io::Result<std::process::ExitStatus>, String, String)),
+        TimedOut,
+        Interrupted,
+    }
+
+    let outcome = {
+        tokio::pin!(run);
+        let timer = tokio::time::sleep(timeout);
+        tokio::pin!(timer);
+        match shutdown {
+            Some(shutdown) => tokio::select! {
+                biased;
+                _ = shutdown.wait() => HookOutcome::Interrupted,
+                result = &mut run => HookOutcome::Finished(result),
+                _ = &mut timer => HookOutcome::TimedOut,
+            },
+            None => tokio::select! {
+                result = &mut run => HookOutcome::Finished(result),
+                _ = &mut timer => HookOutcome::TimedOut,
+            },
+        }
+    };
+
+    match outcome {
+        HookOutcome::Finished((status, out, err)) => {
             log_output(HOOK, ctx.container_key, &out, &err);
-            let status = status.map_err(|source| HookError::Spawn { hook: HOOK, source })?;
+            let status = match status {
+                Ok(status) => status,
+                Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+            };
             if status.success() {
-                Ok(())
+                Some(Ok(()))
             } else {
-                Err(HookError::Failed {
+                Some(Err(HookError::Failed {
                     hook: HOOK,
                     code: status.code().unwrap_or(-1),
-                })
+                }))
             }
         }
-        Err(_) => {
+        HookOutcome::TimedOut => {
             // Kill before waiting: the hook is hung by definition, so waiting
             // first would never return.
             hook.kill_tree();
             let _ = hook.child.wait().await;
-            Err(HookError::Timeout {
+            Some(Err(HookError::Timeout {
                 hook: HOOK,
                 timeout,
-            })
+            }))
+        }
+        HookOutcome::Interrupted => {
+            hook.kill_tree();
+            let _ = hook.child.wait().await;
+            None
         }
     }
-}
-
-/// Fires `post_run` and returns immediately. Its outcome is logged; a failing
-/// cleanup script never turns into an error the caller has to handle.
-pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
-    const HOOK: &str = "post_run";
-
-    let container = ctx.container_key.to_string();
-    let mut hook = match spawn_hook(ctx, script) {
-        Ok(hook) => hook,
-        Err(err) => {
-            report::line(&format!(
-                "{} {}",
-                format!("[{HOOK}:{container}]").dimmed(),
-                format!("could not start: {err}").red()
-            ));
-            return;
-        }
-    };
-
-    tokio::spawn(async move {
-        let child = &mut hook.child;
-        let mut stdout = child.stdout.take();
-        let mut stderr = child.stderr.take();
-        let (status, out, err) =
-            tokio::join!(child.wait(), read_all(&mut stdout), read_all(&mut stderr));
-        log_output(HOOK, &container, &out, &err);
-        match status {
-            Ok(status) if status.success() => {}
-            Ok(status) => report::line(&format!(
-                "{} {}",
-                format!("[{HOOK}:{container}]").dimmed(),
-                format!("exited with {}", status.code().unwrap_or(-1)).yellow()
-            )),
-            Err(err) => report::line(&format!(
-                "{} {}",
-                format!("[{HOOK}:{container}]").dimmed(),
-                format!("could not be waited on: {err}").yellow()
-            )),
-        }
-    });
 }
 
 /// A hook process plus whatever the platform needs to take its descendants
@@ -168,6 +284,14 @@ impl HookProcess {
                 let _ = self.child.start_kill();
             }
         }
+    }
+}
+
+impl Drop for HookProcess {
+    fn drop(&mut self) {
+        // Last-resort cleanup for an abrupt runtime drop. Normal timeout and
+        // project shutdown kill and wait before this point.
+        self.kill_tree();
     }
 }
 

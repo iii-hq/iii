@@ -15,11 +15,14 @@
 //!    process will run it. A download that does not match its digest is not a
 //!    slow download or a corrupt one — it is a different artefact than the
 //!    registry promised, and it never reaches disk.
-//! 3. **Cache.** Installs are keyed by `(name, version, target)`, which is the
-//!    artefact's whole identity, so a second `up` reuses the first one's work
-//!    and two projects on one machine share it.
+//! 3. **Cache.** Installs are keyed by package metadata, target, and SHA-256,
+//!    so only the exact verified artefact is reused across registries and
+//!    projects.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -33,13 +36,17 @@ pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
 /// there rather than in the compose file.
 pub const BUNDLE_MANIFEST: &str = "iii.worker.yaml";
 
-/// How long the registry has to answer. Resolution is a single small request;
-/// a minute means something is wrong, not slow.
-const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Registry resolution is small and idempotent. A short transport outage or
+/// overloaded server should not roll back an otherwise healthy project.
+const RESOLVE_ATTEMPTS: usize = 3;
+/// Three attempts keep the whole operation near the original one-minute
+/// budget, instead of multiplying that budget for every retry.
+const RESOLVE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+const RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Downloads get their own budget: an artefact is megabytes over a link we do
 /// not control.
-const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// What the registry answers to `POST /resolve`.
 #[derive(Debug, Deserialize)]
@@ -94,6 +101,14 @@ pub enum Payload {
     Bundle(PathBuf),
 }
 
+/// Whether this invocation downloaded an artefact or reused one already on
+/// disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallStatus {
+    Downloaded,
+    Cached,
+}
+
 /// A package resolved and installed locally.
 #[derive(Debug, Clone)]
 pub struct InstalledPackage {
@@ -103,6 +118,7 @@ pub struct InstalledPackage {
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
+    pub status: InstallStatus,
 }
 
 /// The rust target triple this daemon is running on, which is the one its
@@ -153,13 +169,25 @@ pub async fn install(
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
     let (registry, name) = split_reference(reference);
+    install_from_registry(container, &registry, &name, version_range, cache_root).await
+}
+
+async fn install_from_registry(
+    container: &str,
+    registry: &str,
+    name: &str,
+    version_range: &str,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
     let target = host_target();
 
-    let resolved = resolve(container, &registry, &name, version_range, target).await?;
+    let resolved = resolve(container, registry, name, version_range, target).await?;
 
-    let payload = match resolved.kind.as_str() {
+    let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
-            Payload::Binary(install_binary(container, &resolved, target, cache_root).await?)
+            let (program, status) =
+                install_binary(container, &resolved, target, cache_root).await?;
+            (Payload::Binary(program), status)
         }
         // Refused before the download on a platform that could not start it:
         // the archive is megabytes, and an operator learns nothing from having
@@ -172,7 +200,10 @@ pub async fn install(
             });
         }
         #[cfg(unix)]
-        "bundle" => Payload::Bundle(install_bundle(container, &resolved, cache_root).await?),
+        "bundle" => {
+            let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
+            (Payload::Bundle(install_dir), status)
+        }
         // `engine` workers are compiled into the engine itself: there is no
         // artefact to install and nothing for compose to start. `image` workers
         // have one, but running it needs the OCI runtime.
@@ -195,6 +226,7 @@ pub async fn install(
         version: resolved.version,
         payload,
         default_config,
+        status,
     })
 }
 
@@ -258,7 +290,7 @@ async fn install_binary(
     resolved: &ResolvedWorker,
     target: &str,
     cache_root: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, InstallStatus)> {
     let artifact =
         resolved
             .binaries
@@ -275,16 +307,23 @@ async fn install_binary(
                 },
             })?;
 
-    let install_dir = cache_root.join(format!("{}-{}-{}", resolved.name, resolved.version, target));
+    let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
+    let install_dir = cache_root.join(format!(
+        "{}-{}-{}-{digest}",
+        resolved.name, resolved.version, target
+    ));
     if let Some(existing) = installed_binary(&install_dir) {
-        return Ok(existing);
+        return Ok((existing, InstallStatus::Cached));
     }
+    remove_invalid_install(&install_dir)?;
     download_and_extract(container, artifact, &install_dir).await?;
-    installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
-        container: container.to_string(),
-        name: resolved.name.clone(),
-        path: install_dir.clone(),
-    })
+    let program =
+        installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
+            container: container.to_string(),
+            name: resolved.name.clone(),
+            path: install_dir.clone(),
+        })?;
+    Ok((program, InstallStatus::Downloaded))
 }
 
 /// Installs a bundle: one archive, no target in its identity.
@@ -300,7 +339,7 @@ async fn install_bundle(
     container: &str,
     resolved: &ResolvedWorker,
     cache_root: &Path,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, InstallStatus)> {
     // The registry sends both or neither. Without the digest the archive cannot
     // be verified, and an unverifiable artefact is not installed.
     let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
@@ -317,13 +356,18 @@ async fn install_bundle(
         }
     };
 
-    let install_dir = cache_root.join(format!("{}-{}-bundle", resolved.name, resolved.version));
+    let digest = validated_cache_digest(container, resolved, sha256)?;
+    let install_dir = cache_root.join(format!(
+        "{}-{}-bundle-{digest}",
+        resolved.name, resolved.version
+    ));
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
     if install_dir.join(BUNDLE_MANIFEST).is_file() {
-        return Ok(install_dir);
+        return Ok((install_dir, InstallStatus::Cached));
     }
+    remove_invalid_install(&install_dir)?;
 
     let artifact = Artifact {
         sha256: sha256.clone(),
@@ -338,7 +382,49 @@ async fn install_bundle(
             path: install_dir.clone(),
         });
     }
-    Ok(install_dir)
+    Ok((install_dir, InstallStatus::Downloaded))
+}
+
+/// Returns the normalized digest used as the immutable part of a cache key.
+fn validated_cache_digest(
+    container: &str,
+    resolved: &ResolvedWorker,
+    sha256: &str,
+) -> Result<String> {
+    if sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(sha256.to_ascii_lowercase());
+    }
+
+    Err(ComposeError::PackageNotResolved {
+        container: container.to_string(),
+        name: resolved.name.clone(),
+        range: resolved.version.clone(),
+        message: "the registry returned an invalid SHA-256 digest".to_string(),
+    })
+}
+
+/// Removes a stale cache entry that cannot be used as an installed package.
+fn remove_invalid_install(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(ComposeError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    let result = if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    result.map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// The raw `/resolve` answer: the worker and everything it depends on.
@@ -350,18 +436,17 @@ async fn resolve_response(
     target: &str,
 ) -> Result<ResolveResponse> {
     let client = reqwest::Client::builder()
-        .timeout(RESOLVE_TIMEOUT)
+        .timeout(RESOLVE_ATTEMPT_TIMEOUT)
         .build()
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
-    let response = client
-        .post(format!("{registry}/resolve"))
-        .json(&serde_json::json!({
-            "worker": name,
-            "version": version_range,
-            "target": target,
-        }))
-        .send()
+    let endpoint = format!("{registry}/resolve");
+    let request = serde_json::json!({
+        "worker": name,
+        "version": version_range,
+        "target": target,
+    });
+    let response = send_resolve_request(&client, &endpoint, &request)
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
@@ -383,6 +468,33 @@ async fn resolve_response(
 
     check_names(container, registry, &resolved)?;
     Ok(resolved)
+}
+
+async fn send_resolve_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    request: &serde_json::Value,
+) -> std::result::Result<reqwest::Response, reqwest::Error> {
+    for attempt in 1..RESOLVE_ATTEMPTS {
+        let result = client.post(endpoint).json(request).send().await;
+        let should_retry = match &result {
+            Err(_) => true,
+            Ok(response) => {
+                let status = response.status();
+                status.is_server_error()
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            }
+        };
+
+        if !should_retry {
+            return result;
+        }
+
+        tokio::time::sleep(RESOLVE_RETRY_DELAY * attempt as u32).await;
+    }
+
+    client.post(endpoint).json(request).send().await
 }
 
 /// Whether a value from the registry may be used to build a path.
@@ -528,28 +640,42 @@ async fn download_and_extract(
     // Extract beside the destination and rename: a crash mid-extraction must
     // not leave a half-unpacked directory that the next run treats as a cache
     // hit.
-    let staging = install_dir.with_extension("unpacking");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging).map_err(|source| ComposeError::Io {
-        path: staging.clone(),
-        source,
-    })?;
+    // Each writer needs its own staging directory. Two containers can resolve
+    // to the same artefact and download it at the same time; sharing one
+    // `.unpacking` path would let either writer remove files under the other.
+    let staging = install_dir.with_extension(format!("unpacking-{}", uuid::Uuid::new_v4()));
+    if let Err(source) = std::fs::create_dir_all(&staging) {
+        return Err(ComposeError::Io {
+            path: staging,
+            source,
+        });
+    }
 
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
-    tar::Archive::new(decoder)
-        .unpack(&staging)
-        .map_err(|source| ComposeError::Io {
+    if let Err(source) = tar::Archive::new(decoder).unpack(&staging) {
+        let error = ComposeError::Io {
             path: staging.clone(),
             source,
-        })?;
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
 
-    if let Some(parent) = install_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
+    if let Some(parent) = install_dir.parent()
+        && let Err(source) = std::fs::create_dir_all(parent)
+    {
+        let error = ComposeError::Io {
             path: parent.to_path_buf(),
             source,
-        })?;
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
     }
-    publish(&staging, install_dir)
+    let result = publish(&staging, install_dir);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
 }
 
 /// Moves a verified install into place without ever unmaking one.
@@ -654,13 +780,207 @@ fn download_error(container: &str, url: &str, message: &str) -> ComposeError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    fn executable_archive(body: &[u8]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        let name = format!("worker{}", std::env::consts::EXE_SUFFIX);
+        archive.append_data(&mut header, name, body).unwrap();
+        let encoder = archive.into_inner().unwrap();
+        encoder.finish().unwrap()
+    }
 
     #[test]
     fn a_reference_without_a_host_uses_the_default_registry() {
         let (registry, name) = split_reference("state");
         assert_eq!(registry, DEFAULT_REGISTRY);
         assert_eq!(name, "state");
+    }
+
+    #[tokio::test]
+    async fn resolve_retries_a_transient_server_failure() {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = Arc::clone(&attempts);
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "graph": [{
+                            "name": "state",
+                            "version": "1.0.0",
+                            "type": "binary",
+                            "binaries": {}
+                        }]
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let resolved = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            "x86_64-unknown-linux-gnu",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.graph[0].name, "state");
+    }
+
+    #[tokio::test]
+    async fn resolve_does_not_retry_a_client_error() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": {"message": "version does not exist"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "99.0.0",
+            "x86_64-unknown-linux-gnu",
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
+    }
+
+    #[tokio::test]
+    async fn a_second_install_reuses_the_downloaded_artefact() {
+        let server = MockServer::start().await;
+        let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let target = host_target();
+        let artifact_url = format!("{}/artifact", server.uri());
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "state",
+                    "version": "1.0.0",
+                    "type": "binary",
+                    "binaries": {
+                        (target): {
+                            "sha256": digest,
+                            "url": artifact_url,
+                        }
+                    },
+                    "config": {"prefix": "state"}
+                }]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+
+        assert_eq!(first.status, InstallStatus::Downloaded);
+        assert_eq!(second.status, InstallStatus::Cached);
+        assert_eq!(first.default_config, second.default_config);
+    }
+
+    #[tokio::test]
+    async fn same_name_and_version_with_a_different_digest_is_downloaded_again() {
+        let server = MockServer::start().await;
+        let first_archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let second_archive = executable_archive(b"#!/bin/sh\nexit 1\n");
+        let first_digest = hex::encode(Sha256::digest(&first_archive));
+        let second_digest = hex::encode(Sha256::digest(&second_archive));
+        let first_url = format!("{}/artifact-first", server.uri());
+        let second_url = format!("{}/artifact-second", server.uri());
+        let target = host_target();
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let responder_resolutions = Arc::clone(&resolutions);
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                let (digest, url) = if responder_resolutions.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (&first_digest, &first_url)
+                } else {
+                    (&second_digest, &second_url)
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "state",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "binaries": {
+                            (target): {
+                                "sha256": digest,
+                                "url": url,
+                            }
+                        }
+                    }]
+                }))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact-first"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(first_archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact-second"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(second_archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            [first.status, second.status],
+            [InstallStatus::Downloaded, InstallStatus::Downloaded]
+        );
     }
 
     #[test]

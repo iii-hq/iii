@@ -38,14 +38,14 @@ Then change into the project directory you chose at the prompt:
 cd <your-project>
 ```
 
-## Step 3: Start the Engine
+## Step 3: Start the Project
 
 ```bash
-iii --config iii-config.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
-The engine starts and listens for worker connections on `ws://localhost:49134`. The REST API is
-available at `http://localhost:3111`. The console is available at `http://localhost:3113`.
+The file's `engine:` section starts the engine; `containers:` starts project workers. The engine
+commonly listens on `ws://localhost:49134`. Keep this foreground supervisor running.
 
 ## Step 4: Install the SDK
 
@@ -53,7 +53,7 @@ Pick your language:
 
 ```bash
 # TypeScript / Node.js
-npm install iii-sdk @iii-dev/helpers
+pnpm add iii-sdk @iii-dev/helpers
 
 # Python
 pip install iii-sdk iii-helpers
@@ -151,18 +151,17 @@ Expected response:
 
 ## Add Existing Workers
 
-To add a capability that already exists, browse `https://workers.iii.dev/` and install the worker by
-name:
+To add a capability that already exists, browse `https://workers.iii.dev/` and add it through the
+running Compose daemon:
 
 ```bash
-iii worker add iii-state
-iii worker add iii-queue
-iii worker add image-resize@0.1.2
+iii trigger -n dev compose::add worker=state
+iii trigger -n dev compose::add worker=queue
+iii trigger -n dev compose::add worker=image-resize@0.1.2
 ```
 
-`iii worker add` writes project config, installs the worker artifact, starts it, and records the pin
-in `iii.lock` when the worker comes from the registry. Commit `iii.lock` with your config so other
-machines can replay the same worker set with `iii worker sync`.
+`compose::add` resolves dependencies, writes exact versions to `worker-compose.yaml`, and restarts
+the affected project. A local worker can be declared as a `path://` container or added by path.
 
 ## Install Agent Skills
 
@@ -186,7 +185,8 @@ live with the worker docs and registry entries.
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls
-- Use `iii worker add <name>` when the capability already exists in the worker registry
+- Use `iii trigger -n <daemon> compose::add worker=<name>` when the capability already exists in
+  the worker registry
 
 ## Recommended Next Steps
 

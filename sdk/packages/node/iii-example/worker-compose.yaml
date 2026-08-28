@@ -1,0 +1,32 @@
+# namespace: default
+engine:
+  workers:
+    iii-stream:
+      port: ${STREAMS_PORT:3112}
+      host: 127.0.0.1
+      adapter:
+        name: redis
+        config:
+          redis_url: redis://localhost:6379
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "0.22.2"
+    config_name: state
+  http:
+    worker: package://api.workers.iii.dev/http
+    version: "0.21.3"
+    config_name: http
+  pubsub:
+    worker: package://api.workers.iii.dev/pubsub
+    version: "0.21.2"
+    config_name: pubsub
+  cron:
+    worker: package://api.workers.iii.dev/cron
+    version: "0.21.9"
+    config_name: cron
+  iii-example:
+    worker: path://.
+    start_after: [state, http, pubsub, cron]
+    scripts:
+      run: pnpm dev

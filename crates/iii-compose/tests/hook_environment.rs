@@ -21,6 +21,8 @@ async fn a_stale_reserved_variable_never_reaches_a_hook() {
     let ctx = SpawnCtx {
         engine_url: "ws://engine.test:49134",
         namespace: "orders-test",
+        compose_namespace: "compose-test",
+        compose_file: tmp.path(),
         container_key: "api",
         start: &start,
         config_path: Some(config.as_path()),

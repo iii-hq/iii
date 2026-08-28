@@ -491,12 +491,12 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
         eprintln!("    {}", format!("cd {}", root.display()).bold());
     }
     eprintln!(
-        "    {}    # add a worker",
-        "iii worker add <package>".bold()
+        "    {}    # declare project workers",
+        "edit worker-compose.yaml".bold()
     );
     eprintln!(
-        "    {}                          # start the engine",
-        "iii".bold()
+        "    {}    # start the engine and project workers",
+        "iii compose --up".bold()
     );
     if docker {
         eprintln!(

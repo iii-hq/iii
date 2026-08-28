@@ -60,10 +60,20 @@ def test_get_worker_metadata_name_defaults_from_iii_worker_name_env(
     assert metadata["name"] == "managed-worker"
 
 
-def test_get_worker_metadata_explicit_worker_name_wins_over_env(
+def test_get_worker_metadata_iii_worker_name_env_wins_over_explicit_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("III_WORKER_NAME", "managed-worker")
+
+    metadata = _call_metadata_method(InitOptions(worker_name="explicit-name"))
+
+    assert metadata["name"] == "managed-worker"
+
+
+def test_get_worker_metadata_uses_explicit_name_when_env_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("III_WORKER_NAME", raising=False)
 
     metadata = _call_metadata_method(InitOptions(worker_name="explicit-name"))
 

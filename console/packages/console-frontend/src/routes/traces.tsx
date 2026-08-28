@@ -90,6 +90,35 @@ function TracesPage() {
   const [spansError, setSpansError] = useState<string | null>(null)
   const [isPaused, setIsPaused] = useState(false)
 
+  // Silent refresh of the OPEN trace on a trace-change tick: no loading
+  // spinner (ticks arrive continuously while the trace runs), one request in
+  // flight at a time, and a stale response for a since-deselected trace is
+  // dropped.
+  const selectedTraceIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    selectedTraceIdRef.current = selectedTraceId
+  }, [selectedTraceId])
+  const refreshInFlightRef = useRef(false)
+  const handleTracesChanged = useCallback((traceIds: string[]) => {
+    const current = selectedTraceIdRef.current
+    if (!current || !traceIds.includes(current) || refreshInFlightRef.current) return
+    refreshInFlightRef.current = true
+    fetchTraceTree(current)
+      .then((data) => {
+        if (selectedTraceIdRef.current !== current) return
+        if (data.roots && data.roots.length > 0) {
+          const wfData = treeToWaterfallData(data.roots)
+          if (wfData) setWaterfallData(wfData)
+        }
+      })
+      .catch(() => {
+        // Keep the current waterfall; the next tick retries.
+      })
+      .finally(() => {
+        refreshInFlightRef.current = false
+      })
+  }, [])
+
   const {
     filters: filterState,
     updateFilter,
@@ -118,6 +147,7 @@ function TracesPage() {
     showSystem,
     debouncedSearch,
     isPaused,
+    onTracesChanged: handleTracesChanged,
   })
 
   const loadTraceSpans = useCallback(async (traceId: string) => {

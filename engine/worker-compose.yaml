@@ -1,0 +1,59 @@
+# namespace: default
+engine:
+  registration_namespace_grace_ms: 5000
+  workers:
+    iii-stream:
+      port: ${STREAM_PORT:3112}
+      host: 127.0.0.1
+      adapter:
+        name: redis
+        config:
+          redis_url: redis://localhost:6379
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+      ttl_seconds: 0
+
+    # Ephemeral sandboxes are an engine-owned exception to project containers.
+    # iii-sandbox:
+    #   auto_install: true
+    #   image_allowlist: [python, node]
+    #   default_idle_timeout_secs: 300
+    #   max_concurrent_sandboxes: 32
+    #   default_cpus: 1
+    #   default_memory_mb: 512
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "0.22.2"
+    config_name: state
+    config_override:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store.db
+  http:
+    worker: package://api.workers.iii.dev/http
+    version: "0.21.3"
+    config_name: http
+    config_override:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
+        allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
+  pubsub:
+    worker: package://api.workers.iii.dev/pubsub
+    version: "0.21.2"
+    config_name: pubsub
+  cron:
+    worker: package://api.workers.iii.dev/cron
+    version: "0.21.9"
+    config_name: cron

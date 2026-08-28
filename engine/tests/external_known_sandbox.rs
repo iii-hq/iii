@@ -3,7 +3,7 @@
 
 //! Black-box test: the engine resolves the well-known worker name
 //! `iii-sandbox` to an `iii-worker sandbox-daemon ...` invocation
-//! without any iii.toml / iii_workers/ setup.
+//! without any project-worker resolution setup.
 
 use serial_test::serial;
 
@@ -25,8 +25,7 @@ fn iii_sandbox_resolves_to_path_iii_worker() {
         std::env::set_var("PATH", dir.path());
     }
 
-    let info =
-        iii::workers::external::resolve_external_module_in(dir.path(), "workers::iii_sandbox");
+    let info = iii::workers::external::resolve_external_module("iii-sandbox");
 
     // SAFETY: same — restoring original PATH.
     unsafe {
@@ -56,8 +55,7 @@ fn iii_sandbox_returns_none_without_iii_worker_on_path() {
         std::env::set_var("HOME", dir.path());
     }
 
-    let result =
-        iii::workers::external::resolve_external_module_in(dir.path(), "workers::iii_sandbox");
+    let result = iii::workers::external::resolve_external_module("iii-sandbox");
 
     // SAFETY: restoring originals.
     unsafe {

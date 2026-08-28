@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use iii_compose::daemon::Daemon;
+use iii_compose::daemon::{Daemon, EnginePolicy};
 
 /// Enough concurrent callers that the window between the cache miss and the
 /// insert is hit, rather than hoping two tasks interleave.
@@ -43,6 +43,8 @@ fn daemon() -> Arc<Daemon> {
     Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("cache-test-{}", std::process::id()),
+        None,
+        EnginePolicy::External,
     )
 }
 
@@ -107,6 +109,24 @@ async fn the_same_file_reached_twice_is_still_one_project() {
     assert!(Arc::ptr_eq(&first, &second));
 }
 
+#[tokio::test]
+async fn explicit_cli_namespace_overrides_the_project_file_namespace() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        "test".to_string(),
+        Some("test".to_string()),
+        EnginePolicy::External,
+    );
+
+    let project = daemon.project(&file).await.unwrap();
+
+    assert_eq!(project.project_namespace, "test");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_load_that_failed_is_retried_rather_than_cached() {
     let tmp = project_dir();
@@ -120,4 +140,263 @@ async fn a_load_that_failed_is_retried_rather_than_cached() {
     // the error the daemon happened to see first.
     std::fs::write(&file, COMPOSE).unwrap();
     assert!(daemon.project(&file).await.is_ok());
+}
+
+#[tokio::test]
+async fn external_daemon_rejects_a_project_that_tries_to_own_an_engine() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let err = match daemon().project(&file).await {
+        Err(err) => err,
+        Ok(_) => panic!("external daemon must reject engine ownership"),
+    };
+    assert_eq!(err.code(), "ENGINE_SECTION_REQUIRES_MANAGED_START");
+}
+
+#[tokio::test]
+async fn explicit_external_engine_overrides_the_owner_file_engine_section() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { url: 'ws://ignored:49134', workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n",
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("external-override-test-{}", std::process::id()),
+        None,
+        EnginePolicy::external_overriding(&initial),
+    );
+
+    let project = daemon.project(&file).await.unwrap();
+
+    assert_eq!(project.engine_url, "ws://127.0.0.1:1/ws");
+}
+
+#[tokio::test]
+async fn external_daemon_validation_rejects_a_project_that_owns_an_engine() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let err = daemon()
+        .validate(Some(&file))
+        .await
+        .expect_err("offline validation must enforce engine ownership");
+    assert_eq!(err.code(), "ENGINE_SECTION_REQUIRES_MANAGED_START");
+}
+
+#[tokio::test]
+async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let policy = EnginePolicy::managed(&initial).unwrap();
+    std::fs::write(
+        &file,
+        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-change-test-{}", std::process::id()),
+        None,
+        policy,
+    );
+    let err = match daemon.project(&file).await {
+        Err(err) => err,
+        Ok(_) => panic!("changed engine section must require a restart"),
+    };
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+}
+
+#[tokio::test]
+async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, "engine: { workers: {} }\ncontainers: {}\n").unwrap();
+
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-cached-change-test-{}", std::process::id()),
+        None,
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    daemon
+        .project(&file)
+        .await
+        .expect("the initial project should load into the cache");
+
+    std::fs::write(
+        &file,
+        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers: {}\n",
+    )
+    .unwrap();
+
+    let err = daemon
+        .up(Some(&file), None, "cached-engine-change".to_string())
+        .await
+        .expect_err("up must reject an engine section changed after the project was cached");
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+}
+
+#[tokio::test]
+async fn managed_daemon_rejects_a_second_engine_owner() {
+    isolate_state();
+    let tmp = project_dir();
+    let owner = tmp.path().join("owner.yaml");
+    let other = tmp.path().join("other.yaml");
+    let text = "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+    std::fs::write(&owner, text).unwrap();
+    std::fs::write(&other, text).unwrap();
+    let initial = iii_compose::ComposeFile::load(&owner).unwrap();
+
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-owner-test-{}", std::process::id()),
+        None,
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    let err = match daemon.project(&other).await {
+        Err(err) => err,
+        Ok(_) => panic!("a second file must not own the same engine"),
+    };
+    assert_eq!(err.code(), "ENGINE_ALREADY_OWNED");
+}
+
+fn managed_mutation_fixture(
+    containers: &str,
+) -> (tempfile::TempDir, std::path::PathBuf, Arc<Daemon>) {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("workers/api")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("workers/extra")).unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        format!(
+            "engine: {{ url: 'ws://127.0.0.1:1/ws', workers: {{}} }}\ncontainers:\n{containers}"
+        ),
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-mutation-test-{}", std::process::id()),
+        None,
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    (tmp, file, daemon)
+}
+
+fn change_managed_engine(file: &std::path::Path, containers: &str) -> String {
+    let changed = format!(
+        "engine:\n  url: ws://127.0.0.1:1/ws\n  workers:\n    iii-stream: {{ port: 3112 }}\ncontainers:\n{containers}"
+    );
+    std::fs::write(file, &changed).unwrap();
+    changed
+}
+
+#[tokio::test]
+async fn add_rejects_an_engine_change_before_editing_the_file() {
+    let (_tmp, file, daemon) =
+        managed_mutation_fixture("  api:\n    worker: path://./workers/api\n");
+    let changed = change_managed_engine(&file, "  api:\n    worker: path://./workers/api\n");
+
+    let err = daemon
+        .add(
+            Some(&file),
+            &["./workers/extra".to_string()],
+            "add-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("add must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn update_rejects_an_engine_change_before_editing_the_file() {
+    let containers =
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n";
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let changed = change_managed_engine(&file, containers);
+
+    let err = daemon
+        .update(
+            Some(&file),
+            Some("state@2.0.0"),
+            "update-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("update must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn remove_rejects_an_engine_change_before_editing_the_file() {
+    let containers = concat!(
+        "  api:\n    worker: path://./workers/api\n",
+        "  extra:\n    worker: path://./workers/extra\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let changed = change_managed_engine(&file, containers);
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            Some("api"),
+            "remove-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("remove must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn remove_validates_the_edited_file_before_writing_it() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = daemon();
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            Some("api"),
+            "remove-only-container".to_string(),
+        )
+        .await
+        .expect_err("remove must reject an empty edited project");
+
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), before);
 }

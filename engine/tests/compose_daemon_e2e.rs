@@ -141,12 +141,75 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
     let daemon = Daemon::start(
         format!("ws://127.0.0.1:{port}"),
         daemon_namespace.to_string(),
+        None,
+        iii_compose::daemon::EnginePolicy::External,
     );
     remote::register(&daemon);
     // The SDK flushes registrations after the namespace announce; give the
     // round trip a moment before the first call.
     tokio::time::sleep(Duration::from_millis(600)).await;
     daemon
+}
+
+/// Registers the readiness identity for a test child process.
+fn register_test_worker(port: u16, namespace: &str, name: &str) -> iii_sdk::IIIClient {
+    let mut metadata = iii_sdk::iii::WorkerMetadata {
+        name: name.to_string(),
+        ..Default::default()
+    };
+    metadata.namespace = Some(namespace.to_string());
+
+    register_worker(
+        &format!("ws://127.0.0.1:{port}"),
+        InitOptions {
+            metadata: Some(metadata),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+    )
+}
+
+/// Waits until every child has crossed an explicit process-start barrier.
+async fn wait_for_start_markers(paths: &[&std::path::Path]) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if paths.iter().all(|path| path.exists()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("children did not reach their start barriers");
+}
+
+/// Waits for the engine to observe a worker registration or its removal.
+async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, registered: bool) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if daemon.engine().is_registered(namespace, name).await.ok() == Some(registered) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("worker {namespace}/{name} did not reach registered={registered}"));
+}
+
+fn operation_containers(operation: &Value) -> Vec<&str> {
+    let mut names = operation["containers"]
+        .as_array()
+        .expect("operation should report containers")
+        .iter()
+        .map(|container| {
+            container["container"]
+                .as_str()
+                .expect("container result should have a name")
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
 }
 
 const TWO_WORKERS: &str = r#"
@@ -160,7 +223,7 @@ containers:
       run: "sleep 30"
   api:
     worker: path://./workers/api
-    depends_on: [database]
+    start_after: [database]
     scripts:
       run: "sleep 30"
 "#;
@@ -202,21 +265,62 @@ async fn the_daemon_serves_compose_functions_in_the_default_namespace() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_scoped_call_names_the_argument_it_wanted() {
+async fn schema_introspection_is_callable_and_matches_engine_metadata() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
 
-    // The daemon runs from the test harness's directory, which holds no
-    // compose file, so there is nothing to fall back to and nothing to guess.
+    let schema = call(
+        port,
+        "compose::schema",
+        json!({ "function_id": "compose::up" }),
+    )
+    .await
+    .expect("compose::schema should answer");
+    let schemas = schema["schemas"].as_array().expect("schemas array");
+    assert_eq!(schemas.len(), 1, "the filter returns one entry: {schema}");
+    assert_eq!(schemas[0]["function_id"], "compose::up");
+    assert!(schemas[0]["request"]["properties"]["file"].is_object());
+    assert!(schemas[0]["response"]["properties"]["containers"].is_object());
+    assert_eq!(schemas[0]["default_timeout_ms"], 600_000);
+    assert_eq!(schemas[0]["idempotent"], true);
+
+    let info = call(
+        port,
+        "engine::functions::info",
+        json!({ "function_id": "compose::up" }),
+    )
+    .await
+    .expect("engine::functions::info should find compose::up");
+    assert_eq!(info["request_schema"], schemas[0]["request"]);
+    assert_eq!(info["response_schema"], schemas[0]["response"]);
+    assert_eq!(info["metadata"]["default_timeout_ms"], 600_000);
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_scoped_call_uses_the_daemons_default_file() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    // Engine integration tests run from `engine/`, whose canonical Compose
+    // fixture now owns an engine. A bare project-scoped call must find that
+    // default file. Because this particular daemon is attached to an external
+    // engine, the ownership guard then rejects the managed file.
     let error = call(port, "compose::down", json!({}))
         .await
-        .expect_err("down without a file cannot mean anything");
+        .expect_err("an external daemon must not load a managed engine file");
 
-    assert!(error.contains("NO_COMPOSE_FILE"), "unexpected: {error}");
-    // The message is the invocation that would have worked, not a description
-    // of the one that did not.
-    assert!(error.contains("file="), "the way out is named: {error}");
+    assert!(
+        error.contains("ENGINE_SECTION_REQUIRES_MANAGED_START"),
+        "unexpected: {error}"
+    );
+    assert!(
+        error.contains("worker-compose.yaml") && error.contains("without --engine"),
+        "the way out is named: {error}"
+    );
 
     daemon.shutdown().await;
 }
@@ -317,6 +421,282 @@ async fn validating_a_file_does_not_take_the_project_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn add_edits_several_workers_and_reconciles_the_project_once() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let existing_started = tmp.path().join("workers/existing/started");
+    let database_started = tmp.path().join("workers/database/started");
+    let web_started = tmp.path().join("workers/web/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: addition
+startup_timeout: 3s
+stop_timeout: 100ms
+containers:
+  existing:
+    worker: path://./workers/existing
+    scripts:
+      run: "echo started >> started && sleep 30"
+"#,
+        &["existing", "database", "web"],
+    );
+    for worker in ["database", "web"] {
+        std::fs::write(
+            tmp.path()
+                .join("workers")
+                .join(worker)
+                .join("iii.worker.yaml"),
+            "scripts:\n  start: \"echo started >> started && sleep 30\"\n",
+        )
+        .expect("write worker manifest");
+    }
+
+    let add = call(
+        port,
+        "compose::add",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["./workers/database", "./workers/web"],
+        }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[
+            existing_started.as_path(),
+            database_started.as_path(),
+            web_started.as_path(),
+        ])
+        .await;
+        let existing = register_test_worker(port, "addition", "existing");
+        let database = register_test_worker(port, "addition", "database");
+        let web = register_test_worker(port, "addition", "web");
+        for worker in ["existing", "database", "web"] {
+            wait_for_worker_state(&daemon, "addition", worker, true).await;
+        }
+        (existing, database, web)
+    };
+    let (result, (existing, database, web)) = tokio::join!(add, ready);
+    let result = result.expect("compose::add should answer");
+
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["workers"], json!(["database", "web"]), "{result}");
+    assert_eq!(result["container"], "database", "{result}");
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(result["down"], json!(null), "{result}");
+    assert_eq!(result["restarted"], json!([]), "{result}");
+    assert_eq!(result["up"]["status"], "ok", "{result}");
+    assert_eq!(
+        operation_containers(&result["up"]),
+        vec!["database", "existing", "web"],
+        "the one restart used the complete edited worker set: {result}"
+    );
+
+    let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    for worker in ["database", "web"] {
+        assert_eq!(
+            edited.matches(&format!("  {worker}:\n")).count(),
+            1,
+            "worker should be declared once: {edited}"
+        );
+    }
+    for marker in [&existing_started, &database_started, &web_started] {
+        let starts = std::fs::read_to_string(marker).expect("read start count");
+        assert_eq!(
+            starts.lines().count(),
+            1,
+            "the batch should restart the project once: {starts}"
+        );
+    }
+
+    existing.shutdown_async().await;
+    database.shutdown_async().await;
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_drops_dependency_edges_and_keeps_survivors_running() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let foundation_started = tmp.path().join("workers/foundation/started");
+    let keep_started = tmp.path().join("workers/keep/started");
+    let discard_started = tmp.path().join("workers/discard/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: removal
+startup_timeout: 3s
+stop_timeout: 100ms
+containers:
+  foundation:
+    worker: path://./workers/foundation
+    scripts:
+      run: "touch started && sleep 30"
+  keep:
+    worker: path://./workers/keep
+    start_after: [foundation]
+    scripts:
+      run: "touch started && sleep 30"
+  discard:
+    worker: path://./workers/discard
+    scripts:
+      run: "touch started && sleep 30"
+"#,
+        &["foundation", "keep", "discard"],
+    );
+
+    // Each child creates its marker only after compose has captured the
+    // readiness baseline and spawned it. Registration therefore cannot race
+    // with baseline capture.
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[foundation_started.as_path(), discard_started.as_path()]).await;
+        let foundation = register_test_worker(port, "removal", "foundation");
+        let discard = register_test_worker(port, "removal", "discard");
+        wait_for_worker_state(&daemon, "removal", "foundation", true).await;
+        wait_for_worker_state(&daemon, "removal", "discard", true).await;
+        wait_for_start_markers(&[keep_started.as_path()]).await;
+        let keep = register_test_worker(port, "removal", "keep");
+        wait_for_worker_state(&daemon, "removal", "keep", true).await;
+        (foundation, keep, discard)
+    };
+    let (up, (foundation, keep, discard)) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "project did not start: {up}");
+    assert_eq!(
+        operation_containers(&up),
+        vec!["discard", "foundation", "keep"],
+        "initial up used the wrong worker set: {up}"
+    );
+
+    let before = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status before remove");
+    let pid = |status: &Value, key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))["pid"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("missing pid for {key}: {status}"))
+    };
+    let keep_pid = pid(&before, "keep");
+    let discard_pid = pid(&before, "discard");
+
+    let result = call(
+        port,
+        "compose::remove",
+        json!({
+            "file": file.to_str().unwrap(),
+            "worker": "foundation",
+        }),
+    )
+    .await
+    .expect("compose::remove should answer");
+
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["container"], "foundation", "{result}");
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(result["down"]["status"], "ok", "{result}");
+    assert_eq!(result["up"]["status"], "ok", "{result}");
+    assert_eq!(
+        operation_containers(&result["down"]),
+        vec!["foundation"],
+        "remove stopped more than the named worker: {result}"
+    );
+    assert_eq!(
+        operation_containers(&result["up"]),
+        vec!["discard", "keep"],
+        "reconciliation used the wrong worker set: {result}"
+    );
+    assert_eq!(result["up"]["changed"], false, "survivors moved: {result}");
+
+    let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    assert!(
+        edited.contains("  keep:"),
+        "kept worker was removed: {edited}"
+    );
+    assert!(
+        !edited.contains("start_after: [foundation]"),
+        "dependency edge survived: {edited}"
+    );
+    assert!(
+        !edited.contains("  foundation:"),
+        "named worker survived: {edited}"
+    );
+
+    let after = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after remove");
+    assert_eq!(
+        pid(&after, "keep"),
+        keep_pid,
+        "dependent restarted: {after}"
+    );
+    assert_eq!(
+        pid(&after, "discard"),
+        discard_pid,
+        "unrelated worker restarted: {after}"
+    );
+    assert!(
+        after["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .all(|container| container["container"] != "foundation"),
+        "removed worker remains declared: {after}"
+    );
+
+    let later_up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("up after remove should still answer");
+    assert_eq!(later_up["status"], "ok", "{later_up}");
+    assert_eq!(
+        later_up["changed"], false,
+        "later up moved workers: {later_up}"
+    );
+
+    let final_status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("final status");
+    assert_eq!(pid(&final_status, "keep"), keep_pid);
+    assert_eq!(pid(&final_status, "discard"), discard_pid);
+
+    foundation.shutdown_async().await;
+    keep.shutdown_async().await;
+    discard.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_file_is_one_project_however_it_is_spelled() {
     isolate_state();
     let port = spawn_engine().await;
@@ -390,6 +770,110 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
         );
     }
 
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_continue_from_a_cursor_after_the_worker_is_ready() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("workers/queue/started");
+    let emit = tmp.path().join("workers/queue/emit-after-ready");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: worker-logs
+startup_timeout: 3s
+stop_timeout: 100ms
+containers:
+  queue:
+    worker: path://./workers/queue
+    scripts:
+      run: |
+        touch started
+        printf '%s\n' 'output before ready'
+        while [ ! -f emit-after-ready ]; do sleep 0.02; done
+        printf '%s\n' 'output after ready'
+        printf '%s\n' 'error after ready' >&2
+        sleep 30
+"#,
+        &["queue"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        let worker = register_test_worker(port, "worker-logs", "queue");
+        wait_for_worker_state(&daemon, "worker-logs", "queue", true).await;
+        worker
+    };
+    let (up, worker) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "project did not start: {up}");
+
+    let before = call(
+        port,
+        "compose::logs",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "queue",
+            "tail": 10,
+            "wait_ms": 1_000,
+        }),
+    )
+    .await
+    .expect("compose::logs should return startup output");
+    assert_eq!(
+        before["containers"][0]["entries"][0]["message"], "output before ready",
+        "startup output was not retained: {before}"
+    );
+    let cursor = before["containers"][0]["cursor"].clone();
+
+    std::fs::write(&emit, "now").expect("release worker output");
+    let after = call(
+        port,
+        "compose::logs",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "queue",
+            "cursors": { "queue": cursor },
+            "tail": 10,
+            "wait_ms": 2_000,
+        }),
+    )
+    .await
+    .expect("compose::logs should continue after its cursor");
+    let entries = after["containers"][0]["entries"]
+        .as_array()
+        .expect("log entries");
+    assert!(
+        entries.iter().any(|entry| {
+            entry["stream"] == "stdout" && entry["message"] == "output after ready"
+        }),
+        "stdout after readiness was not returned: {after}"
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry["stream"] == "stderr" && entry["message"] == "error after ready"
+        }),
+        "stderr after readiness was not returned: {after}"
+    );
+
+    worker.shutdown_async().await;
+    call(
+        port,
+        "compose::down",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::down should stop the fixture");
     daemon.shutdown().await;
 }
 

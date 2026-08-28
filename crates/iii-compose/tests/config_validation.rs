@@ -18,6 +18,33 @@ fn code(text: &str) -> String {
         .to_string()
 }
 
+#[test]
+fn repository_managed_compose_files_follow_the_engine_schema() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("iii-compose is two directories below the repository root")
+        .to_path_buf();
+    for relative in [
+        "engine/worker-compose.yaml",
+        "engine/config.prod.worker-compose.yaml",
+        "engine/worker-compose.remote-kv.yaml",
+        "sdk/fixtures/config-test.yaml",
+        "sdk/fixtures/config-bridge.yaml",
+        "sdk/fixtures/config-bridge-backend.yaml",
+        "sdk/packages/node/iii-example/worker-compose.yaml",
+        "sdk/packages/python/iii-example/worker-compose.yaml",
+    ] {
+        let path = root.join(relative);
+        let file = ComposeFile::load(&path)
+            .unwrap_or_else(|error| panic!("{} must parse: {error}", path.display()));
+        assert!(
+            file.engine.is_some(),
+            "{relative} must own its managed engine"
+        );
+    }
+}
+
 const CANONICAL: &str = r#"
 namespace: orders
 containers:
@@ -27,7 +54,7 @@ containers:
     config_name: orders-db
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - database
     config_name: orders-api
     config_override:
@@ -50,7 +77,7 @@ fn accepts_the_canonical_project() {
     assert_eq!(file.start_order().unwrap(), vec!["database", "api"]);
 
     let api = &file.containers["api"];
-    assert_eq!(api.depends_on, vec!["database".to_string()]);
+    assert_eq!(api.start_after, vec!["database".to_string()]);
     assert_eq!(api.config_name.as_deref(), Some("orders-api"));
     assert_eq!(
         api.scripts.pre_run_timeout,
@@ -66,6 +93,164 @@ fn accepts_the_canonical_project() {
     assert_eq!(
         file.containers["api"].config_name.as_deref(),
         Some("orders-api")
+    );
+}
+
+#[test]
+fn accepts_managed_engine_configuration_as_a_direct_worker_map() {
+    let file = parse(
+        r#"
+namespace: orders
+engine:
+  url: ws://127.0.0.1:50123
+  registration_namespace_grace_ms: 2500
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+    iii-worker-manager:
+      host: 127.0.0.1
+      port: 50123
+    iii-worker-manager#rbac:
+      host: 127.0.0.1
+      port: 50124
+    iii-http-functions: {}
+    iii-stream: {}
+    iii-sandbox:
+      auto_install: false
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("managed engine section should parse");
+
+    let engine = file.engine.expect("engine section should be retained");
+    assert_eq!(engine.url, "ws://127.0.0.1:50123");
+    assert_eq!(engine.registration_namespace_grace_ms, Some(2500));
+    assert_eq!(
+        engine
+            .workers
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "configuration",
+            "iii-http-functions",
+            "iii-sandbox",
+            "iii-stream",
+            "iii-worker-manager",
+            "iii-worker-manager#rbac",
+        ],
+        "the public map is canonical regardless of YAML declaration order"
+    );
+    assert_eq!(engine.workers["iii-sandbox"]["auto_install"], false);
+}
+
+#[test]
+fn rejects_blank_managed_engine_url() {
+    for url in ["", "   "] {
+        let text = format!("engine:\n  url: {url:?}\n  workers: {{}}\ncontainers: {{}}\n");
+        assert_eq!(code(&text), "INVALID_MANAGED_ENGINE_URL");
+    }
+}
+
+#[test]
+fn trims_managed_engine_url() {
+    let file = parse("engine:\n  url: '  ws://127.0.0.1:50123  '\n  workers: {}\ncontainers: {}\n")
+        .expect("surrounding URL whitespace should be normalized");
+
+    assert_eq!(file.engine.unwrap().url, "ws://127.0.0.1:50123");
+}
+
+#[test]
+fn rejects_malformed_engine_worker_instance_keys() {
+    for name in ["iii-worker-manager#", "iii-worker-manager#one#two"] {
+        assert_eq!(
+            code(&format!(
+                "engine:\n  workers:\n    {name}: {{}}\ncontainers: {{}}\n"
+            )),
+            "UNSUPPORTED_ENGINE_WORKER",
+            "for {name}"
+        );
+    }
+}
+
+#[test]
+fn engine_url_defaults_and_engine_only_files_are_valid() {
+    let file = parse(
+        r#"
+namespace: shared
+engine:
+  workers: {}
+containers: {}
+"#,
+    )
+    .expect("an engine-only compose invocation should be valid");
+
+    let engine = file.engine.expect("engine section should be retained");
+    assert_eq!(engine.url, "ws://127.0.0.1:49134");
+    assert!(engine.workers.is_empty());
+    assert!(file.containers.is_empty());
+}
+
+#[test]
+fn rejects_project_and_internal_workers_inside_engine_section() {
+    assert_eq!(
+        code(
+            r#"
+engine:
+  workers:
+    http: {}
+containers: {}
+"#
+        ),
+        "UNSUPPORTED_ENGINE_WORKER"
+    );
+    assert_eq!(
+        code(
+            r#"
+engine:
+  workers:
+    iii-observability: {}
+containers: {}
+"#
+        ),
+        "ENGINE_WORKER_IS_INJECTED"
+    );
+}
+
+#[test]
+fn rejects_non_mapping_engine_worker_config() {
+    assert_eq!(
+        code(
+            r#"
+engine:
+  workers:
+    iii-stream: 3112
+containers: {}
+"#
+        ),
+        "INVALID_ENGINE_WORKER_CONFIG"
+    );
+}
+
+#[test]
+fn rejects_duplicate_engine_worker_keys() {
+    assert_eq!(
+        code(
+            r#"
+engine:
+  workers:
+    iii-stream: {}
+    iii-stream:
+      port: 3112
+containers: {}
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
     );
 }
 
@@ -109,7 +294,7 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - databse
 "#
         ),
@@ -126,11 +311,33 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - api
 "#
         ),
         "SELF_DEPENDENCY"
+    );
+}
+
+#[test]
+fn rejects_depends_on_as_a_legacy_field() {
+    let err = parse(
+        r#"
+namespace: orders
+containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    depends_on: [database]
+"#,
+    )
+    .expect_err("depends_on should not remain as an alias");
+
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert!(
+        err.to_string().contains("start_after"),
+        "the error should name the replacement field: {err}"
     );
 }
 
@@ -142,15 +349,15 @@ namespace: orders
 containers:
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - queue
   queue:
     worker: path://./workers/queue
-    depends_on:
+    start_after:
       - database
   database:
     worker: path://./workers/database
-    depends_on:
+    start_after:
       - api
 "#,
     )
@@ -459,16 +666,16 @@ namespace: orders
 containers:
   web:
     worker: path://./workers/web
-    depends_on:
+    start_after:
       - api
       - queue
   api:
     worker: path://./workers/api
-    depends_on:
+    start_after:
       - database
   queue:
     worker: path://./workers/queue
-    depends_on:
+    start_after:
       - database
   database:
     worker: path://./workers/database

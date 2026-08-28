@@ -344,8 +344,8 @@ fn project_init_prints_next_steps_with_docs_link() {
         "expected docs link in output:\n{stderr}"
     );
     assert!(
-        stderr.contains("iii worker add"),
-        "next steps should mention worker add:\n{stderr}"
+        stderr.contains("worker-compose.yaml") && stderr.contains("iii compose --up"),
+        "next steps should mention Compose:\n{stderr}"
     );
 }
 

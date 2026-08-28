@@ -84,16 +84,15 @@ function getOsInfo(): string {
   return `${os.platform()} ${os.release()} (${os.arch()})`
 }
 
-function getDefaultWorkerName(): string {
-  // III_WORKER_NAME carries the config.yaml entry name for managed workers
-  // (set by iii-worker at spawn). Engine truth (`iii worker status`/`list`)
-  // matches connections by name, so the managed identity must win over the
-  // hostname:pid fallback.
+function resolveWorkerName(explicitName?: string): string {
+  // III_WORKER_NAME carries the orchestrator-assigned name (set by the supervisor
+  // for Compose-managed workers). The engine matches live registrations by
+  // name, so that identity must win over a name embedded in worker code.
   const managedName = process.env.III_WORKER_NAME
   if (managedName) {
     return managedName
   }
-  return `${os.hostname()}:${process.pid}`
+  return explicitName ?? `${os.hostname()}:${process.pid}`
 }
 
 /**
@@ -208,7 +207,7 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
-  /** Display name for this worker. Defaults to `hostname:pid`. */
+  /** Display name for this worker. A non-empty `III_WORKER_NAME` overrides it. Defaults to `hostname:pid`. */
   workerName?: string
   /**
    * Namespace this worker belongs to. Resolution order:
@@ -279,7 +278,7 @@ class Sdk implements IIIClient {
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
-    this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.workerName = resolveWorkerName(options?.workerName)
     this.namespace = resolveNamespace(options?.namespace)
     this.workerDescription = options?.workerDescription
     this.metricsReportingEnabled = options?.enableMetricsReporting ?? true
@@ -744,7 +743,7 @@ class Sdk implements IIIClient {
   }
 
   /**
-   * The current WebSocket connection state. `'failed'` is terminal — it follows
+   * The current WebSocket connection state. `'failed'` is terminal: it follows
    * a fatal registration rejection (see {@link getFatalError}). Mirrors the
    * Python/Rust SDKs' `get_connection_state()`.
    */
@@ -1420,7 +1419,7 @@ export const TriggerAction = {
    * acknowledges the caller with `{ messageReceiptId }`, and processes it
    * asynchronously.
    *
-   * Requires a queue worker in the project. Run `iii worker add queue`.
+   * Requires the `queue` worker in `worker-compose.yaml`.
    * Without it the trigger rejects with `enqueue_error` (no queue provider).
    *
    * @param opts - Queue routing options.
