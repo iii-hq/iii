@@ -3385,14 +3385,25 @@ impl ObservabilityWorker {
             disabled_component()
         };
 
-        // Check span storage
+        // Check span storage. The component status must surface a degraded
+        // archive — the overall status already does, and a consumer reading
+        // only `components.spans.status` must not see "healthy" while the
+        // durable tier is failing.
         let trace_storage_status = otel::trace_storage_status();
         let spans_component = if let Some(storage) = otel::get_span_storage() {
-            healthy_component(serde_json::json!({
+            let details = serde_json::json!({
                 "stored_spans": storage.len(),
                 "hot_bytes": storage.hot_bytes(),
                 "archive": trace_storage_status,
-            }))
+            });
+            if trace_storage_status.archive == "degraded" {
+                serde_json::json!({
+                    "status": "degraded",
+                    "details": details,
+                })
+            } else {
+                healthy_component(details)
+            }
         } else {
             disabled_component()
         };
@@ -8860,6 +8871,39 @@ mod tests {
         let storage = otel::get_span_storage().expect("span storage should exist");
         otel::attach_trace_disk_storage(&storage);
         ArchiveTestGuard
+    }
+
+    /// A degraded durable tier must surface on the spans COMPONENT, not just
+    /// the overall status — consumers reading `components.spans.status`
+    /// alone must never see "healthy" while the archive is failing.
+    #[tokio::test]
+    #[serial]
+    async fn test_health_check_spans_component_reflects_degraded_archive() {
+        reset_observability_test_state();
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let _guard = attach_test_archive(directory.path());
+        let module = make_test_module(Arc::new(Engine::new()));
+
+        let healthy = match module.health_check(HealthCheckInput {}).await {
+            FunctionResult::Success(value) => value,
+            _ => panic!("expected health_check success"),
+        };
+        assert_eq!(healthy.status, "healthy");
+        assert_eq!(healthy.components.spans["status"], "healthy");
+
+        otel::get_trace_disk_storage()
+            .expect("archive should be configured")
+            .mark_degraded("test-induced failure");
+        let degraded = match module.health_check(HealthCheckInput {}).await {
+            FunctionResult::Success(value) => value,
+            _ => panic!("expected health_check success"),
+        };
+        assert_eq!(degraded.status, "degraded");
+        assert_eq!(degraded.components.spans["status"], "degraded");
+        assert_eq!(
+            degraded.components.spans["details"]["archive"]["last_error"],
+            "test-induced failure"
+        );
     }
 
     fn flush_test_archive() {
