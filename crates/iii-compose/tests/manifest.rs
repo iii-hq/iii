@@ -23,6 +23,10 @@ fn start_of(file: &ComposeFile, key: &str) -> Result<StartSpec, iii_compose::Com
     iii_compose::manifest::resolve_start(key, &file.containers[key])
 }
 
+fn canonical_worker_dir(tmp: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(tmp.join("workers/api")).unwrap()
+}
+
 const MANIFEST: &str = r#"
 name: api
 runtime: rust
@@ -82,7 +86,7 @@ fn base_image_selects_the_local_vm() {
     assert_eq!(
         start_of(&file, "api").unwrap(),
         StartSpec::Vm(VmSpec::Local {
-            worker_dir: tmp.path().join("workers/api"),
+            worker_dir: canonical_worker_dir(tmp.path()),
             run_override: None,
         })
     );
@@ -100,7 +104,7 @@ fn compose_run_overrides_the_manifest_inside_the_local_vm() {
     assert_eq!(
         start_of(&file, "api").unwrap(),
         StartSpec::Vm(VmSpec::Local {
-            worker_dir: tmp.path().join("workers/api"),
+            worker_dir: canonical_worker_dir(tmp.path()),
             run_override: Some("python src/dev.py".to_string()),
         })
     );
@@ -121,7 +125,7 @@ fn compose_run_is_enough_for_a_local_vm_without_manifest_start() {
     assert_eq!(
         start_of(&file, "api").unwrap(),
         StartSpec::Vm(VmSpec::Local {
-            worker_dir: tmp.path().join("workers/api"),
+            worker_dir: canonical_worker_dir(tmp.path()),
             run_override: Some("python src/dev.py".to_string()),
         })
     );
