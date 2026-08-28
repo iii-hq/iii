@@ -55,7 +55,10 @@ pub struct TracesListInput {
     service_name: Option<String>,
     /// Filter by span name (case-insensitive substring match)
     name: Option<String>,
-    /// Filter by status (case-insensitive substring match)
+    /// Filter by status. For `engine::traces::list`, accepts `error`,
+    /// `pending`, `ok`, or `unset` (case-insensitive); other values match no
+    /// traces. For `engine::traces::spans`, this remains a case-insensitive
+    /// substring match on the raw span status.
     status: Option<String>,
     /// Minimum span duration in milliseconds (sub-ms precision)
     min_duration_ms: Option<f64>,
@@ -734,6 +737,66 @@ fn span_matches_attribute_pairs(span: &otel::StoredSpan, pairs: &[Vec<String>]) 
                 .iter()
                 .any(|(key, value)| key == &pair[0] && value == &pair[1])
     })
+}
+
+/// Apply filters whose trace-summary semantics are determined entirely by the
+/// representative root. Returning `true` only means that the trace remains a
+/// candidate: aggregate status, duration/time and child-span searches are
+/// still evaluated after the candidate traces have been loaded in full.
+fn trace_might_match_root_filters(
+    root_spans: &[otel::StoredSpan],
+    input: &TracesListInput,
+    include_internal: bool,
+) -> bool {
+    let Some(representative) = representative_trace_span(root_spans) else {
+        return false;
+    };
+
+    // After internal rows are removed, a non-internal child can become the
+    // representative root. Keep these traces for the exact post-load pass.
+    if !include_internal && is_internal_span(representative) {
+        return true;
+    }
+
+    if let Some(service_name) = input.service_name.as_deref()
+        && !representative
+            .service_name
+            .to_lowercase()
+            .contains(&service_name.to_lowercase())
+    {
+        return false;
+    }
+
+    let search_all = input.search_all_spans.unwrap_or(false);
+    if !search_all {
+        if let Some(name) = input.name.as_deref()
+            && !representative
+                .name
+                .to_lowercase()
+                .contains(&name.to_lowercase())
+        {
+            return false;
+        }
+        if let Some(pairs) = input.attributes.as_deref()
+            && !span_matches_attribute_pairs(representative, pairs)
+        {
+            return false;
+        }
+    }
+
+    if let Some(excluded) = input.exclude_attributes.as_deref()
+        && excluded.iter().any(|pair| {
+            pair.len() == 2
+                && representative
+                    .attributes
+                    .iter()
+                    .any(|(key, value)| key == &pair[0] && value == &pair[1])
+        })
+    {
+        return false;
+    }
+
+    true
 }
 
 fn trace_matches_list_filters(
@@ -2346,6 +2409,7 @@ impl ObservabilityWorker {
                 let query_started = Instant::now();
                 let query_trace_id = input.trace_id.clone();
                 let query_trace_ids = input.trace_ids.clone();
+                let query_input = input.clone();
                 let query_view = run_blocking_query("traces::list summary view", move || {
                     if unfiltered {
                         let mut roots = otel::get_query_root_spans();
@@ -2375,7 +2439,30 @@ impl ObservabilityWorker {
                     } else if let Some(trace_ids) = query_trace_ids {
                         (otel::get_query_spans_by_trace_ids(&trace_ids), None)
                     } else {
-                        (otel::get_query_spans(), None)
+                        // Root-level filters can reject traces before their
+                        // child payloads are decoded. Filters that depend on
+                        // aggregate/child data are deliberately deferred to
+                        // the exact pass below.
+                        let roots = otel::get_query_root_spans();
+                        let mut roots_by_trace = HashMap::<String, Vec<otel::StoredSpan>>::new();
+                        for root in roots {
+                            roots_by_trace
+                                .entry(root.trace_id.clone())
+                                .or_default()
+                                .push(root);
+                        }
+                        let trace_ids: Vec<String> = roots_by_trace
+                            .into_iter()
+                            .filter_map(|(trace_id, root_spans)| {
+                                trace_might_match_root_filters(
+                                    &root_spans,
+                                    &query_input,
+                                    include_internal,
+                                )
+                                .then_some(trace_id)
+                            })
+                            .collect();
+                        (otel::get_query_spans_by_trace_ids(&trace_ids), None)
                     }
                 })
                 .await;
@@ -6011,6 +6098,76 @@ mod tests {
         let bare = make_span("t", "s", None, "n", "svc", 1, 2, "ok", vec![]);
         assert!(!is_internal_span(&bare));
         assert_eq!(span_function_id(&bare), None);
+    }
+
+    #[test]
+    fn trace_root_candidate_filter_only_rejects_root_determined_mismatches() {
+        let root = make_span(
+            "trace",
+            "root",
+            None,
+            "checkout request",
+            "checkout",
+            1,
+            2,
+            "ok",
+            vec![("tenant", "alpha")],
+        );
+
+        assert!(!trace_might_match_root_filters(
+            std::slice::from_ref(&root),
+            &TracesListInput {
+                service_name: Some("billing".to_string()),
+                ..Default::default()
+            },
+            false,
+        ));
+        assert!(!trace_might_match_root_filters(
+            std::slice::from_ref(&root),
+            &TracesListInput {
+                name: Some("child operation".to_string()),
+                ..Default::default()
+            },
+            false,
+        ));
+        assert!(trace_might_match_root_filters(
+            std::slice::from_ref(&root),
+            &TracesListInput {
+                name: Some("child operation".to_string()),
+                search_all_spans: Some(true),
+                ..Default::default()
+            },
+            false,
+        ));
+        assert!(trace_might_match_root_filters(
+            std::slice::from_ref(&root),
+            &TracesListInput {
+                // Aggregate status cannot be decided from the root alone.
+                status: Some("error".to_string()),
+                ..Default::default()
+            },
+            false,
+        ));
+
+        let internal_root = make_span(
+            "internal-trace",
+            "internal-root",
+            None,
+            "internal",
+            "iii",
+            1,
+            2,
+            "ok",
+            vec![("function_id", "engine::traces::list")],
+        );
+        assert!(trace_might_match_root_filters(
+            &[internal_root],
+            &TracesListInput {
+                service_name: Some("application".to_string()),
+                ..Default::default()
+            },
+            false,
+        ));
     }
 
     #[test]

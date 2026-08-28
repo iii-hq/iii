@@ -144,6 +144,7 @@ redirect traces sorted by duration, slowest first:
 ```bash
 iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \
   | jq -r '.traces[]
+      | select(.end_time_unix_nano != null)
       | "\(((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round) / 1000) ms  \(.trace_id)"'
 ```
 

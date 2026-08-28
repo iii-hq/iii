@@ -319,7 +319,9 @@ async fn handle_otel_traces_list(bridge: &IIIClient, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
         .trigger(TriggerRequest {
-            function_id: "engine::traces::list".to_string(),
+            // This legacy console view groups full span records client-side.
+            // Compact trace summaries are consumed by the worker Console.
+            function_id: "engine::traces::spans".to_string(),
             payload: effective_input,
             action: None,
             timeout_ms: Some(5000),
