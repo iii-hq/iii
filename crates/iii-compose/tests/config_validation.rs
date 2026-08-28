@@ -197,6 +197,34 @@ containers: {}
 }
 
 #[test]
+fn accepts_null_containers_for_a_managed_engine() {
+    let file = parse(
+        r#"
+engine:
+  workers: {}
+containers:
+"#,
+    )
+    .expect("a managed engine may start without containers");
+
+    assert!(file.containers.is_empty());
+}
+
+#[test]
+fn accepts_an_inline_empty_container_map_for_a_managed_engine() {
+    let file = parse(
+        r#"
+engine:
+  workers: {}
+containers: {}
+"#,
+    )
+    .expect("a managed engine may start with an inline empty container map");
+
+    assert!(file.containers.is_empty());
+}
+
+#[test]
 fn rejects_project_and_internal_workers_inside_engine_section() {
     assert_eq!(
         code(
@@ -283,6 +311,37 @@ containers: {}
         ),
         "EMPTY_CONTAINERS"
     );
+}
+
+#[test]
+fn rejects_null_containers_without_a_managed_engine() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+"#
+        ),
+        "EMPTY_CONTAINERS"
+    );
+}
+
+#[test]
+fn rejects_a_non_mapping_containers_value() {
+    for text in [
+        r#"
+engine:
+  workers: {}
+containers: []
+"#,
+        r#"
+engine:
+  workers: {}
+containers: state
+"#,
+    ] {
+        assert_eq!(code(text), "INVALID_COMPOSE_FILE", "input: {text}");
+    }
 }
 
 #[test]

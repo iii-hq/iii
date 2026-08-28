@@ -397,6 +397,6 @@ async fn remove_validates_the_edited_file_before_writing_it() {
         .await
         .expect_err("remove must reject an empty edited project");
 
-    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert_eq!(err.code(), "EMPTY_CONTAINERS");
     assert_eq!(std::fs::read_to_string(file).unwrap(), before);
 }

@@ -16,9 +16,13 @@ use iii::engine::Engine;
 use iii::workers::engine_fn::EngineFunctionsWorker;
 use iii::workers::traits::Worker;
 use iii::workers::worker::WorkerManager;
-use iii_compose::{ComposeFile, daemon::Daemon, remote};
+use iii_compose::{
+    ComposeFile,
+    daemon::{Daemon, EnginePolicy},
+    remote,
+};
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{InitOptions, register_worker};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -514,6 +518,114 @@ containers:
     existing.shutdown_async().await;
     database.shutdown_async().await;
     web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_starts_a_managed_project_declared_with_null_containers() {
+    isolate_state();
+    let port = spawn_engine().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let worker_dir = tmp.path().join("workers/state");
+    std::fs::create_dir_all(&worker_dir).expect("worker dir");
+    std::fs::write(
+        worker_dir.join("iii.worker.yaml"),
+        "scripts:\n  start: \"echo started > started && sleep 30\"\n",
+    )
+    .expect("write worker manifest");
+
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        format!(
+            "namespace: empty-add\nstartup_timeout: 3s\nstop_timeout: 100ms\nengine:\n  url: ws://127.0.0.1:{port}\n  workers: {{}}\ncontainers:\n"
+        ),
+    )
+    .expect("write compose file");
+    let compose = ComposeFile::load(&file).expect("empty managed project should parse");
+    let engine = compose.engine.clone().expect("managed engine spec");
+
+    let daemon_namespace = "empty-add-daemon";
+    let daemon = Daemon::start(
+        format!("ws://127.0.0.1:{port}"),
+        daemon_namespace.to_string(),
+        None,
+        EnginePolicy::Managed {
+            owner: compose.path.clone(),
+            spec: engine,
+        },
+    );
+    remote::register(&daemon);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let up = call_in(
+        port,
+        Some(daemon_namespace),
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("empty managed project should start");
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(up["containers"], json!([]), "{up}");
+
+    let started = worker_dir.join("started");
+    let add = call_in(
+        port,
+        Some(daemon_namespace),
+        "compose::add",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["./workers/state"],
+        }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        let worker = register_test_worker(port, "empty-add", "state");
+        worker.register_function(
+            "state::ping",
+            RegisterFunction::new_async(|input: Value| async move {
+                Ok(json!({ "pong": input["message"] }))
+            }),
+        );
+        wait_for_worker_state(&daemon, "empty-add", "state", true).await;
+        worker
+    };
+    let (result, worker) = tokio::join!(add, ready);
+    let result = result.expect("compose::add should answer");
+
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(result["up"]["containers"][0]["state"], "ready", "{result}");
+
+    let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    assert!(
+        edited.contains("containers:\n  # added by compose::add\n  state:\n"),
+        "first worker was not written as a block: {edited}"
+    );
+
+    let ping = call_in(
+        port,
+        Some("empty-add"),
+        "state::ping",
+        json!({ "message": "hello" }),
+    )
+    .await
+    .expect("the added worker function should answer");
+    assert_eq!(ping, json!({ "pong": "hello" }));
+
+    let stop = call_in(
+        port,
+        Some(daemon_namespace),
+        "compose::stop",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("managed project should stop");
+    assert_eq!(stop["stopping"], json!([file.to_str().unwrap()]), "{stop}");
+
+    worker.shutdown_async().await;
     daemon.shutdown().await;
 }
 
