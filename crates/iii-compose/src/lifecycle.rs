@@ -35,7 +35,7 @@ use crate::{
     error::{ComposeError, Result},
     hooks,
     logs::LogStore,
-    manifest::{StartSpec, resolve_start},
+    manifest::{StartSpec, VmSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -102,7 +102,7 @@ pub struct LifecycleCtx<'a> {
     pub package_cache: &'a std::path::Path,
     /// Persistent, bounded stdout and stderr for every project worker.
     pub logs: &'a LogStore,
-    /// Root of the per-container VM state for bundle containers.
+    /// Root of the per-container VM state.
     pub vm_dir: &'a std::path::Path,
 }
 
@@ -650,9 +650,10 @@ async fn start_one_until_shutdown(
                 ),
                 // The start command is the bundle's own, read from its manifest
                 // inside the VM. Nothing on the host runs it.
-                crate::registry::Payload::Bundle(install_dir) => {
-                    (StartSpec::Vm { install_dir }, installed.default_config)
-                }
+                crate::registry::Payload::Bundle(install_dir) => (
+                    StartSpec::Vm(VmSpec::Bundle { install_dir }),
+                    installed.default_config,
+                ),
             }
         }
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
@@ -703,9 +704,9 @@ async fn start_one_until_shutdown(
     let plan = spawn_plan(&spawn_ctx);
     let command = match plan.command() {
         Some(command) => command,
-        // A bundle: publisher-controlled code, so it is booted in a VM instead
-        // of run here. The handle that comes back is an ordinary child, so
-        // readiness, stop, crash cascade and log capture below are unchanged.
+        // A VM worker is booted instead of run here. The handle that comes
+        // back is an ordinary child, so readiness, stop, crash cascade and log
+        // capture below are unchanged.
         None => wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
             |message| ComposeError::SpawnFailed {
                 container: key.to_string(),
@@ -769,8 +770,7 @@ async fn start_one_until_shutdown(
     Ok((record, child))
 }
 
-/// Builds the boot command for a bundle container, by asking `iii-worker` for
-/// it.
+/// Builds the boot command for a VM container, by asking `iii-worker` for it.
 ///
 /// A process boundary rather than a call: libkrun needs glibc, and the engine
 /// ships a musl build so it installs on any Linux. Linked, the two do not fit
@@ -791,8 +791,13 @@ async fn vm_command(
     plan: &crate::spawn::SpawnPlan,
     config: Option<&ResolvedConfig>,
 ) -> std::result::Result<tokio::process::Command, String> {
-    let StartSpec::Vm { install_dir } = start else {
-        return Err("not a VM container".to_string());
+    let (worker_dir, run_override, prepare_command) = match start {
+        StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
+        StartSpec::Vm(VmSpec::Local {
+            worker_dir,
+            run_override,
+        }) => (worker_dir, run_override.as_deref(), "__local-prepare"),
+        _ => return Err("not a VM container".to_string()),
     };
 
     let mut env: BTreeMap<String, String> = plan.env.clone();
@@ -831,14 +836,15 @@ async fn vm_command(
 
     let request = serde_json::json!({
         "worker_name": key,
-        "install_dir": install_dir,
+        "worker_dir": worker_dir,
         "state_dir": ctx.vm_dir.join(key),
         "engine_url": ctx.engine_url,
         "extra_env": env,
         "config_dir": config_dir,
+        "run_override": run_override,
     });
 
-    let plan = prepare_vm(&request).await?;
+    let plan = prepare_vm(prepare_command, &request).await?;
     let mut command = tokio::process::Command::new(&plan.program);
     command.args(&plan.args);
     for (name, value) in &plan.env {
@@ -857,7 +863,7 @@ async fn vm_command(
 /// constant `iii-worker` mounts it at; it is part of the request contract.
 const GUEST_CONFIG_DIR: &str = "/run/iii/config";
 
-/// What `iii-worker __bundle-prepare` answers: a program, its arguments, and
+/// What an `iii-worker` VM prepare command answers: a program, its arguments, and
 /// the environment to start it with.
 #[derive(serde::Deserialize)]
 struct VmPlan {
@@ -869,12 +875,15 @@ struct VmPlan {
     env_remove: Vec<String>,
 }
 
-/// Runs `iii-worker __bundle-prepare` and reads the plan back.
-async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, String> {
+/// Runs an `iii-worker` VM prepare command and reads the plan back.
+async fn prepare_vm(
+    prepare_command: &str,
+    request: &serde_json::Value,
+) -> std::result::Result<VmPlan, String> {
     let program = worker_binary()?;
     let mut command = tokio::process::Command::new(&program);
     command
-        .arg("__bundle-prepare")
+        .arg(prepare_command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -892,7 +901,7 @@ async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, 
             .write_all(body.as_bytes())
             .await
             .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
-        // Dropped here: __bundle-prepare reads to end of file, so it would wait
+        // Dropped here: the prepare command reads to end of file, so it would wait
         // forever on a pipe compose still holds open.
         drop(stdin);
     }
@@ -911,8 +920,8 @@ async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, 
         // in compose rather than as the version skew it is.
         if reason.contains("unrecognized subcommand") {
             return Err(format!(
-                "{} is too old: it does not know `__bundle-prepare`, which compose uses to \
-                 build a bundle's VM. Install it from the same release as iii — they are \
+                "{} is too old: it does not know `{prepare_command}`, which compose uses to \
+                 build a worker VM. Install it from the same release as iii — they are \
                  shipped together and are updated together",
                 program.display()
             ));
@@ -951,8 +960,8 @@ fn worker_binary() -> std::result::Result<std::path::PathBuf, String> {
         .find(|candidate| candidate.is_file())
         .ok_or_else(|| {
             format!(
-                "{name} is not installed. Bundle containers run in a VM, and it is the binary \
-                 that boots one; install it beside iii, or run this project without bundles"
+                "{name} is not installed. VM containers need this binary to boot; install it \
+                 beside iii, or remove the worker's VM requirement"
             )
         })
 }

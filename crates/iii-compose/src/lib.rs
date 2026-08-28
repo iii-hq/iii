@@ -47,7 +47,7 @@ pub mod state;
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
 pub use error::{ComposeError, Result};
-pub use manifest::{StartSpec, ValidationReport};
+pub use manifest::{StartSpec, ValidationReport, VmSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineMode {

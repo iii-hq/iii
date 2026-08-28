@@ -555,7 +555,20 @@ async fn async_main() -> anyhow::Result<()> {
         },
         Commands::SandboxDaemon(args) => iii_worker::cli::sandbox_daemon::run(args).await,
         Commands::BundlePrepare => {
-            std::process::exit(iii_worker::cli::bundle_prepare::run().await);
+            std::process::exit(
+                iii_worker::cli::bundle_prepare::run(
+                    iii_worker::cli::bundle_prepare::PrepareKind::Bundle,
+                )
+                .await,
+            );
+        }
+        Commands::LocalPrepare => {
+            std::process::exit(
+                iii_worker::cli::bundle_prepare::run(
+                    iii_worker::cli::bundle_prepare::PrepareKind::Local,
+                )
+                .await,
+            );
         }
         Commands::VmBoot(args) => {
             // Run the VM on a dedicated OS thread: `msb_krun`'s virtio-blk

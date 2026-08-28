@@ -501,6 +501,11 @@ Each key under `containers` is the worker name the container registers under.
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
 validation.
 
+A path worker normally runs as a host process. A non-empty `runtime.base_image` in its
+`iii.worker.yaml` selects a local VM instead. The worker's `scripts.install` and start command then
+run inside that image, and compose keeps the VM state inside the project. An invalid image reference
+fails the start instead of falling back to the host or to another image.
+
 ### Worker kinds
 
 The registry answers with a kind, and it decides how the container runs. A kind compose cannot run
@@ -521,8 +526,8 @@ honours.
 
 A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
 glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable;
-a bundle container on a machine without `iii-worker` fails saying so, and every other worker kind
-is unaffected.
+a VM container on a machine without `iii-worker` fails saying so, and every host worker is
+unaffected.
 
 Bundles need a VM, and windows has none: a bundle container there fails with
 `BUNDLE_NEEDS_A_VM` before anything is downloaded. Run compose under WSL, where the VM has KVM to
@@ -541,6 +546,10 @@ Both hooks run with the container's environment, working directory, and their ow
 
 The start command for a `path://` container is `run`, then `scripts.start` from the worker's
 `iii.worker.yaml`. A container with neither fails with `MISSING_START_COMMAND`.
+
+When the manifest declares `runtime.base_image`, the same precedence applies inside the VM: `run`
+replaces `scripts.start`, but it never moves the worker back to the host. Host source changes do not
+automatically restart this VM. Use `compose::restart worker=<container>` after a source change.
 
 Where the two files describe the same thing, `worker-compose.yaml` wins and the manifest is the
 default. `run` overrides `scripts.start`, and the container key overrides the manifest's `name`: the
@@ -665,7 +674,7 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
 | `<ns>/<project>/config/`    | Resolved configuration files.                        |
 | `<ns>/<project>/logs/`      | Rotating stdout and stderr for every project worker.  |
-| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each, plus the config each one publishes into its guest. |
+| `<ns>/<project>/vm/`        | VM state for bundle and local-image containers, one directory each, plus the config each one publishes into its guest. |
 | `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:

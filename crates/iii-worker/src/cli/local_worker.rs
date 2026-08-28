@@ -883,6 +883,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         /*disable_watcher=*/ false,
         /*is_bundle=*/ false,
         None,
+        None,
     )
     .await
     {
@@ -923,12 +924,81 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         /*disable_watcher=*/ true,
         /*is_bundle=*/ true,
         None,
+        None,
     )
     .await
     {
         VmStart::Exit(code) => code,
         VmStart::Plan(_) => 1,
     }
+}
+
+/// Builds the VM for a local-path worker without starting it.
+///
+/// Compose owns the child lifecycle, so this returns the boot command and uses
+/// caller-scoped VM state. Local manifest rules still apply: setup and install
+/// are allowed, resources are not bundle-clamped, and the manifest name does
+/// not have to match the compose container key.
+pub async fn local_vm_command(
+    worker_name: &str,
+    worker_dir: &Path,
+    run_override: Option<&str>,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    validate_compose_base_image(worker_dir)?;
+
+    match start_worker_impl(
+        worker_name,
+        &worker_dir.to_string_lossy(),
+        // The guest reaches the engine through `over.engine_url`; no port is
+        // derived here.
+        0,
+        // Compose supervises the VM itself. A detached, name-keyed watcher
+        // could restart a different project that uses the same container key.
+        /*disable_watcher=*/
+        true,
+        /*is_bundle=*/ false,
+        Some(over),
+        run_override,
+    )
+    .await
+    {
+        VmStart::Plan(built) => Ok(*built),
+        VmStart::Exit(_) => Err(format!(
+            "could not prepare the VM for local worker '{worker_name}'"
+        )),
+    }
+}
+
+/// Compose selects a local VM only for an explicit, valid OCI image. The
+/// regular local-worker CLI keeps its warning-and-fallback behavior; compose
+/// must not silently change an invalid VM request into another image.
+fn validate_compose_base_image(worker_dir: &Path) -> Result<(), String> {
+    let manifest_path = worker_dir.join(WORKER_MANIFEST);
+    let doc = super::project::read_manifest_doc(&manifest_path)?
+        .ok_or_else(|| format!("{} does not exist", manifest_path.display()))?;
+    let value = doc
+        .get("runtime")
+        .and_then(|runtime| runtime.get("base_image"))
+        .ok_or_else(|| {
+            format!(
+                "{} must declare `runtime.base_image` to run as a compose VM",
+                manifest_path.display()
+            )
+        })?;
+    let image = value.as_str().map(str::trim).ok_or_else(|| {
+        format!(
+            "{}: `runtime.base_image` must be a string",
+            manifest_path.display()
+        )
+    })?;
+    if !super::project::is_plausible_image_ref(image) {
+        return Err(format!(
+            "{}: `runtime.base_image` must be a plausible OCI image reference",
+            manifest_path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Builds the VM for an installed bundle worker without starting it.
@@ -963,6 +1033,7 @@ pub async fn bundle_vm_command(
         /*disable_watcher=*/ true,
         /*is_bundle=*/ true,
         Some(over),
+        None,
     )
     .await
     {
@@ -991,8 +1062,8 @@ pub async fn bundle_vm_command(
 /// Without one, the worker name is the whole identity: state lands in
 /// `~/.iii/managed/<worker_name>` and a start first kills whatever else answers
 /// to that name. Compose cannot live with either — two of its projects may
-/// legitimately run the same bundle under the same container key, and killing
-/// by name would stop the other project's VM.
+/// legitimately use the same container key, and killing by name would stop the
+/// other project's VM.
 pub struct VmOverride<'a> {
     /// Per-caller VM state: rootfs (or overlay trampoline), boot script, pid
     /// file. Replaces the name-keyed managed dir.
@@ -1028,6 +1099,7 @@ async fn start_worker_impl(
     disable_watcher: bool,
     is_bundle: bool,
     over: Option<VmOverride<'_>>,
+    run_override: Option<&str>,
 ) -> VmStart {
     // Kill any stale process from a previous engine run. Skipped when the
     // caller owns the VM's identity: the name is not unique across projects
@@ -1100,7 +1172,7 @@ async fn start_worker_impl(
     }
 
     // 2. Detect language
-    let project = match load_project_info(project_path) {
+    let mut project = match load_project_info(project_path) {
         Some(p) => p,
         None => {
             eprintln!(
@@ -1111,6 +1183,10 @@ async fn start_worker_impl(
             return VmStart::Exit(1);
         }
     };
+
+    if let Some(run_override) = run_override {
+        project.run_cmd = run_override.to_string();
+    }
 
     if let Err(msg) = project.validate() {
         eprintln!("{} {}", "error:".red(), msg);

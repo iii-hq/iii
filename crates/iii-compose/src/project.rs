@@ -368,9 +368,9 @@ impl Project {
         self.store.dir().join("config")
     }
 
-    /// Per-container VM state for bundle containers: rootfs, boot script, pid
-    /// file. Keyed by project rather than by worker name, so two projects
-    /// running the same bundle under the same container key stay apart.
+    /// Per-container VM state: rootfs, boot script, pid file. Keyed by project
+    /// rather than by worker name, so two projects using the same container key
+    /// stay apart.
     fn vm_dir(&self) -> PathBuf {
         self.store.dir().join("vm")
     }
