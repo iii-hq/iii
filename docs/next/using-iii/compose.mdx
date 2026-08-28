@@ -493,9 +493,9 @@ Both hooks run with the worker's environment, working directory, and their own p
 `stop_timeout` argument is a global timer for a compose daemon to stop. If this time is exceeded all
 scripts will be exited along with the compose daemon.
 
-Workers ship with scripts specified in `iii.worker.yaml` and they can be overwritten with scripts in
-a project's `worker-compose.yaml`. If both sources are missing a `run` command then the worker fails
-with `MISSING_START_COMMAND`.
+A path worker's start command is `scripts.run` in `worker-compose.yaml`, or `scripts.start` in the
+worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails with
+`MISSING_START_COMMAND`.
 
 ### Configuration precedence
 
