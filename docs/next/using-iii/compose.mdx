@@ -395,7 +395,7 @@ containers:
     env_file: [./.env] # specify .envs, later in list overwrites earlier declarations
     environment:
       RUST_LOG: info # specify environment variables directly
-      MY_ENV: ${MY_ENV:-} # assign an environment variable from the execution environment
+      MY_ENV: ${MY_ENV:-defaultValue} # assign an environment variable from the execution environment
     scripts:
       pre_run: npm run migrate
       pre_run_timeout: 2m
@@ -493,35 +493,20 @@ Both hooks run with the worker's environment, working directory, and their own p
 `stop_timeout` argument is a global timer for a compose daemon to stop. If this time is exceeded all
 scripts will be exited along with the compose daemon.
 
-A `path://` worker starts with `scripts.run` from `worker-compose.yaml`. Compose reads the worker's
-`iii.worker.yaml` for `scripts.start` only when the compose file declares no `run`, so a worker that
-ships a manifest needs nothing here. A worker with neither fails with `MISSING_START_COMMAND`.
-
-Where the two files describe the same thing, `worker-compose.yaml` wins and the manifest is the
-default. `run` overrides `scripts.start`, and the key under `containers` overrides the manifest's
-`name`: the key is what reaches the child as `III_WORKER_NAME`, so a worker honouring the reserved
-contract registers under it whatever its manifest declares. A worker that hardcodes its name instead
-is caught at readiness by `WORKER_NAME_MISMATCH`, which reports the name it took.
+Workers ship with scripts specified in `iii.worker.yaml` and they can be overwritten with scripts in
+a project's `worker-compose.yaml`. If both sources are missing a `run` command then the worker fails
+with `MISSING_START_COMMAND`.
 
 ### Configuration precedence
 
-Lowest to highest: the configuration a package ships, the entry the configuration worker holds, then
+Lowest to highest: the configuration a package ships, the entry in the configuration worker, then
 `config_override`. The merged result is written to an owner-only file and its path is passed to the
 worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
 the error is `CONFIG_FETCH_FAILED`.
 
-{/* REVIEW-10 FIXED: new paragraph. Compose also publishes the merged value back to the configuration entry (lifecycle.rs:1087-1089), so `config_override` overwrites what is stored. */}
-
-The merged value is delivered twice, because a worker reads its configuration in one of two places
-and both have to agree. A worker that declares `config_name` also has the result written back to
-that configuration entry, so a `config_override` becomes the stored value rather than a local
-variation on it. A write that the configuration worker refuses stops the worker with
-`CONFIG_PUBLISH_FAILED`.
-
 ## The worker environment
 
-A worker's environment is built, and the daemon's own environment is not inherited wholesale. Three
-layers apply, lowest to highest.
+A worker's environment is defined by the following sources:
 
 1. A host baseline. On Unix: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `TZ`,
    `LANG`, `LC_ALL`. Windows adds the variables the platform needs, such as `SystemRoot`, `COMSPEC`,
@@ -540,18 +525,12 @@ layers apply, lowest to highest.
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
 | `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
 
-Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`,
-in both cases at `compose::validate` time.
+Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
-<Note>
-  For why the daemon owns these eight rather than treating them as defaults a worker can replace,
-  see [Understanding iii / Compose](../understanding-iii/compose).
-</Note>
+### Expanding values from environment variables
 
-### Reading a value from the host
-
-The baseline is short on purpose, so nothing an operator exported reaches a worker by accident. A
-file names the values it wants instead, with `${VAR}`.
+Variables can be expanded with `${VAR}`. References expand in any value, not only in `environment`.
+For example:
 
 ```yaml
 containers:
@@ -561,11 +540,6 @@ containers:
       RUST_LOG: ${RUST_LOG:-info}
 ```
 
-{/* REVIEW-6 OPEN: `engine.workers` is never expanded either, same as `config_override` (interpolate.rs:76-79). `engine.url` is expanded. A `${VAR}` under `engine.workers` reaches the engine literally. */}
-
-References expand in any value, not only in `environment`: a worker path, a version, an `env_file`
-entry. The file on disk is never rewritten.
-
 | Written        | Means                                                                                           |
 | -------------- | ----------------------------------------------------------------------------------------------- |
 | `${VAR}`       | The value from compose's own environment. Unset, the file is refused with `UNDEFINED_VARIABLE`. |
@@ -573,21 +547,16 @@ entry. The file on disk is never rewritten.
 | `$VAR`         | Nothing. A bare name is left alone, so a `scripts.run` holding `$PWD` still reaches the shell.  |
 | `$${VAR}`      | A literal `${VAR}`.                                                                             |
 
-#### What `config_override` keeps
-
-`config_override` is never expanded, at any depth. That block is not compose's to read: it is
-carried to the configuration worker, which resolves `${VAR}` references of its own at read time.
-That is how a secret is stored as a reference rather than as a value.
+<Warning>
+  `config_override` is never expanded, all values are treated as literals.
 
 ```yaml
 config_override:
-  # Reaches the worker as written. The value is never in the compose file,
-  # and never in what compose stores.
+  # Reaches the worker exactly as written.
   api_key: ${ANTHROPIC_API_KEY}
 ```
 
-A name that compose's environment does not hold is therefore not an error inside this block. Nothing
-in it is compose's to resolve.
+</Warning>
 
 ## Build registry packages
 
@@ -598,8 +567,6 @@ iii compose build [-f, --file <PATH>]
 | Option              | Description                                                                              |
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
-
-{/* REVIEW-7 OPEN: "built-in engine workers" is a banned phrase and inaccurate - build.rs:63-72 skips `path://` only; an engine-kind package cannot be a container at all. */}
 
 `build` reads and validates the compose file, then downloads every `package://` worker into the same
 cache used by `compose::up`. The file defaults to `./worker-compose.yaml`. The command does not
@@ -612,9 +579,7 @@ iii compose --up --file worker-compose.yaml
 ```
 
 The cache is shared under `~/.iii/compose/packages`, or under `III_COMPOSE_STATE_DIR` when that
-variable is set. A later `compose::up` still resolves package metadata, but it reuses a valid cached
-artefact and does not download its bytes again. If the cache is missing, `up` keeps its existing
-download fallback.
+variable is set. A later `compose::up` reuses a valid cached artifact if it exists.
 
 ## Readiness
 
@@ -631,25 +596,20 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
 After a worker is ready, the daemon checks it every 250 ms. A worker that exits takes its transitive
-dependents down with it and is recorded as `failed`. Nothing is restarted: v1 has no restart policy,
-so a worker that dies stays down until the next `up`. When the engine connection drops and comes
-back, every running worker gets its `startup_timeout` to register again.
+dependents down with it and is recorded as `failed`. Automatic restarts are not performed. When the
+engine connection drops and comes back, every running worker gets its `startup_timeout` to register
+again.
 
-What a failure takes with it depends on when it happens, and v1 has no way to declare otherwise.
+Dependency shutdown is dependent upon when a shutdown happens:
 
 | When                      | What comes down                                                                                                                  |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | During `up`               | The operation ends. Everything it started is stopped in reverse order, and workers later in the start order are never attempted. |
 | After the worker is ready | Its transitive dependents. Everything else keeps running.                                                                        |
 
-<Note>
-  So a worker nothing depends on ends the whole `up` if it fails at start, and is contained if it
-  fails a minute later. See [Understanding iii / Compose](../understanding-iii/compose).
-</Note>
-
 ## Where compose keeps state
 
-Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when that is set.
+Compose state is stored under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when that is set.
 
 | Path                        | Contents                                                                                            |
 | --------------------------- | --------------------------------------------------------------------------------------------------- |
@@ -659,10 +619,8 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | `<ns>/<project>/vm/`        | VM state for bundle workers, one directory each, plus the config each one publishes into its guest. |
 | `packages/`                 | Installed `package://` artefacts, shared by projects.                                               |
 
-`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
-readable enough to recognise, hashed enough that two projects in directories of the same name stay
-apart. Because it is derived, it cannot be guessed. `compose::status` reports it as `state_dir` and
-reports the exact `log_path` for each worker:
+`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path + a
+short hash to prevent project name collisions.
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
@@ -670,25 +628,9 @@ iii trigger compose::status --namespace dev file=./worker-compose.yaml
 ls /home/you/.iii/compose/dev/shop-3f2a1b9c/logs/
 ```
 
-<Note>
-  For why this is one place per machine rather than a directory beside each compose file, see
-  [Understanding iii / Compose](../understanding-iii/compose).
-</Note>
-
-Capture continues until the worker exits. Rotation bounds disk use while keeping raw `print`,
-`console.log`, `println!`, stdout, and stderr output available even when the worker does not use the
-structured logger. Use `engine::logs::list` when structured OpenTelemetry fields and trace
-correlation are required.
-
-A clean shutdown clears the state file. After an unclean exit, the daemon compares each record
-against the live process: a match is adopted, a dead process is recorded `failed`, and a live pid it
-cannot verify is left running and reported for manual cleanup.
-
 ## Error codes
 
-{/* REVIEW-9 FIXED: added the `Managed engine` and `Command line` rows and 12 codes that were missing from the existing rows. */}
-
-Compose errors cross the wire with a stable code and a message.
+Compose can output the following error codes:
 
 | Area                | Codes                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -704,8 +646,8 @@ Compose errors cross the wire with a stable code and a message.
 ## Related
 
 <Note>
-  For why compose is a worker and why a project is its file, see [Understanding iii /
-  Compose](../understanding-iii/compose). For the namespace dimension itself, see [Understanding iii
-  / Namespaces](../understanding-iii/namespaces). For the `iii compose` entry in the command tree,
-  see the [CLI reference](../cli-reference/index#iii-compose).
+  For why compose is a worker see [Understanding iii / Compose](../understanding-iii/compose). For
+  understanding namespaces see [Understanding iii / Namespaces](../understanding-iii/namespaces).
+  For the `iii compose` entry in the command tree, see the [CLI
+  reference](../cli-reference/index#iii-compose).
 </Note>
