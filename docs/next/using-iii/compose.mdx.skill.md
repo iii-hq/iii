@@ -200,22 +200,23 @@ worker. Those remain declared until they are removed explicitly.
 
 ### Restarting one worker
 
-`compose::restart worker=state` stops that specified worker and starts it again. Nothing else moves:
-not what it depends on, and not what depends on it. A dependent holding a connection to the worker
-sees it drop.
+`compose::restart worker=state` stops that specified worker and starts it again. All other workers,
+including dependencies, are left unchanged.
 
-| Field       | Description                                                            |
-| ----------- | ---------------------------------------------------------------------- |
-| `file`      | The project to restart.                                                |
-| `container` | The worker to restart. `worker` is another spelling of the same field. |
+`compose::restart` without a worker argument restarts the entire compose project. It is
+approximately the equivalent of `compose::down` followed by `compose::up`.
 
-Left out, `container` restarts the whole project instead: a `down`, then an `up`, with the compose
-file read again between them, so an edit made by hand takes effect without a daemon restart. There
-is no rolling restart, and no worker is kept because it did not change.
+| Field    | Description             |
+| -------- | ----------------------- |
+| `file`   | The project to restart. |
+| `worker` | The worker to restart.  |
 
 ### Updating a worker
 
-`compose::update worker=state` moves a declared worker to another version of the same package.
+`compose::update worker=state` updates a worker to either the current `latest` version when no
+version is specified or to the target version when it is.
+
+If the requested version is already installed this operation is treated as a NOOP.
 
 | Field    | Description                                |
 | -------- | ------------------------------------------ |
@@ -227,51 +228,41 @@ worker=state            the version the registry calls latest
 worker=state@0.21.4     that version, which is also how a downgrade is spelled
 ```
 
-The answer names both ends, because an operator who asked for "latest" does not know what it is
-until the call says so:
+The worker has to be declared already in order to be updated, and it has to be a `package://`. Use
+[`compose::add`](#adding-workers) to add new workers.
 
-```json
-{
-  "container": "state",
-  "from": "0.21.4-alpha.4",
-  "to": "0.22.0",
-  "detail": "state from 0.21.4-alpha.4 to 0.22.0"
-}
-```
+Workers specified with `path://` are not versioned, any updates to these workers will be reflected
+the next time the worker is restarted.
 
-Already on the version asked for, nothing is written and `changed` is `false`.
-
-The worker has to be declared already, and has to be a `package://` one: this edits a version line,
-it does not add a worker, and a `path://` worker has no version to move. Use
-[`compose::add`](#adding-workers) to declare something new.
-
-Only the version line changes. A `start_after` written by hand comes through as it was, since
-rewriting the graph is what `compose::add` is for.
-
-<Note>
-  Unlike `compose::restart worker=`, an update restarts the whole project. A project is held as its
-  file was read, so a new version is only picked up once the project is dropped and read again.
-  Dropping it while its other workers run would leave them supervised by nothing.
-</Note>
+<Note>Unlike `compose::restart worker=state`, an update restarts the whole project.</Note>
 
 ### Checking status
 
-`compose::status` reports the project namespace, its compose file, its state directory, the daemon
-pid, and every declared worker. It takes `file`. See [Worker states](#worker-states) for what each
-worker entry holds.
+`compose::status` reports each declared worker with its `state`, its `pid`, an `owned` flag, its
+rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a worker this daemon
+has knowledge of but does not manage (ie. was not started by the compose daemon).
+
+#### Worker states
+
+| State      | Meaning                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `starting` | Spawned. The engine has not registered it yet.             |
+| `ready`    | Registered in the engine under `(namespace, container)`.   |
+| `failed`   | Exited without being asked to, or one of its hooks failed. |
+| `stopped`  | Stopped by this daemon.                                    |
 
 ### Viewing logs
 
 `compose::logs` returns recent stdout and stderr for the workers of one project.
 
-| Field       | Description                                                                          |
-| ----------- | ------------------------------------------------------------------------------------ |
-| `file`      | The project to read.                                                                 |
-| `container` | One worker. Omit for every worker. `worker` is another spelling of the same field.   |
-| `tail`      | Recent lines returned when no cursor is sent. Default 100, maximum 1000.             |
-| `cursors`   | The `cursor` from the last response, keyed by worker. The call continues from there. |
-| `stream`    | `stdout` or `stderr`. Omit for both.                                                 |
-| `wait_ms`   | Wait this many milliseconds for new output. Maximum 5000.                            |
+| Field     | Description                                                                          |
+| --------- | ------------------------------------------------------------------------------------ |
+| `file`    | The project to read.                                                                 |
+| `worker`  | One worker. Returns every compose-orchestrated worker when omitted.                  |
+| `tail`    | Recent lines returned when no cursor is sent. Default 100, maximum 1000.             |
+| `cursors` | The `cursor` from the last response, keyed by worker. The call continues from there. |
+| `stream`  | `stdout` or `stderr`. Omit for both.                                                 |
+| `wait_ms` | Wait this many milliseconds for new output. Maximum 5000.                            |
 
 The response holds one entry per worker with `container`, `entries`, `cursor`, and `truncated`. Each
 entry in `entries` has `stream` and `message`. A `cursor` has `generation` and `offset`. `truncated`
@@ -284,27 +275,39 @@ iii trigger compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 
 ### Listing projects
 
-`compose::list` returns the daemon name, its namespace, its pid, and every project it holds. It
-takes no file.
+`compose::list` returns the daemon name, its namespace, its pid, and other project information.
 
 ### Validating a file
 
-`compose::validate` checks a compose file and loads no project. It takes `file`. Validation is
-offline, so `package://` workers are reported under `deferred_packages` instead of being resolved.
+`compose::validate` validates a compose file and is intended for package develpment work. It takes
+`file`. Validation is offline, so `package://` workers are reported under `deferred_packages` and
+not resolved.
+
+#### Validation reports
+
+| Field               | Type   | Description                                               |
+| ------------------- | ------ | --------------------------------------------------------- |
+| `namespace`         | string | Namespace the project's workers register in.              |
+| `start_order`       | array  | Worker names in dependency order.                         |
+| `deferred_packages` | array  | `package://` workers, which need the registry to resolve. |
 
 ### Stopping the daemon
 
-{/* REVIEW-3 FIXED: this section now states the daemon-wide behaviour (daemon.rs:867-891). The old line said `compose::stop` stops one project. */}
+`compose::stop` stops the compose project, all associated workers, and optionally the engine if
+started with (`--up`). The compose daemon will also exit. Before exiting the daemon will return its
+name, pid, and the projects it is about to stop.
 
-`compose::stop` takes down every project the daemon holds, then the daemon exits. It answers the
-caller before it exits, and returns the daemon name, its pid, and the projects it is about to stop.
-It takes no file.
+<Warning>
+  There is no `compose::start` equivalent to `compose::stop`. Stopping a compose daemon means it
+  must be restarted from the server it is running on.
+</Warning>
 
 ### Viewing schema
 
-`compose::schema` is read-only. With no `function_id`, it returns every `compose::*` contract. Pass
-a function id to return one contract. The pseudo-id `worker-compose.yaml` returns the file's JSON
-Schema as `request` and a complete small example as `response`.
+`compose::schema` takes a `function_id` argument. With no `function_id`, it returns every
+`compose::*` schema. Pass a function id to return the schema for a given function_id. The pseudo-id
+`worker-compose.yaml` returns the file's JSON Schema as `request` and a complete small example as
+`response`.
 
 Each entry holds `function_id`, `description`, `request`, `response`, `default_timeout_ms`, and
 `idempotent`. The same schemas, descriptions, and metadata are also published through
@@ -316,57 +319,17 @@ iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
-### Operation results
-
-`compose::up` and `compose::down` return the same fields.
-
-| Field          | Type    | Description                                                          |
-| -------------- | ------- | -------------------------------------------------------------------- |
-| `operation_id` | string  | Identifier for this operation.                                       |
-| `status`       | string  | `ok` or `failed`.                                                    |
-| `changed`      | boolean | `false` when every requested worker was already in the target state. |
-| `containers`   | array   | One entry per worker the operation planned.                          |
-
-Each entry in `containers` contains `container`, `state`, `changed`. If a worker failed it will also
-contain an `error` object with `code` and `message`.
-
-A failed `up` tears down any running workers, in reverse startup order, and reports those workers as
-`stopped` with `changed: false`. Workers that were already running before the operation are left
-alone.
-
-### Worker states
-
-| State      | Meaning                                                    |
-| ---------- | ---------------------------------------------------------- |
-| `starting` | Spawned. The engine has not registered it yet.             |
-| `ready`    | Registered in the engine under `(namespace, container)`.   |
-| `failed`   | Exited without being asked to, or one of its hooks failed. |
-| `stopped`  | Stopped by this daemon.                                    |
-
-`compose::status` reports each declared worker with its `state`, its `pid`, an `owned` flag, its
-rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a worker this daemon
-can see but did not start.
-
-### Validation reports
-
-| Field               | Type   | Description                                               |
-| ------------------- | ------ | --------------------------------------------------------- |
-| `namespace`         | string | Namespace the project's workers register in.              |
-| `start_order`       | array  | Worker names in dependency order.                         |
-| `deferred_packages` | array  | `package://` workers, which need the registry to resolve. |
-
-{/* REVIEW-18 NEW: namespace material was scattered across `The daemon`, `Starting a project`, the payload table and `Top-level fields`. Collected here; those places now point at this section. */}
-
 ## Namespaces
 
-A compose call names two namespaces, and one value usually fills both roles.
+Namespaces are used to allow advanced architectures that require more than one running copy of a
+given worker, multi-tenancy, some multi-agent workflows, and various isolation schemes between
+different parts of a iii application.
 
-The **daemon namespace** addresses one Compose daemon. The daemon registers on the engine as a
-worker named `compose`, so the engine leases `(namespace, compose)` to one connection and
-`iii trigger compose::up --namespace dev` reaches the daemon serving `dev` and no other.
+Namespaces are arbitrary and their usage depends largely on the given usecase. They do not prescribe
+a specific way of constructing your iii application.
 
-The **project namespace** is where a project's workers register. It is the routing dimension every
-other worker uses, so a worker in a project namespaced `shop` answers triggers addressed to `shop`.
+The two primary points where Namespaces are used are during Worker registration via Compose and
+during Function and Trigger interactions. All have ways of declaring which namespace to use.
 
 ### Precedence
 
@@ -376,59 +339,31 @@ other worker uses, so a worker in a project namespaced `shop` answers triggers a
 | `namespace:` in the file | The daemon namespace when `--namespace` is absent, and the project namespace. |
 | Neither                  | `default`.                                                                    |
 
-A daemon that starts outside a project has no file to read, so it serves `default` until
-`--namespace` says otherwise. An explicit `--namespace` overrides `namespace:` in every file that
-daemon loads, which is what keeps a daemon and its workers in one place.
+`namespace` is commonly defined in `worker-compose.yaml` but can be overriden on compose daemon
+startup with the `--namespace` flag.
 
-`compose::status` reports the namespace a project's workers registered in, and `compose::list`
-reports the daemon's own.
+Likewise, compose's own `compose::*` functions will exist within the same declared namespace.
 
 ### What a namespace may hold
 
-A namespace holds `a-z`, `0-9`, `-` and `_`. A value outside that set is refused with
-`INVALID_NAMESPACE` and is never rewritten to fit, so what the file declares is what an operator
-types into `--namespace`. Uppercase is refused for the same reason, with an error that says so.
-
-Nothing about the file's path enters the namespace. Two copies of one project therefore declare one
-namespace and collide, which is how the engine reports a duplicate for every other worker.
+A valid namespace is made up of the lowercase characters `a-z`, `0-9`, `-` and `_`. All other
+characters are not permitted and will result in an `INVALID_NAMESPACE` error; including uppercase
+letters. To prevent naming conflicts there is no coercion of invalid namespaces to valid namespaces.
 
 ### One daemon to a namespace
 
-Two daemons with different namespaces share an engine. A second daemon claiming a namespace that is
-already served is refused at registration with `DAEMON_ALREADY_SERVING`.
-
-{/* REVIEW-11 FIXED: DAEMON_ALREADY_SERVING is the engine refusing registration; DAEMON_NAMESPACE_TAKEN is a local lock file (managed_engine.rs:438-446). */}
-
-A managed `--up` is refused earlier, on the host itself. It holds a lock file for its namespace, so
-a second managed invocation of the same namespace fails with `DAEMON_NAMESPACE_TAKEN` before it
-reaches the engine.
+Two compose daemons with different namespaces can share an engine. However, a second daemon claiming
+a namespace that is already served is refused at registration with `DAEMON_ALREADY_SERVING`.
 
 <Warning>
-  Only one Compose daemon can serve a namespace on an engine. Set `namespace:` in the compose file
-  or pass `--namespace` when several daemons must share one engine.
+  Only one Compose daemon can serve a namespace on a iii engine. Set `namespace:` in the compose
+  file or pass `--namespace` when several daemons must share one iii engine.
 </Warning>
-
-### Naming the daemon in a call
-
-The `--namespace` flag routes a `compose::*` call. The `namespace` payload field guards it.
-
-<Warning>
-  `namespace` in the payload does not select a daemon. The engine resolves a call by the
-  `--namespace` flag and never reads the body, so this can only catch having reached the wrong
-  daemon: a mismatch fails with `WRONG_DAEMON`. Sent alone, the call still lands wherever the flag
-  pointed.
-</Warning>
-
-A worker is told both values. `III_NAMESPACE` is the project namespace it registered in, and
-`III_COMPOSE_NAMESPACE` is the daemon namespace it addresses its own `compose::*` calls to. See
-[The worker environment](#the-worker-environment).
 
 ## `worker-compose.yaml`
 
-<Note>
-  This documentation reflects version 1 of a worker compose file. Unknown keys and duplicate keys
-  are errors. Durations can specify a unit: `500ms`, `30s`, `2m`.
-</Note>
+Below is an example of version 1 of a worker compose file. Unknown keys and duplicate keys are
+errors. Durations can specify a unit such as: `500ms`, `30s`, `2m`.
 
 ```yaml
 namespace: shop
@@ -442,21 +377,19 @@ engine:
         name: fs
         config:
           directory: ./config
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
 containers:
-  database:
-    worker: path://./workers/database
+  database_1: # Worker names do not need to match package names
+    worker: package://database
   api:
     worker: path://./workers/api
     start_after: [database]
     config_name: shop-api
     config_override:
       log_level: debug
-    env_file: [./.env]
+    env_file: [./.env] # specify .envs, later in list overwrites earlier declarations
     environment:
-      RUST_LOG: info
+      RUST_LOG: info # specify environment variables directly
+      MY_ENV: ${MY_ENV:-} # assign an environment variable from the execution environment
     scripts:
       pre_run: npm run migrate
       pre_run_timeout: 2m
@@ -477,13 +410,6 @@ containers:
 | `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                          |
 | `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                                 |
 
-`namespace:` sets where the project's workers register, and it also names the daemon when the
-command line does not. `--namespace` overrides it, and a file that declares none lands in `default`.
-The value holds `a-z`, `0-9`, `-` and `_`, and is refused with `INVALID_NAMESPACE` rather than
-rewritten to fit. See [Namespaces](#namespaces).
-
-{/* REVIEW-13 OPEN: undocumented rule - `url`'s port must match the `iii-worker-manager` port or the start fails with MANAGED_ENGINE_ENDPOINT_MISMATCH (error.rs:316-319, managed_engine.rs:308-335). */}
-
 ### Engine fields
 
 | Field                             | Type    | Default                | Description                                                                              |
@@ -497,13 +423,13 @@ and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for 
 `iii-worker-manager#rbac`. Internal `iii-engine-functions`, `iii-telemetry`, and `iii-observability`
 are injected and must not be declared.
 
-The engine section belongs to the file that started the managed daemon. A runtime change returns
-`ENGINE_RESTART_REQUIRED`; restart the Compose invocation to apply it. A different file cannot merge
-another section into that daemon and fails with `ENGINE_ALREADY_OWNED`.
+<Note>
+  These workers are always engine managed and started so this method of operating these workers is
+  an exception to the typical way for other workers. Changes to these workers requires an engine
+  restart.
+</Note>
 
 ### Worker fields
-
-{/* REVIEW-1 FIXED: `worker` row now reads `package://<name>`, host optional. A host-less reference goes to the default registry (registry.rs:154-159). The example under `worker-compose.yaml` changed to `package://state`. */}
 
 Each key under `containers` is the name the worker registers under.
 
@@ -526,20 +452,14 @@ validation.
 
 ### Worker kinds
 
-The registry answers with a kind, and it decides how the worker runs. A kind compose cannot run
-fails with `UNSUPPORTED_PACKAGE_KIND`.
+Worker packages can be released in multiple different "kinds". A kind compose cannot run fails with
+`UNSUPPORTED_PACKAGE_KIND`.
 
-| Kind     | How it runs                                                                           |
-| -------- | ------------------------------------------------------------------------------------- |
-| `binary` | A child process on the host.                                                          |
-| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest.       |
-| `engine` | Not installable: the registry publishes no artefact, so compose has nothing to start. |
-| `image`  | Not supported: it needs the OCI runtime.                                              |
-
-A bundle is published code that compose did not build, so it is started behind the same boundary
-`iii add` puts it behind, rather than as a host process. Its configuration is published into the
-guest, so `III_CONFIG` names a path inside the VM; a worker reads it the same way either way. Bundle
-support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose honours.
+| Kind     | How it runs                                                                     |
+| -------- | ------------------------------------------------------------------------------- |
+| `binary` | A child process on the host.                                                    |
+| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
+| `path`   | A path to a worker stored locally on disk.                                      |
 
 A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
 glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable; a
@@ -550,23 +470,26 @@ Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDL
 anything is downloaded. Run compose under WSL, where the VM has KVM to run on. Every other worker
 kind runs on windows as it always has.
 
+Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
+honours.
+
 ### Scripts
 
-| Field             | Type   | Default | Description                                                               |
-| ----------------- | ------ | ------- | ------------------------------------------------------------------------- |
-| `pre_run`         | string | absent  | Runs to completion before the worker is spawned.                          |
-| `pre_run_timeout` | string | `60s`   | Budget for `pre_run`. Rejected without a `pre_run`.                       |
-| `run`             | string | absent  | Start command. Rejected for `package://` workers.                         |
-| `post_run`        | string | absent  | Runs after the worker's exit is confirmed. Teardown does not wait for it. |
-
-{/* REVIEW-5 FIXED: `post_run` row said `Never awaited`. Teardown does not wait, project shutdown does, bounded by stop_timeout (hooks.rs PostRunSupervisor, lifecycle.rs:1104). */}
+| Field             | Type   | Default | Description                                         |
+| ----------------- | ------ | ------- | --------------------------------------------------- |
+| `pre_run`         | string | absent  | Runs to completion before the worker is spawned.    |
+| `pre_run_timeout` | string | `60s`   | Budget for `pre_run`. Rejected without a `pre_run`. |
+| `run`             | string | absent  | Start command. Rejected for `package://` workers.   |
+| `post_run`        | string | absent  | Runs after the worker's exit is confirmed.          |
 
 Both hooks run with the worker's environment, working directory, and their own process group. A
-`post_run` outlives the worker it cleans up after, but not the daemon: project shutdown waits for
-it, and `stop_timeout` is the budget it is killed at.
+`post_run` runs after the worker stops but before the compose daemon exits. The top-level
+`stop_timeout` argument is a global timer for a compose daemon to stop. If this time is exceeded all
+scripts will be exited along with the compose daemon.
 
-The start command for a `path://` worker is `run`, then `scripts.start` from the worker's
-`iii.worker.yaml`. A worker with neither fails with `MISSING_START_COMMAND`.
+A `path://` worker starts with `scripts.run` from `worker-compose.yaml`. Compose reads the worker's
+`iii.worker.yaml` for `scripts.start` only when the compose file declares no `run`, so a worker that
+ships a manifest needs nothing here. A worker with neither fails with `MISSING_START_COMMAND`.
 
 Where the two files describe the same thing, `worker-compose.yaml` wins and the manifest is the
 default. `run` overrides `scripts.start`, and the key under `containers` overrides the manifest's
