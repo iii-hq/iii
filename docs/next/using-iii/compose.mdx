@@ -456,6 +456,11 @@ Each key under `containers` is the name the worker registers under.
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
 validation.
 
+A path worker normally runs as a host process. A non-empty `runtime.base_image` in its
+`iii.worker.yaml` selects a local VM instead. The worker's `scripts.install` and start command then
+run inside that image, and compose keeps the VM state inside the project. An invalid image reference
+fails the start instead of falling back to the host or to another image.
+
 ### Worker kinds
 
 Worker packages can be released in multiple different "kinds". A kind compose cannot run fails with
@@ -611,13 +616,13 @@ Dependency shutdown is dependent upon when a shutdown happens:
 
 Compose state is stored under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when that is set.
 
-| Path                        | Contents                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------- |
-| `<ns>/<project>/state.json` | One project's child records. Owner-only.                                                            |
-| `<ns>/<project>/config/`    | Resolved configuration files.                                                                       |
-| `<ns>/<project>/logs/`      | Rotating stdout and stderr for every project worker.                                                |
-| `<ns>/<project>/vm/`        | VM state for bundle workers, one directory each, plus the config each one publishes into its guest. |
-| `packages/`                 | Installed `package://` artefacts, shared by projects.                                               |
+| Path                        | Contents                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `<ns>/<project>/state.json` | One project's child records. Owner-only.                                                                            |
+| `<ns>/<project>/config/`    | Resolved configuration files.                                                                                       |
+| `<ns>/<project>/logs/`      | Rotating stdout and stderr for every project worker.                                                                |
+| `<ns>/<project>/vm/`        | VM state for bundle and local-image workers, one directory each, plus the config each one publishes into its guest. |
+| `packages/`                 | Installed `package://` artefacts, shared by projects.                                                               |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path + a
 short hash to prevent project name collisions.

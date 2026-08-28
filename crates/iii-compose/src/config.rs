@@ -203,7 +203,8 @@ impl ComposeFile {
                 message: err.to_string(),
             })?;
 
-        if raw.containers.is_empty() && raw.engine.is_none() {
+        let raw_containers = raw.containers.unwrap_or_default();
+        if raw_containers.is_empty() && raw.engine.is_none() {
             return Err(ComposeError::EmptyContainers);
         }
 
@@ -231,8 +232,8 @@ impl ComposeFile {
         let stop_timeout = file_duration("stop_timeout", &raw.stop_timeout, DEFAULT_STOP_TIMEOUT)?;
         let engine = raw.engine.map(validate_engine).transpose()?;
 
-        let mut containers = IndexMap::with_capacity(raw.containers.len());
-        for (key, raw_container) in &raw.containers {
+        let mut containers = IndexMap::with_capacity(raw_containers.len());
+        for (key, raw_container) in &raw_containers {
             containers.insert(
                 key.clone(),
                 validate_container(key, raw_container, &base_dir, startup_timeout)?,
@@ -600,9 +601,9 @@ struct RawComposeFile {
     stop_timeout: Option<String>,
     #[serde(default)]
     engine: Option<RawEngineSpec>,
-    #[serde(default, deserialize_with = "deserialize_unique_map")]
-    #[schemars(with = "BTreeMap<String, RawContainer>")]
-    containers: IndexMap<String, RawContainer>,
+    #[serde(default, deserialize_with = "deserialize_optional_unique_map")]
+    #[schemars(with = "Option<BTreeMap<String, RawContainer>>")]
+    containers: Option<IndexMap<String, RawContainer>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -660,6 +661,49 @@ where
     }
 
     deserializer.deserialize_map(UniqueMap(std::marker::PhantomData))
+}
+
+fn deserialize_optional_unique_map<'de, D, V>(
+    deserializer: D,
+) -> std::result::Result<Option<IndexMap<String, V>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    use serde::de::Visitor;
+
+    struct OptionalUniqueMap<V>(std::marker::PhantomData<V>);
+
+    impl<'de, V: Deserialize<'de>> Visitor<'de> for OptionalUniqueMap<V> {
+        type Value = Option<IndexMap<String, V>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("null or a mapping with unique keys")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserialize_unique_map(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptionalUniqueMap(std::marker::PhantomData))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -773,7 +817,21 @@ containers:
         let schema = worker_compose_schema_json();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["engine"].is_object());
-        assert!(schema["properties"]["containers"].is_object());
+        let container_types = schema["properties"]["containers"]["type"]
+            .as_array()
+            .expect("containers must accept an object or null");
+        assert!(
+            container_types
+                .iter()
+                .any(|schema_type| schema_type == "object"),
+            "containers must accept an object: {container_types:?}"
+        );
+        assert!(
+            container_types
+                .iter()
+                .any(|schema_type| schema_type == "null"),
+            "containers must accept null: {container_types:?}"
+        );
         assert!(
             !schema["required"].as_array().is_some_and(|fields| {
                 fields

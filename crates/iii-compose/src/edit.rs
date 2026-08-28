@@ -146,6 +146,8 @@ fn invalid(spec: &str, reason: &str) -> ComposeError {
 /// not affect anything — start order comes from `start_after` — so the end is
 /// where it disturbs the smallest part of the file and of its diff.
 pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
+    let normalized = normalize_inline_empty_containers(text);
+    let text = normalized.as_deref().unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
     let containers = find_containers(&lines)?;
 
@@ -395,6 +397,25 @@ fn join(lines: &[String], original: &str) -> String {
         text.push('\n');
     }
     text
+}
+
+fn normalize_inline_empty_containers(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (line_index, comment) = lines.iter().enumerate().find_map(|(index, line)| {
+        let rest = line.strip_prefix("containers:")?;
+        let (value, comment) = rest
+            .split_once('#')
+            .map_or((rest, None), |(value, comment)| (value, Some(comment)));
+        let inner = value.trim().strip_prefix('{')?.strip_suffix('}')?;
+        inner.trim().is_empty().then_some((index, comment))
+    })?;
+
+    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
+    out[line_index] = "containers:".to_string();
+    if let Some(comment) = comment {
+        out.insert(line_index + 1, format!("  #{comment}"));
+    }
+    Some(join(&out, text))
 }
 
 /// The half-open line range of the `containers:` mapping body.
@@ -872,7 +893,84 @@ containers:
     }
 
     #[test]
-    fn a_file_without_containers_is_refused() {
+    fn adds_the_first_container_to_a_bare_empty_mapping() {
+        let text = "engine:\n  workers: {}\ncontainers:\n";
+        let out = match upsert_container(text, &parse_worker("state@0.21.4").unwrap()).unwrap() {
+            Outcome::Added(text) => text,
+            other => panic!("expected an addition, got {other:?}"),
+        };
+
+        assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
+        assert!(out.contains("# added by compose::add"), "{out}");
+        assert!(out.contains("version: \"0.21.4\""), "{out}");
+        assert!(out.ends_with('\n'), "lost the trailing newline: {out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
+            .expect("the edited file should load");
+    }
+
+    #[test]
+    fn adds_the_first_container_to_an_inline_empty_mapping() {
+        let text = "engine:\n  workers: {}\ncontainers: {}\n";
+        let out = match upsert_container(text, &parse_worker("state@0.21.4").unwrap()).unwrap() {
+            Outcome::Added(text) => text,
+            other => panic!("expected an addition, got {other:?}"),
+        };
+
+        assert!(
+            !out.contains("containers: {}"),
+            "inline map survived: {out}"
+        );
+        assert_eq!(out.matches("containers:").count(), 1, "duplicated: {out}");
+        assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
+        assert!(out.contains("worker: package://api.workers.iii.dev/state"));
+        assert!(out.contains("version: \"0.21.4\""), "{out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
+            .expect("the edited file should load");
+    }
+
+    #[test]
+    fn preserves_an_inline_empty_mapping_comment_when_adding() {
+        let text = "engine:\n  workers: {}\ncontainers: { } # keep this empty until bootstrap\n";
+        let out = match upsert_container(text, &parse_worker("state@0.21.4").unwrap()).unwrap() {
+            Outcome::Added(text) => text,
+            other => panic!("expected an addition, got {other:?}"),
+        };
+
+        assert!(!out.contains("containers: {"), "inline map survived: {out}");
+        assert!(
+            out.contains("containers:\n  # keep this empty until bootstrap\n"),
+            "comment changed: {out}"
+        );
+        assert!(out.ends_with('\n'), "lost the trailing newline: {out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
+            .expect("the edited file should load");
+    }
+
+    #[test]
+    fn adds_multiple_containers_after_normalizing_an_inline_empty_mapping() {
+        let text = "engine:\n  workers: {}\ncontainers: {}\n";
+        let once = match upsert_container(text, &parse_worker("state@0.21.4").unwrap()).unwrap() {
+            Outcome::Added(text) => text,
+            other => panic!("expected the first addition, got {other:?}"),
+        };
+        let out = match upsert_container(&once, &parse_worker("queue@1.0.0").unwrap()).unwrap() {
+            Outcome::Added(text) => text,
+            other => panic!("expected the second addition, got {other:?}"),
+        };
+
+        assert!(
+            !out.contains("containers: {}"),
+            "inline map survived: {out}"
+        );
+        assert_eq!(out.matches("containers:").count(), 1, "duplicated: {out}");
+        assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
+        assert_eq!(out.matches("queue:").count(), 1, "duplicated: {out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
+            .expect("the edited file should load");
+    }
+
+    #[test]
+    fn still_refuses_a_file_without_the_containers_key() {
         let err = upsert_container("namespace: default\n", &parse_worker("state").unwrap())
             .expect_err("there is nothing to add to");
         assert!(err.to_string().contains("containers"), "{err}");

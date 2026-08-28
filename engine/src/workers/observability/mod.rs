@@ -2517,7 +2517,8 @@ impl ObservabilityWorker {
                         "service_name" => a.service_name.cmp(&b.service_name),
                         "name" => a.name.cmp(&b.name),
                         _ => a.start_time_unix_nano.cmp(&b.start_time_unix_nano),
-                    };
+                    }
+                    .then_with(|| a.trace_id.cmp(&b.trace_id));
                     if sort_order_asc { cmp } else { cmp.reverse() }
                 });
 
@@ -7699,6 +7700,84 @@ mod tests {
                 assert_eq!(value.traces[0].span_count, 3);
             }
             _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_filtered_trace_summary_pagination_uses_stable_tiebreaker() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "t-c",
+                "r-c",
+                None,
+                "shared root",
+                "shared-service",
+                1_000,
+                2_000,
+                "ok",
+                vec![],
+            ),
+            make_span(
+                "t-a",
+                "r-a",
+                None,
+                "shared root",
+                "shared-service",
+                1_000,
+                2_000,
+                "ok",
+                vec![],
+            ),
+            make_span(
+                "t-b",
+                "r-b",
+                None,
+                "shared root",
+                "shared-service",
+                1_000,
+                2_000,
+                "ok",
+                vec![],
+            ),
+        ]);
+
+        for sort_by in ["start_time", "duration_ms", "service_name", "name"] {
+            for (sort_order, expected) in [
+                ("asc", vec!["t-a", "t-b", "t-c"]),
+                ("desc", vec!["t-c", "t-b", "t-a"]),
+            ] {
+                let mut actual = Vec::new();
+                for offset in 0..3 {
+                    let result = module
+                        .list_traces(TracesListInput {
+                            offset: Some(offset),
+                            limit: Some(1),
+                            name: Some("shared".to_string()),
+                            sort_by: Some(sort_by.to_string()),
+                            sort_order: Some(sort_order.to_string()),
+                            ..Default::default()
+                        })
+                        .await;
+                    match result {
+                        FunctionResult::Success(value) => {
+                            assert_eq!(value.total, 3);
+                            assert_eq!(value.traces.len(), 1);
+                            actual.push(value.traces[0].trace_id.clone());
+                        }
+                        _ => panic!("expected list_traces success"),
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "{sort_by} {sort_order} must keep pages deterministic when values tie"
+                );
+            }
         }
     }
 

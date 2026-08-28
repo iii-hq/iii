@@ -6,9 +6,9 @@
 
 //! `iii.worker.yaml` subset parser and start-command resolution.
 //!
-//! Compose reads only `name` and `scripts.start`. The manifest is another
-//! tool's file, so unknown keys are tolerated here — the opposite of the
-//! compose file's strictness. This parser is deliberately independent from
+//! Compose reads only `scripts.start` and `runtime.base_image`. The manifest is
+//! another tool's file, so unknown keys are tolerated here — the opposite of
+//! the compose file's strictness. This parser is deliberately independent from
 //! `crates/iii-worker`: compose must not inherit the legacy lifecycle system.
 
 use std::path::{Path, PathBuf};
@@ -29,15 +29,29 @@ pub enum StartSpec {
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
-    /// An installed bundle, started in a VM. The command is the `scripts.start`
-    /// of the manifest in `install_dir`, and it is publisher-controlled: it is
-    /// read and run inside the guest, never on the host.
-    Vm { install_dir: PathBuf },
+    /// A worker started in a VM. The source decides which validation and
+    /// workspace rules `iii-worker` applies before it builds the boot command.
+    Vm(VmSpec),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmSpec {
+    /// An installed registry bundle. Its manifest command is publisher-owned
+    /// and is always read and run inside the guest.
+    Bundle { install_dir: PathBuf },
+    /// A local project whose manifest selected an OCI rootfs. The compose
+    /// command may replace the manifest's `scripts.start`, but still runs in
+    /// the guest.
+    Local {
+        worker_dir: PathBuf,
+        run_override: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub start: Option<String>,
+    pub base_image: Option<String>,
 }
 
 /// Reads the manifest in `dir`, if there is one. A missing manifest is not an
@@ -55,8 +69,25 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
             path: path.clone(),
             message: err.to_string(),
         })?;
+    let base_image = raw
+        .runtime
+        .as_ref()
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|runtime| runtime.get("base_image"))
+        .map(|value| {
+            value.as_str().ok_or_else(|| ComposeError::InvalidManifest {
+                path: path.clone(),
+                message: "`runtime.base_image` must be a string".to_string(),
+            })
+        })
+        .transpose()?
+        .map(str::trim)
+        .filter(|image| !image.is_empty())
+        .map(str::to_string);
+
     Ok(Some(Manifest {
         start: raw.scripts.and_then(|scripts| scripts.start),
+        base_image,
     }))
 }
 
@@ -97,21 +128,31 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
         });
     }
 
-    // Before the manifest is read, not after: a compose file that says how to
-    // run the worker does not need one, and a broken `iii.worker.yaml` next
-    // door should not fail a container that never consults it.
-    if let Some(run) = &container.scripts.run {
-        return Ok(StartSpec::Shell(run.clone()));
+    let manifest = read_manifest(dir)?;
+    let run_override = container.scripts.run.clone();
+    let Some(start) = run_override.clone().or_else(|| {
+        manifest
+            .as_ref()
+            .and_then(|manifest| manifest.start.clone())
+    }) else {
+        return Err(ComposeError::MissingStartCommand {
+            container: key.to_string(),
+            manifest: dir.join(MANIFEST_FILE),
+        });
+    };
+
+    if manifest
+        .as_ref()
+        .and_then(|manifest| manifest.base_image.as_ref())
+        .is_some()
+    {
+        return Ok(StartSpec::Vm(VmSpec::Local {
+            worker_dir: dir.clone(),
+            run_override,
+        }));
     }
 
-    let manifest = read_manifest(dir)?;
-    if let Some(start) = manifest.and_then(|manifest| manifest.start) {
-        return Ok(StartSpec::Shell(start));
-    }
-    Err(ComposeError::MissingStartCommand {
-        container: key.to_string(),
-        manifest: dir.join(MANIFEST_FILE),
-    })
+    Ok(StartSpec::Shell(start))
 }
 
 /// What one container would do on `up`.
@@ -240,6 +281,10 @@ struct RawManifest {
     // rather than rejected.
     #[serde(default)]
     scripts: Option<RawManifestScripts>,
+    /// Kept as a value so legacy scalar forms remain ignored. Compose only
+    /// consults the `base_image` key when `runtime` is a mapping.
+    #[serde(default)]
+    runtime: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Deserialize)]

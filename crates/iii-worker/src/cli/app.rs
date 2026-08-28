@@ -245,6 +245,10 @@ pub enum Commands {
     #[command(name = "__bundle-prepare", hide = true)]
     BundlePrepare,
 
+    /// Internal: build a local-path worker's VM and print how to start it
+    #[command(name = "__local-prepare", hide = true)]
+    LocalPrepare,
+
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),

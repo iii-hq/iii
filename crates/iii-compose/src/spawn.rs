@@ -194,10 +194,10 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     let (program, args) = match ctx.start {
         StartSpec::Shell(command) => shell_invocation(command),
         StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
-        // The host execs nothing for a VM container: the start command is the
-        // bundle's own and runs inside the guest. Only the environment and the
-        // working directory computed above carry over.
-        StartSpec::Vm { .. } => (String::new(), Vec::new()),
+        // The host execs nothing for a VM container: the start command runs
+        // inside the guest. Only the environment and the working directory
+        // computed above carry over.
+        StartSpec::Vm(_) => (String::new(), Vec::new()),
     };
 
     SpawnPlan {

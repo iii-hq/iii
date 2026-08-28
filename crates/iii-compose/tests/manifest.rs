@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use iii_compose::{ComposeFile, StartSpec};
+use iii_compose::{ComposeFile, StartSpec, VmSpec};
 
 /// Writes a compose file plus optional worker dirs/manifests into a tempdir and
 /// loads it, so path resolution goes through the same code the CLI uses.
@@ -23,12 +23,25 @@ fn start_of(file: &ComposeFile, key: &str) -> Result<StartSpec, iii_compose::Com
     iii_compose::manifest::resolve_start(key, &file.containers[key])
 }
 
+fn canonical_worker_dir(tmp: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(tmp.join("workers/api")).unwrap()
+}
+
 const MANIFEST: &str = r#"
 name: api
 runtime: rust
 scripts:
   start: cargo run --release
   install: cargo build
+"#;
+
+const VM_MANIFEST: &str = r#"
+name: api
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  install: pip install -e .
+  start: python src/main.py
 "#;
 
 #[test]
@@ -59,6 +72,113 @@ fn compose_run_wins_over_the_manifest() {
         start_of(&file, "api").unwrap(),
         StartSpec::Shell("./dev.sh".to_string())
     );
+}
+
+#[test]
+fn base_image_selects_the_local_vm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        &[("workers/api", Some(VM_MANIFEST))],
+    );
+
+    assert_eq!(
+        start_of(&file, "api").unwrap(),
+        StartSpec::Vm(VmSpec::Local {
+            worker_dir: canonical_worker_dir(tmp.path()),
+            run_override: None,
+        })
+    );
+}
+
+#[test]
+fn compose_run_overrides_the_manifest_inside_the_local_vm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: python src/dev.py\n",
+        &[("workers/api", Some(VM_MANIFEST))],
+    );
+
+    assert_eq!(
+        start_of(&file, "api").unwrap(),
+        StartSpec::Vm(VmSpec::Local {
+            worker_dir: canonical_worker_dir(tmp.path()),
+            run_override: Some("python src/dev.py".to_string()),
+        })
+    );
+}
+
+#[test]
+fn compose_run_is_enough_for_a_local_vm_without_manifest_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: python src/dev.py\n",
+        &[(
+            "workers/api",
+            Some("runtime:\n  base_image: docker.io/iiidev/python:latest\n"),
+        )],
+    );
+
+    assert_eq!(
+        start_of(&file, "api").unwrap(),
+        StartSpec::Vm(VmSpec::Local {
+            worker_dir: canonical_worker_dir(tmp.path()),
+            run_override: Some("python src/dev.py".to_string()),
+        })
+    );
+}
+
+#[test]
+fn local_vm_without_any_start_command_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        &[(
+            "workers/api",
+            Some("runtime:\n  base_image: docker.io/iiidev/python:latest\n"),
+        )],
+    );
+
+    let error = start_of(&file, "api").expect_err("a VM still needs a start command");
+    assert_eq!(error.code(), "MISSING_START_COMMAND");
+}
+
+#[test]
+fn blank_base_image_keeps_the_host_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        &[(
+            "workers/api",
+            Some("runtime:\n  base_image: '  '\nscripts:\n  start: cargo run\n"),
+        )],
+    );
+
+    assert_eq!(
+        start_of(&file, "api").unwrap(),
+        StartSpec::Shell("cargo run".to_string())
+    );
+}
+
+#[test]
+fn non_string_base_image_is_an_invalid_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        &[(
+            "workers/api",
+            Some("runtime:\n  base_image: 42\nscripts:\n  start: cargo run\n"),
+        )],
+    );
+
+    let error = start_of(&file, "api").expect_err("a numeric image must be rejected");
+    assert_eq!(error.code(), "INVALID_MANIFEST");
 }
 
 #[test]
