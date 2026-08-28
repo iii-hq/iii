@@ -39,7 +39,7 @@ use crate::{
     workers::traits::Worker,
 };
 
-#[derive(Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesListInput {
     /// Filter by specific trace ID
     trace_id: Option<String>,
@@ -86,6 +86,11 @@ pub struct TracesListInput {
     /// in the trace matches the name filter. Defaults to false.
     #[serde(default)]
     search_all_spans: Option<bool>,
+    /// Attribute keys to project onto each trace summary. Only these
+    /// arbitrary attributes are returned; full span attributes remain on
+    /// `engine::traces::spans` and `engine::traces::tree`.
+    #[serde(default)]
+    attribute_projection: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Default, JsonSchema)]
@@ -150,14 +155,56 @@ pub struct SpanTreeNode {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TracesListResult {
-    /// Stored spans (each a serialized span record).
-    pub spans: Vec<Value>,
-    /// Total matching spans before pagination.
+    /// One compact aggregate per matching trace.
+    pub traces: Vec<TraceSummary>,
+    /// Total matching traces before pagination.
     pub total: usize,
     pub offset: usize,
     pub limit: usize,
     /// Indicates whether the result includes complete durable history.
     pub storage: Value,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TracesSpansResult {
+    /// Full stored span records, including attributes, events and links.
+    pub spans: Vec<Value>,
+    /// Total matching spans before pagination.
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub storage: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceSummaryStatus {
+    Ok,
+    Error,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TraceSummary {
+    pub trace_id: String,
+    pub name: String,
+    pub start_time_unix_nano: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time_unix_nano: Option<u64>,
+    pub status: TraceSummaryStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub trace_tags: std::collections::BTreeMap<String, String>,
+    /// Only keys requested through `attribute_projection` are present.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub attributes: std::collections::BTreeMap<String, String>,
+    pub span_count: usize,
+    pub error_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -566,6 +613,226 @@ fn is_internal_span(span: &otel::StoredSpan) -> bool {
         (k == "iii.function.kind" && v == "internal")
             || (k == "function_id" && v.starts_with("engine::"))
     })
+}
+
+fn span_attribute<'a>(span: &'a otel::StoredSpan, key: &str) -> Option<&'a str> {
+    span.attributes
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.as_str())
+}
+
+fn is_trace_tag_attribute(key: &str) -> bool {
+    key.starts_with("iii.tag.")
+        || matches!(
+            key,
+            "iii.session.id" | "iii.session.name" | "iii.message.id"
+        )
+}
+
+fn representative_trace_span(spans: &[otel::StoredSpan]) -> Option<&otel::StoredSpan> {
+    let present_span_ids: HashSet<&str> = spans.iter().map(|span| span.span_id.as_str()).collect();
+    spans
+        .iter()
+        .filter(|span| {
+            span.parent_span_id
+                .as_deref()
+                .is_none_or(|parent| !present_span_ids.contains(parent))
+        })
+        .min_by(|a, b| {
+            a.start_time_unix_nano
+                .cmp(&b.start_time_unix_nano)
+                .then_with(|| a.span_id.cmp(&b.span_id))
+        })
+        .or_else(|| {
+            spans.iter().min_by(|a, b| {
+                a.start_time_unix_nano
+                    .cmp(&b.start_time_unix_nano)
+                    .then_with(|| a.span_id.cmp(&b.span_id))
+            })
+        })
+}
+
+fn ordered_trace_attributes(
+    spans: &[otel::StoredSpan],
+    include: impl Fn(&str) -> bool,
+) -> std::collections::BTreeMap<String, String> {
+    let mut ordered: Vec<_> = spans.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.span_id.cmp(&b.span_id))
+    });
+    let mut attributes = std::collections::BTreeMap::new();
+    for span in ordered {
+        for (key, value) in &span.attributes {
+            if include(key) {
+                attributes.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    attributes
+}
+
+fn summarize_trace(
+    spans: &[otel::StoredSpan],
+    projection: &HashSet<String>,
+) -> Option<TraceSummary> {
+    let representative = representative_trace_span(spans)?;
+    let trace_tags = ordered_trace_attributes(spans, is_trace_tag_attribute);
+    let attributes = ordered_trace_attributes(spans, |key| projection.contains(key));
+    let error_count = spans
+        .iter()
+        .filter(|span| span.status.eq_ignore_ascii_case("error"))
+        .count();
+    let outcome_is_error = trace_tags
+        .get("iii.tag.outcome")
+        .is_some_and(|outcome| matches!(outcome.as_str(), "failed" | "error"));
+    let has_pending = spans.iter().any(|span| span.pending);
+    let status = if error_count > 0 || outcome_is_error {
+        TraceSummaryStatus::Error
+    } else if has_pending {
+        TraceSummaryStatus::Pending
+    } else {
+        TraceSummaryStatus::Ok
+    };
+    let start_time_unix_nano = spans
+        .iter()
+        .map(|span| span.start_time_unix_nano)
+        .min()
+        .unwrap_or(representative.start_time_unix_nano);
+    let end_time_unix_nano = if has_pending {
+        None
+    } else {
+        spans.iter().map(|span| span.end_time_unix_nano).max()
+    };
+
+    Some(TraceSummary {
+        trace_id: representative.trace_id.clone(),
+        name: representative.name.clone(),
+        start_time_unix_nano,
+        end_time_unix_nano,
+        status,
+        service_name: (!representative.service_name.is_empty())
+            .then(|| representative.service_name.clone()),
+        function_id: span_attribute(representative, "faas.invoked_name")
+            .or_else(|| span_attribute(representative, "function_id"))
+            .map(str::to_string),
+        topic: span_attribute(representative, "messaging.destination.name").map(str::to_string),
+        trace_tags,
+        attributes,
+        span_count: spans.len(),
+        error_count,
+    })
+}
+
+fn span_matches_attribute_pairs(span: &otel::StoredSpan, pairs: &[Vec<String>]) -> bool {
+    pairs.iter().all(|pair| {
+        pair.len() == 2
+            && span
+                .attributes
+                .iter()
+                .any(|(key, value)| key == &pair[0] && value == &pair[1])
+    })
+}
+
+fn trace_matches_list_filters(
+    summary: &TraceSummary,
+    spans: &[otel::StoredSpan],
+    input: &TracesListInput,
+    now_ns: u64,
+) -> bool {
+    let Some(representative) = representative_trace_span(spans) else {
+        return false;
+    };
+    let search_all = input.search_all_spans.unwrap_or(false);
+
+    if let Some(service_name) = input.service_name.as_deref()
+        && !summary
+            .service_name
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains(&service_name.to_lowercase())
+    {
+        return false;
+    }
+    if let Some(name) = input.name.as_deref() {
+        let needle = name.to_lowercase();
+        let matches = if search_all {
+            spans
+                .iter()
+                .any(|span| span.name.to_lowercase().contains(&needle))
+        } else {
+            summary.name.to_lowercase().contains(&needle)
+        };
+        if !matches {
+            return false;
+        }
+    }
+    if let Some(status) = input.status.as_deref() {
+        let matches = match status.to_lowercase().as_str() {
+            "error" => matches!(summary.status, TraceSummaryStatus::Error),
+            "pending" => matches!(summary.status, TraceSummaryStatus::Pending),
+            "ok" => matches!(summary.status, TraceSummaryStatus::Ok),
+            "unset" => {
+                matches!(summary.status, TraceSummaryStatus::Ok)
+                    && representative.status.eq_ignore_ascii_case("unset")
+            }
+            _ => false,
+        };
+        if !matches {
+            return false;
+        }
+    }
+
+    let effective_end = summary.end_time_unix_nano.unwrap_or(now_ns);
+    let duration_ms =
+        effective_end.saturating_sub(summary.start_time_unix_nano) as f64 / 1_000_000.0;
+    if input
+        .min_duration_ms
+        .is_some_and(|minimum| duration_ms < minimum)
+        || input
+            .max_duration_ms
+            .is_some_and(|maximum| duration_ms > maximum)
+    {
+        return false;
+    }
+    if input
+        .start_time
+        .is_some_and(|start_ms| effective_end < start_ms.saturating_mul(1_000_000))
+        || input
+            .end_time
+            .is_some_and(|end_ms| summary.start_time_unix_nano > end_ms.saturating_mul(1_000_000))
+    {
+        return false;
+    }
+
+    if let Some(pairs) = input.attributes.as_deref() {
+        let matches = if search_all {
+            spans
+                .iter()
+                .any(|span| span_matches_attribute_pairs(span, pairs))
+        } else {
+            span_matches_attribute_pairs(representative, pairs)
+        };
+        if !matches {
+            return false;
+        }
+    }
+    if let Some(excluded) = input.exclude_attributes.as_deref()
+        && excluded.iter().any(|pair| {
+            pair.len() == 2
+                && representative
+                    .attributes
+                    .iter()
+                    .any(|(key, value)| key == &pair[0] && value == &pair[1])
+        })
+    {
+        return false;
+    }
+
+    true
 }
 
 // =============================================================================
@@ -2043,12 +2310,168 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::traces::list",
-        description = "List root spans of stored traces with filtering (service, name, status, duration, time, attributes), pagination, and sort; hides engine-internal spans unless include_internal. Requires exporter memory or both, else fails memory_exporter_not_enabled."
+        description = "List compact trace summaries with aggregate status/counts, filtering, pagination, sort, and optional attribute_projection. Child spans are searched and aggregated in the engine; full span payloads are available from engine::traces::spans. Requires exporter memory or both, else fails memory_exporter_not_enabled."
     )]
     pub async fn list_traces(
         &self,
         input: TracesListInput,
     ) -> FunctionResult<TracesListResult, ErrorBody> {
+        match otel::get_span_storage() {
+            Some(_storage) => {
+                let include_internal = input.include_internal.unwrap_or(false);
+                let offset = input.offset.unwrap_or(0);
+                let limit = input.limit.unwrap_or(100);
+                let sort_order_asc = input
+                    .sort_order
+                    .as_deref()
+                    .map(|order| order.eq_ignore_ascii_case("asc"))
+                    .unwrap_or(true);
+                // The hot path is the ordinary trace list: identify and page
+                // distinct trace roots first, then read full spans only for
+                // those trace IDs. This preserves one-row-per-trace semantics
+                // even for distributed traces with more than one dangling
+                // root, while keeping full records off the wire.
+                let unfiltered = input.trace_id.is_none()
+                    && input.trace_ids.is_none()
+                    && input.service_name.is_none()
+                    && input.name.is_none()
+                    && input.status.is_none()
+                    && input.min_duration_ms.is_none()
+                    && input.max_duration_ms.is_none()
+                    && input.start_time.is_none()
+                    && input.end_time.is_none()
+                    && input.attributes.is_none()
+                    && input.exclude_attributes.is_none()
+                    && matches!(input.sort_by.as_deref(), None | Some("start_time"));
+                let query_started = Instant::now();
+                let query_trace_id = input.trace_id.clone();
+                let query_trace_ids = input.trace_ids.clone();
+                let query_view = run_blocking_query("traces::list summary view", move || {
+                    if unfiltered {
+                        let mut roots = otel::get_query_root_spans();
+                        if !include_internal {
+                            roots.retain(|span| !is_internal_span(span));
+                        }
+                        roots.sort_by(|a, b| {
+                            let cmp = a
+                                .start_time_unix_nano
+                                .cmp(&b.start_time_unix_nano)
+                                .then_with(|| a.trace_id.cmp(&b.trace_id))
+                                .then_with(|| a.span_id.cmp(&b.span_id));
+                            if sort_order_asc { cmp } else { cmp.reverse() }
+                        });
+                        let mut seen = HashSet::new();
+                        roots.retain(|span| seen.insert(span.trace_id.clone()));
+                        let total = roots.len();
+                        let trace_ids: Vec<String> = roots
+                            .into_iter()
+                            .skip(offset)
+                            .take(limit)
+                            .map(|span| span.trace_id)
+                            .collect();
+                        (otel::get_query_spans_by_trace_ids(&trace_ids), Some(total))
+                    } else if let Some(trace_id) = query_trace_id {
+                        (otel::get_query_spans_by_trace_id(&trace_id), None)
+                    } else if let Some(trace_ids) = query_trace_ids {
+                        (otel::get_query_spans_by_trace_ids(&trace_ids), None)
+                    } else {
+                        (otel::get_query_spans(), None)
+                    }
+                })
+                .await;
+                let (mut spans, prepaginated_total) = match query_view {
+                    Ok(result) => result,
+                    Err(error) => return FunctionResult::Failure(error),
+                };
+                let query_view_elapsed = query_started.elapsed();
+                if !include_internal {
+                    spans.retain(|span| !is_internal_span(span));
+                }
+
+                let projection: HashSet<String> = input
+                    .attribute_projection
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|key| !key.is_empty())
+                    .cloned()
+                    .collect();
+                let now_ns = otel::now_unix_nanos();
+                let mut by_trace = HashMap::<String, Vec<otel::StoredSpan>>::new();
+                for span in spans {
+                    by_trace
+                        .entry(span.trace_id.clone())
+                        .or_default()
+                        .push(span);
+                }
+
+                let mut summaries: Vec<TraceSummary> = by_trace
+                    .into_values()
+                    .filter_map(|trace_spans| {
+                        let summary = summarize_trace(&trace_spans, &projection)?;
+                        trace_matches_list_filters(&summary, &trace_spans, &input, now_ns)
+                            .then_some(summary)
+                    })
+                    .collect();
+                let filtering_elapsed = query_started.elapsed();
+                summaries.sort_by(|a, b| {
+                    let cmp = match input.sort_by.as_deref().unwrap_or("start_time") {
+                        "duration" | "duration_ms" => {
+                            let a_duration = a
+                                .end_time_unix_nano
+                                .unwrap_or(now_ns)
+                                .saturating_sub(a.start_time_unix_nano);
+                            let b_duration = b
+                                .end_time_unix_nano
+                                .unwrap_or(now_ns)
+                                .saturating_sub(b.start_time_unix_nano);
+                            a_duration.cmp(&b_duration)
+                        }
+                        "service_name" => a.service_name.cmp(&b.service_name),
+                        "name" => a.name.cmp(&b.name),
+                        _ => a.start_time_unix_nano.cmp(&b.start_time_unix_nano),
+                    };
+                    if sort_order_asc { cmp } else { cmp.reverse() }
+                });
+
+                let total = prepaginated_total.unwrap_or(summaries.len());
+                let traces = if prepaginated_total.is_some() {
+                    summaries
+                } else {
+                    summaries.into_iter().skip(offset).take(limit).collect()
+                };
+                tracing::debug!(
+                    operation = "engine::traces::list",
+                    total,
+                    returned_traces = traces.len(),
+                    projected_attributes = projection.len(),
+                    query_view_ms = query_view_elapsed.as_secs_f64() * 1_000.0,
+                    aggregation_ms =
+                        (filtering_elapsed - query_view_elapsed).as_secs_f64() * 1_000.0,
+                    total_ms = query_started.elapsed().as_secs_f64() * 1_000.0,
+                    "trace summary list query completed"
+                );
+
+                FunctionResult::Success(TracesListResult {
+                    traces,
+                    total,
+                    offset,
+                    limit,
+                    storage: trace_storage_status_value(),
+                })
+            }
+            None => memory_exporter_not_enabled_error(),
+        }
+    }
+
+    #[function(
+        id = "engine::traces::spans",
+        description = "List full stored spans, including attributes, events and links, with filtering and pagination. Use engine::traces::list for compact trace summaries. Requires exporter memory or both, else fails memory_exporter_not_enabled."
+    )]
+    pub async fn list_trace_spans(
+        &self,
+        input: TracesListInput,
+    ) -> FunctionResult<TracesSpansResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(_storage) => {
                 let search_all = input.search_all_spans.unwrap_or(false);
@@ -2351,7 +2774,7 @@ impl ObservabilityWorker {
                     .collect();
                 let serialization_elapsed = serialization_started.elapsed();
                 tracing::debug!(
-                    operation = "engine::traces::list",
+                    operation = "engine::traces::spans",
                     search_all_spans = search_all,
                     total,
                     returned_spans = result_spans.len(),
@@ -2365,7 +2788,7 @@ impl ObservabilityWorker {
                     "trace list query completed"
                 );
 
-                FunctionResult::Success(TracesListResult {
+                FunctionResult::Success(TracesSpansResult {
                     spans: result_spans,
                     total,
                     offset,
@@ -5637,6 +6060,7 @@ mod tests {
         assert!(input.sort_order.is_none());
         assert!(input.attributes.is_none());
         assert!(input.include_internal.is_none());
+        assert!(input.attribute_projection.is_none());
     }
 
     #[test]
@@ -5655,7 +6079,8 @@ mod tests {
             "sort_by": "duration",
             "sort_order": "desc",
             "attributes": [["key1", "val1"]],
-            "include_internal": true
+            "include_internal": true,
+            "attribute_projection": ["custom.label"]
         }"#;
         let input: TracesListInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.trace_id.unwrap(), "abc123");
@@ -5672,6 +6097,10 @@ mod tests {
         assert_eq!(input.sort_order.unwrap(), "desc");
         assert_eq!(input.attributes.unwrap().len(), 1);
         assert!(input.include_internal.unwrap());
+        assert_eq!(
+            input.attribute_projection.unwrap(),
+            vec!["custom.label".to_string()]
+        );
     }
 
     #[test]
@@ -6969,6 +7398,144 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_trace_summaries_aggregate_child_errors_and_project_only_requested_attributes() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        let mut child = make_span(
+            "trace-summary",
+            "child",
+            Some("root"),
+            "execute billing::charge",
+            "billing-worker",
+            1_100_000_000,
+            1_900_000_000,
+            "error",
+            vec![
+                ("custom.label", "checkout"),
+                ("secret.payload", "must-not-leak"),
+                ("iii.tag.outcome", "failed"),
+            ],
+        );
+        child.events.push(otel::StoredSpanEvent {
+            name: "large-event".to_string(),
+            timestamp_unix_nano: 1_500_000_000,
+            attributes: vec![("payload".to_string(), "x".repeat(256 * 1024))],
+        });
+        span_storage.add_spans(vec![
+            make_span(
+                "trace-summary",
+                "root",
+                None,
+                "handle checkout",
+                "gateway",
+                1_000_000_000,
+                2_000_000_000,
+                "ok",
+                vec![
+                    ("function_id", "checkout::handle"),
+                    ("messaging.destination.name", "payments"),
+                ],
+            ),
+            child,
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                name: Some("billing::charge".to_string()),
+                search_all_spans: Some(true),
+                include_internal: Some(true),
+                attribute_projection: Some(vec!["custom.label".to_string()]),
+                ..Default::default()
+            })
+            .await;
+
+        let value = match result {
+            FunctionResult::Success(value) => serde_json::to_value(value).unwrap(),
+            _ => panic!("expected list_traces success"),
+        };
+        let traces = value["traces"].as_array().expect("traces array");
+        assert_eq!(traces.len(), 1);
+        let summary = &traces[0];
+        assert_eq!(summary["trace_id"], "trace-summary");
+        assert_eq!(summary["name"], "handle checkout");
+        assert_eq!(summary["status"], "error", "child error must fail trace");
+        assert_eq!(summary["span_count"], 2);
+        assert_eq!(summary["error_count"], 1);
+        assert_eq!(summary["function_id"], "checkout::handle");
+        assert_eq!(summary["topic"], "payments");
+        assert_eq!(summary["attributes"]["custom.label"], "checkout");
+        assert!(summary["attributes"].get("secret.payload").is_none());
+        assert_eq!(summary["trace_tags"]["iii.tag.outcome"], "failed");
+        assert!(summary.get("events").is_none());
+        assert!(summary.get("links").is_none());
+        assert!(summary.get("span_id").is_none());
+        assert!(
+            serde_json::to_vec(summary).unwrap().len() < 2_000,
+            "large child event must not reach the summary payload"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_trace_summaries_return_one_row_per_trace_and_paginate_traces() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span("t-1", "r-1", None, "one", "svc", 1, 10, "ok", vec![]),
+            make_span(
+                "t-1",
+                "c-1",
+                Some("r-1"),
+                "one child",
+                "svc",
+                2,
+                9,
+                "ok",
+                vec![],
+            ),
+            // A second dangling root in the same distributed trace must not
+            // become a second list row or inflate the trace total.
+            make_span(
+                "t-1",
+                "r-remote",
+                Some("remote-parent"),
+                "remote branch",
+                "svc",
+                3,
+                8,
+                "ok",
+                vec![],
+            ),
+            make_span("t-2", "r-2", None, "two", "svc", 20, 30, "ok", vec![]),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                limit: Some(1),
+                sort_order: Some("asc".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.total, 2);
+                assert_eq!(value.traces.len(), 1);
+                assert_eq!(value.traces[0].trace_id, "t-1");
+                assert_eq!(value.traces[0].span_count, 3);
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_list_traces_treats_dangling_remote_parent_as_root() {
         reset_observability_test_state();
 
@@ -7022,9 +7589,10 @@ mod tests {
             exclude_attributes: None,
             include_internal: Some(false),
             search_all_spans: None,
+            attribute_projection: None,
         };
 
-        let spans = match module.list_traces(input).await {
+        let spans = match module.list_trace_spans(input).await {
             FunctionResult::Success(v) => serde_json::to_value(&v).unwrap()["spans"]
                 .as_array()
                 .expect("spans array")
@@ -7106,9 +7674,10 @@ mod tests {
             exclude_attributes: None,
             include_internal: Some(false),
             search_all_spans: None,
+            attribute_projection: None,
         };
 
-        let order = |result: FunctionResult<TracesListResult, ErrorBody>| -> Vec<String> {
+        let order = |result: FunctionResult<TracesSpansResult, ErrorBody>| -> Vec<String> {
             match result {
                 FunctionResult::Success(value) => serde_json::to_value(&value).unwrap()["spans"]
                     .as_array()
@@ -7123,7 +7692,7 @@ mod tests {
         // duration_ms desc: 900ms (t-b), 300ms (t-a), 100ms (t-c)
         let desc = order(
             module
-                .list_traces(TracesListInput {
+                .list_trace_spans(TracesListInput {
                     sort_by: Some("duration_ms".to_string()),
                     sort_order: Some("desc".to_string()),
                     ..base_input()
@@ -7139,7 +7708,7 @@ mod tests {
         // duration_ms asc: 100ms (t-c), 300ms (t-a), 900ms (t-b)
         let asc = order(
             module
-                .list_traces(TracesListInput {
+                .list_trace_spans(TracesListInput {
                     sort_by: Some("duration_ms".to_string()),
                     sort_order: Some("asc".to_string()),
                     ..base_input()
@@ -7155,7 +7724,7 @@ mod tests {
         // service_name asc: alpha (t-a), bravo (t-c), charlie (t-b)
         let by_service = order(
             module
-                .list_traces(TracesListInput {
+                .list_trace_spans(TracesListInput {
                     sort_by: Some("service_name".to_string()),
                     sort_order: Some("asc".to_string()),
                     ..base_input()
@@ -7216,7 +7785,7 @@ mod tests {
         ]);
 
         let traces_result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: Some(0),
@@ -7234,6 +7803,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(false),
                 search_all_spans: None,
+                attribute_projection: None,
             })
             .await;
 
@@ -7436,7 +8006,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: Some(0),
@@ -7457,6 +8027,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(true),
+                attribute_projection: None,
             })
             .await;
 
@@ -7519,7 +8090,7 @@ mod tests {
         ]);
 
         let result_root_only = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: Some(0),
@@ -7537,6 +8108,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(false),
+                attribute_projection: None,
             })
             .await;
         match result_root_only {
@@ -7550,7 +8122,7 @@ mod tests {
         }
 
         let result_all = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: Some(0),
@@ -7568,6 +8140,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(true),
+                attribute_projection: None,
             })
             .await;
         match result_all {
@@ -7622,7 +8195,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: Some(0),
@@ -7643,6 +8216,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(false),
+                attribute_projection: None,
             })
             .await;
 
@@ -8097,7 +8671,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: None,
@@ -8118,6 +8692,7 @@ mod tests {
                 ]]),
                 include_internal: Some(true),
                 search_all_spans: None,
+                attribute_projection: None,
             })
             .await;
 
@@ -8184,7 +8759,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: Some(vec!["t-1".to_string(), "t-3".to_string()]),
                 offset: None,
@@ -8202,6 +8777,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: None,
+                attribute_projection: None,
             })
             .await;
 
@@ -8244,13 +8820,14 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 offset: Some(1),
                 limit: Some(1),
                 sort_by: Some("start_time".to_string()),
                 sort_order: Some("desc".to_string()),
                 include_internal: Some(true),
                 search_all_spans: Some(true),
+                attribute_projection: None,
                 ..Default::default()
             })
             .await;
@@ -8395,7 +8972,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 limit: Some(10),
                 ..Default::default()
             })
@@ -8424,7 +9001,7 @@ mod tests {
 
         // include_internal widens the same page to the archived internal root.
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 limit: Some(10),
                 include_internal: Some(true),
                 ..Default::default()
@@ -8440,7 +9017,7 @@ mod tests {
 
         // Descending offset/limit slices the merged order.
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 offset: Some(1),
                 limit: Some(1),
                 sort_order: Some("desc".to_string()),
@@ -8519,7 +9096,7 @@ mod tests {
         // Descending, limit 1: the window prefix is entirely demoted children;
         // the widening loop must keep doubling until root-old surfaces.
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 limit: Some(1),
                 sort_order: Some("desc".to_string()),
                 ..Default::default()
@@ -8594,7 +9171,7 @@ mod tests {
         ]);
 
         let result = module
-            .list_traces(TracesListInput {
+            .list_trace_spans(TracesListInput {
                 trace_id: None,
                 trace_ids: None,
                 offset: None,
@@ -8612,6 +9189,7 @@ mod tests {
                 exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: None,
+                attribute_projection: None,
             })
             .await;
 

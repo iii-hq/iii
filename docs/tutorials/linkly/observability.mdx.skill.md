@@ -105,7 +105,7 @@ full execution context of the request. Grab the most recent redirect's `trace_id
 request as a tree. Capturing the id into a shell variable keeps this a single paste:
 
 ```bash
-trace_id=$(iii trigger engine::traces::list name="GET /s/:code" limit=1 | jq -r '.spans[0].trace_id')
+trace_id=$(iii trigger engine::traces::list name="GET /s/:code" limit=1 | jq -r '.traces[0].trace_id')
 iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
   def walk(depth):
     ("  " * depth // "") + .name + " (" + .service_name + ") "
@@ -139,11 +139,11 @@ The per-span timing shows where the request spends its time.
 ## Compare traces to find the slowest links
 
 To compare many traces it's possible to filter, list, and sort them in one operation. Here are the
-redirect spans sorted by duration, slowest first:
+redirect traces sorted by duration, slowest first:
 
 ```bash
 iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \
-  | jq -r '.spans[]
+  | jq -r '.traces[]
       | "\(((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round) / 1000) ms  \(.trace_id)"'
 ```
 

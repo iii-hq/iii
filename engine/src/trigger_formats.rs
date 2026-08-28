@@ -350,7 +350,8 @@ pub struct TraceTriggerConfig {
 /// changed" tick. Span activity is debounced and the distinct affected trace
 /// ids in the window are delivered, rather than per-span full payloads — the
 /// trigger is a "refetch soon" beat, not a span feed. Re-read details via
-/// `engine::traces::list` / `engine::traces::tree`.
+/// `engine::traces::list` for summaries or `engine::traces::spans` /
+/// `engine::traces::tree` for full detail.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TraceCallRequest {
     /// Distinct trace ids that had span activity in this coalesced window.

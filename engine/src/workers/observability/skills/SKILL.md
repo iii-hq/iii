@@ -61,7 +61,9 @@ credentials in environment variables or a secret manager, not in config files.
   differs.
 - `engine::logs::list` — read stored OTel logs, filtered by time, trace correlation, or severity.
 - `engine::logs::clear` — wipe the in-memory log store.
-- `engine::traces::list` — list stored spans.
+- `engine::traces::list` — list compact trace summaries with aggregate status/counts and optional
+  attribute projection.
+- `engine::traces::spans` — list full span records for detail/timeline consumers.
 - `engine::traces::tree` — walk a single trace as a parent/child tree.
 - `engine::traces::group_by` — aggregate stored spans by an attribute value (counts, duration,
   errors per group).

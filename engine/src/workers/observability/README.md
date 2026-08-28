@@ -210,11 +210,12 @@ All logging functions accept: `message` (string, required), `data` (object), `tr
 
 ### Traces API
 
-| Function                | Description                                                                                                                                                                                                             |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::traces::list`  | List stored spans. Filters: `trace_id`, `service_name`, `name`, `status`, `min_duration_ms`, `max_duration_ms`, `start_time`, `end_time`, `sort_by`, `sort_order`, `attributes`, `include_internal`, `offset`, `limit`. |
-| `engine::traces::tree`  | Retrieve a trace as a hierarchical span tree. Parameters: `trace_id` (required).                                                                                                                                        |
-| `engine::traces::clear` | Clear all stored trace spans from memory.                                                                                                                                                                               |
+| Function                 | Description                                                                                                                                                                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::traces::list`   | List one compact summary per trace. Child spans contribute aggregate status/counts and can be searched with `search_all_spans`; `attribute_projection` returns only requested arbitrary attributes. Supports the standard trace filters, sort, `offset`, and `limit`.                       |
+| `engine::traces::spans`  | List full stored span records, including attributes, events, and links. Accepts the same filters and pagination as the former span-list contract; use this only for detail/timeline consumers that need complete span payloads.                                                             |
+| `engine::traces::tree`   | Retrieve a trace as a hierarchical span tree. Parameters: `trace_id` (required).                                                                                                                                                                                                          |
+| `engine::traces::clear`  | Clear all stored trace spans from memory.                                                                                                                                                                                                                                                 |
 
 ### Live (pending) spans
 
@@ -302,7 +303,7 @@ or the web console — can refresh reactively instead of polling. The trigger is
 changed" tick**, not a per-span feed: span activity is debounced (~300ms) and the handler receives
 the distinct affected trace ids for the window. With `live_spans` on, the tick also fires when spans
 **start** (pending snapshots land in the store), not just when they close. Re-read details via
-`engine::traces::list` / `engine::traces::tree`. Requires the memory exporter (`exporter: memory` or
+`engine::traces::list` / `engine::traces::spans` / `engine::traces::tree`. Requires the memory exporter (`exporter: memory` or
 `both`); in OTLP-only mode engine spans never land in the store, so the trigger only ever sees
 OTLP-ingested SDK spans there.
 

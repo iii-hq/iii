@@ -102,12 +102,12 @@ engine-owned exception, so it belongs under the top-level `engine.workers`, not 
 # run something to produce a trace
 iii trigger sandbox::run image=python lang=python code='print(1)'
 
-# count the recorded spans (workers export them a moment after the call,
+# count the recorded traces (workers export spans a moment after the call,
 # so re-run this until it reports a non-zero count)
 iii trigger engine::traces::list | jq '.total'
 
 # grab the most recent trace id and print its span tree
-TID=$(iii trigger engine::traces::list | jq -r '.spans[-1].trace_id')
+TID=$(iii trigger engine::traces::list | jq -r '.traces[-1].trace_id')
 iii trigger engine::traces::tree trace_id=$TID
 ```
 
@@ -134,7 +134,7 @@ iii trigger engine::logs::list
 # clear stored traces
 iii trigger engine::traces::clear
 
-# the span count is now zero
+# the trace count is now zero
 iii trigger engine::traces::list | jq '.total'
 ```
 
