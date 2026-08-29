@@ -40,6 +40,10 @@ pub enum VmSpec {
         environment: BTreeMap<String, String>,
         resources: VmResources,
     },
+    /// A public Registry bundle published before package descriptors. This
+    /// compatibility path is never produced by the release descriptor
+    /// compiler; `iii-worker` reads the archive's `iii.worker.yaml` in the VM.
+    LegacyBundle { install_dir: PathBuf },
     /// A local catalog worker whose descriptor selected an OCI rootfs.
     Local {
         worker_dir: PathBuf,

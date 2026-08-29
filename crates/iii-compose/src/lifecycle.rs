@@ -648,37 +648,34 @@ async fn start_one_until_shutdown(
                     },
                     installed.default_config,
                 ),
-                // The start command is the bundle's own, read from its manifest
-                // inside the VM. Nothing on the host runs it.
-                crate::registry::Payload::Bundle(install_dir) => (
-                    StartSpec::Vm(VmSpec::Bundle {
-                        install_dir,
-                        exec: installed
-                            .descriptor
-                            .runtime
-                            .exec
-                            .clone()
-                            .unwrap_or_default(),
-                        base_image: installed
-                            .descriptor
-                            .runtime
-                            .base_image
-                            .clone()
-                            .expect("validated bundle descriptor has a base image"),
-                        prepare: installed.descriptor.runtime.prepare.clone(),
-                        environment: installed.descriptor.runtime.environment.clone(),
-                        resources: installed.descriptor.runtime.resources.as_ref().into(),
-                    }),
-                    installed.default_config,
-                ),
+                // Descriptor-native bundles carry runtime metadata in the
+                // Registry. Historical public bundles keep it in their
+                // manifest, which iii-worker reads only inside the VM.
+                crate::registry::Payload::Bundle(install_dir) => {
+                    let start = match installed.descriptor.as_ref() {
+                        Some(descriptor) => StartSpec::Vm(VmSpec::Bundle {
+                            install_dir,
+                            exec: descriptor.runtime.exec.clone().unwrap_or_default(),
+                            base_image: descriptor
+                                .runtime
+                                .base_image
+                                .clone()
+                                .expect("validated bundle descriptor has a base image"),
+                            prepare: descriptor.runtime.prepare.clone(),
+                            environment: descriptor.runtime.environment.clone(),
+                            resources: descriptor.runtime.resources.as_ref().into(),
+                        }),
+                        None => StartSpec::Vm(VmSpec::LegacyBundle { install_dir }),
+                    };
+                    (start, installed.default_config)
+                }
                 crate::registry::Payload::Oci(image) => (
                     StartSpec::Oci {
                         image,
                         exec: installed
                             .descriptor
-                            .runtime
-                            .exec
-                            .clone()
+                            .as_ref()
+                            .and_then(|descriptor| descriptor.runtime.exec.clone())
                             .unwrap_or_default(),
                     },
                     installed.default_config,
@@ -820,42 +817,59 @@ async fn vm_command(
     plan: &crate::spawn::SpawnPlan,
     config: Option<&ResolvedConfig>,
 ) -> std::result::Result<tokio::process::Command, String> {
-    let (worker_dir, exec, base_image, prepare, descriptor_env, resources, prepare_command) =
-        match start {
-            StartSpec::Vm(VmSpec::Bundle {
-                install_dir,
+    enum VmInput<'a> {
+        Descriptor {
+            exec: &'a Vec<String>,
+            base_image: &'a str,
+            prepare: &'a Vec<Vec<String>>,
+            environment: &'a BTreeMap<String, String>,
+            resources: &'a crate::manifest::VmResources,
+        },
+        LegacyBundle,
+    }
+
+    let (worker_dir, input, prepare_command) = match start {
+        StartSpec::Vm(VmSpec::Bundle {
+            install_dir,
+            exec,
+            base_image,
+            prepare,
+            environment,
+            resources,
+        }) => (
+            install_dir,
+            VmInput::Descriptor {
                 exec,
                 base_image,
                 prepare,
                 environment,
                 resources,
-            }) => (
-                install_dir,
+            },
+            "__bundle-prepare",
+        ),
+        StartSpec::Vm(VmSpec::LegacyBundle { install_dir }) => {
+            (install_dir, VmInput::LegacyBundle, "__bundle-prepare")
+        }
+        StartSpec::Vm(VmSpec::Local {
+            worker_dir,
+            exec,
+            base_image,
+            prepare,
+            environment,
+            resources,
+        }) => (
+            worker_dir,
+            VmInput::Descriptor {
                 exec,
                 base_image,
                 prepare,
                 environment,
                 resources,
-                "__bundle-prepare",
-            ),
-            StartSpec::Vm(VmSpec::Local {
-                worker_dir,
-                exec,
-                base_image,
-                prepare,
-                environment,
-                resources,
-            }) => (
-                worker_dir,
-                exec,
-                base_image,
-                prepare,
-                environment,
-                resources,
-                "__local-prepare",
-            ),
-            _ => return Err("not a VM container".to_string()),
-        };
+            },
+            "__local-prepare",
+        ),
+        _ => return Err("not a VM container".to_string()),
+    };
 
     let mut env: BTreeMap<String, String> = plan.env.clone();
     let config_dir = match config {
@@ -891,19 +905,36 @@ async fn vm_command(
         None => None,
     };
 
-    let request = serde_json::json!({
-        "worker_name": key,
-        "worker_dir": worker_dir,
-        "state_dir": ctx.vm_dir.join(key),
-        "engine_url": ctx.engine_url,
-        "extra_env": env,
-        "config_dir": config_dir,
-        "exec": exec,
-        "base_image": base_image,
-        "prepare": prepare,
-        "environment": descriptor_env,
-        "resources": { "cpus": resources.cpus, "memory_mib": resources.memory_mib },
-    });
+    let request = match input {
+        VmInput::Descriptor {
+            exec,
+            base_image,
+            prepare,
+            environment,
+            resources,
+        } => serde_json::json!({
+            "worker_name": key,
+            "worker_dir": worker_dir,
+            "state_dir": ctx.vm_dir.join(key),
+            "engine_url": ctx.engine_url,
+            "extra_env": env,
+            "config_dir": config_dir,
+            "exec": exec,
+            "base_image": base_image,
+            "prepare": prepare,
+            "environment": environment,
+            "resources": { "cpus": resources.cpus, "memory_mib": resources.memory_mib },
+        }),
+        VmInput::LegacyBundle => serde_json::json!({
+            "worker_name": key,
+            "worker_dir": worker_dir,
+            "state_dir": ctx.vm_dir.join(key),
+            "engine_url": ctx.engine_url,
+            "extra_env": env,
+            "config_dir": config_dir,
+            "run_override": null,
+        }),
+    };
 
     let plan = prepare_vm(prepare_command, &request).await?;
     let mut command = tokio::process::Command::new(&plan.program);

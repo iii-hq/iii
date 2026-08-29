@@ -32,6 +32,12 @@ use crate::error::{ComposeError, Result};
 /// Registry used when a `package://` reference names no host.
 pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
 
+/// Historical bundle packages published before package descriptors keep their
+/// public worker manifest at the archive root. Release descriptors never read
+/// this file; it is used only by the interactive Compose runtime while an old
+/// Registry response remains reachable.
+pub const LEGACY_BUNDLE_MANIFEST: &str = "iii.worker.yaml";
+
 /// Registry resolution is small and idempotent. A short transport outage or
 /// overloaded server should not roll back an otherwise healthy project.
 const RESOLVE_ATTEMPTS: usize = 3;
@@ -63,9 +69,30 @@ struct ResolvedEdge {
 
 #[derive(Debug, Deserialize)]
 struct ResolvedWorker {
-    package_descriptor: crate::descriptor::PackageDescriptor,
-    descriptor_sha256: String,
-    artifacts: ResolvedArtifacts,
+    #[serde(default)]
+    package_descriptor: Option<crate::descriptor::PackageDescriptor>,
+    #[serde(default)]
+    descriptor_sha256: Option<String>,
+    #[serde(default)]
+    artifacts: Option<ResolvedArtifacts>,
+    // Public Registry compatibility projection. A descriptor-native response
+    // may include these fields too; descriptor fields always win.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default, rename = "type")]
+    legacy_kind: Option<String>,
+    #[serde(default)]
+    binaries: std::collections::HashMap<String, Artifact>,
+    #[serde(default)]
+    archive_url: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,42 +116,87 @@ enum ResolvedArtifacts {
 
 impl ResolvedWorker {
     fn name(&self) -> &str {
-        &self.package_descriptor.name
+        self.package_descriptor
+            .as_ref()
+            .map(|descriptor| descriptor.name.as_str())
+            .or(self.name.as_deref())
+            .unwrap_or_default()
     }
 
     fn version(&self) -> &str {
-        &self.package_descriptor.version
+        self.package_descriptor
+            .as_ref()
+            .map(|descriptor| descriptor.version.as_str())
+            .or(self.version.as_deref())
+            .unwrap_or_default()
     }
 
     fn binaries(&self) -> Option<&std::collections::HashMap<String, Artifact>> {
-        match &self.artifacts {
-            ResolvedArtifacts::RustBinary { binaries } => Some(binaries),
-            _ => None,
+        match self.artifacts.as_ref() {
+            Some(ResolvedArtifacts::RustBinary { binaries }) => Some(binaries),
+            Some(_) => None,
+            None if self.legacy_kind.as_deref() == Some("binary") => Some(&self.binaries),
+            None => None,
         }
     }
 
     fn bundle(&self) -> Option<(&str, &str)> {
-        match &self.artifacts {
-            ResolvedArtifacts::JavascriptBundle {
-                archive_url,
-                sha256,
+        match self.artifacts.as_ref() {
+            Some(
+                ResolvedArtifacts::JavascriptBundle {
+                    archive_url,
+                    sha256,
+                }
+                | ResolvedArtifacts::PythonBundle {
+                    archive_url,
+                    sha256,
+                },
+            ) => Some((archive_url, sha256)),
+            Some(_) => None,
+            None if self.legacy_kind.as_deref() == Some("bundle") => {
+                self.archive_url.as_deref().zip(self.sha256.as_deref())
             }
-            | ResolvedArtifacts::PythonBundle {
-                archive_url,
-                sha256,
-            } => Some((archive_url, sha256)),
-            _ => None,
+            None => None,
         }
     }
 
-    fn kind(&self) -> &'static str {
-        match &self.artifacts {
-            ResolvedArtifacts::RustBinary { .. } => "binary",
-            ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
-                "bundle"
-            }
-            ResolvedArtifacts::OciImage { .. } => "image",
+    fn image(&self) -> Option<&str> {
+        match self.artifacts.as_ref() {
+            Some(ResolvedArtifacts::OciImage { image_tag }) => Some(image_tag),
+            Some(_) => None,
+            None if self.legacy_kind.as_deref() == Some("image") => self.image.as_deref(),
+            None => None,
         }
+    }
+
+    fn kind(&self) -> &str {
+        match self.artifacts.as_ref() {
+            Some(ResolvedArtifacts::RustBinary { .. }) => "binary",
+            Some(ResolvedArtifacts::JavascriptBundle { .. })
+            | Some(ResolvedArtifacts::PythonBundle { .. }) => "bundle",
+            Some(ResolvedArtifacts::OciImage { .. }) => "image",
+            None => self.legacy_kind.as_deref().unwrap_or_default(),
+        }
+    }
+
+    fn is_descriptor_native(&self) -> bool {
+        self.package_descriptor.is_some()
+            && self.descriptor_sha256.is_some()
+            && self.artifacts.is_some()
+    }
+
+    fn default_config(&self) -> Option<serde_yaml::Value> {
+        if let Some(descriptor) = self.package_descriptor.as_ref() {
+            return descriptor
+                .registry
+                .config
+                .as_ref()
+                .and_then(|config| serde_yaml::to_value(&config.defaults).ok());
+        }
+        self.config
+            .as_ref()
+            .filter(|config| !config.is_null())
+            .and_then(|config| serde_yaml::to_value(config).ok())
     }
 }
 
@@ -163,8 +235,8 @@ pub struct InstalledPackage {
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
-    pub descriptor: crate::descriptor::PackageDescriptor,
-    pub descriptor_sha256: String,
+    pub descriptor: Option<crate::descriptor::PackageDescriptor>,
+    pub descriptor_sha256: Option<String>,
     pub artifact: InstalledArtifact,
     pub status: InstallStatus,
 }
@@ -255,10 +327,9 @@ pub async fn install_from_registry(
     let target = host_target();
 
     let resolved = resolve(container, registry, name, version_range, target).await?;
-    validate_descriptor(container, &resolved)?;
 
-    let (payload, status) = match &resolved.artifacts {
-        ResolvedArtifacts::RustBinary { .. } => {
+    let (payload, status) = match resolved.kind() {
+        "binary" => {
             let (program, status) =
                 install_binary(container, &resolved, target, cache_root).await?;
             (Payload::Binary(program), status)
@@ -267,42 +338,54 @@ pub async fn install_from_registry(
         // the archive is megabytes, and an operator learns nothing from having
         // fetched it.
         #[cfg(not(unix))]
-        ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
+        "bundle" => {
             return Err(ComposeError::BundleNeedsAVm {
                 container: container.to_string(),
-                name: resolved.package_descriptor.name.clone(),
+                name: resolved.name().to_string(),
             });
         }
         #[cfg(unix)]
-        ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
+        "bundle" => {
             let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
             (Payload::Bundle(install_dir), status)
         }
-        ResolvedArtifacts::OciImage { image_tag } => {
-            if !digest_pinned_image(image_tag) {
+        "image" => {
+            let image = resolved
+                .image()
+                .ok_or_else(|| ComposeError::PackageNotResolved {
+                    container: container.to_string(),
+                    name: resolved.name().to_string(),
+                    range: resolved.version().to_string(),
+                    message: "the registry resolved an OCI package without an image".into(),
+                })?;
+            if !digest_pinned_image(image) {
                 return Err(ComposeError::PackageNotResolved {
                     container: container.to_string(),
-                    name: resolved.package_descriptor.name.clone(),
-                    range: resolved.package_descriptor.version.clone(),
+                    name: resolved.name().to_string(),
+                    range: resolved.version().to_string(),
                     message: "the registry OCI artifact is not digest-pinned".into(),
                 });
             }
-            (Payload::Oci(image_tag.clone()), InstallStatus::Cached)
+            (Payload::Oci(image.to_string()), InstallStatus::Cached)
+        }
+        kind => {
+            return Err(ComposeError::UnsupportedPackageKind {
+                container: container.to_string(),
+                name: resolved.name().to_string(),
+                kind: kind.to_string(),
+            });
         }
     };
 
-    let default_config = resolved
-        .package_descriptor
-        .registry
-        .config
-        .as_ref()
-        .and_then(|config| serde_yaml::to_value(&config.defaults).ok());
-    let package_name = resolved.package_descriptor.name.clone();
-    let package_version = resolved.package_descriptor.version.clone();
+    let default_config = resolved.default_config();
+    let package_name = resolved.name().to_string();
+    let package_version = resolved.version().to_string();
 
-    let artifact = match &resolved.artifacts {
-        ResolvedArtifacts::RustBinary { binaries } => InstalledArtifact::RustBinary {
-            artifacts: binaries
+    let artifact = match resolved.kind() {
+        "binary" => InstalledArtifact::RustBinary {
+            artifacts: resolved
+                .binaries()
+                .expect("validated binary response has binaries")
                 .iter()
                 .map(|(target, artifact)| {
                     (
@@ -315,20 +398,22 @@ pub async fn install_from_registry(
                 })
                 .collect(),
         },
-        ResolvedArtifacts::JavascriptBundle {
-            archive_url,
-            sha256,
+        "bundle" => {
+            let (archive_url, sha256) = resolved
+                .bundle()
+                .expect("validated bundle response has archive identity");
+            InstalledArtifact::Bundle {
+                archive_url: archive_url.to_string(),
+                sha256: sha256.to_string(),
+            }
         }
-        | ResolvedArtifacts::PythonBundle {
-            archive_url,
-            sha256,
-        } => InstalledArtifact::Bundle {
-            archive_url: archive_url.clone(),
-            sha256: sha256.clone(),
+        "image" => InstalledArtifact::Oci {
+            image: resolved
+                .image()
+                .expect("validated image response has an image")
+                .to_string(),
         },
-        ResolvedArtifacts::OciImage { image_tag } => InstalledArtifact::Oci {
-            image: image_tag.clone(),
-        },
+        _ => unreachable!("unsupported package kinds return before artifact projection"),
     };
 
     Ok(InstalledPackage {
@@ -358,7 +443,7 @@ fn digest_pinned_image(image: &str) -> bool {
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
     let (registry, name) = split_reference(reference);
     let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
-    Ok(resolved.package_descriptor.version)
+    Ok(resolved.version().to_string())
 }
 
 /// One worker in a resolved graph.
@@ -484,7 +569,12 @@ async fn install_bundle(
         resolved.name(),
         resolved.version()
     ));
-    if is_populated(&install_dir) {
+    let installed = if resolved.is_descriptor_native() {
+        is_populated(&install_dir)
+    } else {
+        install_dir.join(LEGACY_BUNDLE_MANIFEST).is_file()
+    };
+    if installed {
         return Ok((install_dir, InstallStatus::Cached));
     }
     remove_invalid_install(&install_dir)?;
@@ -495,7 +585,12 @@ async fn install_bundle(
     };
     download_and_extract(container, &artifact, &install_dir).await?;
 
-    if !is_populated(&install_dir) {
+    let installed = if resolved.is_descriptor_native() {
+        is_populated(&install_dir)
+    } else {
+        install_dir.join(LEGACY_BUNDLE_MANIFEST).is_file()
+    };
+    if !installed {
         return Err(ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
             name: resolved.name().to_string(),
@@ -505,16 +600,109 @@ async fn install_bundle(
     Ok((install_dir, InstallStatus::Downloaded))
 }
 
-fn validate_descriptor(container: &str, resolved: &ResolvedWorker) -> Result<()> {
-    if resolved.package_descriptor.sha256() != resolved.descriptor_sha256 {
-        return Err(ComposeError::PackageNotResolved {
-            container: container.to_string(),
-            name: resolved.name().to_string(),
-            range: resolved.version().to_string(),
-            message: "the registry package descriptor identity or SHA-256 is invalid".to_string(),
-        });
+fn validate_registry_contract(container: &str, resolved: &ResolvedWorker) -> Result<()> {
+    let descriptor_fields = [
+        resolved.package_descriptor.is_some(),
+        resolved.descriptor_sha256.is_some(),
+        resolved.artifacts.is_some(),
+    ];
+    let descriptor_field_count = descriptor_fields
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+    if descriptor_field_count == 0 {
+        return validate_legacy_contract(container, resolved);
+    }
+    if descriptor_field_count != descriptor_fields.len() {
+        return Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the registry returned an incomplete package descriptor contract",
+        ));
+    }
+
+    let descriptor = resolved
+        .package_descriptor
+        .as_ref()
+        .expect("all descriptor fields were checked");
+    let descriptor_sha256 = resolved
+        .descriptor_sha256
+        .as_deref()
+        .expect("all descriptor fields were checked");
+    if descriptor.sha256() != descriptor_sha256 {
+        return Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the registry package descriptor identity or SHA-256 is invalid",
+        ));
+    }
+
+    // During the coordinated Registry rollout both projections are returned.
+    // Refuse a response where the public compatibility fields disagree rather
+    // than silently choosing whichever one is more convenient to an attacker.
+    if resolved
+        .name
+        .as_deref()
+        .is_some_and(|name| name != descriptor.name)
+        || resolved
+            .version
+            .as_deref()
+            .is_some_and(|version| version != descriptor.version)
+        || resolved
+            .legacy_kind
+            .as_deref()
+            .is_some_and(|kind| kind != resolved.kind())
+    {
+        return Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the registry descriptor and compatibility projection disagree",
+        ));
     }
     Ok(())
+}
+
+fn validate_legacy_contract(container: &str, resolved: &ResolvedWorker) -> Result<()> {
+    match resolved.kind() {
+        "binary" if resolved.binaries().is_some() => Ok(()),
+        "bundle" if resolved.bundle().is_some() => Ok(()),
+        "image" if resolved.image().is_some() => Ok(()),
+        "engine" => Ok(()),
+        "binary" => Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the legacy Registry response contains no binaries",
+        )),
+        "bundle" => Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the legacy Registry response contains no archive_url + sha256 pair",
+        )),
+        "image" => Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the legacy Registry response contains no image",
+        )),
+        _ => Err(invalid_registry_contract(
+            container,
+            resolved,
+            "the Registry response contains no supported package contract",
+        )),
+    }
+}
+
+fn invalid_registry_contract(
+    container: &str,
+    resolved: &ResolvedWorker,
+    message: &str,
+) -> ComposeError {
+    ComposeError::PackageNotResolved {
+        container: container.to_string(),
+        name: resolved.name().to_string(),
+        range: resolved.version().to_string(),
+        message: message.to_string(),
+    }
 }
 
 /// Returns the normalized digest used as the immutable part of a cache key.
@@ -598,6 +786,9 @@ async fn resolve_response(
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
+    for worker in &resolved.graph {
+        validate_registry_contract(container, worker)?;
+    }
     check_names(container, registry, &resolved)?;
     Ok(resolved)
 }
@@ -931,6 +1122,21 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    fn legacy_bundle_archive() -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let body = b"name: public-worker\nscripts:\n  start: node index.js\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, LEGACY_BUNDLE_MANIFEST, &body[..])
+            .unwrap();
+        let encoder = archive.into_inner().unwrap();
+        encoder.finish().unwrap()
+    }
+
     fn resolved_binary(
         name: &str,
         version: &str,
@@ -950,6 +1156,18 @@ mod tests {
                 "kind": "rust-binary",
                 "binaries": binaries,
             }
+        })
+    }
+
+    fn legacy_binary(name: &str, version: &str, binaries: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "type": "binary",
+            "repo": "iii-hq/workers",
+            "config": {"adapter": {"name": "local"}},
+            "dependencies": {},
+            "binaries": binaries,
         })
     }
 
@@ -1057,6 +1275,112 @@ mod tests {
         assert_eq!(first.status, InstallStatus::Downloaded);
         assert_eq!(second.status, InstallStatus::Cached);
         assert_eq!(first.default_config, second.default_config);
+    }
+
+    #[tokio::test]
+    async fn public_compose_runtime_accepts_a_historical_registry_binary() {
+        let server = MockServer::start().await;
+        let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let target = host_target();
+        let artifact_url = format!("{}/artifact", server.uri());
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [legacy_binary("state", "0.22.2", serde_json::json!({
+                    (target): {"sha256": digest, "url": artifact_url}
+                }))]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let installed =
+            install_from_registry("state", &server.uri(), "state", "0.22.2", cache.path())
+                .await
+                .unwrap();
+
+        assert_eq!(installed.name, "state");
+        assert_eq!(installed.version, "0.22.2");
+        assert!(matches!(installed.payload, Payload::Binary(_)));
+        assert!(installed.descriptor.is_none());
+        assert!(installed.descriptor_sha256.is_none());
+        assert!(installed.default_config.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_compose_runtime_keeps_historical_manifest_bundles() {
+        let server = MockServer::start().await;
+        let archive = legacy_bundle_archive();
+        let digest = hex::encode(Sha256::digest(&archive));
+        let artifact_url = format!("{}/artifact", server.uri());
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "public-worker",
+                    "version": "1.0.0",
+                    "type": "bundle",
+                    "repo": "example/public-worker",
+                    "config": {},
+                    "dependencies": {},
+                    "archive_url": artifact_url,
+                    "sha256": digest,
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cache = tempfile::tempdir().unwrap();
+        let installed = install_from_registry(
+            "public-worker",
+            &server.uri(),
+            "public-worker",
+            "1.0.0",
+            cache.path(),
+        )
+        .await
+        .unwrap();
+
+        let Payload::Bundle(path) = installed.payload else {
+            panic!("historical bundle resolved to the wrong payload kind");
+        };
+        assert!(path.join(LEGACY_BUNDLE_MANIFEST).is_file());
+        assert!(installed.descriptor.is_none());
+    }
+
+    #[test]
+    fn incomplete_descriptor_fields_never_downgrade_to_the_legacy_projection() {
+        let mut value = resolved_binary("state", "1.0.0", serde_json::json!({}));
+        let object = value.as_object_mut().unwrap();
+        object.remove("descriptor_sha256");
+        object.insert("name".into(), serde_json::json!("state"));
+        object.insert("version".into(), serde_json::json!("1.0.0"));
+        object.insert("type".into(), serde_json::json!("binary"));
+        object.insert("binaries".into(), serde_json::json!({}));
+
+        let resolved: ResolvedWorker = serde_json::from_value(value).unwrap();
+        let error = validate_registry_contract("state", &resolved).unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
+        assert!(error.to_string().contains("incomplete package descriptor"));
     }
 
     #[tokio::test]
