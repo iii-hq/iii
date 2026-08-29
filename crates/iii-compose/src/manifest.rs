@@ -20,6 +20,8 @@ pub enum StartSpec {
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
+    /// A digest-pinned OCI image executed by the host OCI runtime.
+    Oci { image: String, exec: Vec<String> },
     /// A worker started in a VM. The source decides which validation and
     /// workspace rules `iii-worker` applies before it builds the boot command.
     Vm(VmSpec),

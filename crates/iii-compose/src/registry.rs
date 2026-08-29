@@ -63,23 +63,69 @@ struct ResolvedEdge {
 
 #[derive(Debug, Deserialize)]
 struct ResolvedWorker {
-    name: String,
-    version: String,
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    binaries: std::collections::HashMap<String, Artifact>,
-    /// A bundle ships one archive for every platform, named here rather than in
-    /// `binaries`. The registry sends both fields or neither.
-    #[serde(default)]
-    archive_url: Option<String>,
-    #[serde(default)]
-    sha256: Option<String>,
-    /// The worker's own default configuration, if it ships one.
-    #[serde(default)]
-    config: Option<serde_json::Value>,
     package_descriptor: crate::descriptor::PackageDescriptor,
     descriptor_sha256: String,
+    artifacts: ResolvedArtifacts,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum ResolvedArtifacts {
+    RustBinary {
+        binaries: std::collections::HashMap<String, Artifact>,
+    },
+    JavascriptBundle {
+        archive_url: String,
+        sha256: String,
+    },
+    PythonBundle {
+        archive_url: String,
+        sha256: String,
+    },
+    OciImage {
+        image_tag: String,
+    },
+}
+
+impl ResolvedWorker {
+    fn name(&self) -> &str {
+        &self.package_descriptor.name
+    }
+
+    fn version(&self) -> &str {
+        &self.package_descriptor.version
+    }
+
+    fn binaries(&self) -> Option<&std::collections::HashMap<String, Artifact>> {
+        match &self.artifacts {
+            ResolvedArtifacts::RustBinary { binaries } => Some(binaries),
+            _ => None,
+        }
+    }
+
+    fn bundle(&self) -> Option<(&str, &str)> {
+        match &self.artifacts {
+            ResolvedArtifacts::JavascriptBundle {
+                archive_url,
+                sha256,
+            }
+            | ResolvedArtifacts::PythonBundle {
+                archive_url,
+                sha256,
+            } => Some((archive_url, sha256)),
+            _ => None,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match &self.artifacts {
+            ResolvedArtifacts::RustBinary { .. } => "binary",
+            ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
+                "bundle"
+            }
+            ResolvedArtifacts::OciImage { .. } => "image",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +143,8 @@ pub enum Payload {
     /// declares is publisher-controlled, so it runs in a VM rather than on the
     /// host — see `lifecycle::start_one`.
     Bundle(PathBuf),
+    /// A registry OCI image, always digest-pinned.
+    Oci(String),
 }
 
 /// Whether this invocation downloaded an artefact or reused one already on
@@ -183,8 +231,8 @@ async fn install_from_registry(
     let resolved = resolve(container, registry, name, version_range, target).await?;
     validate_descriptor(container, &resolved)?;
 
-    let (payload, status) = match resolved.kind.as_str() {
-        "binary" => {
+    let (payload, status) = match &resolved.artifacts {
+        ResolvedArtifacts::RustBinary { .. } => {
             let (program, status) =
                 install_binary(container, &resolved, target, cache_root).await?;
             (Payload::Binary(program), status)
@@ -193,37 +241,42 @@ async fn install_from_registry(
         // the archive is megabytes, and an operator learns nothing from having
         // fetched it.
         #[cfg(not(unix))]
-        "bundle" => {
+        ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
             return Err(ComposeError::BundleNeedsAVm {
                 container: container.to_string(),
-                name: resolved.name,
+                name: resolved.package_descriptor.name.clone(),
             });
         }
         #[cfg(unix)]
-        "bundle" => {
+        ResolvedArtifacts::JavascriptBundle { .. } | ResolvedArtifacts::PythonBundle { .. } => {
             let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
             (Payload::Bundle(install_dir), status)
         }
-        // `engine` workers are compiled into the engine itself: there is no
-        // artefact to install and nothing for compose to start. `image` workers
-        // have one, but running it needs the OCI runtime.
-        _ => {
-            return Err(ComposeError::UnsupportedPackageKind {
-                container: container.to_string(),
-                name: resolved.name,
-                kind: resolved.kind,
-            });
+        ResolvedArtifacts::OciImage { image_tag } => {
+            if !digest_pinned_image(image_tag) {
+                return Err(ComposeError::PackageNotResolved {
+                    container: container.to_string(),
+                    name: resolved.package_descriptor.name.clone(),
+                    range: resolved.package_descriptor.version.clone(),
+                    message: "the registry OCI artifact is not digest-pinned".into(),
+                });
+            }
+            (Payload::Oci(image_tag.clone()), InstallStatus::Cached)
         }
     };
 
-    let default_config = match resolved.config {
-        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
-        _ => None,
-    };
+    let default_config = resolved
+        .package_descriptor
+        .registry
+        .config
+        .as_ref()
+        .and_then(|config| serde_yaml::to_value(&config.defaults).ok());
+    let package_name = resolved.package_descriptor.name.clone();
+    let package_version = resolved.package_descriptor.version.clone();
 
     Ok(InstalledPackage {
-        name: resolved.name,
-        version: resolved.version,
+        name: package_name,
+        version: package_version,
         payload,
         default_config,
         descriptor: resolved.package_descriptor,
@@ -231,12 +284,22 @@ async fn install_from_registry(
     })
 }
 
+fn digest_pinned_image(image: &str) -> bool {
+    let Some((_, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// The version the registry hands back for `*`, so `compose::add` can pin what
 /// it just resolved rather than writing a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
     let (registry, name) = split_reference(reference);
     let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
-    Ok(resolved.version)
+    Ok(resolved.package_descriptor.version)
 }
 
 /// One worker in a resolved graph.
@@ -272,9 +335,9 @@ pub async fn resolve_graph(container: &str, reference: &str, version_range: &str
             .graph
             .into_iter()
             .map(|worker| Node {
-                name: worker.name,
-                version: worker.version,
-                kind: worker.kind,
+                name: worker.name().to_string(),
+                version: worker.version().to_string(),
+                kind: worker.kind().to_string(),
             })
             .collect(),
         edges: response
@@ -292,26 +355,27 @@ async fn install_binary(
     target: &str,
     cache_root: &Path,
 ) -> Result<(PathBuf, InstallStatus)> {
-    let artifact =
-        resolved
-            .binaries
-            .get(target)
-            .ok_or_else(|| ComposeError::UnsupportedPlatform {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                version: resolved.version.clone(),
-                target: target.to_string(),
-                available: {
-                    let mut targets: Vec<String> = resolved.binaries.keys().cloned().collect();
-                    targets.sort();
-                    targets.join(", ")
-                },
-            })?;
+    let binaries = resolved.binaries().expect("binary artifact variant");
+    let artifact = binaries
+        .get(target)
+        .ok_or_else(|| ComposeError::UnsupportedPlatform {
+            container: container.to_string(),
+            name: resolved.name().to_string(),
+            version: resolved.version().to_string(),
+            target: target.to_string(),
+            available: {
+                let mut targets: Vec<String> = binaries.keys().cloned().collect();
+                targets.sort();
+                targets.join(", ")
+            },
+        })?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let install_dir = cache_root.join(format!(
         "{}-{}-{}-{digest}",
-        resolved.name, resolved.version, target
+        resolved.name(),
+        resolved.version(),
+        target
     ));
     if let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
@@ -321,7 +385,7 @@ async fn install_binary(
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
-            name: resolved.name.clone(),
+            name: resolved.name().to_string(),
             path: install_dir.clone(),
         })?;
     Ok((program, InstallStatus::Downloaded))
@@ -343,24 +407,13 @@ async fn install_bundle(
 ) -> Result<(PathBuf, InstallStatus)> {
     // The registry sends both or neither. Without the digest the archive cannot
     // be verified, and an unverifiable artefact is not installed.
-    let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
-        (Some(url), Some(sha256)) => (url, sha256),
-        _ => {
-            return Err(ComposeError::PackageNotResolved {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                range: resolved.version.clone(),
-                message: "the registry resolved it as a bundle but sent no archive_url + sha256 \
-                          pair, so the archive could not be verified"
-                    .to_string(),
-            });
-        }
-    };
+    let (url, sha256) = resolved.bundle().expect("bundle artifact variant");
 
     let digest = validated_cache_digest(container, resolved, sha256)?;
     let install_dir = cache_root.join(format!(
         "{}-{}-bundle-{digest}",
-        resolved.name, resolved.version
+        resolved.name(),
+        resolved.version()
     ));
     if is_populated(&install_dir) {
         return Ok((install_dir, InstallStatus::Cached));
@@ -368,15 +421,15 @@ async fn install_bundle(
     remove_invalid_install(&install_dir)?;
 
     let artifact = Artifact {
-        sha256: sha256.clone(),
-        url: url.clone(),
+        sha256: sha256.to_string(),
+        url: url.to_string(),
     };
     download_and_extract(container, &artifact, &install_dir).await?;
 
     if !is_populated(&install_dir) {
         return Err(ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
-            name: resolved.name.clone(),
+            name: resolved.name().to_string(),
             path: install_dir.clone(),
         });
     }
@@ -384,14 +437,11 @@ async fn install_bundle(
 }
 
 fn validate_descriptor(container: &str, resolved: &ResolvedWorker) -> Result<()> {
-    if resolved.package_descriptor.name != resolved.name
-        || resolved.package_descriptor.version != resolved.version
-        || resolved.package_descriptor.sha256() != resolved.descriptor_sha256
-    {
+    if resolved.package_descriptor.sha256() != resolved.descriptor_sha256 {
         return Err(ComposeError::PackageNotResolved {
             container: container.to_string(),
-            name: resolved.name.clone(),
-            range: resolved.version.clone(),
+            name: resolved.name().to_string(),
+            range: resolved.version().to_string(),
             message: "the registry package descriptor identity or SHA-256 is invalid".to_string(),
         });
     }
@@ -410,8 +460,8 @@ fn validated_cache_digest(
 
     Err(ComposeError::PackageNotResolved {
         container: container.to_string(),
-        name: resolved.name.clone(),
-        range: resolved.version.clone(),
+        name: resolved.name().to_string(),
+        range: resolved.version().to_string(),
         message: "the registry returned an invalid SHA-256 digest".to_string(),
     })
 }
@@ -538,11 +588,11 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
         value: value.to_string(),
     };
     for worker in &resolved.graph {
-        if !is_path_safe(&worker.name) {
-            return Err(refuse("name", &worker.name));
+        if !is_path_safe(worker.name()) {
+            return Err(refuse("name", worker.name()));
         }
-        if !is_path_safe(&worker.version) {
-            return Err(refuse("version", &worker.version));
+        if !is_path_safe(worker.version()) {
+            return Err(refuse("version", worker.version()));
         }
     }
     Ok(())
@@ -564,7 +614,7 @@ async fn resolve(
     resolved
         .graph
         .into_iter()
-        .find(|worker| worker.name == name)
+        .find(|worker| worker.name() == name)
         .ok_or_else(|| ComposeError::PackageNotResolved {
             container: container.to_string(),
             name: name.to_string(),
@@ -856,7 +906,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(resolved.graph[0].name, "state");
+        assert_eq!(resolved.graph[0].name(), "state");
     }
 
     #[tokio::test]

@@ -84,6 +84,8 @@ pub enum ComposeSubcommand {
     Validate(ValidateCli),
     /// Compile one catalog worker into an immutable release descriptor.
     Descriptor(DescriptorCli),
+    /// Compile every catalog worker and a deterministic descriptor index.
+    DescriptorIndex(DescriptorIndexCli),
     /// Download every registry package declared by the compose file.
     Build(BuildCli),
     /// Read retained worker stdout and stderr from a running Compose daemon.
@@ -114,6 +116,18 @@ pub struct DescriptorCli {
     pub source_sha: String,
     #[arg(long, value_name = "PATH", default_value = "-")]
     pub output: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DescriptorIndexCli {
+    #[arg(short = 'f', long, value_name = "PATH", default_value = DEFAULT_COMPOSE_FILE)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub source_sha: String,
+    #[arg(long)]
+    pub compiler_sha: String,
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -190,6 +204,12 @@ pub enum ComposeCommand {
         source_sha: String,
         output: String,
     },
+    DescriptorIndex {
+        file: PathBuf,
+        source_sha: String,
+        compiler_sha: String,
+        output_dir: PathBuf,
+    },
     /// Download registry packages without starting an engine or a worker.
     Build {
         file: PathBuf,
@@ -235,6 +255,12 @@ impl ComposeCli {
                     worker: args.worker.clone(),
                     source_sha: args.source_sha.clone(),
                     output: args.output.clone(),
+                }),
+                ComposeSubcommand::DescriptorIndex(args) => Ok(ComposeCommand::DescriptorIndex {
+                    file: args.file.clone(),
+                    source_sha: args.source_sha.clone(),
+                    compiler_sha: args.compiler_sha.clone(),
+                    output_dir: args.output_dir.clone(),
                 }),
                 ComposeSubcommand::Build(args) => {
                     if self.engine.is_some() || self.ns.is_some() || self.up || self.file.is_some()

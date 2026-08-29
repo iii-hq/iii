@@ -220,6 +220,9 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Init(_)) => "compose init".to_string(),
             Some(iii_compose::ComposeSubcommand::Validate(_)) => "compose validate".to_string(),
             Some(iii_compose::ComposeSubcommand::Descriptor(_)) => "compose descriptor".to_string(),
+            Some(iii_compose::ComposeSubcommand::DescriptorIndex(_)) => {
+                "compose descriptor-index".to_string()
+            }
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),

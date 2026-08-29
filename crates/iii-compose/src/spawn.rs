@@ -126,6 +126,9 @@ pub struct SpawnPlan {
     /// inherited, so this map is the whole story.
     pub env: BTreeMap<String, String>,
     pub working_dir: PathBuf,
+    /// OCI clients need the daemon's credential/runtime environment; worker
+    /// variables travel as explicit container arguments instead.
+    pub inherit_env: bool,
 }
 
 /// Builds the spawn plan for one container.
@@ -191,13 +194,47 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         }
     }
 
-    let (program, args) = match ctx.start {
-        StartSpec::Shell(command) => shell_invocation(command),
-        StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
+    let (program, args, inherit_env) = match ctx.start {
+        StartSpec::Shell(command) => {
+            let (program, args) = shell_invocation(command);
+            (program, args, false)
+        }
+        StartSpec::Exec { program, args } => {
+            (program.to_string_lossy().to_string(), args.clone(), false)
+        }
+        StartSpec::Oci { image, exec } => {
+            let mut args = vec![
+                "run".to_string(),
+                "--rm".to_string(),
+                "--network".to_string(),
+                "host".to_string(),
+                "--name".to_string(),
+                format!("iii-compose-{}", ctx.container_key),
+            ];
+            for (name, value) in &env {
+                args.push("--env".to_string());
+                args.push(format!("{name}={value}"));
+            }
+            if let Some(config_path) = ctx.config_path {
+                args.push("--volume".to_string());
+                args.push(format!(
+                    "{}:{}:ro",
+                    config_path.display(),
+                    config_path.display()
+                ));
+            }
+            args.push(image.clone());
+            args.extend(exec.clone());
+            (
+                std::env::var("III_OCI_RUNTIME").unwrap_or_else(|_| "docker".to_string()),
+                args,
+                true,
+            )
+        }
         // The host execs nothing for a VM container: the start command runs
         // inside the guest. Only the environment and the working directory
         // computed above carry over.
-        StartSpec::Vm(_) => (String::new(), Vec::new()),
+        StartSpec::Vm(_) => (String::new(), Vec::new(), false),
     };
 
     SpawnPlan {
@@ -205,6 +242,7 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         args,
         env,
         working_dir: ctx.working_dir.to_path_buf(),
+        inherit_env,
     }
 }
 
@@ -240,9 +278,11 @@ impl SpawnPlan {
         command.args(&self.args).current_dir(&self.working_dir);
         // Clear first: the plan is the child's entire environment, so nothing
         // from the daemon's shell can leak in behind it.
-        command.env_clear();
-        for (name, value) in &self.env {
-            command.env(name, value);
+        if !self.inherit_env {
+            command.env_clear();
+            for (name, value) in &self.env {
+                command.env(name, value);
+            }
         }
         Some(command)
     }
@@ -394,6 +434,23 @@ mod tests {
             ("cmd", "/C")
         );
         assert_eq!(plan.args[1], "npm start");
+    }
+
+    #[test]
+    fn oci_start_executes_the_descriptor_digest() {
+        let digest = "a".repeat(64);
+        let image = format!("ghcr.io/iii-hq/browser@sha256:{digest}");
+        let start = StartSpec::Oci {
+            image: image.clone(),
+            exec: vec!["/worker".into(), "serve".into()],
+        };
+        let user_env = BTreeMap::new();
+        let plan = spawn_plan(&ctx(&start, None, &user_env));
+
+        assert!(plan.inherit_env);
+        let image_index = plan.args.iter().position(|value| value == &image).unwrap();
+        assert_eq!(&plan.args[image_index + 1..], ["/worker", "serve"]);
+        assert!(!plan.args.iter().any(|value| value.contains(":latest")));
     }
 
     #[test]

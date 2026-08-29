@@ -19,7 +19,7 @@ pub struct WorkerDefinition {
     pub artifact: Artifact,
     #[serde(default)]
     pub runtime: Runtime,
-    pub registry: RegistryMetadata,
+    pub registry: RegistryDefinition,
     pub validation: Validation,
 }
 
@@ -78,7 +78,7 @@ pub struct Resources {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct RegistryMetadata {
+pub struct RegistryDefinition {
     pub description: String,
     pub license: String,
     #[serde(default)]
@@ -86,7 +86,7 @@ pub struct RegistryMetadata {
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<RegistryConfig>,
+    pub config: Option<RegistryConfigFile>,
     #[serde(default = "default_publish")]
     pub publish: bool,
 }
@@ -97,8 +97,26 @@ fn default_publish() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct RegistryConfig {
+pub struct RegistryConfigFile {
     pub defaults_file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryMetadata {
+    pub description: String,
+    pub license: String,
+    pub tags: Vec<String>,
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<RegistryConfig>,
+    pub publish: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryConfig {
+    pub defaults: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -147,6 +165,24 @@ pub struct ReleaseDescriptor {
     pub descriptor_sha256: String,
     pub package: PackageDescriptor,
     pub build_units: Vec<BuildUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseDescriptorIndex {
+    pub contract: String,
+    pub source_sha: String,
+    pub compiler_sha: String,
+    pub workers: BTreeMap<String, ReleaseDescriptorIndexEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseDescriptorIndexEntry {
+    pub path: String,
+    pub digest: String,
+    pub version: String,
+    pub publish: bool,
 }
 
 impl PackageDescriptor {
@@ -202,13 +238,14 @@ impl PackageDescriptor {
             }
         })?;
         validate_definition(name, &definition, &source_dir)?;
+        let registry = compile_registry(name, definition.registry, &source_dir)?;
         Ok(Self {
             name: name.into(),
             version,
             source: definition.source,
             artifact: definition.artifact,
             runtime: definition.runtime,
-            registry: definition.registry,
+            registry,
             validation: definition.validation,
         })
     }
@@ -363,6 +400,125 @@ fn validate_definition(name: &str, definition: &WorkerDefinition, source_dir: &P
             worker: name.into(),
             message: "runtime.exec is required for non-OCI workers".into(),
         });
+    }
+    Ok(())
+}
+
+fn compile_registry(
+    name: &str,
+    authored: RegistryDefinition,
+    source_dir: &Path,
+) -> Result<RegistryMetadata> {
+    let config = match authored.config {
+        None => None,
+        Some(config) => {
+            let authored_path = Path::new(&config.defaults_file);
+            if config.defaults_file.trim().is_empty()
+                || authored_path.is_absolute()
+                || authored_path
+                    .components()
+                    .any(|part| matches!(part, Component::ParentDir))
+            {
+                return Err(ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: "registry.config.defaults_file must be a relative path without '..'"
+                        .into(),
+                });
+            }
+            let path = source_dir
+                .join(authored_path)
+                .canonicalize()
+                .map_err(|error| ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: format!("cannot resolve registry config defaults: {error}"),
+                })?;
+            if !path.starts_with(source_dir) || !path.is_file() {
+                return Err(ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: "registry config defaults must be a regular file within source.path"
+                        .into(),
+                });
+            }
+            let text = std::fs::read_to_string(&path).map_err(|error| {
+                ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: format!("cannot read registry config defaults: {error}"),
+                }
+            })?;
+            let value: serde_json::Value =
+                if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                    serde_json::from_str(&text).map_err(|error| error.to_string())
+                } else {
+                    serde_yaml::from_str::<serde_yaml::Value>(&text)
+                        .map_err(|error| error.to_string())
+                        .and_then(|value| {
+                            serde_json::to_value(value).map_err(|error| error.to_string())
+                        })
+                }
+                .map_err(|error| ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: format!("registry config defaults are invalid: {error}"),
+                })?;
+            let serde_json::Value::Object(defaults) = value else {
+                return Err(ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: "registry config defaults must be a JSON object".into(),
+                });
+            };
+            validate_config_defaults(name, &serde_json::Value::Object(defaults.clone()), "")?;
+            Some(RegistryConfig { defaults })
+        }
+    };
+    Ok(RegistryMetadata {
+        description: authored.description,
+        license: authored.license,
+        tags: authored.tags,
+        dependencies: authored.dependencies,
+        config,
+        publish: authored.publish,
+    })
+}
+
+fn validate_config_defaults(name: &str, value: &serde_json::Value, prefix: &str) -> Result<()> {
+    if let serde_json::Value::Array(values) = value {
+        for (index, nested) in values.iter().enumerate() {
+            validate_config_defaults(name, nested, &format!("{prefix}[{index}]"))?;
+        }
+        return Ok(());
+    }
+    let serde_json::Value::Object(values) = value else {
+        return Ok(());
+    };
+    for (key, nested) in values {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if key.starts_with("III_") {
+            return Err(ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!("registry config defaults cannot set reserved key {path}"),
+            });
+        }
+        let upper = key.to_ascii_uppercase();
+        let secret_like = [
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "API_KEY",
+            "CREDENTIAL",
+            "CREDENTIALS",
+        ]
+        .iter()
+        .any(|word| upper == *word || upper.ends_with(&format!("_{word}")));
+        if secret_like && nested.as_str().is_none_or(|value| !value.is_empty()) {
+            return Err(ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!("secret-like registry config default {path} must be empty"),
+            });
+        }
+        validate_config_defaults(name, nested, &path)?;
     }
     Ok(())
 }

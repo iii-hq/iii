@@ -663,6 +663,18 @@ async fn start_one_until_shutdown(
                     }),
                     installed.default_config,
                 ),
+                crate::registry::Payload::Oci(image) => (
+                    StartSpec::Oci {
+                        image,
+                        exec: installed
+                            .descriptor
+                            .runtime
+                            .exec
+                            .clone()
+                            .unwrap_or_default(),
+                    },
+                    installed.default_config,
+                ),
             }
         }
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),

@@ -32,6 +32,12 @@ pub async fn run(
     events: &dyn EventSink,
     shim: &dyn WorkerHostShim,
 ) -> Result<AddOutcome, WorkerOpError> {
+    if !matches!(opts.source, WorkerSource::Registry { .. }) {
+        return Err(WorkerOpError::InvalidSource {
+            input: source_label(&opts.source),
+            reason: "iii worker add accepts registry references only; declare local or OCI workers in worker-compose.yaml and use iii compose up".into(),
+        });
+    }
     let label = source_label(&opts.source);
     events.emit(WorkerOpEvent::Started {
         op: "add",
@@ -155,10 +161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_source_installs() {
-        // Local-path installs are allowed regardless of caller. The W102
-        // trigger-surface rejection was removed on purpose; `run` no longer
-        // takes a CallerMode and never rejects `kind: "local"`.
+    async fn local_source_is_rejected_in_favor_of_compose() {
         let dir = TempDir::new().unwrap();
         let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
         let sink = CapturingSink::new();
@@ -171,8 +174,9 @@ mod tests {
             yes: false,
             wait: true,
         };
-        let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
-        assert_eq!(outcome.status, AddStatus::Installed);
+        let error = run(opts, &ctx, &sink, &StubShim).await.unwrap_err();
+        assert!(matches!(error, WorkerOpError::InvalidSource { .. }));
+        assert!(error.to_string().contains("worker-compose.yaml"));
     }
 
     #[tokio::test]

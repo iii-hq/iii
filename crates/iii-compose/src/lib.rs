@@ -47,10 +47,13 @@ pub mod state;
 
 pub use cli::{
     BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand, DescriptorCli,
-    InitCli, ValidateCli,
+    DescriptorIndexCli, InitCli, ValidateCli,
 };
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
-pub use descriptor::{PackageDescriptor, ReleaseDescriptor, WorkerDefinition};
+pub use descriptor::{
+    PackageDescriptor, ReleaseDescriptor, ReleaseDescriptorIndex, ReleaseDescriptorIndexEntry,
+    WorkerDefinition,
+};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport, VmSpec};
 
@@ -145,6 +148,15 @@ pub async fn run(cli: ComposeCli) -> i32 {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
+        ComposeCommand::DescriptorIndex {
+            file,
+            source_sha,
+            compiler_sha,
+            output_dir,
+        } => match write_release_descriptor_index(&file, &source_sha, &compiler_sha, &output_dir) {
+            Ok(()) => 0,
+            Err(err) => report_error(&err),
+        },
         ComposeCommand::Build { file } => match build::build(&file).await {
             Ok(_) => 0,
             Err(err) => report_error(&err),
@@ -236,6 +248,112 @@ fn write_release_descriptor(
         let path = std::path::PathBuf::from(output);
         std::fs::write(&path, bytes).map_err(|source| ComposeError::Io { path, source })
     }
+}
+
+fn write_release_descriptor_index(
+    file: &std::path::Path,
+    source_sha: &str,
+    compiler_sha: &str,
+    output_dir: &std::path::Path,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let catalog = ComposeFile::load_catalog(file)?;
+    if compiler_sha.len() != 40
+        || !compiler_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: "<index>".into(),
+            message: "compiler_sha must be exactly 40 lowercase hex characters".into(),
+        });
+    }
+    if output_dir.exists() {
+        return Err(ComposeError::Io {
+            path: output_dir.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "refusing to replace an existing descriptor output directory",
+            ),
+        });
+    }
+    let parent = output_dir
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let staging = parent.join(format!(
+        ".descriptor-index-{}-{}",
+        std::process::id(),
+        output_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("output")
+    ));
+    std::fs::create_dir(&staging).map_err(|source| ComposeError::Io {
+        path: staging.clone(),
+        source,
+    })?;
+    let descriptors_dir = staging.join("descriptors");
+    std::fs::create_dir(&descriptors_dir).map_err(|source| ComposeError::Io {
+        path: descriptors_dir.clone(),
+        source,
+    })?;
+
+    let result = (|| {
+        let mut workers = BTreeMap::new();
+        let mut sorted: Vec<_> = catalog.into_iter().collect();
+        sorted.sort_by(|left, right| left.0.cmp(&right.0));
+        for (slug, package) in sorted {
+            let release = package.release_descriptor(source_sha);
+            let path = format!("descriptors/{slug}.json");
+            let bytes = serde_json::to_vec_pretty(&release).map_err(|error| {
+                ComposeError::InvalidPackageDescriptor {
+                    worker: slug.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+            let descriptor_path = staging.join(&path);
+            std::fs::write(&descriptor_path, bytes).map_err(|source| ComposeError::Io {
+                path: descriptor_path,
+                source,
+            })?;
+            workers.insert(
+                slug,
+                ReleaseDescriptorIndexEntry {
+                    path,
+                    digest: release.descriptor_sha256,
+                    version: release.version,
+                    publish: release.package.registry.publish,
+                },
+            );
+        }
+        let index = ReleaseDescriptorIndex {
+            contract: "release-descriptor-index".into(),
+            source_sha: source_sha.to_string(),
+            compiler_sha: compiler_sha.to_string(),
+            workers,
+        };
+        let path = staging.join("release-descriptor-index.json");
+        let bytes = serde_json::to_vec_pretty(&index).map_err(|error| {
+            ComposeError::InvalidPackageDescriptor {
+                worker: "<index>".into(),
+                message: error.to_string(),
+            }
+        })?;
+        std::fs::write(&path, bytes).map_err(|source| ComposeError::Io { path, source })?;
+        std::fs::rename(&staging, output_dir).map_err(|source| ComposeError::Io {
+            path: output_dir.to_path_buf(),
+            source,
+        })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
 }
 
 async fn follow_worker_logs(
