@@ -47,7 +47,7 @@ fn help_flag_shows_all_subcommands() {
     // All subcommands should appear in help
     assert!(stdout.contains("trigger"), "help should list trigger");
     assert!(stdout.contains("console"), "help should list console");
-    assert!(!stdout.contains("  worker"), "help must not list worker");
+    assert!(stdout.contains("  worker"), "help should list worker");
     assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");
     // "create" was replaced by `iii project init --template` — it must not
@@ -100,22 +100,6 @@ fn start_subcommand_is_rejected() {
     assert!(
         !output.status.success(),
         "\"iii start\" should not be a valid subcommand"
-    );
-}
-
-// ── Worker subcommand group ─────────────────────────────────────────
-
-#[test]
-fn worker_subcommand_is_rejected() {
-    let output = iii_bin()
-        .args(["worker", "add", "http"])
-        .output()
-        .expect("failed to execute");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unrecognized subcommand") && stderr.contains("worker"),
-        "worker should be rejected by the root CLI, got: {stderr}"
     );
 }
 
