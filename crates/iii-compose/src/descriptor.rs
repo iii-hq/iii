@@ -530,7 +530,7 @@ fn validate_bundle_toolchain(
     install_command: &[String],
     require_lockfile: bool,
 ) -> Result<()> {
-    if !safe_bundle_include(workspace_root) || !safe_bundle_include(lockfile) {
+    if !safe_relative_path(workspace_root) || !safe_relative_path(lockfile) {
         return Err(ComposeError::InvalidPackageDescriptor {
             worker: name.into(),
             message: "bundle workspace_root and lockfile must be safe relative paths".into(),
@@ -730,16 +730,10 @@ fn digest_pinned_image(image: &str) -> bool {
 }
 
 fn safe_bundle_include(value: &str) -> bool {
-    let path = Path::new(value);
-    if value.trim().is_empty()
-        || value.contains(['*', '?', '[', ']'])
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
+    if !safe_relative_path(value) {
         return false;
     }
+    let path = Path::new(value);
     !path
         .components()
         .filter_map(|part| match part {
@@ -754,15 +748,25 @@ fn safe_bundle_include(value: &str) -> bool {
         })
 }
 
+fn safe_relative_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.trim().is_empty()
+        && !value.contains(['*', '?', '[', ']'])
+        && !path.is_absolute()
+        && !path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+}
+
 fn validate_frontend_build(
     name: &str,
     compose_root: &Path,
     index: usize,
     frontend: &FrontendBuild,
 ) -> Result<()> {
-    if !safe_bundle_include(&frontend.workspace_root)
-        || !safe_bundle_include(&frontend.source_path)
-        || !safe_bundle_include(&frontend.lockfile)
+    if !safe_relative_path(&frontend.workspace_root)
+        || !safe_relative_path(&frontend.source_path)
+        || !safe_relative_path(&frontend.lockfile)
     {
         return Err(ComposeError::InvalidPackageDescriptor {
             worker: name.into(),
