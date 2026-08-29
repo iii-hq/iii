@@ -16,6 +16,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub const SOURCE_SYNC_PORT_NAME: &str = "iii.source-sync";
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 const FRAME_MAGIC: [u8; 4] = *b"IIIS";
 const ACK_MAGIC: [u8; 4] = *b"IIIA";
@@ -58,6 +59,12 @@ pub struct EntryHeader {
 
 pub fn write_header(mut writer: impl Write, header: &EntryHeader) -> io::Result<()> {
     validate_relative_path(&header.path)?;
+    if header.kind == EntryKind::File && header.payload_len > MAX_FILE_BYTES {
+        return Err(invalid_input(format!(
+            "source-sync file payload is too large: {} bytes (maximum {MAX_FILE_BYTES})",
+            header.payload_len
+        )));
+    }
     let path = header.path.as_bytes();
     if path.len() > MAX_PATH_BYTES {
         return Err(invalid_input(format!(
@@ -98,6 +105,11 @@ pub fn read_header(mut reader: impl Read) -> io::Result<EntryHeader> {
     }
     let mode = u32::from_be_bytes(fixed[8..12].try_into().expect("fixed header slice"));
     let payload_len = u64::from_be_bytes(fixed[12..20].try_into().expect("fixed header slice"));
+    if kind == EntryKind::File && payload_len > MAX_FILE_BYTES {
+        return Err(invalid_data(format!(
+            "source-sync file payload is too large: {payload_len} bytes (maximum {MAX_FILE_BYTES})"
+        )));
+    }
 
     let mut path = vec![0u8; path_len];
     reader.read_exact(&mut path)?;
@@ -212,5 +224,36 @@ mod tests {
 
         let error = read_ack(bytes.as_slice()).unwrap_err();
         assert!(error.to_string().contains("cannot replace target"));
+    }
+
+    #[test]
+    fn oversized_file_payload_is_rejected_when_writing() {
+        let header = EntryHeader {
+            kind: EntryKind::File,
+            path: "large.bin".to_string(),
+            mode: 0o100644,
+            payload_len: MAX_FILE_BYTES + 1,
+        };
+
+        let error = write_header(Vec::new(), &header).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn oversized_file_payload_is_rejected_when_reading() {
+        let header = EntryHeader {
+            kind: EntryKind::File,
+            path: "large.bin".to_string(),
+            mode: 0o100644,
+            payload_len: MAX_FILE_BYTES,
+        };
+        let mut bytes = Vec::new();
+        write_header(&mut bytes, &header).unwrap();
+        bytes[16..24].copy_from_slice(&(MAX_FILE_BYTES + 1).to_be_bytes());
+
+        let error = read_header(bytes.as_slice()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

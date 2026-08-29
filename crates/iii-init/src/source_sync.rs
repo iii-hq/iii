@@ -35,10 +35,15 @@ pub fn run(port_path: &Path, workspace: &Path, ready_path: &Path) -> io::Result<
     loop {
         let header = read_header_when_ready(&mut port)?;
 
-        let result = apply_entry(&mut port, workspace, &header);
-        match &result {
+        match apply_entry(&mut port, workspace, &header) {
             Ok(()) => source_sync::write_ack(&mut port, Ok(()))?,
-            Err(error) => source_sync::write_ack(&mut port, Err(&error.to_string()))?,
+            Err(error) => {
+                source_sync::write_ack(&mut port, Err(&error.to_string()))?;
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("source-sync frame rejected: {error}"),
+                ));
+            }
         }
     }
 }
@@ -100,6 +105,16 @@ fn apply_file(
     relative: &Path,
     header: &EntryHeader,
 ) -> io::Result<()> {
+    if header.payload_len > source_sync::MAX_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "source-sync file payload is too large: {} bytes (maximum {})",
+                header.payload_len,
+                source_sync::MAX_FILE_BYTES
+            ),
+        ));
+    }
     ensure_safe_parent(workspace, relative)?;
     let target = workspace.join(relative);
     let parent = target
@@ -358,5 +373,25 @@ mod tests {
             read > 0,
             "guest-side file write did not emit an inotify event"
         );
+    }
+
+    #[test]
+    fn apply_file_rejects_payload_over_shared_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut payload = io::empty();
+
+        let error = apply_entry(
+            &mut payload,
+            temp.path(),
+            &header(
+                EntryKind::File,
+                "large.bin",
+                source_sync::MAX_FILE_BYTES + 1,
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!temp.path().join("large.bin").exists());
     }
 }

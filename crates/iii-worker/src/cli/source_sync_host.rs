@@ -11,10 +11,10 @@
 //! the worker, where normal tools consume the guest kernel's file events.
 
 use std::collections::{BTreeSet, HashSet};
-use std::fs::File;
-use std::io::{self, Write};
+use std::fs::{File, Metadata};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -24,6 +24,14 @@ use iii_supervisor::source_sync::{self, EntryHeader, EntryKind};
 use notify::{Event, EventKind, Watcher};
 
 use super::source_watcher::{DEBOUNCE_MS, register_new_dirs, should_ignore_path, watch_pruned};
+
+const FILE_READ_ATTEMPTS: usize = 3;
+
+#[derive(Debug)]
+struct FileSnapshot {
+    contents: Vec<u8>,
+    mode: u32,
+}
 
 pub fn spawn(source_root: PathBuf, stream: UnixStream) -> io::Result<()> {
     let source_root = std::fs::canonicalize(&source_root)?;
@@ -148,25 +156,31 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
             Ok(())
         }
         Ok(metadata) if metadata.is_file() => {
-            let mut file = File::open(path)?;
-            let metadata = file.metadata()?;
+            let snapshot = match read_stable_file(path) {
+                Ok(snapshot) => snapshot,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    tracing::warn!(path = %path.display(), %error, "source sync: file skipped");
+                    return Ok(());
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    send_header(stream, EntryKind::Remove, relative, 0, 0)?;
+                    return finish_entry(stream);
+                }
+                Err(error) => return Err(error),
+            };
             send_header(
                 stream,
                 EntryKind::File,
                 relative,
-                metadata.permissions().mode(),
-                metadata.len(),
+                snapshot.mode,
+                snapshot.contents.len() as u64,
             )?;
-            let copied = io::copy(&mut file, stream)?;
-            if copied != metadata.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "source file {} changed while it was being synchronized",
-                        path.display()
-                    ),
-                ));
-            }
+            stream.write_all(&snapshot.contents)?;
             finish_entry(stream)
         }
         Ok(_) => {
@@ -179,6 +193,70 @@ fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::
         }
         Err(error) => Err(error),
     }
+}
+
+fn read_stable_file(path: &Path) -> io::Result<FileSnapshot> {
+    for attempt in 0..FILE_READ_ATTEMPTS {
+        let mut file = File::open(path)?;
+        let before = file.metadata()?;
+        if before.len() > source_sync::MAX_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "source file is too large: {} bytes (maximum {})",
+                    before.len(),
+                    source_sync::MAX_FILE_BYTES
+                ),
+            ));
+        }
+
+        let capacity = usize::try_from(before.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source file size does not fit in memory on this host",
+            )
+        })?;
+        let mut contents = Vec::new();
+        contents.try_reserve_exact(capacity).map_err(|error| {
+            io::Error::other(format!(
+                "could not reserve memory for source file {}: {error}",
+                path.display()
+            ))
+        })?;
+        let copied = (&mut file).take(before.len()).read_to_end(&mut contents)? as u64;
+        let after = std::fs::symlink_metadata(path)?;
+
+        if copied == before.len() && same_file_version(&before, &after) {
+            return Ok(FileSnapshot {
+                contents,
+                mode: before.permissions().mode(),
+            });
+        }
+
+        if attempt + 1 < FILE_READ_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        format!(
+            "source file {} kept changing while it was being synchronized",
+            path.display()
+        ),
+    ))
+}
+
+fn same_file_version(before: &Metadata, after: &Metadata) -> bool {
+    after.is_file()
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+        && before.permissions().mode() == after.permissions().mode()
 }
 
 fn send_header(
@@ -240,8 +318,6 @@ mod tests {
 
     #[test]
     fn changed_file_is_framed_with_its_content() {
-        use std::io::Read;
-
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         std::fs::create_dir(&source).unwrap();
@@ -261,5 +337,17 @@ mod tests {
         let (header, payload) = receiver.join().unwrap();
         assert_eq!(header.path, "main.rs");
         assert_eq!(payload, b"fn main() {}\n");
+    }
+
+    #[test]
+    fn oversized_file_is_rejected_before_a_frame_is_sent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.bin");
+        let file = File::create(&path).unwrap();
+        file.set_len(source_sync::MAX_FILE_BYTES + 1).unwrap();
+
+        let error = read_stable_file(&path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
