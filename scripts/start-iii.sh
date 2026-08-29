@@ -56,20 +56,34 @@ ready=false
 rm -f "$COMPOSE_PID_FILE"
 : > "$LOG_FILE"
 
+process_alive() {
+  local pid="$1"
+  kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null
+}
+
+signal_process() {
+  local signal="$1"
+  local pid="$2"
+  kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null || true
+}
+
 terminate_pid() {
   local pid="$1"
-  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+  if [[ -z "$pid" ]]; then
     return
   fi
-  kill "$pid" 2>/dev/null || true
+  if ! process_alive "$pid"; then
+    return
+  fi
+  signal_process TERM "$pid"
   for _ in $(seq 1 "$CLEANUP_GRACE_SECONDS"); do
-    if ! kill -0 "$pid" 2>/dev/null; then
+    if ! process_alive "$pid"; then
       break
     fi
     sleep 1
   done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
+  if process_alive "$pid"; then
+    signal_process KILL "$pid"
   fi
   wait "$pid" 2>/dev/null || true
 }
@@ -121,9 +135,11 @@ fi
 if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
   compose_args+=(--engine "$ENGINE_URL" --up --file "$COMPOSE_FILE")
   compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
+  set -m
   III_COMPOSE_STATE_DIR="$compose_state_dir" \
     "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
   compose_pid=$!
+  set +m
   echo "$compose_pid" > "$PID_FILE"
   echo "Waiting for III Compose workers..."
   if wait_for_compose "$compose_pid"; then
@@ -138,8 +154,10 @@ if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
 fi
 
 # Engine config and worker-compose are deliberately separate contracts.
+set -m
 "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
 engine_pid=$!
+set +m
 echo "$engine_pid" > "$PID_FILE"
 echo "Waiting for III Engine on port $PORT..."
 if ! wait_for_engine "$engine_pid"; then
@@ -157,9 +175,11 @@ fi
 
 compose_args+=(--engine "ws://127.0.0.1:${PORT}" --up --file "$COMPOSE_FILE")
 compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
+set -m
 III_COMPOSE_STATE_DIR="$compose_state_dir" \
   "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
 compose_pid=$!
+set +m
 echo "$compose_pid" > "$COMPOSE_PID_FILE"
 echo "Waiting for III Compose workers..."
 if wait_for_compose "$compose_pid"; then
