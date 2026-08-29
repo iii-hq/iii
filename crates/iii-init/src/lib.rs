@@ -25,6 +25,8 @@ pub mod child_exits;
 #[cfg(target_os = "linux")]
 pub mod shell_dispatcher;
 #[cfg(target_os = "linux")]
+pub mod source_sync;
+#[cfg(target_os = "linux")]
 pub mod supervisor;
 // Filesystem operation handlers. Linux-only because the module calls
 // std::os::unix::fs APIs and references shell_dispatcher internals.

@@ -142,6 +142,12 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub shell_sock: Option<String>,
 
+    /// Host source directory whose changes are forwarded into the guest over
+    /// `iii.source-sync`. Local-path workers set this; immutable bundles and
+    /// ordinary volume mounts do not.
+    #[arg(long)]
+    pub source_sync: Option<String>,
+
     /// Enable network egress for the guest. When false, the smoltcp
     /// userspace TCP/IP stack is not initialized and no virtio-net
     /// device is attached, so the VM has no network interface — useful
@@ -910,6 +916,26 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             }
         }
     }
+    let mut source_sync_port_env = false;
+    let mut guest_source_sync_fd: Option<i32> = None;
+    if let Some(source_root) = args.source_sync.clone() {
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        match crate::cli::source_sync_host::spawn(std::path::PathBuf::from(source_root), host_end) {
+            Ok(()) => {
+                guest_source_sync_fd = Some(guest_fd);
+                source_sync_port_env = true;
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: source sync failed to start ({error}). \
+                     Host source changes will not reach the guest."
+                );
+                unsafe {
+                    libc::close(guest_fd);
+                }
+            }
+        }
+    }
     let control_workdir = args.workdir.clone();
     let nofile_limit = args.nofile_limit;
 
@@ -968,6 +994,14 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 "III_SHELL_PORT",
                 iii_supervisor::shell_protocol::SHELL_PORT_NAME,
             );
+        }
+        if source_sync_port_env {
+            e = e.env(
+                "III_SOURCE_SYNC_PORT",
+                iii_supervisor::source_sync::SOURCE_SYNC_PORT_NAME,
+            );
+            e = e.env("III_SOURCE_SYNC_ROOT", "/workspace");
+            e = e.env("III_SOURCE_SYNC_READY", "/run/iii/source-ready");
         }
         if !virtiofs_mount_env.is_empty() {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
@@ -1031,6 +1065,9 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         }
         if let Some(fd) = guest_shell_fd {
             c = c.port(iii_supervisor::shell_protocol::SHELL_PORT_NAME, fd, fd);
+        }
+        if let Some(fd) = guest_source_sync_fd {
+            c = c.port(iii_supervisor::source_sync::SOURCE_SYNC_PORT_NAME, fd, fd);
         }
         c
     });

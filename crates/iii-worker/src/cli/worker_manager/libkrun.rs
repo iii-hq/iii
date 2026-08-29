@@ -148,6 +148,7 @@ pub fn build_vm_command(
     rootfs_mode: String,
     rootfs_upper: Option<PathBuf>,
     mounts: &[(String, String)],
+    source_sync: Option<&Path>,
 ) -> Result<VmCommand, String> {
     let env = build_vm_env(env);
 
@@ -187,6 +188,7 @@ pub fn build_vm_command(
         &pid_file,
         &control_sock,
         &shell_sock,
+        source_sync,
         &env_pairs,
         mounts,
         args,
@@ -250,6 +252,7 @@ pub async fn run_dev(
     background: bool,
     worker_name: &str,
     mounts: &[(String, String)],
+    source_sync: Option<&Path>,
 ) -> i32 {
     let VmCommand {
         command: mut cmd,
@@ -265,6 +268,7 @@ pub async fn run_dev(
         rootfs_mode,
         rootfs_upper,
         mounts,
+        source_sync,
     ) {
         Ok(built) => built,
         Err(e) => {
@@ -468,6 +472,7 @@ fn vm_boot_args_dev(
     pid_file: &Path,
     control_sock: &Path,
     shell_sock: &Path,
+    source_sync: Option<&Path>,
     env: &[(String, String)],
     mounts: &[(String, String)],
     exec_args: &[String],
@@ -494,6 +499,10 @@ fn vm_boot_args_dev(
     out.push(control_sock.as_os_str().to_owned());
     out.push(OsString::from("--shell-sock"));
     out.push(shell_sock.as_os_str().to_owned());
+    if let Some(source_sync) = source_sync {
+        out.push(OsString::from("--source-sync"));
+        out.push(source_sync.as_os_str().to_owned());
+    }
     out.push(OsString::from(VM_BOOT_NETWORK_FLAG));
     for (k, v) in env {
         out.push(OsString::from("--env"));
@@ -1111,6 +1120,7 @@ mod tests {
         assert_eq!(parsed.console_output.as_deref(), Some("/tmp/console.log"));
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
+        assert_eq!(parsed.source_sync, None);
         assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
         assert_eq!(parsed.arg, exec_args);
         assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.erofs"));
@@ -1135,6 +1145,7 @@ mod tests {
             Path::new("/tmp/vm.pid"),
             Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
+            Some(Path::new("/host/src")),
             &env,
             &mounts,
             &exec_args,
@@ -1149,6 +1160,7 @@ mod tests {
         assert_eq!(parsed.pid_file.as_deref(), Some("/tmp/vm.pid"));
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
+        assert_eq!(parsed.source_sync.as_deref(), Some("/host/src"));
         assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
         assert_eq!(parsed.mount, vec!["/host/src:/guest/src".to_string()]);
         assert_eq!(parsed.arg, exec_args);

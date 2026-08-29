@@ -31,6 +31,7 @@ pub mod sandbox;
 pub mod sandbox_daemon;
 pub mod shell_client;
 pub mod shell_relay;
+pub mod source_sync_host;
 pub mod source_watcher;
 pub mod spinner;
 pub mod status;

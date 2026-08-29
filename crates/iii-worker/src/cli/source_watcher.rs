@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Host-side source watcher for local-path workers.
+//! Legacy restart watcher and shared host-watch helpers.
 //!
 //! Virtiofs propagates file content and metadata from the host into the
 //! guest VM, but inotify events do NOT cross the FUSE boundary — so
@@ -12,15 +12,10 @@
 //! never fire on host edits unless they opt into polling. Some runtimes
 //! (notably tsx 4.x) don't support a polling fallback at all.
 //!
-//! This module works around that by watching the project directory on
-//! the *host* with `notify`, debouncing rapid writes, and re-invoking
-//! `iii-worker start <name>` to kill the stale VM and boot a fresh one.
-//! The engine re-registers the worker automatically when its websocket
-//! reconnects.
-//!
-//! Spawned as a hidden `__watch-source` subprocess alongside the VM so
-//! the watcher survives independent of the short-lived `iii worker start`
-//! CLI invocation.
+//! New VM launches use `source_sync_host`: it reuses the path filters and
+//! watch-tree helpers in this module, then forwards file operations into the
+//! guest. The hidden `__watch-source` restart command remains for compatibility
+//! but is not started by the local-worker path.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -30,7 +25,7 @@ use std::time::Duration;
 use notify::{RecursiveMode, Watcher};
 
 /// Debounce window: collapse rapid writes (editor save-then-rename,
-/// multi-file renames, etc.) into a single restart.
+/// multi-file renames, etc.) into one operation.
 pub const DEBOUNCE_MS: u64 = 500;
 
 /// Directories whose contents should NEVER trigger a restart. These are
@@ -187,7 +182,7 @@ pub fn should_ignore_path(path: &Path, project_root: &Path) -> bool {
 ///
 /// Best-effort: permission errors on subdirs are logged and skipped,
 /// not propagated. The watcher stays online for the rest of the tree.
-fn watch_pruned(
+pub(crate) fn watch_pruned(
     watcher: &mut notify::RecommendedWatcher,
     root: &Path,
     registered: &mut HashSet<PathBuf>,
@@ -286,7 +281,7 @@ fn watch_pruned(
 ///
 /// macOS FSEvents is inherently recursive and auto-covers new subdirs
 /// already, so this call is a no-op there aside from the logging cost.
-fn register_new_dirs(
+pub(crate) fn register_new_dirs(
     watcher: &mut notify::RecommendedWatcher,
     paths: &[PathBuf],
     root: &Path,
@@ -599,9 +594,8 @@ fn try_fast_restart(worker_name: &str) -> anyhow::Result<()> {
 /// path. Factored out of `restart_via_full_vm` so the contract can be
 /// regression-tested without spawning a real process.
 ///
-/// `--no-wait` is load-bearing: the watcher runs with stdout/stderr
-/// redirected to `watcher.log` (see `spawn_source_watcher`), so any
-/// output the child emits gets appended to that file. The default
+/// `--no-wait` is load-bearing: legacy watcher launchers redirect output to
+/// `watcher.log`, so any output the child emits gets appended to that file. The default
 /// wait path prints the 500ms status-panel redraw loop plus
 /// "✓ started / ✓ ready / <name>" lines, all of which would pollute
 /// watcher.log on every slow-path restart.

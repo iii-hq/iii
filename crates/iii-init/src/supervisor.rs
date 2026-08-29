@@ -59,6 +59,13 @@ const III_WORKER_WORKDIR_ENV: &str = "III_WORKER_WORKDIR";
 /// for this VM — the worker child keeps running normally.
 const III_SHELL_PORT_ENV: &str = "III_SHELL_PORT";
 
+/// Virtio-console port carrying host source changes. The receiver only writes
+/// files; the worker's own watcher remains responsible for process restarts.
+const III_SOURCE_SYNC_PORT_ENV: &str = "III_SOURCE_SYNC_PORT";
+
+const III_SOURCE_SYNC_ROOT_ENV: &str = "III_SOURCE_SYNC_ROOT";
+const III_SOURCE_SYNC_READY_ENV: &str = "III_SOURCE_SYNC_READY";
+
 /// Stores the current child worker PID for async-signal-safe signal
 /// forwarding. 0 means no child has been spawned yet. Updated both on
 /// initial spawn and after every respawn inside supervisor mode.
@@ -118,6 +125,7 @@ pub fn exec_worker() -> Result<(), InitError> {
     // sysfs (host forgot `--shell-sock`, or sysfs not mounted), we
     // log and continue without exec; the worker still runs normally.
     maybe_spawn_shell_dispatcher();
+    maybe_spawn_source_sync();
 
     if let Ok(port_name) = std::env::var(III_CONTROL_PORT_ENV) {
         let workdir =
@@ -126,6 +134,40 @@ pub fn exec_worker() -> Result<(), InitError> {
     }
 
     run_legacy(cmd)
+}
+
+fn maybe_spawn_source_sync() {
+    let port_name = match std::env::var(III_SOURCE_SYNC_PORT_ENV) {
+        Ok(port) => port,
+        Err(_) => return,
+    };
+    let workspace =
+        std::env::var(III_SOURCE_SYNC_ROOT_ENV).unwrap_or_else(|_| "/workspace".to_string());
+    let ready = std::env::var(III_SOURCE_SYNC_READY_ENV)
+        .unwrap_or_else(|_| "/run/iii/source-ready".to_string());
+
+    match iii_supervisor::control::find_virtio_port_by_name(&port_name) {
+        Some(port_path) => {
+            std::thread::Builder::new()
+                .name("iii-init-source-sync".to_string())
+                .spawn(move || {
+                    if let Err(error) = crate::source_sync::run(
+                        &port_path,
+                        Path::new(&workspace),
+                        Path::new(&ready),
+                    ) {
+                        eprintln!("iii-init: source sync error: {error}");
+                    }
+                })
+                .expect("spawn source sync thread");
+        }
+        None => {
+            eprintln!(
+                "iii-init: warning: III_SOURCE_SYNC_PORT={port_name} but no matching port \
+                 in /sys/class/virtio-ports. Host source changes will not be forwarded."
+            );
+        }
+    }
 }
 
 /// Look up `III_SHELL_PORT`, resolve the named virtio-console port via
