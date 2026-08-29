@@ -83,12 +83,17 @@ either form as *outdated* with the replacement `iii trigger sandbox::<verb>`.
 
 **Recognized flags** (partial, like the rest of this catalog): `--json` (machine-readable output;
 valid on many commands), `--config`, `--use-default-config`, `--no-update-check`, `--version`,
-`--list-targets`. Never flag a flag as invalid — at most warn that it couldn't be confirmed.
+`--list-targets`, and `-n` / `--namespace` on `iii trigger`. Never flag a flag as invalid — at
+most warn that it couldn't be confirmed.
 
 **Verbless top-level commands** (take args, not a verb): `iii trigger <function-path>`,
 `iii console`, `iii update`. The `iii trigger` form is documented separately below.
 
-**Recognized exemption — `iii trigger`:** The syntax `iii trigger <function-path> [argA="value" argB=5 ...]` is the canonical way to invoke any registered function from the CLI (e.g., `iii trigger sandbox::run`, `iii trigger state::set`, `iii trigger iii::durable::publish`). The `function-path` follows the worker-namespaced `noun::verb` scheme.
+**Recognized exemption — `iii trigger`:** The syntax
+`iii trigger [-n <namespace>|--namespace <namespace>] <function-path> [argA="value" argB=5 ...]`
+is the canonical way to invoke any registered function from the CLI (e.g.,
+`iii trigger sandbox::run`, `iii trigger state::set`, `iii trigger iii::durable::publish`). The
+`function-path` follows the worker-namespaced `noun::verb` scheme.
 
 When you encounter another command that doesn't follow `iii noun verb`, flag it on *convention*
 grounds — either the command name should change, or the doc should clarify the noun. When the
