@@ -9,7 +9,39 @@ use std::sync::Mutex;
 /// Process-global lock serializing tests that mutate CWD.
 pub static CWD_LOCK: Mutex<()> = Mutex::new(());
 
-/// Run an async closure in a temp dir, restoring cwd afterward.
+struct RestoreProcessContext {
+    cwd: std::path::PathBuf,
+    home: Option<std::ffi::OsString>,
+}
+
+impl RestoreProcessContext {
+    fn enter(path: &std::path::Path) -> Self {
+        let restore = Self {
+            cwd: std::env::current_dir().unwrap(),
+            home: std::env::var_os("HOME"),
+        };
+        std::env::set_current_dir(path).unwrap();
+        // SAFETY: every test in this integration-test process that mutates
+        // CWD/HOME does so while holding CWD_LOCK.
+        unsafe { std::env::set_var("HOME", path) };
+        restore
+    }
+}
+
+impl Drop for RestoreProcessContext {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.cwd).expect("restore test working directory");
+        // SAFETY: the CWD_LOCK guard outlives this restoration.
+        unsafe {
+            match &self.home {
+                Some(home) => std::env::set_var("HOME", home),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
+/// Run an async closure with both CWD and HOME isolated to a temp directory.
 ///
 /// Uses `unwrap_or_else(into_inner)` for poison tolerance: when one test
 /// panics the mutex is poisoned, and without tolerance every subsequent
@@ -22,18 +54,14 @@ where
 {
     let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let _restore = RestoreProcessContext::enter(dir.path());
     f().await;
-    std::env::set_current_dir(original).unwrap();
 }
 
-/// Run a closure in a temp dir, restoring cwd afterward.
+/// Run a closure with both CWD and HOME isolated to a temp directory.
 pub fn in_temp_dir<F: FnOnce()>(f: F) {
     let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let _restore = RestoreProcessContext::enter(dir.path());
     f();
-    std::env::set_current_dir(original).unwrap();
 }

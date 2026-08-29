@@ -62,6 +62,48 @@ iii compose build [OPTIONS]
 | ------ | ----------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
 
+#### `iii compose descriptor`
+
+Compile one catalog worker into an immutable release descriptor
+
+```text
+iii compose descriptor [OPTIONS] --worker <WORKER> --source-sha <SOURCE_SHA>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | [default: worker-compose.yaml] |
+| `--worker <WORKER>` | (required) |
+| `--source-sha <SOURCE_SHA>` | (required) |
+| `--output <PATH>` | [default: -] |
+
+#### `iii compose descriptor-index`
+
+Compile every catalog worker and a deterministic descriptor index
+
+```text
+iii compose descriptor-index [OPTIONS] --source-sha <SOURCE_SHA> --compiler-sha <COMPILER_SHA> --output-dir <DIR>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | [default: worker-compose.yaml] |
+| `--source-sha <SOURCE_SHA>` | (required) |
+| `--compiler-sha <COMPILER_SHA>` | (required) |
+| `--output-dir <DIR>` | (required) |
+
+#### `iii compose init`
+
+Create a strict root worker-compose.yaml catalog
+
+```text
+iii compose init [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | [default: worker-compose.yaml] |
+
 #### `iii compose logs`
 
 Read retained worker stdout and stderr from a running Compose daemon
@@ -86,6 +128,19 @@ iii compose logs [OPTIONS] [WORKER]
 <Note>
   Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
 </Note>
+
+#### `iii compose validate`
+
+Compile and validate the root catalog and one stack without starting it
+
+```text
+iii compose validate [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | [default: worker-compose.yaml] |
+| `--stack <STACK>` |  |
 
 ### `iii project`
 

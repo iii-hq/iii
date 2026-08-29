@@ -24,7 +24,7 @@ engine:
           - metadata:
               ew_public: true
     iii-stream:
-      port: ${STREAMS_PORT:3112}
+      port: ${STREAMS_PORT:-3112}
       host: 0.0.0.0
       adapter:
         name: kv

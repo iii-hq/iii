@@ -240,7 +240,12 @@ pub async fn install(
     install_from_registry(container, &registry, &name, version_range, cache_root).await
 }
 
-async fn install_from_registry(
+/// Resolves and installs a package from an explicit Registry endpoint.
+///
+/// The CLI uses [`DEFAULT_REGISTRY`]. Keeping the endpoint explicit here lets
+/// embedders and tests supply a descriptor-native Registry without changing
+/// process-global state.
+pub async fn install_from_registry(
     container: &str,
     registry: &str,
     name: &str,
@@ -382,6 +387,16 @@ pub struct Graph {
 /// different set, because each answer is computed on its own.
 pub async fn resolve_graph(container: &str, reference: &str, version_range: &str) -> Result<Graph> {
     let (registry, name) = split_reference(reference);
+    resolve_graph_from_registry(container, &registry, &name, version_range).await
+}
+
+/// Resolves a package graph from an explicit Registry endpoint.
+pub async fn resolve_graph_from_registry(
+    container: &str,
+    registry: &str,
+    name: &str,
+    version_range: &str,
+) -> Result<Graph> {
     let target = host_target();
     let response = resolve_response(container, &registry, &name, version_range, target).await?;
     Ok(Graph {

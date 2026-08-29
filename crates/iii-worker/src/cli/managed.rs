@@ -657,7 +657,16 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
 
     let mut fail_count = 0;
     for name in &names {
-        let rc = handle_descriptor_registry_add(name, None, false, true, false, false).await;
+        let rc = handle_descriptor_registry_add(
+            name,
+            None,
+            iii_compose::registry::DEFAULT_REGISTRY,
+            false,
+            true,
+            false,
+            false,
+        )
+        .await;
         if rc != 0 {
             fail_count += 1;
         }
@@ -985,6 +994,7 @@ fn lock_descriptor_packages(
 async fn handle_descriptor_registry_add(
     name: &str,
     version: Option<&str>,
+    registry: &str,
     brief: bool,
     force: bool,
     reset_config: bool,
@@ -994,7 +1004,13 @@ async fn handle_descriptor_registry_add(
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".iii")
         .join("package-cache");
-    let graph = match iii_compose::registry::resolve_graph(name, name, version.unwrap_or("*")).await
+    let graph = match iii_compose::registry::resolve_graph_from_registry(
+        name,
+        registry,
+        name,
+        version.unwrap_or("*"),
+    )
+    .await
     {
         Ok(graph) => graph,
         Err(error) => {
@@ -1004,8 +1020,9 @@ async fn handle_descriptor_registry_add(
     };
     let mut packages = Vec::new();
     for node in &graph.nodes {
-        let installed = match iii_compose::registry::install(
+        let installed = match iii_compose::registry::install_from_registry(
             &node.name,
+            registry,
             &node.name,
             &format!("={}", node.version),
             &cache,
@@ -1120,8 +1137,50 @@ pub async fn handle_managed_add_with_consent(
 
     let (name, version) = parse_worker_input(image_or_name);
 
-    handle_descriptor_registry_add(&name, version.as_deref(), brief, force, reset_config, wait)
-        .await
+    handle_descriptor_registry_add(
+        &name,
+        version.as_deref(),
+        iii_compose::registry::DEFAULT_REGISTRY,
+        brief,
+        force,
+        reset_config,
+        wait,
+    )
+    .await
+}
+
+/// Descriptor-native add with an explicit Registry endpoint.
+///
+/// This is the injectable form used by embedders and integration tests. The
+/// CLI intentionally keeps using the canonical Registry and still accepts
+/// package references only.
+pub async fn handle_managed_add_from_registry(
+    image_or_name: &str,
+    registry: &str,
+    brief: bool,
+    force: bool,
+    reset_config: bool,
+    wait: bool,
+) -> i32 {
+    if image_or_name.starts_with(['.', '/', '~']) || image_or_name.contains(':') {
+        eprintln!(
+            "{} iii worker add accepts Registry package references only; use worker-compose.yaml and `iii compose up` for local or OCI workers",
+            "error:".red()
+        );
+        return 1;
+    }
+
+    let (name, version) = parse_worker_input(image_or_name);
+    handle_descriptor_registry_add(
+        &name,
+        version.as_deref(),
+        registry,
+        brief,
+        force,
+        reset_config,
+        wait,
+    )
+    .await
 }
 
 /// Shared tail for every non-local `handle_managed_add` exit path.
@@ -2623,6 +2682,7 @@ pub async fn handle_managed_start(
     handle_descriptor_registry_add(
         worker_name,
         Some(&locked.version),
+        iii_compose::registry::DEFAULT_REGISTRY,
         false,
         false,
         false,

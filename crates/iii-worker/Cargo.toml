@@ -101,3 +101,4 @@ tempfile = "3"
 iii-shell-proto = { path = "../iii-shell-proto" }
 # Ensure tests that touch HOME env var run serially.
 serial_test = "3"
+wiremock = { workspace = true }
