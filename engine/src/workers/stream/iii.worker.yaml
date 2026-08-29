@@ -1,0 +1,13 @@
+iii: v1
+name: iii-stream
+type: engine
+description: Build durable streams for real-time data subscriptions.
+repo: https://github.com/iii-hq/iii
+config:
+  port: 3112
+  host: 127.0.0.1
+  adapter:
+    name: kv
+    config:
+      store_method: file_based
+      file_path: ./data/stream_store

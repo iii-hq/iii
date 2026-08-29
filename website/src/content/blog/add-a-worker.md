@@ -144,7 +144,7 @@ it left off.
 An agent needs to run untrusted code in an isolated sandbox with its own
 filesystem, shell, and network. **Add a worker.** Sandbox workers in iii are
 hardware-isolated microVMs, each with its own root filesystem, network
-stack, and process tree. a root Compose catalog entry referenced with `catalog://<slug>`. The engine manages
+stack, and process tree. `iii worker add ./my-project`. The engine manages
 the VM lifecycle and auto-detects Node, Python, or Rust.
 
 An agent needs to discover what tools and capabilities exist in the system

@@ -5,7 +5,7 @@ The `http` worker turns your functions into REST routes exposed as HTTP endpoint
 
 ## Before adding the worker
 
-editing `worker-compose.yaml` is served by a running Compose daemon. Keep the engine and a daemon for this project
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
 running in separate terminals before using any of the commands below. If this project does not have
 a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
 
@@ -20,7 +20,7 @@ iii compose --namespace dev --engine ws://127.0.0.1:49134
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=http
 ```
 
 <Note>
@@ -145,7 +145,7 @@ endpoint.
 2. Add the worker to Compose, pointing at its directory:
 
 ```bash
-# Declare the local worker under workers: and reference catalog://<slug> from the stack.
+iii trigger -n dev compose::add worker=./my-worker
 ```
 
 For path patterns, request and response shapes, and the other configuration options, see the

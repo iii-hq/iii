@@ -9,7 +9,7 @@ Asynchronous job processing with named queues, retries, and dead-letter support.
 > the standalone worker to Compose:
 >
 > ```bash
-> iii trigger -n dev Compose catalog editing worker=queue
+> iii trigger -n dev compose::add worker=queue
 > ```
 
 Supports two modes:
@@ -20,7 +20,7 @@ Supports two modes:
 ## Add to Compose
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=queue
 ```
 
 Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
@@ -35,34 +35,29 @@ npx skills add iii-hq/workers --skill queue
 
 ## Sample Configuration
 
-```yaml worker-compose.yaml
-workers: {}
-stacks:
-  default:
-    namespace: default
-    containers:
-      queue:
-        worker: package://queue@0.21.5
+```yaml
+containers:
+  queue:
+    worker: package://api.workers.iii.dev/queue
+    version: "0.21.5"
+    config_name: queue
+    config_override:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 5
+          type: standard
+        payment:
+          max_retries: 10
+          concurrency: 2
+          type: fifo
+          message_group_field: transaction_id
+      adapter:
+        name: builtin
         config:
-          queue_configs:
-            default:
-              max_retries: 5
-              concurrency: 5
-              type: standard
-            payment:
-              max_retries: 10
-              concurrency: 2
-              type: fifo
-              message_group_field: transaction_id
-          adapter:
-            name: builtin
-            config:
-              store_method: file_based
-              file_path: ./data/queue_store
+          store_method: file_based
+          file_path: ./data/queue_store
 ```
-
-With the engine running from `iii --config config.yaml`, start the stack with
-`iii compose --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml`.
 
 ## Configuration
 

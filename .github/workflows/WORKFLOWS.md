@@ -39,7 +39,8 @@ The workflows are organized into two categories:
         │  bumps + tags iii-alpha/v* (isolated; never touches main)
         ▼
         ├─► sdk-node (pnpm) / _py / _rust-cargo / _go   (SDK packages)
-        └─► _rust-binary.yml + init-build job            (engine/worker/init binaries → iii-alpha prerelease)
+        ├─► _rust-binary.yml + init-build job            (engine/worker/init binaries → iii-alpha prerelease)
+        └─► _publish-worker-skills                       (manifest-backed skills → `alpha` registry tag)
 ```
 
 ---
@@ -112,7 +113,7 @@ The tag push then triggers the corresponding release workflow.
 
 **Triggers:** manual dispatch only — run from a feature branch via "Use workflow from: `<branch>`"
 
-Publishes an alpha prerelease of every SDK (npm, pypi, crates, go) and the engine binaries **from any feature branch, without touching `main`**. Built for testing a branch end-to-end before merging.
+Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine binaries, and worker skills **from any feature branch, without touching `main`**. Built for testing a branch end-to-end before merging.
 
 | Input | Options |
 |-------|---------|
@@ -127,10 +128,11 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go) and the engin
 5. Publishes, all checking out that tag:
    - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
    - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
+   - **Worker skills** — `_publish-worker-skills.yml` publishes the manifest-backed skills under a dedicated **`alpha`** tag (never `next`/`latest`)
 
-**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease and do not collide with the official `iii/v*` releases. **Console, docker and homebrew are intentionally excluded.**
+**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease and skill metadata uses the dedicated `alpha` tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Console, docker and homebrew are intentionally excluded.**
 
-**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`.
+**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`. The worker-publish job uses the same override to pin the engine CLI.
 
 **Tag format:** `iii-alpha/v{version}` (e.g., `iii-alpha/v0.19.2-alpha.1`)
 
@@ -163,6 +165,8 @@ setup (parse tag metadata, Slack notification)
   │     ├─► sdk-py ──────────────► _py.yml
   │     ├─► sdk-rust ────────────► _rust-cargo.yml
   │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
+  │
+  ├─► publish-worker-skills ► _publish-worker-skills.yml
   │
   ├─► trigger-validations (dispatch downstream smoke/quickstart on success)
   │
@@ -283,6 +287,25 @@ Generates and publishes a Homebrew formula to the `iii-hq/homebrew-tap` reposito
 
 Only runs for stable (non-prerelease) versions.
 
+### `_publish-worker-skills.yml` — Publish Worker Skills
+
+Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide, including e.g. `crates/iii-worker/src/sandbox_daemon`), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml`, the isolated alpha release, and the manual `publish-worker-skills.yml` workflow.
+
+| Input | Purpose |
+|-------|---------|
+| `registry_tag` | Version tag on the registry (`latest`, `next`) |
+| `api_url` | Workers registry base URL |
+
+---
+
+### `publish-worker-skills.yml` — Manual Skills Publish
+
+**Triggers:** `workflow_dispatch` only
+
+Publishes skill markdown for all workers with an `iii.worker.yaml` manifest and a non-empty `skills/` tree. Choose `registry_tag` (`latest` or `next`) at dispatch time.
+
+---
+
 ## Secrets
 
 | Secret | Used by |
@@ -294,6 +317,7 @@ Only runs for stable (non-prerelease) versions.
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Slack release notifications |
 | `SLACK_WEBHOOK_URL` | Slack Docker notifications |
+| `WORKERS_REGISTRY_API_KEY` | Workers registry skill publishing (`_publish-worker-skills`) |
 
 ---
 

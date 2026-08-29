@@ -23,7 +23,6 @@ integration-oci = []
 
 [dependencies]
 iii-filesystem = { path = "../iii-filesystem" }
-iii-compose = { path = "../iii-compose" }
 iii-network = { path = "../iii-network" }
 # TODO: switch to crates.io pin before shipping; path dep for co-development
 iii-sdk = { path = "../../sdk/packages/rust/iii" }
@@ -101,4 +100,3 @@ tempfile = "3"
 iii-shell-proto = { path = "../iii-shell-proto" }
 # Ensure tests that touch HOME env var run serially.
 serial_test = "3"
-wiremock = { workspace = true }

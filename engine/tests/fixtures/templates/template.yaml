@@ -32,6 +32,7 @@ language_files:
     - 'LICENSE*'
     - '*-config.yaml'
     - 'config.yaml'
+    - 'iii.worker.yaml'
     - 'Dockerfile'
     - 'docker-compose.yml'
     - 'docker-compose.*.yml'

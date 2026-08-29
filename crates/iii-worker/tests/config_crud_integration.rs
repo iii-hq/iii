@@ -39,7 +39,9 @@ fn append_worker_with_config() {
 fn append_worker_appends_to_existing() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
-        TestConfigBuilder::new().with_worker("existing").build(&dir);
+        TestConfigBuilder::new()
+            .with_worker("existing", None)
+            .build(&dir);
         iii_worker::cli::config_file::append_worker("new-worker", None).unwrap();
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: existing"));
@@ -82,9 +84,9 @@ fn remove_worker_removes_and_preserves_others() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
         TestConfigBuilder::new()
-            .with_worker("keep")
-            .with_worker("remove-me")
-            .with_worker("also-keep")
+            .with_worker("keep", None)
+            .with_worker("remove-me", None)
+            .with_worker("also-keep", None)
             .build(&dir);
         iii_worker::cli::config_file::remove_worker("remove-me").unwrap();
         let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -98,7 +100,9 @@ fn remove_worker_removes_and_preserves_others() {
 fn remove_worker_not_found_returns_error() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
-        TestConfigBuilder::new().with_worker("only").build(&dir);
+        TestConfigBuilder::new()
+            .with_worker("only", None)
+            .build(&dir);
         let result = iii_worker::cli::config_file::remove_worker("ghost");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
@@ -117,7 +121,9 @@ fn remove_worker_no_file_returns_error() {
 fn worker_exists_true() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
-        TestConfigBuilder::new().with_worker("present").build(&dir);
+        TestConfigBuilder::new()
+            .with_worker("present", None)
+            .build(&dir);
         assert!(iii_worker::cli::config_file::worker_exists("present"));
     });
 }
@@ -126,7 +132,9 @@ fn worker_exists_true() {
 fn worker_exists_false() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
-        TestConfigBuilder::new().with_worker("other").build(&dir);
+        TestConfigBuilder::new()
+            .with_worker("other", None)
+            .build(&dir);
         assert!(!iii_worker::cli::config_file::worker_exists("absent"));
     });
 }
@@ -152,9 +160,9 @@ fn list_worker_names_multiple() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
         TestConfigBuilder::new()
-            .with_worker("alpha")
-            .with_worker("beta")
-            .with_worker("gamma")
+            .with_worker("alpha", None)
+            .with_worker("beta", None)
+            .with_worker("gamma", None)
             .build(&dir);
         let names = iii_worker::cli::config_file::list_worker_names();
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);

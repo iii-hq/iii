@@ -1,6 +1,6 @@
 # iii-telemetry (internal)
 
-This is an internal engine worker. It is not configurable by users and is not a published package.
+This is an internal engine worker. It is not configurable by users and has no `iii.worker.yaml`.
 
 The telemetry worker collects anonymous usage data from the engine to help improve III. It handles:
 

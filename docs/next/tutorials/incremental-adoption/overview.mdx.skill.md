@@ -14,7 +14,7 @@ runs on iii without ever needing a full cutover.
 ## Prerequisites
 
 - A running iii engine and Compose daemon ([install](../../install), then create `config.yaml` and
-  `worker-compose.yaml`; add the workers each step needs with editing `worker-compose.yaml`; see
+  `worker-compose.yaml`; add the workers each step needs with `compose::add`; see
   [Default configuration](../../using-iii/engine#default-configuration) and
   [Compose](../../using-iii/compose)).
 - An existing service you want to migrate, reachable over HTTP.

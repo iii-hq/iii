@@ -47,9 +47,9 @@ collapses that into one live system surface.
 
 ```bash
 iii compose --namespace dev --up
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=queue
+iii trigger -n dev compose::add worker=agent
+iii trigger -n dev compose::add worker=<anything>
 ```
 
 Each worker joins the live catalog. Every other worker is notified and can call it immediately.
@@ -129,7 +129,7 @@ Full walkthrough at the [Quickstart guide](https://iii.dev/docs/quickstart).
 Declare project workers in `worker-compose.yaml`, or add them through a running Compose daemon:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=queue
 ```
 
 Browse packages at [workers.iii.dev](https://workers.iii.dev/) and see the

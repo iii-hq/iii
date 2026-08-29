@@ -36,15 +36,28 @@ pub fn resolve_builtin_version(requested: Option<&str>) -> &str {
         .unwrap_or(ENGINE_BUILTIN_VERSION)
 }
 
-const STREAM_DEFAULT: &str = "\
-port: 3112
-host: 127.0.0.1
-adapter:
-  name: kv
-  config:
-    store_method: file_based
-    file_path: ./data/stream_store
-";
+const STREAM_MANIFEST: &str = include_str!("../../../../engine/src/workers/stream/iii.worker.yaml");
+
+fn manifest_for_builtin(name: &str) -> Option<&'static str> {
+    match name {
+        "iii-stream" => Some(STREAM_MANIFEST),
+        _ => None,
+    }
+}
+
+fn extract_manifest_config_yaml(manifest: &str) -> Option<String> {
+    let manifest: serde_yaml::Value = serde_yaml::from_str(manifest).ok()?;
+    let config_key = serde_yaml::Value::String("config".into());
+    let config = manifest.as_mapping()?.get(&config_key)?;
+    let yaml = serde_yaml::to_string(config).ok()?;
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml).trim_end();
+
+    if yaml.is_empty() || yaml == "null" {
+        None
+    } else {
+        Some(yaml.to_string())
+    }
+}
 
 // Flat SandboxConfig shape — parsed directly by the daemon's config
 // loader. Renders in config.yaml as a clean `config:` block without a
@@ -72,7 +85,8 @@ pub fn get_builtin_default(name: &str) -> Option<String> {
     if name == "iii-sandbox" {
         return Some(SANDBOX_DEFAULT.to_string());
     }
-    (name == "iii-stream").then(|| STREAM_DEFAULT.to_string())
+
+    manifest_for_builtin(name).and_then(extract_manifest_config_yaml)
 }
 
 #[cfg(test)]
@@ -132,7 +146,7 @@ mod tests {
     #[test]
     fn observability_is_mandatory_without_yaml_default() {
         // Defaults live in ObservabilityWorkerConfig::default(); the
-        // Builtin defaults live in Rust, so
+        // iii.worker.yaml no longer carries a config: block, so
         // get_builtin_default must not invent one for config.yaml.
         assert!(MANDATORY_BUILTIN_NAMES.contains(&"iii-observability"));
         assert!(!BUILTIN_NAMES.contains(&"iii-observability"));

@@ -13,7 +13,7 @@ background, with retries and a dead-letter queue (DLQ) for messages that keep fa
 
 ## Before adding the worker
 
-editing `worker-compose.yaml` is served by a running Compose daemon. Keep the engine and a daemon for this project
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
 running in separate terminals before using any of the commands below. If this project does not have
 a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
 
@@ -32,7 +32,7 @@ iii compose --namespace dev --engine ws://127.0.0.1:49134
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=queue
 ```
 
 <Note>
@@ -213,7 +213,7 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
 Add the worker to start it:
 
 ```bash
-# Declare the local worker under workers: and reference catalog://<slug> from the stack.
+iii trigger -n dev compose::add worker=./email-worker
 ```
 
 ### Publishing a message

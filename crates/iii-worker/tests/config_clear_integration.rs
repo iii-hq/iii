@@ -9,27 +9,17 @@
 //! Covers: clear single worker, clear with invalid name, clear all workers.
 
 mod common;
-#[path = "common/registry.rs"]
-mod descriptor_registry;
 
 use common::isolation::in_temp_dir_async;
-use descriptor_registry::DescriptorRegistry;
 
 #[tokio::test]
 async fn handle_managed_clear_single_no_artifacts_for_known_worker() {
     in_temp_dir_async(|| async {
-        let registry = DescriptorRegistry::oci("iii-stream").await;
         // A worker that's registered (in config.yaml) but has no artifacts
         // yet should succeed silently -- "already clean" is not an error.
-        let add_rc = iii_worker::cli::managed::handle_managed_add_from_registry(
-            "iii-stream",
-            &registry.uri(),
-            false,
-            false,
-            false,
-            false,
-        )
-        .await;
+        let add_rc =
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
+                .await;
         assert_eq!(add_rc, 0, "precondition: add must succeed");
         let exit_code = iii_worker::cli::managed::handle_managed_clear(Some("iii-stream"), true);
         assert_eq!(

@@ -17,6 +17,8 @@ pub struct CliHostShim;
 fn source_label_name(s: &crate::core::WorkerSource) -> String {
     match s {
         crate::core::WorkerSource::Registry { name, .. } => name.clone(),
+        crate::core::WorkerSource::Oci { reference } => reference.clone(),
+        crate::core::WorkerSource::Local { path } => path.display().to_string(),
     }
 }
 
@@ -441,11 +443,16 @@ impl WorkerHostShim for CliHostShim {
         // status is LOSSY: the underlying i32 API doesn't surface whether
         // the worker was already-current or replaced — every success maps
         // to `Installed`. version is recovered post-install from iii.lock.
-        let image_or_name = match &opts.source {
-            WorkerSource::Registry { name, version } => match version {
-                Some(v) => format!("{name}@{v}"),
-                None => name.clone(),
-            },
+        let (image_or_name, is_local) = match &opts.source {
+            WorkerSource::Registry { name, version } => {
+                let s = match version {
+                    Some(v) => format!("{name}@{v}"),
+                    None => name.clone(),
+                };
+                (s, false)
+            }
+            WorkerSource::Oci { reference } => (reference.clone(), false),
+            WorkerSource::Local { path } => (path.display().to_string(), true),
         };
 
         let brief = false;
@@ -453,6 +460,11 @@ impl WorkerHostShim for CliHostShim {
         let force = opts.force;
         let reset_config = opts.reset_config;
         let wait = opts.wait;
+        let assume_yes = opts.yes;
+        let can_prompt = {
+            use std::io::IsTerminal as _;
+            std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+        };
         // Snapshot config workers BEFORE the install so we can diff and
         // recover the canonical worker name on success. For OCI installs
         // `source_label_name` returns a raw reference, which lockfile
@@ -465,21 +477,40 @@ impl WorkerHostShim for CliHostShim {
                 .into_iter()
                 .collect();
         let (rc, captured) = run_capturing_stderr(|| async move {
-            crate::cli::managed::handle_managed_add(
-                &image_or_name_clone,
-                brief,
-                force,
-                reset_config,
-                wait,
-            )
-            .await
+            if is_local {
+                crate::cli::local_worker::handle_local_add(
+                    &image_or_name_clone,
+                    force,
+                    reset_config,
+                    brief,
+                    wait,
+                    assume_yes,
+                    can_prompt,
+                )
+                .await
+            } else {
+                crate::cli::managed::handle_managed_add_with_consent(
+                    &image_or_name_clone,
+                    brief,
+                    force,
+                    reset_config,
+                    wait,
+                    assume_yes,
+                    can_prompt,
+                )
+                .await
+            }
         })
         .await;
 
         if rc == 0 {
-            // Prefer the canonical config entry created by the install; an
-            // idempotent re-add falls back to the immutable Registry slug.
-            let name = post_install_worker_name(&opts.source, &pre_config_names);
+            let label = source_label_name(&opts.source);
+            // First post-install canonical name we didn't see beforehand.
+            // For idempotent re-adds where the entry already existed:
+            // registry sources use the slug, local sources resolve the
+            // manifest name, and only OCI falls back to the raw label
+            // (the lockfile lookup returns None cleanly there).
+            let name = post_install_worker_name(&opts.source, &pre_config_names, &label);
             let version = read_locked_version(&name);
             Ok(AddOutcome {
                 name,
@@ -799,6 +830,7 @@ impl WorkerHostShim for CliHostShim {
 fn post_install_worker_name(
     source: &crate::core::WorkerSource,
     pre: &std::collections::HashSet<String>,
+    fallback_label: &str,
 ) -> String {
     if let Some(new_name) = crate::cli::config_file::list_worker_names()
         .into_iter()
@@ -808,6 +840,14 @@ fn post_install_worker_name(
     }
     match source {
         crate::core::WorkerSource::Registry { name, .. } => name.clone(),
+        // Re-adds (force: true) leave the config.yaml entry in place, so the
+        // pre/post diff finds nothing new. Resolve from the manifest (falling
+        // back to the directory name) — the raw path label is not a worker
+        // name and no other worker::* trigger accepts it.
+        crate::core::WorkerSource::Local { path } => {
+            crate::cli::local_worker::resolve_worker_name(path)
+        }
+        crate::core::WorkerSource::Oci { .. } => fallback_label.to_string(),
     }
 }
 
@@ -1240,5 +1280,83 @@ mod tests {
         // Other typed errors never match.
         let not_found = classify_handler_error(1, "Worker 'w' not found", "add", "w");
         assert!(!is_bare_rc_wrapper(&not_found));
+    }
+
+    /// Regression: a forced re-add of a local worker found no NEW name in
+    /// the config.yaml pre/post diff (the entry already existed) and fell
+    /// back to the raw path label — `worker::add` returned
+    /// `name: "/tmp/hello-world"`, which no other worker::* trigger
+    /// accepts. Local sources must resolve the name from the manifest.
+    #[test]
+    fn post_install_worker_name_local_readd_resolves_manifest_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("iii.worker.yaml"),
+            "name: hello-world\nscripts:\n  start: \"node src/index.js\"\n",
+        )
+        .expect("write manifest");
+
+        let source = crate::core::WorkerSource::Local {
+            path: dir.path().to_path_buf(),
+        };
+        // Snapshot the CURRENT config names as `pre` so the diff finds
+        // nothing new — the forced re-add shape.
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+        let label = dir.path().display().to_string();
+
+        let name = post_install_worker_name(&source, &pre, &label);
+        assert_eq!(
+            name, "hello-world",
+            "local re-add must return the manifest name, not the path"
+        );
+    }
+
+    /// Without a manifest name, the local fallback is the directory name —
+    /// still a valid single-segment worker id, never the full path.
+    #[test]
+    fn post_install_worker_name_local_readd_without_manifest_uses_dir_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = crate::core::WorkerSource::Local {
+            path: dir.path().to_path_buf(),
+        };
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+        let label = dir.path().display().to_string();
+
+        let name = post_install_worker_name(&source, &pre, &label);
+        let dir_name = dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(name, dir_name);
+        assert!(
+            !name.contains('/'),
+            "worker name must be a single path segment, got {name}"
+        );
+    }
+
+    /// OCI re-adds have no manifest dir or registry slug to resolve a name
+    /// from, so the only safe answer is the raw reference label (the
+    /// lockfile version lookup returns None cleanly for it).
+    #[test]
+    fn post_install_worker_name_oci_readd_falls_back_to_reference_label() {
+        let reference = "ghcr.io/iii-hq/node:latest";
+        let source = crate::core::WorkerSource::Oci {
+            reference: reference.to_string(),
+        };
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+
+        let name = post_install_worker_name(&source, &pre, reference);
+        assert_eq!(
+            name, reference,
+            "OCI re-add must fall back to the reference label"
+        );
     }
 }

@@ -69,7 +69,7 @@ HTTP, cron, queue, state, pubsub, bridge, application, and custom workers belong
 `containers:`. Add registry packages with:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n orders-daemon compose::add worker=state
 ```
 
 ## Directly supervised engine
@@ -109,7 +109,7 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 - Keep secrets in environment-backed configuration; do not commit literal credentials.
 - Preserve configuration, stream, state, and queue storage paths during migrations.
 - Use `compose::status` for process ownership and `engine::workers::list` for live connections.
-- editing `worker-compose.yaml` never edits `engine:` or restarts the engine.
+- `compose::add` never edits `engine:` or restarts the engine.
 
 ## When to Use
 

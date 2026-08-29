@@ -10,40 +10,24 @@
 //! and force without reset_config (preserves overrides).
 
 mod common;
-#[path = "common/registry.rs"]
-mod descriptor_registry;
 
 use common::isolation::in_temp_dir_async;
-use descriptor_registry::DescriptorRegistry;
 
 #[tokio::test]
 async fn handle_managed_add_force_builtin_re_adds() {
     in_temp_dir_async(|| async {
-        let registry = DescriptorRegistry::oci("iii-stream").await;
         // First add creates config
-        let exit_code = iii_worker::cli::managed::handle_managed_add_from_registry(
-            "iii-stream",
-            &registry.uri(),
-            false,
-            false,
-            false,
-            false,
-        )
-        .await;
+        let exit_code =
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, false, false, false)
+                .await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-stream"));
 
         // Force re-add succeeds (builtins have no artifacts to delete)
-        let exit_code = iii_worker::cli::managed::handle_managed_add_from_registry(
-            "iii-stream",
-            &registry.uri(),
-            false,
-            true,
-            false,
-            false,
-        )
-        .await;
+        let exit_code =
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, true, false, false)
+                .await;
         assert_eq!(exit_code, 0);
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-stream"));
@@ -54,7 +38,6 @@ async fn handle_managed_add_force_builtin_re_adds() {
 #[tokio::test]
 async fn handle_managed_add_force_reset_config_clears_overrides() {
     in_temp_dir_async(|| async {
-        let registry = DescriptorRegistry::oci("iii-stream").await;
         // Pre-populate with user overrides
         std::fs::write(
             "config.yaml",
@@ -65,15 +48,9 @@ async fn handle_managed_add_force_reset_config_clears_overrides() {
         // Force with reset_config should clear user overrides, leaving a
         // bare entry (defaults live in Rust and flow through the
         // configuration worker — they are no longer written into the file)
-        let exit_code = iii_worker::cli::managed::handle_managed_add_from_registry(
-            "iii-stream",
-            &registry.uri(),
-            false,
-            true,
-            true,
-            false,
-        )
-        .await;
+        let exit_code =
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, true, true, false)
+                .await;
         assert_eq!(exit_code, 0);
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
@@ -92,7 +69,6 @@ async fn handle_managed_add_force_reset_config_clears_overrides() {
 #[tokio::test]
 async fn handle_managed_add_force_without_reset_preserves_config() {
     in_temp_dir_async(|| async {
-        let registry = DescriptorRegistry::oci("iii-stream").await;
         // Pre-populate with user overrides
         std::fs::write(
             "config.yaml",
@@ -101,15 +77,9 @@ async fn handle_managed_add_force_without_reset_preserves_config() {
         .unwrap();
 
         // Force WITHOUT reset_config should preserve user overrides
-        let exit_code = iii_worker::cli::managed::handle_managed_add_from_registry(
-            "iii-stream",
-            &registry.uri(),
-            false,
-            true,
-            false,
-            false,
-        )
-        .await;
+        let exit_code =
+            iii_worker::cli::managed::handle_managed_add("iii-stream", false, true, false, false)
+                .await;
         assert_eq!(exit_code, 0);
 
         let content = std::fs::read_to_string("config.yaml").unwrap();

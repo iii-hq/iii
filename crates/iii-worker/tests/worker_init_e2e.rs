@@ -44,8 +44,8 @@ fn init_subcommand_is_reachable() {
 /// Shared assertions for a successful language-specific scaffold.
 fn assert_lang_scaffold(
     lang_short: &str,
-    expected_artifact_kind: &str,
-    expected_exec: &str,
+    expected_base_image: &str,
+    expected_start: &str,
     expected_files: &[&str],
 ) {
     let parent = tempdir().unwrap();
@@ -74,8 +74,8 @@ fn assert_lang_scaffold(
         "expected .iii/worker.ini"
     );
     assert!(
-        root.join("worker-compose.yaml").exists(),
-        "expected worker-compose.yaml"
+        root.join("iii.worker.yaml").exists(),
+        "expected iii.worker.yaml"
     );
     assert!(root.join(".gitignore").exists(), "expected .gitignore");
 
@@ -95,18 +95,26 @@ fn assert_lang_scaffold(
         "worker.ini missing language={lang_short}, got: {ini}"
     );
 
-    // worker-compose.yaml: the worker identity, artifact and runtime are all
-    // declared in the root catalog.
-    let yaml = std::fs::read_to_string(root.join("worker-compose.yaml")).unwrap();
+    // The per-language source manifest must have been renamed away.
     assert!(
-        yaml.contains("  mywkr:"),
-        "catalog identity not templated: {yaml}"
+        !root.join(format!("iii.worker.{lang_short}.yaml")).exists(),
+        "per-language manifest iii.worker.{lang_short}.yaml should be renamed to iii.worker.yaml"
+    );
+
+    // iii.worker.yaml: name substituted, base_image + start match the language.
+    let yaml = std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap();
+    assert!(
+        yaml.contains("name: mywkr"),
+        "yaml name not templated: {yaml}"
     );
     assert!(
-        yaml.contains(expected_artifact_kind),
-        "artifact kind wrong: {yaml}"
+        yaml.contains(expected_base_image),
+        "yaml base_image wrong: {yaml}"
     );
-    assert!(yaml.contains(expected_exec), "runtime exec wrong: {yaml}");
+    assert!(
+        yaml.contains(expected_start),
+        "yaml start script wrong: {yaml}"
+    );
     assert!(
         !yaml.contains("{{"),
         "yaml still has unresolved placeholders: {yaml}"
@@ -128,8 +136,8 @@ fn assert_lang_scaffold(
 fn init_typescript_creates_node_scaffold_with_sdk() {
     assert_lang_scaffold(
         "ts",
-        "kind: javascript-bundle",
-        "exec: [npx, tsx, src/index.ts]",
+        "docker.io/iiidev/node:latest",
+        "npm run start",
         &["package.json", "tsconfig.json", "src/index.ts"],
     );
     let parent = tempdir().unwrap();
@@ -170,8 +178,8 @@ fn init_typescript_creates_node_scaffold_with_sdk() {
 fn init_javascript_creates_node_scaffold() {
     assert_lang_scaffold(
         "js",
-        "kind: javascript-bundle",
-        "exec: [node, src/index.js]",
+        "docker.io/iiidev/node:latest",
+        "node --watch src/index.js",
         &["package.json", "src/index.js"],
     );
     // A JS worker must NOT inherit the TypeScript toolchain or tsconfig.
@@ -218,8 +226,8 @@ fn init_javascript_creates_node_scaffold() {
 fn init_python_creates_pyproject_with_sdk() {
     assert_lang_scaffold(
         "py",
-        "kind: python-bundle",
-        "exec: [python, src/main.py]",
+        "docker.io/iiidev/python:latest",
+        "watchfiles 'python src/main.py'",
         &["pyproject.toml", "src/main.py"],
     );
     let parent = tempdir().unwrap();
@@ -249,8 +257,8 @@ fn init_python_creates_pyproject_with_sdk() {
 fn init_rust_creates_cargo_with_sdk() {
     assert_lang_scaffold(
         "rust",
-        "kind: rust-binary",
-        "exec: [cargo, run, --bin, mywkr]",
+        "docker.io/library/rust:slim-bookworm",
+        "cargo watch -x run",
         &["Cargo.toml", "src/main.rs"],
     );
     let parent = tempdir().unwrap();
@@ -316,9 +324,9 @@ fn init_preserves_worker_id_and_user_edits_on_rerun() {
     );
     let ini1 = std::fs::read_to_string(dir.path().join(".iii").join("worker.ini")).unwrap();
 
-    // User edits worker-compose.yaml between runs.
-    let yaml_path = dir.path().join("worker-compose.yaml");
-    let edited = "workers: {}\nstacks: {}\n";
+    // User edits iii.worker.yaml between runs.
+    let yaml_path = dir.path().join("iii.worker.yaml");
+    let edited = "name: my-custom-worker\nlanguage: typescript\nentry: ./custom.ts\n";
     std::fs::write(&yaml_path, edited).unwrap();
 
     let out2 = run();
@@ -345,7 +353,7 @@ fn init_preserves_worker_id_and_user_edits_on_rerun() {
     let yaml_after = std::fs::read_to_string(&yaml_path).unwrap();
     assert_eq!(
         yaml_after, edited,
-        "re-init must not clobber edited worker-compose.yaml"
+        "re-init must not clobber edited iii.worker.yaml"
     );
 }
 

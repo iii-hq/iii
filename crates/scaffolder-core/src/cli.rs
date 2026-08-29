@@ -96,7 +96,7 @@ pub fn build_fetcher(template_dir: Option<&str>) -> anyhow::Result<TemplateFetch
 
 /// Apply a template to `target`, skipping any files that already exist at the
 /// destination. This is the idempotent variant -- safe to re-run without
-/// clobbering user edits to `.gitignore`, `worker-compose.yaml`, or any other
+/// clobbering user edits to `.gitignore`, `iii.worker.yaml`, or any other
 /// scaffolded file. Equivalent to `write_if_absent` per-file.
 ///
 /// Merges the root manifest's `language_files` with the per-template overrides.

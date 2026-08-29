@@ -40,9 +40,9 @@ are two common paths:
 | Task | Use |
 | --- | --- |
 | Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` |
-| Add an existing capability | Browse `https://workers.iii.dev/`, then run `iii worker add <name>@<version>` |
-| Pin a stack package | Add `worker: package://<name>@<version>` under a Compose stack |
-| Declare a local worker | Define it under `workers`, then use `worker: catalog://<slug>` in a stack |
+| Add an existing capability | Browse `https://workers.iii.dev/`, then call `compose::add worker=<name>` |
+| Pin a worker version | `compose::add worker=<name>@<version>` |
+| Declare a local worker | Add `worker: path://./workers/my-worker` under `containers:` |
 | Reproduce a project | Commit the exact versions in `worker-compose.yaml` |
 
 The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
@@ -50,13 +50,23 @@ queue, pub/sub, cron, observability, sandbox, database, shell, console, and othe
 workers. Those workers may ship their own function-level skills; do not duplicate every capability
 as a top-level iii skill.
 
-### Worker package descriptor
+### Worker Manifest
 
-Use the repository's root `worker-compose.yaml` for local source. Each `workers.<slug>` entry
-declares source/package manifest, artifact toolchain and files, runtime, Registry metadata, and
-validation policy. Reference it from a stack with `catalog://<slug>` and validate with
-`iii compose validate --file worker-compose.yaml`. Registry bundles and locks execute the compiled
-descriptor; they do not inspect project metadata at runtime.
+Use `iii.worker.yaml` when iii should start a local worker project:
+
+```yaml
+name: math-worker
+runtime:
+  kind: python
+  package_manager: pip
+  entry: math_worker.py
+scripts:
+  install: "pip install -r requirements.txt"
+  start: "python math_worker.py"
+```
+
+The manifest describes how to start the process. Once running, the WebSocket connection and function
+registrations are what make the worker part of iii.
 
 ### Live Engine Registry
 

@@ -34,6 +34,12 @@ fn cli_parses_all_subcommands() {
         (&["iii-worker", "sync"], |c| {
             assert!(matches!(c, Commands::Sync { .. }))
         }),
+        (&["iii-worker", "verify"], |c| {
+            assert!(matches!(c, Commands::Verify { strict: false }))
+        }),
+        (&["iii-worker", "verify", "--strict"], |c| {
+            assert!(matches!(c, Commands::Verify { strict: true }))
+        }),
         (&["iii-worker", "logs", "my-worker"], |c| {
             assert!(matches!(c, Commands::Logs { .. }))
         }),
@@ -360,32 +366,35 @@ fn vm_boot_args_defaults() {
     assert_eq!(w.args.slot, 0);
 }
 
-/// Root worker catalog YAML roundtrip.
+/// Manifest YAML roundtrip (serde pattern test, kept as-is).
 #[test]
-fn worker_compose_yaml_roundtrip() {
+fn manifest_yaml_roundtrip() {
     in_temp_dir(|| {
         let dir = std::env::current_dir().unwrap();
-        let yaml = r#"workers:
-  integration-test-worker:
-    artifact: { kind: javascript-bundle }
-    runtime:
-      environment: { NODE_ENV: production }
-stacks: {}
+        let yaml = r#"
+name: integration-test-worker
+runtime:
+  kind: typescript
+  package_manager: npm
+  entry: src/index.ts
+env:
+  NODE_ENV: production
+  API_KEY: test-key
+resources:
+  cpus: 4
+  memory: 4096
 "#;
-        std::fs::write(dir.join("worker-compose.yaml"), yaml).unwrap();
+        std::fs::write(dir.join("iii.worker.yaml"), yaml).unwrap();
 
-        let content = std::fs::read_to_string(dir.join("worker-compose.yaml")).unwrap();
+        let content = std::fs::read_to_string(dir.join("iii.worker.yaml")).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
-        let worker = &parsed["workers"]["integration-test-worker"];
 
-        assert_eq!(
-            worker["artifact"]["kind"].as_str(),
-            Some("javascript-bundle")
-        );
-        assert_eq!(
-            worker["runtime"]["environment"]["NODE_ENV"].as_str(),
-            Some("production")
-        );
+        assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
+        assert_eq!(parsed["runtime"]["kind"].as_str(), Some("typescript"));
+        assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
+        assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
+        assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
+        assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
     });
 }
 

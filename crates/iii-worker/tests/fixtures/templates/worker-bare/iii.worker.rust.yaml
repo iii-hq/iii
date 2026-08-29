@@ -1,0 +1,7 @@
+name: {{worker_name}}
+runtime:
+  base_image: docker.io/library/rust:slim-bookworm
+scripts:
+  setup: cargo install cargo-watch
+  install: cargo build
+  start: cargo watch -x run

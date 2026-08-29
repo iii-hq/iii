@@ -13,6 +13,13 @@ use crate::core::types::{AddOptions, AddOutcome, WorkerSource};
 /// Provenance of a worker op. Carried into `WorkerOpEvent`s so subscribers
 /// can tell a CLI invocation from a bus-triggered one.
 ///
+/// NOTE: this no longer gates `kind: "local"`. Local installs used to be
+/// rejected over the trigger surface (W102); that guard was removed on
+/// purpose so `worker::add { source: { kind: "local", path } }` works over
+/// the bus. The path resolves on the DAEMON host and the install runs the
+/// manifest's setup/install/start scripts there — same trust as the CLI,
+/// now reachable by any connected caller. Keep that in mind before exposing
+/// the daemon to untrusted workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerMode {
     Cli,
@@ -61,6 +68,8 @@ pub async fn run(
 fn source_label(s: &WorkerSource) -> String {
     match s {
         WorkerSource::Registry { name, .. } => name.clone(),
+        WorkerSource::Oci { reference } => reference.clone(),
+        WorkerSource::Local { path } => path.display().to_string(),
     }
 }
 
@@ -84,6 +93,8 @@ mod tests {
         ) -> Result<AddOutcome, WorkerOpError> {
             let name = match opts.source {
                 WorkerSource::Registry { name, .. } => name,
+                WorkerSource::Oci { reference } => reference,
+                WorkerSource::Local { path } => path.display().to_string(),
             };
             Ok(AddOutcome {
                 name,
@@ -141,6 +152,27 @@ mod tests {
         ) -> Result<crate::core::ClearOutcome, WorkerOpError> {
             unimplemented!()
         }
+    }
+
+    #[tokio::test]
+    async fn local_source_installs() {
+        // Local-path installs are allowed regardless of caller. The W102
+        // trigger-surface rejection was removed on purpose; `run` no longer
+        // takes a CallerMode and never rejects `kind: "local"`.
+        let dir = TempDir::new().unwrap();
+        let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
+        let sink = CapturingSink::new();
+        let opts = AddOptions {
+            source: WorkerSource::Local {
+                path: "./my-worker".into(),
+            },
+            force: false,
+            reset_config: false,
+            yes: false,
+            wait: true,
+        };
+        let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
+        assert_eq!(outcome.status, AddStatus::Installed);
     }
 
     #[tokio::test]

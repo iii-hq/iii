@@ -261,7 +261,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # Engine pipeline (isolated): binaries -> GitHub prerelease on the
-  # iii-alpha/v* tag, builtin workers -> dedicated `alpha` registry tag.
+  # iii-alpha/v* tag, manifest-backed skills -> dedicated `alpha` registry tag.
   # Nothing here touches the official iii/v* releases or the rc/latest
   # worker channels. Console, docker and homebrew are intentionally out.
   # ──────────────────────────────────────────────────────────────
@@ -408,6 +408,16 @@ jobs:
     secrets:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
       III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+  publish-worker-skills:
+    name: Publish worker skills (alpha)
+    needs: [prepare, create-alpha-release]
+    if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
+      registry_tag: alpha
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
 
   worker-release:
     name: Worker Binary (alpha)

@@ -3,9 +3,11 @@
 # Compose
 
 
-Compose is the local source workflow for iii. A repository has one root
-`worker-compose.yaml` containing a worker catalog and named stacks. Local code is never installed
-with `iii worker add`; that command accepts immutable Registry references only.
+Compose is iii's catalog-and-stack workflow. A repository may have one root
+`worker-compose.yaml` containing release definitions and named stacks. This is
+separate from the public `iii.worker.yaml` contract: `iii worker add ./path`
+continues to support manifest-based local development, while release systems
+compile the root catalog and never read those manifests.
 
 ## Commands
 
@@ -81,7 +83,9 @@ Bundle `include` entries are paths relative to `source.path`. The release archiv
 paths exactly; it never flattens or renames them. `runtime.exec` runs with the extracted archive as
 `/workspace`, so its relative path must match the packaged layout. `install_command` and
 `build_command` are release-build commands, not boot-time defaults. Any `runtime.prepare` command
-runs inside the digest-pinned base image and must consume only packaged local content.
+runs inside the digest-pinned base image and must consume only packaged local content. A project
+may explicitly include `iii.worker.yaml` for compatibility with `iii worker`; the descriptor-native
+runtime does not inspect it.
 
 ## Release descriptors
 
@@ -90,6 +94,6 @@ its canonical SHA-256 digest, source SHA, and build units. `descriptor-index` co
 atomically into `release-descriptor-index.json` and `descriptors/<slug>.json`; downstream release
 systems consume those bytes and do not reimplement Compose parsing or digest calculation.
 
-Registry bundles contain only the files enumerated by the descriptor plus the compiler-owned
-descriptor and digest sidecars installed by iii. Bundles do not contain or read project metadata at
-runtime.
+Registry bundles contain only files enumerated by the descriptor plus compiler-owned descriptor
+and digest sidecars installed by iii. Any explicitly packaged public manifest is compatibility
+metadata, not a release-planning or descriptor-runtime input.

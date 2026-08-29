@@ -28,7 +28,7 @@ const III = [
    { k: "muted", t: "All tests pass. Building worker" }],
   [{ k: "worker", t: "payments-ledger" }],
   [{ k: "confirm", t: "Deploy to production? ", ans: "yes" },
-   { k: "cmd", t: "iii compose validate --file worker-compose.yaml" },
+   { k: "cmd", t: "compose::add ./payments-ledger --host production" },
    { k: "ok", t: "joined prod · 25 workers connected" }],
   [],
 ];

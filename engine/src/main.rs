@@ -6,6 +6,7 @@
 
 mod cli;
 mod cli_trigger;
+mod legacy_worker_functions;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
@@ -524,9 +525,13 @@ mod tests {
     }
 
     #[test]
-    fn worker_dispatches_registry_package_commands() {
+    fn worker_dispatches_public_worker_commands() {
         let cli = Cli::try_parse_from(["iii", "worker", "add", "http@1.0.0"])
             .expect("iii worker must remain a public passthrough command");
+        assert_eq!(cli_usage_command_path(&cli), "worker add");
+
+        let cli = Cli::try_parse_from(["iii", "worker", "add", "./my-worker"])
+            .expect("local manifest paths must reach iii-worker unchanged");
         assert_eq!(cli_usage_command_path(&cli), "worker add");
     }
 

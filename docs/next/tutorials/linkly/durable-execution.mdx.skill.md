@@ -13,7 +13,7 @@ This chapter uses two workers. `queue` is already in your project from `iii proj
 `pubsub` now; you publish your first event to it later in the chapter:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n linkly compose::add worker=pubsub
 ```
 
 ## Make redirects fast with a queue
@@ -211,15 +211,23 @@ runtimes. So this time we'll create an analytics worker in Python to count links
 ### Create a new worker
 
 Create a Python worker the same way you created the `link` worker in Chapter 1. It needs an
-`analytics/src/main.py` entrypoint and an `analytics` definition in the root Compose catalog.
+`analytics/src/main.py` entrypoint and an `iii.worker.yaml` manifest.
 
 ```bash
 mkdir -p analytics/src && touch analytics/src/main.py
 ```
 
-Declare the Python runtime, exact package-manager version and lockfile, offline build/install argv,
-explicit included files, digest-pinned base image, and `runtime.exec` in `workers.analytics`. Add a
-`catalog://analytics` container to the tutorial stack, then run `iii compose validate` before up.
+Create its manifest. The install step supplies the SDK, observability helper, and source watcher
+inside the worker runtime:
+
+```yaml analytics/iii.worker.yaml
+name: analytics
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  install: pip install iii-sdk==0.21.4 iii-helpers==0.21.4 watchfiles
+  start: watchfiles 'python src/main.py'
+```
 
 ### Subscribe to link.created events
 
@@ -311,7 +319,7 @@ value:
 Finally, add the new analytics worker to Compose:
 
 ```bash
-# Declare the local worker under workers: and reference catalog://<slug> from the stack.
+iii trigger -n linkly compose::add worker=./analytics
 ```
 
 ### See it work

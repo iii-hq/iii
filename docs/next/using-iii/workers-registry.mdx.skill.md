@@ -3,33 +3,36 @@
 # Worker Registry
 
 
-The [iii Worker Registry](https://workers.iii.dev/) indexes immutable worker versions. Each version
-resolves to a normalized PackageDescriptor, its SHA-256 digest, interface, and digest-addressed
-artifacts.
+## Browsing the registry
 
-## Install a package
+The iii Worker Registry at [workers.iii.dev](https://workers.iii.dev/) is the index of installable
+workers. Each worker page lists the functions and trigger types it provides, its configuration
+schema, supported platforms, and agent skills. Use that information to locate a worker that fulfills
+a capability your project needs.
 
-`iii worker add` accepts only a Registry reference:
+{/* TODO: Add a llm-only note here on how an llm can browse the registry once that surface is stable in the skills worker */}
+
+Workers can also be found on Docker and OCI-compatible registries.
+
+## Adding a worker
+
+`compose::add` accepts a registry name (optionally pinned with `@version`) or a local project path.
+It writes the resolved worker and dependency graph to `worker-compose.yaml`, then restarts the
+project. Its settings are managed through the [configuration worker](./configuration).
 
 ```bash
-iii worker add state@next
-iii worker add state@0.22.2
+iii trigger -n dev compose::add worker=state
+iii trigger -n dev compose::add worker=state@0.22.2
+iii trigger -n dev compose::add worker=./workers/my_worker
 ```
 
-The resolver verifies descriptor and artifact digests, records them in `iii.lock`, and starts the
-descriptor-native runtime. Local paths and arbitrary OCI references are rejected.
+<Note>
+  Replace `dev` with the running Compose daemon's namespace. For project lifecycle, status, updates,
+  and removal by editing the file, see [Workers](./workers) and [Compose](./compose).
+</Note>
 
-## Declare a package in a stack
+## Artifact types
 
-```yaml
-workers: {}
-stacks:
-  default:
-    namespace: dev
-    containers:
-      state:
-        worker: package://state@next
-```
-
-Validate with `iii compose validate --file worker-compose.yaml`. Local source belongs under the root
-`workers` catalog and is referenced by stacks as `catalog://<slug>`.
+Compose currently runs registry workers published as native binaries or bundles. Engine-kind roots
+are rejected because the engine already supplies them; image workers require an OCI runtime and are
+not yet supported by Compose.

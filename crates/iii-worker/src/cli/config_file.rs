@@ -123,10 +123,12 @@ pub enum ResolvedWorkerType {
         image: String,
         env: std::collections::HashMap<String, String>,
     },
+    /// Local-path worker — has `worker_path:` in config.yaml
+    Local { worker_path: String },
     /// Binary worker — executable at ~/.iii/workers/{name}
     Binary { binary_path: std::path::PathBuf },
     /// Bundle worker — extracted archive at ~/.iii/workers-bundle/{name}/
-    /// containing worker-compose.yaml. Dispatched through the local-worker
+    /// containing iii.worker.yaml. Dispatched through the local-worker
     /// rails (libkrun boot) but with watcher disabled (immutable install).
     Bundle { worker_path: std::path::PathBuf },
     /// Config-only / builtin worker — no image, path, or binary
@@ -365,6 +367,36 @@ fn extract_worker_config(content: &str, name: &str) -> Option<String> {
     Some(stripped.join("\n"))
 }
 
+/// Extract the `worker_path:` value for a named worker from file content.
+fn extract_worker_path(content: &str, name: &str) -> Option<String> {
+    let target = format!("- name: {}", name);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+
+    // Find the entry
+    while i < lines.len() {
+        if lines[i].trim() == target {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+
+    // Look for `worker_path:` in the entry's indented lines
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("- name:") || (!lines[i].starts_with(' ') && !lines[i].is_empty()) {
+            break; // hit next entry or top-level key
+        }
+        if let Some(rest) = trimmed.strip_prefix("worker_path:") {
+            return Some(rest.trim().to_string());
+        }
+        i += 1;
+    }
+
+    None
+}
+
 /// Extract the `image:` value for a named worker from file content.
 fn extract_image(content: &str, name: &str) -> Option<String> {
     let target = format!("- name: {}", name);
@@ -459,6 +491,67 @@ pub fn append_worker_with_image(
     append_worker_impl(name, Some(image), config_yaml)
 }
 
+/// Same as [`append_worker`] but writes a `worker_path: {worker_path}` field
+/// instead of `image:`. Used for local directory-based workers.
+pub fn append_worker_with_path(
+    name: &str,
+    worker_path: &str,
+    config_yaml: Option<&str>,
+) -> Result<(), String> {
+    super::registry::validate_worker_name(name)?;
+    let path = config_path();
+
+    let mut content = if path.exists() {
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {}", path.display(), e))?
+    } else {
+        String::new()
+    };
+
+    if worker_exists_in(&content, name) {
+        let existing_config = extract_worker_config(&content, name);
+        content = remove_worker_from(&content, name);
+
+        if let Some(existing) = existing_config {
+            if let Some(incoming) = config_yaml {
+                let merged = merge_yaml_configs(incoming, &existing);
+                return append_to_content_with_fields(
+                    &mut content,
+                    &path,
+                    name,
+                    None,
+                    Some(worker_path),
+                    Some(&merged),
+                );
+            }
+            return append_to_content_with_fields(
+                &mut content,
+                &path,
+                name,
+                None,
+                Some(worker_path),
+                Some(&existing),
+            );
+        }
+    }
+
+    append_to_content_with_fields(
+        &mut content,
+        &path,
+        name,
+        None,
+        Some(worker_path),
+        config_yaml,
+    )
+}
+
+/// Returns the `worker_path:` value for a named worker in `config.yaml`, if present.
+pub fn get_worker_path(name: &str) -> Option<String> {
+    let path = config_path();
+    let content = std::fs::read_to_string(path).ok()?;
+    extract_worker_path(&content, name)
+}
+
 fn append_worker_impl(
     name: &str,
     image: Option<&str>,
@@ -505,6 +598,19 @@ fn append_to_content(
     image: Option<&str>,
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
+    append_to_content_with_fields(content, path, name, image, None, config_yaml)
+}
+
+/// Low-level: appends a worker entry with optional `image` and `worker_path`
+/// fields to `content` and writes to `path`.
+fn append_to_content_with_fields(
+    content: &mut String,
+    path: &Path,
+    name: &str,
+    image: Option<&str>,
+    worker_path: Option<&str>,
+    config_yaml: Option<&str>,
+) -> Result<(), String> {
     // Normalize `workers: []` → `workers:` so appending list items below
     // produces valid YAML.
     *content = normalize_empty_workers_list(content);
@@ -521,6 +627,9 @@ fn append_to_content(
     let mut entry = format!("  - name: {}\n", name);
     if let Some(img) = image {
         entry.push_str(&format!("    image: {}\n", img));
+    }
+    if let Some(wp) = worker_path {
+        entry.push_str(&format!("    worker_path: {}\n", wp));
     }
     if let Some(cfg) = config_yaml {
         let cfg = cfg.trim_end_matches('\n');
@@ -563,6 +672,12 @@ pub fn get_worker_image(name: &str) -> Option<String> {
 /// Resolve the worker type from config.yaml content (no filesystem access for binary check).
 /// Used by tests and by `resolve_worker_type`.
 fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorkerType {
+    // Check worker_path first (local), then image (OCI).
+    // Consistent ordering: local > OCI > binary > config.
+    if let Some(worker_path) = extract_worker_path(content, name) {
+        return ResolvedWorkerType::Local { worker_path };
+    }
+
     if let Some(image) = extract_image(content, name) {
         let config_str = extract_worker_config(content, name);
         let mut env = std::collections::HashMap::new();
@@ -579,9 +694,8 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
 
 /// Resolve the canonical worker type for a named worker.
 /// Reads config.yaml once and checks the filesystem for binary/bundle workers.
-/// Priority: OCI (image) > bundle (~/.iii/workers-bundle/{name}/) > binary
-/// (~/.iii/workers/{name}) > config. Local source paths belong exclusively to
-/// worker-compose.yaml and never enter the global worker config.
+/// Priority: local (worker_path) > OCI (image) > bundle (~/.iii/workers-bundle/{name}/)
+/// > binary (~/.iii/workers/{name}) > config.
 ///
 /// Bundle takes precedence over binary because the bundle install root is a
 /// distinct, newer install type (introduced for registry-published JS/Python
@@ -619,26 +733,24 @@ pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
 }
 
 /// Returns true when a bundle worker named `name` is already installed at the
-/// global cache path (`~/.iii/workers-bundle/{name}/`) with its compiler-owned
-/// package descriptor and digest sidecar.
+/// global cache path (`~/.iii/workers-bundle/{name}/`) with a valid
+/// `iii.worker.yaml` manifest.
 ///
 /// Bundle installs are shared machine-wide by name, not per project, so this
 /// is how a second project detects that another project already installed the
 /// bundle and can register it without re-downloading. Mirrors the bundle
 /// detection in `check_install_fallback`: a stray empty directory does NOT
-/// count as installed (both descriptor sidecars must be present).
+/// count as installed (manifest must be present).
 pub fn bundle_is_installed(name: &str) -> bool {
     let bundle_dir = bundle_worker_path(name);
-    bundle_dir.is_dir()
-        && bundle_dir.join(".iii-package-descriptor.json").is_file()
-        && bundle_dir.join(".iii-package-descriptor.sha256").is_file()
+    bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file()
 }
 
 /// Filesystem fallback precedence: bundle → binary → config-only.
 ///
-/// A bundle install is detected by compiler-owned descriptor and digest
-/// sidecars inside the bundle directory, so a stray empty directory or escaped
-/// staging directory does not trigger a false-positive Bundle resolve.
+/// A bundle install is detected by the presence of `iii.worker.yaml` inside
+/// the bundle directory (not just dir existence) so a stray empty directory
+/// or escaped staging dir doesn't trigger a false-positive Bundle resolve.
 fn check_install_fallback(name: &str) -> ResolvedWorkerType {
     if bundle_is_installed(name) {
         return ResolvedWorkerType::Bundle {
@@ -654,6 +766,15 @@ fn check_install_fallback(name: &str) -> ResolvedWorkerType {
     } else {
         ResolvedWorkerType::Config
     }
+}
+
+/// Backwards-compatible alias kept so external callers and tests that grew
+/// up alongside the binary-only resolver continue to compile. Internally
+/// delegates to `check_install_fallback`, which extends the precedence to
+/// cover bundle workers.
+#[allow(dead_code)]
+fn check_binary_fallback(name: &str) -> ResolvedWorkerType {
+    check_install_fallback(name)
 }
 
 /// Expand `${VAR}` and `${VAR:default}` references against the host
@@ -722,7 +843,7 @@ fn expand_env_vars(yaml_content: &str) -> Result<String, String> {
 /// works in both readers of `config.yaml`.
 ///
 /// Expansion happens at start time, not when `iii worker add` copies
-/// `worker-compose.yaml`'s `config:` into `config.yaml`. That keeps the
+/// `iii.worker.yaml`'s `config:` into `config.yaml`. That keeps the
 /// literal `${VAR}` on disk (so secrets don't get baked into a file
 /// users sometimes check into git) and lets the host env be the source
 /// of truth on every worker start.
@@ -1151,9 +1272,18 @@ mod tests {
 
     #[test]
     fn test_extract_image_not_found() {
-        let content = "workers:\n  - name: config-only\n";
-        let image = extract_image(content, "config-only");
+        let content = "workers:\n  - name: local-w\n    worker_path: /tmp/w\n";
+        let image = extract_image(content, "local-w");
         assert!(image.is_none());
+    }
+
+    #[test]
+    fn test_resolve_worker_type_local() {
+        let content = "workers:\n  - name: my-local\n    worker_path: /home/user/proj\n";
+        let resolved = resolve_worker_type_from_content(content, "my-local");
+        assert!(
+            matches!(resolved, ResolvedWorkerType::Local { worker_path } if worker_path == "/home/user/proj")
+        );
     }
 
     #[test]
@@ -1177,6 +1307,14 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_worker_type_local_takes_precedence_over_image() {
+        let content =
+            "workers:\n  - name: weird\n    worker_path: /tmp/proj\n    image: ghcr.io/org/w:1\n";
+        let resolved = resolve_worker_type_from_content(content, "weird");
+        assert!(matches!(resolved, ResolvedWorkerType::Local { .. }));
+    }
+
+    #[test]
     fn test_remove_worker_from_first_entry() {
         let content = "workers:\n  - name: first\n    config:\n      x: 1\n  - name: second\n";
         let result = remove_worker_from(content, "first");
@@ -1190,6 +1328,39 @@ mod tests {
         let result = remove_worker_from(content, "solo");
         assert!(!result.contains("- name: solo"));
         assert!(result.contains("workers:"));
+    }
+
+    #[test]
+    fn test_append_worker_with_path_field() {
+        let mut content = "workers:\n".to_string();
+        let path = std::path::Path::new("/tmp/test-config.yaml");
+        let _ = std::fs::write(path, &content);
+        append_to_content_with_fields(
+            &mut content,
+            path,
+            "local-worker",
+            None,
+            Some("/absolute/path/to/worker"),
+            Some("timeout: 30"),
+        )
+        .unwrap();
+        assert!(content.contains("- name: local-worker"));
+        assert!(content.contains("worker_path: /absolute/path/to/worker"));
+        assert!(content.contains("timeout: 30"));
+    }
+
+    #[test]
+    fn test_get_worker_path_found() {
+        let content = "workers:\n  - name: my-worker\n    worker_path: /home/user/my-worker\n    config:\n      timeout: 30\n";
+        let path = extract_worker_path(content, "my-worker");
+        assert_eq!(path, Some("/home/user/my-worker".to_string()));
+    }
+
+    #[test]
+    fn test_get_worker_path_not_found() {
+        let content = "workers:\n  - name: oci-worker\n    image: ghcr.io/org/worker:tag\n";
+        let path = extract_worker_path(content, "oci-worker");
+        assert!(path.is_none());
     }
 
     #[test]
@@ -1237,7 +1408,7 @@ mod tests {
         let mut content = "workers: []\n".to_string();
         let path = std::path::Path::new("/tmp/test-empty-list-marker.yaml");
 
-        append_to_content(&mut content, path, "iii-state", None, None).unwrap();
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
 
         assert!(
             content.contains("- name: iii-state"),
@@ -1279,7 +1450,7 @@ workers: []
         .to_string();
         let path = std::path::Path::new("/tmp/test-starter-config-shape.yaml");
 
-        append_to_content(&mut content, path, "iii-http", None, None).unwrap();
+        append_to_content_with_fields(&mut content, path, "iii-http", None, None, None).unwrap();
 
         assert!(content.starts_with("# iii engine configuration."));
         assert!(!content.contains("workers: []"));
@@ -1368,7 +1539,7 @@ workers: []
         let mut content = "workers: [] # add workers here\n".to_string();
         let path = std::path::Path::new("/tmp/test-empty-list-marker-comment.yaml");
 
-        append_to_content(&mut content, path, "iii-state", None, None).unwrap();
+        append_to_content_with_fields(&mut content, path, "iii-state", None, None, None).unwrap();
 
         assert!(
             content.contains("- name: iii-state"),

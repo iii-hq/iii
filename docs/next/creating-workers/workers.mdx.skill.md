@@ -26,10 +26,18 @@ triggers. Create a normal TypeScript, JavaScript, Python, Rust, or Go project us
 package tools, then add the corresponding iii SDK and an entrypoint such as `src/index.ts` or
 `src/main.py`.
 
-Run `iii worker init` to create the language project and a root `worker-compose.yaml`. The Compose
-catalog declares the worker's source, exact build toolchain, immutable runtime, Registry metadata,
-and validation policy. Validate it with `iii compose validate --file worker-compose.yaml`, then
-start the local stack with `iii compose --file worker-compose.yaml --up`.
+To let Compose start a local worker, add an `iii.worker.yaml` at the project root:
+
+```yaml iii.worker.yaml
+name: my-worker
+description: One-line summary of what this worker does.
+scripts:
+  start: pnpm start
+```
+
+Declare the directory in `worker-compose.yaml`, or add it through a running daemon with
+`iii trigger -n dev compose::add worker=./workers/my-worker`. See
+[Using iii / Workers](../using-iii/workers#finding-workers) for the registry and local-path surface.
 
 <Info title="Engine and SDK versions">
   The engine and SDK packages can have different patch versions within the same minor line. Keep the
@@ -475,17 +483,36 @@ as they happen. This is particularly useful for continuing work when a Worker co
   </Tabs>
 </Accordion>
 
-## Worker package descriptor
+## Worker manifest
 
-The root Compose catalog compiles each worker into a normalized immutable package descriptor.
-Bundles and Registry installs execute that descriptor directly; they do not inspect project
-metadata at runtime. See the [worker package descriptor reference](./worker-manifest) and the
-[Compose root schema](../using-iii/compose#root-shape).
+`iii.worker.yaml` is the manifest at the worker's root that tells Compose how to start a local or
+bundled worker. A local Compose container can override the manifest with its own `scripts.run` and
+use `pre_run` or `post_run` for lifecycle hooks.
+
+```yaml
+name: math-worker
+description: Evaluate math expressions over iii functions.
+runtime:
+  # Base OCI image used as the worker rootfs. Override to pin a version.
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  start: "watchfiles 'python src/math_worker.py'"
+```
+
+`description` is an optional one-line, human/LLM-readable summary of what the worker does.
+
+`scripts.start` launches the worker. Here, `watchfiles` reloads it whenever you edit a source file.
+`runtime.base_image` selects the OCI image used for a bundled worker's root filesystem.
+
+The manifest is metadata about _starting_ the Worker. Once the Worker is running, iii treats a
+Compose-managed process and a manually run process that uses the iii SDK identically.
 
 <Note>
-  If a worker isn't starting correctly, check `iii compose validate`, the Compose daemon output, and
+  If a worker isn't starting correctly, check its manifest, the Compose daemon output, and
   `iii trigger -n dev compose::status`.
 </Note>
+
+{/* TODO: link to the canonical iii.worker.yaml reference page once it exists. */}
 
 ## Shutting down a worker
 

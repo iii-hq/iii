@@ -242,6 +242,7 @@ impl WorkerStatus {
 
         let resolved = resolve_worker_type(name);
         let (worker_type, worker_path) = match &resolved {
+            ResolvedWorkerType::Local { worker_path } => ("local", Some(worker_path.clone())),
             ResolvedWorkerType::Oci { .. } => ("oci", None),
             ResolvedWorkerType::Bundle { worker_path } => {
                 ("bundle", Some(worker_path.to_string_lossy().to_string()))
@@ -250,7 +251,7 @@ impl WorkerStatus {
             ResolvedWorkerType::Config => ("config", None),
         };
         let is_binary = matches!(resolved, ResolvedWorkerType::Binary { .. });
-        let is_local = false;
+        let is_local = matches!(resolved, ResolvedWorkerType::Local { .. });
 
         let home = dirs::home_dir().unwrap_or_default();
         let managed_dir = managed_worker_dir(name);
@@ -610,7 +611,7 @@ impl WorkerStatus {
                 "{:>12}  {} {}",
                 "config:".dimmed(),
                 "missing".red(),
-                "(add with `iii worker add <registry-ref>`)".dimmed()
+                "(add with `iii worker add <path-or-name>`)".dimmed()
             )
         } else {
             let ty = self.worker_type.unwrap_or("?");
@@ -638,8 +639,8 @@ impl WorkerStatus {
         } else if self.worker_type == Some("bundle") {
             // Bundle workers boot through the libkrun rails like local
             // workers, but the bundle is immutable and dependencies are
-            // expected to be pre-packaged by the publisher (the descriptor
-            // carries no online runtime install step).
+            // expected to be pre-packaged by the publisher (the strict
+            // manifest validator rejects scripts.setup / scripts.install).
             // The honest statuses here mirror the OCI branch — no in-VM
             // install phase, no `.iii-prepared` marker to wait on.
             match (self.managed_dir_exists, self.alive) {
@@ -1960,8 +1961,8 @@ mod tests {
     /// layer plumbs the binary flag correctly into derive_phase.
     ///
     /// `resolve_worker_type` classifies a worker as `Binary` only when a
-    /// file exists at `~/.iii/workers/{name}`; the config.yaml entry alone is
-    /// insufficient.
+    /// file exists at `~/.iii/workers/{name}` (see `check_binary_fallback`
+    /// in config_file.rs); the config.yaml entry alone is insufficient.
     #[test]
     fn probe_binary_worker_with_live_pidfile_is_ready() {
         let _g = lock_home();

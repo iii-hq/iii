@@ -80,17 +80,17 @@ If a registered function fits, just call it: `iii.trigger({ function_id, payload
 When one fits, add it through the project's Compose daemon:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n <compose-namespace> compose::add worker=<worker>
 ```
 
 `iii-directory` is itself a registry worker, so confirm it is connected before calling `directory::*`:
 
 ```jsonc
 // engine::functions::list { prefix: 'directory::' }
-//   → empty? add it to worker-compose.yaml through Compose catalog editing first.
+//   → empty? add it to worker-compose.yaml through compose::add first.
 ```
 
-**3. Build a worker.** Only when steps 1 and 2 both come up empty. Author it with the SDK (below), then deploy it. Discover the deployment/runtime surface the same way as any other capability — `directory::registry::workers::list` / `::info` and its skill — rather than assuming a worker name. Declare local code in the root Compose `workers` catalog and reference it from a stack as `catalog://<slug>`.
+**3. Build a worker.** Only when steps 1 and 2 both come up empty. Author it with the SDK (below), then deploy it. Discover the deployment/runtime surface the same way as any other capability — `directory::registry::workers::list` / `::info` and its skill — rather than assuming a worker name. Add local code as a `path://` container in `worker-compose.yaml`; relative paths resolve on the Compose daemon host.
 
 > Discover in order. Don't jump to a worker you remember; the registry may hold a better fit, and the right surface is whatever the live engine and registry report — not training-data recall.
 
@@ -222,11 +222,11 @@ Project workers live in `worker-compose.yaml`. The Compose daemon owns their ins
 restart, update, and shutdown lifecycle:
 
 ```bash
-# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
+iii trigger -n dev compose::add worker=state
 iii trigger -n dev compose::status file=worker-compose.yaml
 iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
 iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-# Edit the package://<slug>@<version> reference, validate, and restart the stack.
+iii trigger -n dev compose::update file=worker-compose.yaml worker=state
 iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 

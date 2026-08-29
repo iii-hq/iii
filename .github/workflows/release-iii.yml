@@ -302,6 +302,15 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  publish-worker-skills:
+    name: Publish worker skills
+    needs: [setup, create-iii-release]
+    if: needs.setup.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
+      registry_tag: ${{ needs.setup.outputs.npm_tag }}
+    secrets: inherit
+
   # ──────────────────────────────────────────────────────────────
   # Worker Binary (downloaded on first use of `iii worker`)
   # ──────────────────────────────────────────────────────────────
@@ -664,6 +673,7 @@ jobs:
       - observability-npm
       - observability-py
       - observability-rust
+      - publish-worker-skills
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     env:
@@ -715,6 +725,7 @@ jobs:
       - docker-engine
       - homebrew-engine
       - homebrew-console
+      - publish-worker-skills
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -743,6 +754,7 @@ jobs:
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
+          WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
         run: |
           icon() {
             case "$1" in
@@ -771,6 +783,7 @@ jobs:
           LINES="$LINES$(icon "$HELPERS_NPM_RESULT") Helpers Node\n"
           LINES="$LINES$(icon "$HELPERS_PY_RESULT") Helpers Python\n"
           LINES="$LINES$(icon "$HELPERS_RUST_RESULT") Helpers Rust\n"
+          LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
@@ -778,7 +791,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

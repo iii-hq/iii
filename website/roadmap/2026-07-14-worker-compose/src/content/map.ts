@@ -226,7 +226,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   api: {
     id: 'api',
     kindLabel: 'child worker',
-    role: 'a catalog:// local worker whose compiled package descriptor owns its runtime command.',
+    role: 'a path:// local worker. run: "pnpm dev" in the compose file — no manifest required.',
     sections: [
       {
         heading: 'hooks',

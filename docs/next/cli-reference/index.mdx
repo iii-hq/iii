@@ -244,7 +244,7 @@ iii worker <COMMAND>
 
 | Command | Description |
 | ------- | ----------- |
-| [`add`](#iii-worker-add) | Install an immutable worker package from the iii registry. To run local source, declare it in worker-compose.yaml and use `iii compose up`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
+| [`add`](#iii-worker-add) | Install a worker from the iii registry, a path to a local worker directory (ex. `./myWorker` with a `iii.worker.yaml` file within it) or by OCI image reference. To create a NEW worker from scratch, use `iii worker init`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
 | [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed). Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock) |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
@@ -259,18 +259,19 @@ iii worker <COMMAND>
 | [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings the worker back up |
 | [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock |
 | [`update`](#iii-worker-update) | Update workers pinned in iii.lock to the latest version published in the registry, rewriting config.yaml and iii.lock |
+| [`verify`](#iii-worker-verify) | Verify config.yaml and iii.lock agree: every managed worker in config.yaml must be pinned in iii.lock for this platform |
 
 ### `iii worker add`
 
-Install an immutable worker package from the iii registry. To run local source, declare it in worker-compose.yaml and use `iii compose up`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs
+Install a worker from the iii registry, a path to a local worker directory (ex. `./myWorker` with a `iii.worker.yaml` file within it) or by OCI image reference. To create a NEW worker from scratch, use `iii worker init`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs
 
 ```text
-iii worker add [OPTIONS] <WORKER[@VERSION]>...
+iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | iii registry package references (ex. `database` or `pdfkit@1.0.0`) |
+| `<WORKER[@VERSION]\|PATH>...` | iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
@@ -365,12 +366,12 @@ iii worker logs [OPTIONS] <WORKER>
 Re-download a worker (like `add --force`, but returns immediately instead of waiting for the worker to report ready; pass `--reset-config` to also reset its config.yaml entry to registry defaults)
 
 ```text
-iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
+iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | iii registry package references (ex. `database` or `pdfkit@1.0.0`) |
+| `<WORKER[@VERSION]\|PATH>...` | iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
@@ -632,6 +633,18 @@ iii worker update [WORKER]
 | Argument | Description |
 | -------- | ----------- |
 | `[WORKER]` | Optional worker name to update. If omitted, updates every worker in iii.lock |
+
+### `iii worker verify`
+
+Verify config.yaml and iii.lock agree: every managed worker in config.yaml must be pinned in iii.lock for this platform
+
+```text
+iii worker verify [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--strict` | Also check dependency declarations against locked versions |
 
 ## `iii console`
 

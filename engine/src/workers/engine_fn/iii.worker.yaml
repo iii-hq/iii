@@ -1,0 +1,5 @@
+iii: v1
+name: iii
+type: engine
+description: Core engine introspection (engine::*) and platform authoring reference.
+repo: https://github.com/iii-hq/iii
