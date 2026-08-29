@@ -810,6 +810,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compose_validate_has_its_own_telemetry_path() {
+        let cli = Cli::try_parse_from(["iii", "compose", "validate"])
+            .expect("should parse compose validate");
+        assert_eq!(cli_usage_command_path(&cli), "compose validate");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(matches!(
+                    args.command,
+                    Some(iii_compose::ComposeSubcommand::Validate(_))
+                ));
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
     /// The flags that survived say where the daemon runs and which namespace
     /// it answers in, not what it does. They are parsed here and resolved in
     /// the crate.
@@ -833,11 +849,7 @@ mod tests {
     /// exception to this rule.
     #[test]
     fn a_word_that_is_not_a_subcommand_does_not_parse() {
-        for removed in [
-            ["iii", "compose", "up"],
-            ["iii", "compose", "down"],
-            ["iii", "compose", "validate"],
-        ] {
+        for removed in [["iii", "compose", "up"], ["iii", "compose", "down"]] {
             assert!(
                 Cli::try_parse_from(removed).is_err(),
                 "{removed:?} should not parse"
