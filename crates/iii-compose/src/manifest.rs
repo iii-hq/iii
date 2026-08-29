@@ -6,6 +6,7 @@
 
 //! Start-command resolution from compiled package descriptors.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::{
@@ -34,7 +35,10 @@ pub enum VmSpec {
     Bundle {
         install_dir: PathBuf,
         exec: Vec<String>,
-        base_image: Option<String>,
+        base_image: String,
+        prepare: Vec<Vec<String>>,
+        environment: BTreeMap<String, String>,
+        resources: VmResources,
     },
     /// A local project whose manifest selected an OCI rootfs. The compose
     /// command may replace the manifest's `scripts.start`, but still runs in
@@ -43,7 +47,32 @@ pub enum VmSpec {
         worker_dir: PathBuf,
         exec: Vec<String>,
         base_image: String,
+        prepare: Vec<Vec<String>>,
+        environment: BTreeMap<String, String>,
+        resources: VmResources,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmResources {
+    pub cpus: u32,
+    pub memory_mib: u32,
+}
+
+impl From<Option<&crate::descriptor::Resources>> for VmResources {
+    fn from(resources: Option<&crate::descriptor::Resources>) -> Self {
+        Self {
+            cpus: resources
+                .and_then(|resources| resources.cpu)
+                .map(|cpu| cpu.ceil() as u32)
+                .unwrap_or(2)
+                .max(1),
+            memory_mib: resources
+                .and_then(|resources| resources.memory_mib)
+                .and_then(|memory| u32::try_from(memory).ok())
+                .unwrap_or(2048),
+        }
+    }
 }
 
 /// Resolves how a container starts.
@@ -106,6 +135,9 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
             worker_dir: dir.clone(),
             exec,
             base_image,
+            prepare: descriptor.runtime.prepare.clone(),
+            environment: descriptor.runtime.environment.clone(),
+            resources: descriptor.runtime.resources.as_ref().into(),
         }));
     }
 

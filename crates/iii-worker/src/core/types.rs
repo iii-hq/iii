@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[schemars(
-    description = "Where to fetch the worker from. Use `registry` for the public iii worker registry, `oci` for an arbitrary container image, or `local` for a filesystem path on the engine/daemon host (works over the trigger too; the path is resolved on the host, not the caller)."
-)]
+#[schemars(description = "Immutable package reference in the public iii worker registry.")]
 pub enum WorkerSource {
     Registry {
         #[schemars(description = "Registry slug, e.g. \"pdfkit\".")]
@@ -21,22 +19,12 @@ pub enum WorkerSource {
         )]
         version: Option<String>,
     },
-    Oci {
-        #[schemars(description = "Full OCI reference, e.g. \"ghcr.io/iii-hq/node:latest\".")]
-        reference: String,
-    },
-    Local {
-        #[schemars(
-            description = "Path to a worker PROJECT DIRECTORY on the engine/daemon host (NOT the caller's machine), e.g. \"/srv/workers/my-worker\". The directory MUST contain an `iii.worker.yaml` manifest.\n\nMinimal manifest (just name + how to start):\n  name: my-worker\n  scripts:\n    start: \"node src/index.js\"\n\nAll iii.worker.yaml fields:\n  name        (required) worker id; must be a single path segment (alphanumerics, '-', '_', '.').\n  description (optional) one-line human/LLM-readable summary.\n  scripts.start   (required unless inferred) command that runs the worker process.\n  scripts.setup   (optional) one-time host provisioning, e.g. \"apt-get install -y build-essential\".\n  scripts.install (optional) dependency install, e.g. \"npm install\".\n  dependencies    (optional) map of other-worker-name -> semver range, e.g. { iii-state: \"^0.19\" }.\n  resources.cpus   (optional) integer vCPUs, default 2.\n  resources.memory (optional) MiB, default 2048.\n  env             (optional) string->string vars injected into the worker (III_URL/III_ENGINE_URL are set by the engine and ignored here).\n  runtime.base_image (optional) OCI rootfs override, e.g. \"oven/bun:1\".\n\nUnknown keys are rejected at add time. The setup/install/start scripts run on the host. Works over the trigger as well as the CLI. Dry-run a manifest with `worker::validate`; fetch the full manifest JSON Schema via `worker::schema { function_id: \"iii.worker.yaml\" }`."
-        )]
-        path: PathBuf,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[schemars(example = "add_options_example", example = "add_options_local_example")]
+#[schemars(example = "add_options_example")]
 pub struct AddOptions {
-    #[schemars(description = "Where the worker comes from (registry/oci/local).")]
+    #[schemars(description = "Registry package to install.")]
     pub source: WorkerSource,
     #[serde(default)]
     #[schemars(
@@ -66,16 +54,6 @@ fn add_options_example() -> serde_json::Value {
         "force": false,
         "reset_config": false,
         "yes": false,
-        "wait": true
-    })
-}
-
-/// Second example so introspecting LLMs see the local-path shape, not just
-/// the registry one — the directory must hold an iii.worker.yaml (see the
-/// `WorkerSource::Local` field description for the manifest fields).
-fn add_options_local_example() -> serde_json::Value {
-    serde_json::json!({
-        "source": {"kind": "local", "path": "/srv/workers/my-worker"},
         "wait": true
     })
 }
@@ -412,25 +390,6 @@ mod tests {
             WorkerSource::Registry { name, version } if name == "pdfkit" && version.as_deref() == Some("1.0.0")
         ));
         assert_eq!(serde_json::to_value(&parsed).unwrap(), v);
-    }
-
-    #[test]
-    fn worker_source_oci_round_trip() {
-        let v = json!({ "kind": "oci", "reference": "ghcr.io/iii-hq/node:latest" });
-        let parsed: WorkerSource = serde_json::from_value(v.clone()).unwrap();
-        assert!(
-            matches!(&parsed, WorkerSource::Oci { reference } if reference == "ghcr.io/iii-hq/node:latest")
-        );
-        assert_eq!(serde_json::to_value(&parsed).unwrap(), v);
-    }
-
-    #[test]
-    fn worker_source_local_round_trip() {
-        let v = json!({ "kind": "local", "path": "./my-worker" });
-        let parsed: WorkerSource = serde_json::from_value(v.clone()).unwrap();
-        assert!(
-            matches!(&parsed, WorkerSource::Local { path } if path.to_str() == Some("./my-worker"))
-        );
     }
 
     #[test]

@@ -659,7 +659,15 @@ async fn start_one_until_shutdown(
                             .exec
                             .clone()
                             .unwrap_or_default(),
-                        base_image: installed.descriptor.runtime.base_image.clone(),
+                        base_image: installed
+                            .descriptor
+                            .runtime
+                            .base_image
+                            .clone()
+                            .expect("validated bundle descriptor has a base image"),
+                        prepare: installed.descriptor.runtime.prepare.clone(),
+                        environment: installed.descriptor.runtime.environment.clone(),
+                        resources: installed.descriptor.runtime.resources.as_ref().into(),
                     }),
                     installed.default_config,
                 ),
@@ -812,15 +820,42 @@ async fn vm_command(
     plan: &crate::spawn::SpawnPlan,
     config: Option<&ResolvedConfig>,
 ) -> std::result::Result<tokio::process::Command, String> {
-    let (worker_dir, run_override, prepare_command) = match start {
-        StartSpec::Vm(VmSpec::Bundle {
-            install_dir, exec, ..
-        }) => (install_dir, Some(exec.as_slice()), "__bundle-prepare"),
-        StartSpec::Vm(VmSpec::Local {
-            worker_dir, exec, ..
-        }) => (worker_dir, Some(exec.as_slice()), "__local-prepare"),
-        _ => return Err("not a VM container".to_string()),
-    };
+    let (worker_dir, exec, base_image, prepare, descriptor_env, resources, prepare_command) =
+        match start {
+            StartSpec::Vm(VmSpec::Bundle {
+                install_dir,
+                exec,
+                base_image,
+                prepare,
+                environment,
+                resources,
+            }) => (
+                install_dir,
+                exec,
+                base_image,
+                prepare,
+                environment,
+                resources,
+                "__bundle-prepare",
+            ),
+            StartSpec::Vm(VmSpec::Local {
+                worker_dir,
+                exec,
+                base_image,
+                prepare,
+                environment,
+                resources,
+            }) => (
+                worker_dir,
+                exec,
+                base_image,
+                prepare,
+                environment,
+                resources,
+                "__local-prepare",
+            ),
+            _ => return Err("not a VM container".to_string()),
+        };
 
     let mut env: BTreeMap<String, String> = plan.env.clone();
     let config_dir = match config {
@@ -863,7 +898,11 @@ async fn vm_command(
         "engine_url": ctx.engine_url,
         "extra_env": env,
         "config_dir": config_dir,
-        "exec": run_override,
+        "exec": exec,
+        "base_image": base_image,
+        "prepare": prepare,
+        "environment": descriptor_env,
+        "resources": { "cpus": resources.cpus, "memory_mib": resources.memory_mib },
     });
 
     let plan = prepare_vm(prepare_command, &request).await?;

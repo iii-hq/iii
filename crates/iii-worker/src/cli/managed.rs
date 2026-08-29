@@ -37,8 +37,7 @@ use super::registry::{
     parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
@@ -543,52 +542,9 @@ impl ActiveWorkerRestore {
 pub async fn handle_worker_sync(frozen: bool) -> i32 {
     if frozen {
         let lock_path = super::lockfile::lockfile_path();
-        let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
-            Ok(lockfile) => lockfile,
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-        };
-
-        // Drift check: only active for locks that carry a manifest_hash
-        // (i.e. written by Lane A or later). Legacy locks fall through
-        // to verify unchanged so we don't regress existing CI pipelines.
-        //
-        // Each `iii.worker.yaml` state surfaces a distinct error so the
-        // user sees what's actually wrong: a *missing* manifest reads
-        // as `ManifestMissing`, a *malformed* one as `CorruptManifest`,
-        // and a hash mismatch with no structural drift as
-        // `LockInconsistent`. Only an actual content change reaches the
-        // `Drift` variant — the one with actionable add/remove/change
-        // attribution.
-        if let Some(stored_hash) = &lockfile.manifest_hash {
-            let err: Option<super::sync::SyncError> = match load_cwd_manifest_state() {
-                ManifestState::Missing => Some(super::sync::SyncError::ManifestMissing {
-                    lock_deps: lockfile.declared_dependencies.clone().unwrap_or_default(),
-                }),
-                ManifestState::Malformed(reason) => {
-                    Some(super::sync::SyncError::CorruptManifest { reason })
-                }
-                ManifestState::Loaded(manifest_deps) => {
-                    let current_hash = super::sync::compute_manifest_hash(&manifest_deps);
-                    if current_hash != *stored_hash {
-                        let lock_deps = lockfile.declared_dependencies.clone().unwrap_or_default();
-                        match super::sync::detect_drift(&manifest_deps, &lock_deps) {
-                            Some(report) => Some(super::sync::SyncError::Drift { report }),
-                            None => Some(super::sync::SyncError::LockInconsistent),
-                        }
-                    } else {
-                        None
-                    }
-                }
-            };
-            if let Some(err) = err {
-                // stdout is reserved for worker names; all diagnostic
-                // output goes to stderr.
-                eprint!("{}", err.render());
-                return 1;
-            }
+        if let Err(e) = super::lockfile::WorkerLockfile::read_from(lock_path) {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
         }
 
         return handle_worker_verify(false).await;
@@ -968,46 +924,7 @@ fn verify_lockfile_strict(lockfile: &super::lockfile::WorkerLockfile) -> Result<
         }
     }
 
-    for (worker_name, worker_path) in local_worker_manifest_paths()? {
-        let manifest_path = Path::new(&worker_path).join(super::project::WORKER_MANIFEST);
-        let deps = super::project::load_manifest_dependencies(&manifest_path).map_err(|e| {
-            format!(
-                "{e}. Fix: correct `{}` and rerun `iii worker verify --strict`.",
-                manifest_path.display()
-            )
-        })?;
-        for (dependency, range) in deps {
-            let locked = lockfile.workers.get(&dependency).ok_or_else(|| {
-                format!(
-                    "local worker `{worker_name}` declares dependency `{dependency}@{range}` in {}, but `{dependency}` is missing from iii.lock. \
-                     Fix: run `iii worker add {}` to resolve and lock declared dependencies.",
-                    manifest_path.display(),
-                    worker_path
-                )
-            })?;
-            version_satisfies_range(&locked.version, &range).map_err(|e| {
-                format!(
-                    "local worker `{worker_name}` declares dependency `{dependency}@{range}`, but iii.lock pins version {} ({e}). \
-                     Fix: run `iii worker add {}` after confirming the dependency range.",
-                    locked.version, worker_path
-                )
-            })?;
-        }
-    }
-
     Ok(())
-}
-
-fn local_worker_manifest_paths() -> Result<BTreeMap<String, String>, String> {
-    let mut paths = BTreeMap::new();
-    for name in super::config_file::list_worker_names_result()? {
-        if let ResolvedWorkerType::Local { worker_path } =
-            super::config_file::resolve_worker_type(&name)
-        {
-            paths.insert(name, worker_path);
-        }
-    }
-    Ok(paths)
 }
 
 fn version_satisfies_range(version: &str, range: &str) -> Result<(), String> {
@@ -1368,62 +1285,6 @@ fn persist_engine_worker_config_and_lock(
     Ok(())
 }
 
-/// Distinguishes the three states of `iii.worker.yaml` that drift
-/// detection cares about. Collapsing `Missing` and `Malformed` into the
-/// same fallback (as `load_cwd_manifest_dependencies` does for the
-/// `iii worker add` write path) is fine for *populating* a fresh hash,
-/// but it produces misleading "drift" output when those states arise
-/// during `--frozen`. The `--frozen` path uses this enum directly so
-/// each state surfaces with its own error variant.
-pub(crate) enum ManifestState {
-    Missing,
-    Malformed(String),
-    Loaded(std::collections::BTreeMap<String, String>),
-}
-
-pub(crate) fn load_cwd_manifest_state() -> ManifestState {
-    let manifest_path = std::path::Path::new("iii.worker.yaml");
-    if !manifest_path.exists() {
-        return ManifestState::Missing;
-    }
-    match super::project::load_manifest_dependencies(manifest_path) {
-        Ok(deps) => ManifestState::Loaded(deps),
-        Err(e) => ManifestState::Malformed(e),
-    }
-}
-
-/// Read the cwd `iii.worker.yaml` `dependencies:` block. Returns `None`
-/// when the file is absent, empty, or has a null dependencies field.
-/// Errors are downgraded to `None` with a stderr warning — missing or
-/// malformed root manifests should not block a resolve that otherwise
-/// succeeded; drift detection just doesn't light up for that project.
-fn load_cwd_manifest_dependencies() -> Option<std::collections::BTreeMap<String, String>> {
-    match load_cwd_manifest_state() {
-        ManifestState::Loaded(deps) => Some(deps),
-        ManifestState::Missing => None,
-        ManifestState::Malformed(e) => {
-            eprintln!(
-                "  {} ignoring iii.worker.yaml for manifest_hash: {e}",
-                "warning:".yellow()
-            );
-            None
-        }
-    }
-}
-
-/// Populate [`super::lockfile::WorkerLockfile::manifest_hash`] and
-/// [`super::lockfile::WorkerLockfile::declared_dependencies`] from the
-/// current cwd manifest. No-ops when the manifest is absent, leaving both
-/// fields at whatever they were before (preserves previous writer's
-/// values across incremental `iii worker add` runs).
-fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile) {
-    let Some(deps) = load_cwd_manifest_dependencies() else {
-        return;
-    };
-    lockfile.manifest_hash = Some(super::sync::compute_manifest_hash(&deps));
-    lockfile.declared_dependencies = Some(deps);
-}
-
 fn confirm_large_dependency_graph(
     stats: DependencyGraphStats,
     assume_yes: bool,
@@ -1655,7 +1516,6 @@ async fn handle_preflighted_resolved_graph_add(
     // Slice A.1 limitation: only the cwd manifest is scanned. Multi-worker
     // projects with manifests in subdirectories won't get aggregate
     // drift detection until Slice A.2 adds project-wide scanning.
-    populate_manifest_hash_fields(&mut lockfile);
 
     if let Err(e) = lockfile.write_to(lock_path) {
         eprintln!("{} {}", "error:".red(), e);
@@ -1906,43 +1766,14 @@ pub async fn handle_managed_add_with_consent(
     assume_yes: bool,
     can_prompt: bool,
 ) -> i32 {
-    // Local path workers: starts with '.', '/', or '~'
-    if super::local_worker::is_local_path(image_or_name) {
-        return super::local_worker::handle_local_add(
-            image_or_name,
-            force,
-            reset_config,
-            brief,
-            wait,
-            assume_yes,
-            can_prompt,
-        )
-        .await;
+    if image_or_name.starts_with(['.', '/', '~']) || image_or_name.contains(':') {
+        eprintln!(
+            "{} iii worker add accepts Registry package references only; use worker-compose.yaml and `iii compose up` for local or OCI workers",
+            "error:".red()
+        );
+        return 1;
     }
 
-    // Direct OCI reference (contains '/' or ':') — passthrough, skip API
-    if image_or_name.contains('/') || image_or_name.contains(':') {
-        if !brief {
-            eprintln!("  Resolving {}...", image_or_name.bold());
-        }
-        let name = super::oci_ref::canonical_cache_key(image_or_name)
-            .rsplit('/')
-            .next()
-            .unwrap_or(image_or_name)
-            .split(':')
-            .next()
-            .unwrap_or(image_or_name);
-        if !brief {
-            eprintln!("  {} Resolved to {}", "✓".green(), image_or_name.dimmed());
-        }
-        if apply_force_replacement(name, force, reset_config).await != 0 {
-            return 1;
-        }
-        let rc = handle_oci_pull_and_add(name, image_or_name, brief).await;
-        return finish_add(name, rc, wait, brief).await;
-    }
-
-    // Shorthand name — resolve via API
     let (name, version) = parse_worker_input(image_or_name);
 
     // Mandatory builtins are always injected by the engine with Rust defaults;

@@ -471,7 +471,6 @@ async fn async_main() -> anyhow::Result<()> {
             }
         }
         Commands::Sync { frozen } => iii_worker::cli::managed::handle_worker_sync(frozen).await,
-        Commands::Verify { strict } => iii_worker::cli::managed::handle_worker_verify(strict).await,
         Commands::Status {
             worker_name,
             no_watch,
@@ -634,16 +633,6 @@ async fn async_main() -> anyhow::Result<()> {
 }
 
 fn parse_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
-    if iii_worker::cli::local_worker::is_local_path(input) {
-        return iii_worker::core::WorkerSource::Local { path: input.into() };
-    }
-    // OCI ref heuristic: contains '/' OR contains ':' but not '@'
-    // (`pdfkit@1.0` is registry name+version, not OCI).
-    if input.contains('/') || (input.contains(':') && !input.contains('@')) {
-        return iii_worker::core::WorkerSource::Oci {
-            reference: input.into(),
-        };
-    }
     let (name, version) = match input.split_once('@') {
         Some((n, v)) => (n.to_string(), Some(v.to_string())),
         None => (input.to_string(), None),

@@ -29,9 +29,7 @@ pub struct Request {
     /// The container key, which is also `III_WORKER_NAME`. Bundle manifests
     /// must match it; local manifests may use another name.
     pub worker_name: String,
-    /// The bundle install or local worker directory. Older bundle callers used
-    /// `install_dir`, which remains accepted across binary version skew.
-    #[serde(alias = "install_dir")]
+    /// The immutable bundle install or local source directory.
     pub worker_dir: PathBuf,
     /// Per-caller VM state. Keyed by the caller, not by worker name, so two
     /// projects using the same container key do not share a rootfs.
@@ -44,9 +42,20 @@ pub struct Request {
     /// Published into the guest at `/run/iii/config`.
     #[serde(default)]
     pub config_dir: Option<PathBuf>,
-    /// Compose's `scripts.run` override. Only local workers use it.
+    /// Exact runtime and sandbox contract from PackageDescriptor.
+    pub exec: Vec<String>,
+    pub base_image: String,
     #[serde(default)]
-    pub run_override: Option<String>,
+    pub prepare: Vec<Vec<String>>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    pub resources: Resources,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Resources {
+    pub cpus: u32,
+    pub memory_mib: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +111,11 @@ pub async fn run(kind: PrepareKind) -> i32 {
         engine_url,
         extra_env,
         config_dir,
-        run_override,
+        exec,
+        base_image,
+        prepare,
+        environment,
+        resources,
     } = request;
 
     let over = super::local_worker::VmOverride {
@@ -112,20 +125,22 @@ pub async fn run(kind: PrepareKind) -> i32 {
         config_dir,
     };
 
-    let built = match kind {
-        PrepareKind::Bundle => {
-            super::local_worker::bundle_vm_command(&worker_name, &worker_dir, over).await
-        }
-        PrepareKind::Local => {
-            super::local_worker::local_vm_command(
-                &worker_name,
-                &worker_dir,
-                run_override.as_deref(),
-                over,
-            )
-            .await
-        }
+    let descriptor = super::local_worker::DescriptorVmSpec {
+        exec,
+        base_image,
+        prepare,
+        environment: environment.into_iter().collect(),
+        cpus: resources.cpus,
+        memory_mib: resources.memory_mib,
     };
+    let built = super::local_worker::descriptor_vm_command(
+        &worker_name,
+        &worker_dir,
+        matches!(kind, PrepareKind::Bundle),
+        descriptor,
+        over,
+    )
+    .await;
     let built = match built {
         Ok(built) => built,
         Err(err) => {
@@ -181,29 +196,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_accepts_the_legacy_bundle_install_dir_field() {
-        let request: Request = serde_json::from_value(serde_json::json!({
-            "worker_name": "probe",
-            "install_dir": "/tmp/probe",
-            "state_dir": "/tmp/state",
-            "engine_url": "ws://localhost:49134"
-        }))
-        .expect("the previous bundle request must remain compatible");
-
-        assert_eq!(request.worker_dir, PathBuf::from("/tmp/probe"));
-    }
-
-    #[test]
-    fn request_reads_the_local_run_override() {
+    fn request_requires_the_descriptor_vm_contract() {
         let request: Request = serde_json::from_value(serde_json::json!({
             "worker_name": "probe",
             "worker_dir": "/tmp/probe",
             "state_dir": "/tmp/state",
             "engine_url": "ws://localhost:49134",
-            "run_override": "python src/dev.py"
+            "exec": ["node", "dist/index.mjs"],
+            "base_image": "node@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "prepare": [["npm", "ci"]],
+            "environment": {"NODE_ENV": "production"},
+            "resources": {"cpus": 4, "memory_mib": 4096}
         }))
-        .expect("the local request should parse");
+        .expect("the descriptor request should parse");
 
-        assert_eq!(request.run_override.as_deref(), Some("python src/dev.py"));
+        assert_eq!(request.worker_dir, PathBuf::from("/tmp/probe"));
+        assert_eq!(request.exec, ["node", "dist/index.mjs"]);
+        assert_eq!(request.resources.cpus, 4);
     }
 }

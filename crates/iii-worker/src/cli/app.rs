@@ -13,10 +13,8 @@ pub const DEFAULT_PORT: u16 = 49134;
 /// Shared arguments for `add` and `reinstall` commands.
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker
-    /// paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or
-    /// Docker / OCI image references (ex. `ghcr.io/org/worker:tag`)
-    #[arg(value_name = "WORKER[@VERSION]|PATH", required = true, num_args = 1..)]
+    /// iii registry package references (ex. `database` or `pdfkit@1.0.0`).
+    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
     /// Discard the worker's config.yaml entry and recreate it fresh
@@ -47,10 +45,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install a worker from the iii registry, a path to a local worker directory (ex.
-    /// `./myWorker` with a `iii.worker.yaml` file within it)
-    /// or by OCI image reference. To create a NEW worker from scratch, use
-    /// `iii worker init`.
+    /// Install an immutable worker package from the iii registry. To run local
+    /// source, declare it in worker-compose.yaml and use `iii compose up`.
     /// By default `add` waits up to 120s for the worker to report ready.
     /// After which the worker will continue to boot but the command will
     /// return to the shell. See `iii worker status` to continue observing
@@ -182,14 +178,6 @@ pub enum Commands {
         /// Useful for validation in CICD.
         #[arg(long)]
         frozen: bool,
-    },
-
-    /// Verify config.yaml and iii.lock agree: every managed worker in config.yaml
-    /// must be pinned in iii.lock for this platform.
-    Verify {
-        /// Also check dependency declarations against locked versions.
-        #[arg(long)]
-        strict: bool,
     },
 
     /// Show detailed status of one worker (config, sandbox, process, logs).

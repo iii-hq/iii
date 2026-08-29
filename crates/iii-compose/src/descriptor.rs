@@ -36,12 +36,25 @@ pub enum Artifact {
     RustBinary {
         binary: String,
         targets: Vec<String>,
+        toolchain: FrontendTool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        frontends: Vec<FrontendBuild>,
     },
     JavascriptBundle {
+        workspace_root: String,
+        runtime: FrontendTool,
+        package_manager: FrontendTool,
+        lockfile: String,
+        install_command: Vec<String>,
         build_command: Vec<String>,
         include: Vec<String>,
     },
     PythonBundle {
+        workspace_root: String,
+        runtime: FrontendTool,
+        package_manager: FrontendTool,
+        lockfile: String,
+        install_command: Vec<String>,
         build_command: Vec<String>,
         include: Vec<String>,
     },
@@ -50,6 +63,33 @@ pub enum Artifact {
         dockerfile: String,
         platforms: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendBuild {
+    /// Package-manager workspace relative to the Compose root. Install runs here.
+    pub workspace_root: String,
+    /// Directory relative to the Compose root. It may be shared by multiple workers.
+    /// Build runs here.
+    pub source_path: String,
+    pub runtime: FrontendTool,
+    pub package_manager: FrontendTool,
+    /// Lockfile relative to `workspace_root`, included in cache identity.
+    pub lockfile: String,
+    /// Exact dependency-install argv executed inside `workspace_root`.
+    pub install_command: Vec<String>,
+    /// Exact build argv executed inside `source_path`.
+    pub build_command: Vec<String>,
+    /// Explicit generated paths relative to `source_path`; no discovery or globs.
+    pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendTool {
+    pub name: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -237,7 +277,7 @@ impl PackageDescriptor {
                 message,
             }
         })?;
-        validate_definition(name, &definition, &source_dir)?;
+        validate_definition(name, &definition, &source_dir, &root)?;
         let registry = compile_registry(name, definition.registry, &source_dir)?;
         Ok(Self {
             name: name.into(),
@@ -301,7 +341,12 @@ impl PackageDescriptor {
     }
 }
 
-fn validate_definition(name: &str, definition: &WorkerDefinition, source_dir: &Path) -> Result<()> {
+fn validate_definition(
+    name: &str,
+    definition: &WorkerDefinition,
+    source_dir: &Path,
+    compose_root: &Path,
+) -> Result<()> {
     let non_empty = |field: &str, values: &[String]| {
         if values.is_empty() || values.iter().any(|value| value.trim().is_empty()) {
             Err(ComposeError::InvalidPackageDescriptor {
@@ -344,7 +389,12 @@ fn validate_definition(name: &str, definition: &WorkerDefinition, source_dir: &P
         });
     }
     match &definition.artifact {
-        Artifact::RustBinary { binary, targets } => {
+        Artifact::RustBinary {
+            binary,
+            targets,
+            toolchain,
+            frontends,
+        } => {
             if binary.trim().is_empty() {
                 return Err(ComposeError::InvalidPackageDescriptor {
                     worker: name.into(),
@@ -352,24 +402,64 @@ fn validate_definition(name: &str, definition: &WorkerDefinition, source_dir: &P
                 });
             }
             non_empty("artifact.targets", targets)?;
+            validate_tool("artifact.toolchain", toolchain, name)?;
+            for (index, frontend) in frontends.iter().enumerate() {
+                validate_frontend_build(name, compose_root, index, frontend)?;
+            }
         }
         Artifact::JavascriptBundle {
+            workspace_root,
+            runtime,
+            package_manager,
+            lockfile,
+            install_command,
             build_command,
             include,
         } => {
+            validate_bundle_toolchain(
+                name,
+                compose_root,
+                workspace_root,
+                runtime,
+                package_manager,
+                lockfile,
+                install_command,
+                definition.registry.publish,
+            )?;
             non_empty("artifact.build_command", build_command)?;
             non_empty("artifact.include", include)?;
             validate_bundle_paths(name, include)?;
             validate_bundle_files(name, source_dir, include, true)?;
+            if definition.registry.publish {
+                require_bundle_base_image(name, &definition.runtime)?;
+            }
         }
         Artifact::PythonBundle {
+            workspace_root,
+            runtime,
+            package_manager,
+            lockfile,
+            install_command,
             build_command,
             include,
         } => {
+            validate_bundle_toolchain(
+                name,
+                compose_root,
+                workspace_root,
+                runtime,
+                package_manager,
+                lockfile,
+                install_command,
+                definition.registry.publish,
+            )?;
             non_empty("artifact.build_command", build_command)?;
             non_empty("artifact.include", include)?;
             validate_bundle_paths(name, include)?;
             validate_bundle_files(name, source_dir, include, false)?;
+            if definition.registry.publish {
+                require_bundle_base_image(name, &definition.runtime)?;
+            }
         }
         Artifact::OciImage {
             context,
@@ -399,6 +489,85 @@ fn validate_definition(name: &str, definition: &WorkerDefinition, source_dir: &P
         return Err(ComposeError::InvalidPackageDescriptor {
             worker: name.into(),
             message: "runtime.exec is required for non-OCI workers".into(),
+        });
+    }
+    Ok(())
+}
+
+fn require_bundle_base_image(name: &str, runtime: &Runtime) -> Result<()> {
+    if runtime.base_image.is_none() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: "bundle workers require a digest-pinned runtime.base_image".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_tool(field: &str, tool: &FrontendTool, name: &str) -> Result<()> {
+    if tool.name.trim().is_empty() || tool.version.trim().is_empty() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!("{field} requires non-blank name and version"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_bundle_toolchain(
+    name: &str,
+    compose_root: &Path,
+    workspace_root: &str,
+    runtime: &FrontendTool,
+    package_manager: &FrontendTool,
+    lockfile: &str,
+    install_command: &[String],
+    require_lockfile: bool,
+) -> Result<()> {
+    if !safe_bundle_include(workspace_root) || !safe_bundle_include(lockfile) {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: "bundle workspace_root and lockfile must be safe relative paths".into(),
+        });
+    }
+    validate_tool("artifact.runtime", runtime, name)?;
+    validate_tool("artifact.package_manager", package_manager, name)?;
+    if install_command.is_empty() || install_command.iter().any(|arg| arg.trim().is_empty()) {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: "artifact.install_command must contain non-blank argv".into(),
+        });
+    }
+    let workspace = compose_root
+        .join(workspace_root)
+        .canonicalize()
+        .map_err(|error| ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!("artifact.workspace_root cannot be resolved: {error}"),
+        })?;
+    if !workspace.starts_with(compose_root) || !workspace.is_dir() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: "artifact.workspace_root must be a directory within the Compose root".into(),
+        });
+    }
+    let authored_lockfile = workspace.join(lockfile);
+    let lockfile = match authored_lockfile.canonicalize() {
+        Ok(path) => path,
+        Err(error) if !require_lockfile && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!("artifact.lockfile cannot be resolved: {error}"),
+            });
+        }
+    };
+    if !lockfile.starts_with(&workspace) || !lockfile.is_file() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: "artifact.lockfile must be a regular file within workspace_root".into(),
         });
     }
     Ok(())
@@ -579,6 +748,141 @@ fn safe_bundle_include(value: &str) -> bool {
         })
 }
 
+fn validate_frontend_build(
+    name: &str,
+    compose_root: &Path,
+    index: usize,
+    frontend: &FrontendBuild,
+) -> Result<()> {
+    if !safe_bundle_include(&frontend.workspace_root)
+        || !safe_bundle_include(&frontend.source_path)
+        || !safe_bundle_include(&frontend.lockfile)
+    {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].workspace_root, source_path and lockfile must be safe relative paths"
+            ),
+        });
+    }
+    if frontend.runtime.name.trim().is_empty()
+        || frontend.runtime.version.trim().is_empty()
+        || frontend.package_manager.name.trim().is_empty()
+        || frontend.package_manager.version.trim().is_empty()
+    {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}] runtime and package_manager require name and version"
+            ),
+        });
+    }
+    for (field, command) in [
+        ("install_command", &frontend.install_command),
+        ("build_command", &frontend.build_command),
+    ] {
+        if command.is_empty() || command.iter().any(|value| value.trim().is_empty()) {
+            return Err(ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!("artifact.frontends[{index}].{field} must contain non-blank argv"),
+            });
+        }
+    }
+    if frontend.outputs.is_empty()
+        || frontend
+            .outputs
+            .iter()
+            .any(|path| !safe_bundle_include(path))
+    {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].outputs must contain explicit safe relative paths"
+            ),
+        });
+    }
+    let frontend_dir = compose_root
+        .join(&frontend.source_path)
+        .canonicalize()
+        .map_err(|error| ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!("artifact.frontends[{index}].source_path cannot be resolved: {error}"),
+        })?;
+    if !frontend_dir.starts_with(compose_root) || !frontend_dir.is_dir() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].source_path must be a directory within the Compose root"
+            ),
+        });
+    }
+    let workspace_dir = compose_root
+        .join(&frontend.workspace_root)
+        .canonicalize()
+        .map_err(|error| ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].workspace_root cannot be resolved: {error}"
+            ),
+        })?;
+    if !workspace_dir.starts_with(compose_root) || !workspace_dir.is_dir() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].workspace_root must be a directory within the Compose root"
+            ),
+        });
+    }
+    let lockfile = workspace_dir
+        .join(&frontend.lockfile)
+        .canonicalize()
+        .map_err(|error| ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!("artifact.frontends[{index}].lockfile cannot be resolved: {error}"),
+        })?;
+    if !lockfile.starts_with(&workspace_dir) || !lockfile.is_file() {
+        return Err(ComposeError::InvalidPackageDescriptor {
+            worker: name.into(),
+            message: format!(
+                "artifact.frontends[{index}].lockfile must be a regular file within workspace_root"
+            ),
+        });
+    }
+    for output in &frontend.outputs {
+        let candidate = frontend_dir.join(output);
+        let existing = match candidate.canonicalize() {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                canonical_existing_parent(&candidate).ok_or_else(|| {
+                    ComposeError::InvalidPackageDescriptor {
+                        worker: name.into(),
+                        message: format!(
+                            "artifact.frontends[{index}].output '{output}' has no resolvable parent"
+                        ),
+                    }
+                })?
+            }
+            Err(error) => {
+                return Err(ComposeError::InvalidPackageDescriptor {
+                    worker: name.into(),
+                    message: format!(
+                        "artifact.frontends[{index}].output '{output}' cannot be resolved: {error}"
+                    ),
+                });
+            }
+        };
+        if !existing.starts_with(&frontend_dir) {
+            return Err(ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!(
+                    "artifact.frontends[{index}].output '{output}' escapes its frontend path"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_bundle_paths(name: &str, include: &[String]) -> Result<()> {
     if let Some(path) = include.iter().find(|path| !safe_bundle_include(path)) {
         return Err(ComposeError::InvalidPackageDescriptor {
@@ -739,5 +1043,45 @@ mod tests {
         let a = serde_json::json!({"b": 2, "a": {"z": 1, "c": 3}});
         let b = serde_json::json!({"a": {"c": 3, "z": 1}, "b": 2});
         assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[test]
+    fn registry_schema_parity_digest_is_stable() {
+        let descriptor = PackageDescriptor {
+            name: "iii-compose".into(),
+            version: "0.1.0".into(),
+            source: PackageSource {
+                path: "crates/iii-compose".into(),
+                package_manifest: "Cargo.toml".into(),
+            },
+            artifact: Artifact::RustBinary {
+                binary: "iii-compose".into(),
+                targets: vec!["x86_64-unknown-linux-gnu".into()],
+                toolchain: FrontendTool {
+                    name: "rust".into(),
+                    version: "1.90.0".into(),
+                },
+                frontends: Vec::new(),
+            },
+            runtime: Runtime {
+                exec: Some(vec!["./iii-compose".into()]),
+                ..Runtime::default()
+            },
+            registry: RegistryMetadata {
+                description: "Compose compiler fixture".into(),
+                license: "Elastic-2.0".into(),
+                tags: Vec::new(),
+                dependencies: BTreeMap::new(),
+                config: None,
+                publish: false,
+            },
+            validation: Validation {
+                interface: ValidationMode::Skipped,
+            },
+        };
+        assert_eq!(
+            descriptor.sha256(),
+            "9bbce3a7ece8338149eaed4681d2e6952d3a2196f513f2bf96664a7402600509"
+        );
     }
 }

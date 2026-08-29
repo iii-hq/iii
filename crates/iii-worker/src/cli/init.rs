@@ -17,12 +17,8 @@
 //!   3. Hand off to `scaffolder_core::run` -- that drives the cliclack TUI
 //!      when interactive, or a non-interactive single-language scaffold
 //!      when languages are pre-set.
-//!   4. Post-process: substitute `{{worker_name}}` in the scaffolded
-//!      `iii.worker.yaml`, persist `.iii/worker.ini`, print worker-specific
-//!      success message. The language-tagged-to-canonical rename
-//!      (`iii.worker.<lang>.yaml` -> `iii.worker.yaml`, `package.<lang>.json`
-//!      -> `package.json`) is declared in the template's `renames` block and
-//!      performed by the scaffolder at copy time, not here.
+//!   4. Post-process: write the canonical root `worker-compose.yaml`, persist
+//!      `.iii/worker.ini`, and print worker-specific next steps.
 
 use clap::Args;
 use colored::Colorize;
@@ -297,11 +293,23 @@ pub async fn run(args: InitArgs) -> i32 {
         }
     };
 
-    if let Err(e) = finalize_worker_manifest(&root, &worker_name) {
+    // Older remote copies of the scaffold template may still emit the former
+    // per-worker metadata file. It is not a runtime input after this hard cut;
+    // remove only the file created by this scaffold and preserve a pre-existing
+    // user file during idempotent migration.
+    let retired_manifest = ["iii", "worker", "yaml"].join(".");
+    if !snapshots.contains_key(Path::new(&retired_manifest)) {
+        let path = root.join(&retired_manifest);
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    if let Err(e) = write_worker_compose(&root, &worker_name, final_lang) {
         return print_err(
-            "could not write iii.worker.yaml",
+            "could not write worker-compose.yaml",
             &e.to_string(),
-            "check that iii.worker.yaml is writable",
+            "check that worker-compose.yaml is writable",
         );
     }
 
@@ -400,27 +408,67 @@ fn restore_snapshots(
     Ok(())
 }
 
-/// Substitute the `{{worker_name}}` placeholder in the scaffolded
-/// `iii.worker.yaml`.
-///
-/// The language-tagged-to-canonical rename (`iii.worker.<lang>.yaml` ->
-/// `iii.worker.yaml`, `package.<lang>.json` -> `package.json`) is declared in
-/// the template's `renames` block and performed by the scaffolder at copy time,
-/// so the file already arrives under its canonical name. On idempotent re-init
-/// a user-owned `iii.worker.yaml` is restored over the freshly-scaffolded one
-/// before this runs, so the substitution is a no-op (the placeholder is gone).
-fn finalize_worker_manifest(root: &Path, worker_name: &str) -> std::io::Result<()> {
-    // Substitute the worker name in the manifest. No-op when the file is absent
-    // (test short-circuit) or the placeholder is gone (idempotent re-run).
-    let manifest = root.join("iii.worker.yaml");
-    if !manifest.exists() {
+/// Writes the one source of truth consumed by `iii compose validate/up` and
+/// the release descriptor compiler. Re-init never overwrites a user-owned
+/// catalog.
+fn write_worker_compose(
+    root: &Path,
+    worker_name: &str,
+    language: WorkerLanguage,
+) -> std::io::Result<()> {
+    let path = root.join("worker-compose.yaml");
+    if path.exists() {
         return Ok(());
     }
-    let contents = std::fs::read_to_string(&manifest)?;
-    if !contents.contains("{{worker_name}}") {
-        return Ok(());
-    }
-    std::fs::write(&manifest, contents.replace("{{worker_name}}", worker_name))
+    let slug = worker_name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '-' | '_')
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['-', '_'])
+        .to_string();
+    let slug = if slug.is_empty() {
+        "iii-worker"
+    } else {
+        slug.as_str()
+    };
+    let (package_manifest, artifact, exec) = match language {
+        WorkerLanguage::Ts => (
+            "package.json".to_string(),
+            "    artifact:\n      kind: javascript-bundle\n      workspace_root: .\n      runtime: { name: node, version: '22' }\n      package_manager: { name: npm, version: '10' }\n      lockfile: package-lock.json\n      install_command: [npm, install]\n      build_command: [npm, install]\n      include: [src/index.ts]".to_string(),
+            "[npx, tsx, src/index.ts]".to_string(),
+        ),
+        WorkerLanguage::Js => (
+            "package.json".to_string(),
+            "    artifact:\n      kind: javascript-bundle\n      workspace_root: .\n      runtime: { name: node, version: '22' }\n      package_manager: { name: npm, version: '10' }\n      lockfile: package-lock.json\n      install_command: [npm, install]\n      build_command: [npm, install]\n      include: [src/index.js]".to_string(),
+            "[node, src/index.js]".to_string(),
+        ),
+        WorkerLanguage::Py => (
+            "pyproject.toml".to_string(),
+            "    artifact:\n      kind: python-bundle\n      workspace_root: .\n      runtime: { name: python, version: 3.12.13 }\n      package_manager: { name: pip, version: '24' }\n      lockfile: pyproject.toml\n      install_command: [python, -m, pip, install, -e, .]\n      build_command: [python, -m, build]\n      include: [src/main.py]".to_string(),
+            "[python, src/main.py]".to_string(),
+        ),
+        WorkerLanguage::Rust => (
+            "Cargo.toml".to_string(),
+            format!(
+                "    artifact:\n      kind: rust-binary\n      binary: {slug}\n      targets: [x86_64-unknown-linux-gnu]\n      toolchain: {{ name: rust, version: 1.90.0 }}"
+            ),
+            format!("[cargo, run, --bin, {slug}]"),
+        ),
+    };
+    let contents = format!(
+        "workers:\n  {slug}:\n    source:\n      path: .\n      package_manifest: {package_manifest}\n{artifact}\n    runtime:\n      exec: {exec}\n    registry:\n      description: {slug} worker\n      license: Apache-2.0\n      tags: []\n      dependencies: {{}}\n      publish: false\n    validation:\n      interface: required\nstacks: {{}}\n"
+    );
+    std::fs::write(path, contents)
 }
 
 /// Detect the language the scaffolder picked by sniffing the language-specific
@@ -514,7 +562,7 @@ fn print_init_success(
     );
     eprintln!(
         "    {}    # from a parent iii project",
-        "iii worker add ./path/to/this-worker".bold()
+        "iii compose validate --file worker-compose.yaml".bold()
     );
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");

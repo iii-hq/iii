@@ -13,13 +13,6 @@ use crate::core::types::{AddOptions, AddOutcome, WorkerSource};
 /// Provenance of a worker op. Carried into `WorkerOpEvent`s so subscribers
 /// can tell a CLI invocation from a bus-triggered one.
 ///
-/// NOTE: this no longer gates `kind: "local"`. Local installs used to be
-/// rejected over the trigger surface (W102); that guard was removed on
-/// purpose so `worker::add { source: { kind: "local", path } }` works over
-/// the bus. The path resolves on the DAEMON host and the install runs the
-/// manifest's setup/install/start scripts there — same trust as the CLI,
-/// now reachable by any connected caller. Keep that in mind before exposing
-/// the daemon to untrusted workers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerMode {
     Cli,
@@ -32,12 +25,6 @@ pub async fn run(
     events: &dyn EventSink,
     shim: &dyn WorkerHostShim,
 ) -> Result<AddOutcome, WorkerOpError> {
-    if !matches!(opts.source, WorkerSource::Registry { .. }) {
-        return Err(WorkerOpError::InvalidSource {
-            input: source_label(&opts.source),
-            reason: "iii worker add accepts registry references only; declare local or OCI workers in worker-compose.yaml and use iii compose up".into(),
-        });
-    }
     let label = source_label(&opts.source);
     events.emit(WorkerOpEvent::Started {
         op: "add",
@@ -74,8 +61,6 @@ pub async fn run(
 fn source_label(s: &WorkerSource) -> String {
     match s {
         WorkerSource::Registry { name, .. } => name.clone(),
-        WorkerSource::Oci { reference } => reference.clone(),
-        WorkerSource::Local { path } => path.display().to_string(),
     }
 }
 
@@ -99,8 +84,6 @@ mod tests {
         ) -> Result<AddOutcome, WorkerOpError> {
             let name = match opts.source {
                 WorkerSource::Registry { name, .. } => name,
-                WorkerSource::Oci { reference } => reference,
-                WorkerSource::Local { path } => path.display().to_string(),
             };
             Ok(AddOutcome {
                 name,
@@ -158,25 +141,6 @@ mod tests {
         ) -> Result<crate::core::ClearOutcome, WorkerOpError> {
             unimplemented!()
         }
-    }
-
-    #[tokio::test]
-    async fn local_source_is_rejected_in_favor_of_compose() {
-        let dir = TempDir::new().unwrap();
-        let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
-        let sink = CapturingSink::new();
-        let opts = AddOptions {
-            source: WorkerSource::Local {
-                path: "./my-worker".into(),
-            },
-            force: false,
-            reset_config: false,
-            yes: false,
-            wait: true,
-        };
-        let error = run(opts, &ctx, &sink, &StubShim).await.unwrap_err();
-        assert!(matches!(error, WorkerOpError::InvalidSource { .. }));
-        assert!(error.to_string().contains("worker-compose.yaml"));
     }
 
     #[tokio::test]

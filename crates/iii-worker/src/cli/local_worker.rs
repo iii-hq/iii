@@ -390,6 +390,13 @@ pub fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+fn shell_join(argv: &[String]) -> String {
+    argv.iter()
+        .map(|argument| format!("'{}'", shell_escape(argument)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn build_local_env(
     engine_url: &str,
     worker_name: &str,
@@ -884,6 +891,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         /*is_bundle=*/ false,
         None,
         None,
+        None,
     )
     .await
     {
@@ -925,6 +933,7 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         /*is_bundle=*/ true,
         None,
         None,
+        None,
     )
     .await
     {
@@ -960,6 +969,7 @@ pub async fn local_vm_command(
         /*is_bundle=*/ false,
         Some(over),
         run_override,
+        None,
     )
     .await
     {
@@ -1034,6 +1044,7 @@ pub async fn bundle_vm_command(
         /*is_bundle=*/ true,
         Some(over),
         None,
+        None,
     )
     .await
     {
@@ -1043,6 +1054,49 @@ pub async fn bundle_vm_command(
         // reports what it knows at the point it fails.
         VmStart::Exit(_) => Err(format!(
             "could not prepare the VM for bundle worker '{worker_name}'"
+        )),
+    }
+}
+
+/// Fully compiled VM inputs. Compose passes this from PackageDescriptor so
+/// VM startup never re-opens publisher metadata from the installed bundle.
+pub struct DescriptorVmSpec {
+    pub exec: Vec<String>,
+    pub base_image: String,
+    pub prepare: Vec<Vec<String>>,
+    pub environment: HashMap<String, String>,
+    pub cpus: u32,
+    pub memory_mib: u32,
+}
+
+pub async fn descriptor_vm_command(
+    worker_name: &str,
+    worker_dir: &Path,
+    is_bundle: bool,
+    descriptor: DescriptorVmSpec,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    if is_bundle && super::bundle_download::bundle_workers_disabled() {
+        return Err(format!(
+            "bundle workers are disabled via {}=1; refusing to start '{worker_name}'",
+            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
+        ));
+    }
+    match start_worker_impl(
+        worker_name,
+        &worker_dir.to_string_lossy(),
+        0,
+        true,
+        is_bundle,
+        Some(over),
+        None,
+        Some(descriptor),
+    )
+    .await
+    {
+        VmStart::Plan(built) => Ok(*built),
+        VmStart::Exit(_) => Err(format!(
+            "could not prepare descriptor VM for worker '{worker_name}'"
         )),
     }
 }
@@ -1100,6 +1154,7 @@ async fn start_worker_impl(
     is_bundle: bool,
     over: Option<VmOverride<'_>>,
     run_override: Option<&str>,
+    descriptor: Option<DescriptorVmSpec>,
 ) -> VmStart {
     // Kill any stale process from a previous engine run. Skipped when the
     // caller owns the VM's identity: the name is not unique across projects
@@ -1133,7 +1188,8 @@ async fn start_worker_impl(
     // load_project_info path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
-    if is_bundle
+    if descriptor.is_none()
+        && is_bundle
         && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, worker_name)
     {
         eprintln!(
@@ -1150,7 +1206,7 @@ async fn start_worker_impl(
     // load_project_info path below. Deprecation warnings are intentionally NOT
     // re-emitted here — they fired at add time; repeating them on every engine
     // boot would be noise.
-    if !is_bundle {
+    if descriptor.is_none() && !is_bundle {
         let manifest_path = project_path.join(WORKER_MANIFEST);
         match super::project::read_manifest_doc(&manifest_path) {
             Ok(Some(doc)) => {
@@ -1172,15 +1228,32 @@ async fn start_worker_impl(
     }
 
     // 2. Detect language
-    let mut project = match load_project_info(project_path) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "{} Could not detect project type in '{}'",
-                "error:".red(),
-                worker_path
-            );
-            return VmStart::Exit(1);
+    let mut project = if let Some(descriptor) = descriptor.as_ref() {
+        ProjectInfo {
+            name: worker_name.to_string(),
+            kind: None,
+            setup_cmd: String::new(),
+            install_cmd: descriptor
+                .prepare
+                .iter()
+                .map(|command| shell_join(command))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            run_cmd: shell_join(&descriptor.exec),
+            env: descriptor.environment.clone(),
+            base_image: Some(descriptor.base_image.clone()),
+        }
+    } else {
+        match load_project_info(project_path) {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "{} Could not detect project type in '{}'",
+                    "error:".red(),
+                    worker_path
+                );
+                return VmStart::Exit(1);
+            }
         }
     };
 
@@ -1460,7 +1533,9 @@ async fn start_worker_impl(
 
     // 9. Run via libkrun
     let manifest_path = project_path.join(WORKER_MANIFEST);
-    let (vcpus, ram) = if is_bundle {
+    let (vcpus, ram) = if let Some(descriptor) = descriptor.as_ref() {
+        (descriptor.cpus.max(1), descriptor.memory_mib)
+    } else if is_bundle {
         // Strict clamp at start-time so a publisher-controlled manifest
         // can't boot a libkrun guest with attacker-chosen resources.
         // Install-time clamp (handle_bundle_add) only emits a WARN
