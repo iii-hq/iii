@@ -640,50 +640,6 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
-  # Publish builtin (engine) workers to the workers registry.
-  # Runs on every release including prereleases; 409 (already
-  # published) is treated as a no-op so re-runs are safe.
-  # ──────────────────────────────────────────────────────────────
-
-  publish-builtin-workers:
-    name: Publish builtin workers
-    # worker-release must finish before iii-sandbox publish: the install script
-    # pulls iii-worker from the GitHub release being tagged.
-    needs: [setup, create-iii-release, engine-release, worker-release]
-    if: needs.setup.outputs.dry_run != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - worker: iii-worker-manager
-            worker_dir: engine/src/workers/worker
-          - worker: iii-stream
-            worker_dir: engine/src/workers/stream
-          - worker: iii-observability
-            worker_dir: engine/src/workers/observability
-          - worker: configuration
-            worker_dir: engine/src/workers/configuration
-          - worker: iii-sandbox
-            worker_dir: crates/iii-worker/src/sandbox_daemon
-          - worker: iii-engine-functions
-            worker_dir: engine/src/workers/engine_fn
-    uses: ./.github/workflows/_publish-engine-workers.yml
-    with:
-      worker: ${{ matrix.worker }}
-      worker_dir: ${{ matrix.worker_dir }}
-      registry_tag: ${{ needs.setup.outputs.npm_tag }}
-    secrets: inherit
-
-  publish-worker-skills:
-    name: Publish worker skills
-    needs: [setup, publish-builtin-workers]
-    if: needs.setup.outputs.dry_run != 'true'
-    uses: ./.github/workflows/_publish-worker-skills.yml
-    with:
-      registry_tag: ${{ needs.setup.outputs.npm_tag }}
-    secrets: inherit
-
-  # ──────────────────────────────────────────────────────────────
   # Trigger downstream validations
   #
   # Once every publish job has succeeded (the validators install the
@@ -708,8 +664,6 @@ jobs:
       - observability-npm
       - observability-py
       - observability-rust
-      - publish-builtin-workers
-      - publish-worker-skills
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     env:
@@ -761,8 +715,6 @@ jobs:
       - docker-engine
       - homebrew-engine
       - homebrew-console
-      - publish-builtin-workers
-      - publish-worker-skills
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -791,8 +743,6 @@ jobs:
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
-          BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
-          WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
         run: |
           icon() {
             case "$1" in
@@ -821,8 +771,6 @@ jobs:
           LINES="$LINES$(icon "$HELPERS_NPM_RESULT") Helpers Node\n"
           LINES="$LINES$(icon "$HELPERS_PY_RESULT") Helpers Python\n"
           LINES="$LINES$(icon "$HELPERS_RUST_RESULT") Helpers Rust\n"
-          LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
-          LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"

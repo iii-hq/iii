@@ -25,7 +25,6 @@ pub mod configuration;
 pub mod daemon;
 pub mod dag;
 pub mod descriptor;
-pub mod edit;
 pub mod engine;
 pub mod error;
 pub mod hooks;
@@ -858,7 +857,7 @@ mod tests {
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
-            "namespace: orders\ncontainers:\n  api:\n    worker: path://./api\n",
+            "workers: {}\nstacks:\n  default:\n    namespace: orders\n    containers:\n      api:\n        worker: package://api@next\n",
             "/srv/app/worker-compose.yaml",
         )
         .unwrap()
@@ -880,52 +879,19 @@ mod tests {
     }
 
     #[test]
-    fn daemon_without_a_namespace_uses_default() {
-        assert_eq!(
-            resolve_daemon_namespace(None, None),
-            crate::namespace::DEFAULT_NAMESPACE
-        );
-    }
-
-    #[test]
-    fn initial_compose_without_a_namespace_uses_default() {
-        let compose = ComposeFile::parse(
-            "containers:\n  api:\n    worker: path://./api\n",
-            "/srv/app/worker-compose.yaml",
-        )
-        .unwrap();
-
-        assert_eq!(
-            resolve_daemon_namespace(None, Some(&compose)),
-            crate::namespace::DEFAULT_NAMESPACE
-        );
-    }
-
-    #[test]
-    fn bare_compose_loads_an_existing_default_file_for_configuration() {
+    fn bare_compose_loads_the_strict_default_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("worker-compose.yaml");
         std::fs::write(
             &path,
-            "namespace: orders\nengine: { workers: {} }\ncontainers: {}\n",
+            "workers: {}\nstacks:\n  default:\n    namespace: orders\n    containers:\n      api:\n        worker: package://api@next\n",
         )
         .unwrap();
 
         let loaded = load_invocation_file(&path, false).unwrap();
-
         assert_eq!(
             loaded.and_then(|file| file.namespace).as_deref(),
             Some("orders")
         );
-    }
-
-    #[test]
-    fn bare_compose_tolerates_a_missing_default_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("worker-compose.yaml");
-
-        let loaded = load_invocation_file(&path, false).unwrap();
-
-        assert!(loaded.is_none());
     }
 }

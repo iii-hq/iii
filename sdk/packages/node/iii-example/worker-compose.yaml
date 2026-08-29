@@ -1,32 +1,39 @@
-# namespace: default
-engine:
-  workers:
-    iii-stream:
-      port: ${STREAMS_PORT:3112}
-      host: 127.0.0.1
-      adapter:
-        name: redis
-        config:
-          redis_url: redis://localhost:6379
-containers:
-  state:
-    worker: package://api.workers.iii.dev/state
-    version: "0.22.2"
-    config_name: state
-  http:
-    worker: package://api.workers.iii.dev/http
-    version: "0.21.3"
-    config_name: http
-  pubsub:
-    worker: package://api.workers.iii.dev/pubsub
-    version: "0.21.2"
-    config_name: pubsub
-  cron:
-    worker: package://api.workers.iii.dev/cron
-    version: "0.21.9"
-    config_name: cron
+workers:
   iii-example:
-    worker: path://.
-    start_after: [state, http, pubsub, cron]
-    scripts:
-      run: pnpm dev
+    source:
+      path: .
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: .
+      runtime: { name: bun, version: 1.3.5 }
+      package_manager: { name: bun, version: 1.3.5 }
+      lockfile: package.json
+      install_command: [bun, install]
+      build_command: [bun, build, src/index.ts, --outdir, dist]
+      include: [src/index.ts]
+    runtime:
+      exec: [bun, ./src/index.ts]
+    registry:
+      description: Node SDK example worker
+      license: Elastic-2.0
+      tags: [example]
+      dependencies: {}
+      publish: false
+    validation:
+      interface: skipped
+stacks:
+  default:
+    namespace: default
+    containers:
+      state:
+        worker: package://state@next
+      http:
+        worker: package://http@next
+      pubsub:
+        worker: package://pubsub@next
+      cron:
+        worker: package://cron@next
+      iii-example:
+        worker: catalog://iii-example
+        start_after: [state, http, pubsub, cron]

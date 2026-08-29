@@ -71,8 +71,8 @@ pub fn valid_engine_worker_name(name: &str) -> bool {
 pub enum WorkerSource {
     /// `package://<registry-host>/<name>`
     Package { reference: String },
-    /// `path://<dir>`, resolved against the compose file's directory.
-    Path {
+    /// `catalog://<slug>`, compiled from the root worker catalog.
+    Catalog {
         dir: PathBuf,
         declared: String,
         descriptor: PackageDescriptor,
@@ -378,7 +378,7 @@ fn compile_container(
                     .join(" && ")
             });
             (
-                WorkerSource::Path {
+                WorkerSource::Catalog {
                     dir: dir.clone(),
                     declared: raw.worker.clone(),
                     descriptor: descriptor.clone(),
@@ -448,11 +448,11 @@ fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
 }
 
 impl Container {
-    /// Directory of a `path://` worker. `None` for packages, which have no
+    /// Directory of a local catalog worker. `None` for packages, which have no
     /// local directory until registry resolution exists.
     pub fn worker_dir(&self) -> Option<&std::path::Path> {
         match &self.worker {
-            WorkerSource::Path { dir, .. } => Some(dir.as_path()),
+            WorkerSource::Catalog { dir, .. } => Some(dir.as_path()),
             WorkerSource::Package { .. } => None,
         }
     }

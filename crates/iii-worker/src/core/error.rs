@@ -33,7 +33,7 @@ pub enum WorkerOpErrorKind {
     StartTimeout,                  // W161
     StopTimeout,                   // W162
     Cancelled,                     // W170
-    BundleManifestRejected,        // W180
+    BundleDescriptorRejected,      // W180
     BundleArchiveUnsafe,           // W181
     BundleResourceClamped,         // W182  (carried by warn events, not Err returns)
     BundleDepGraphExceeded,        // W183
@@ -67,7 +67,7 @@ impl WorkerOpErrorKind {
             Self::StartTimeout => "W161",
             Self::StopTimeout => "W162",
             Self::Cancelled => "W170",
-            Self::BundleManifestRejected => "W180",
+            Self::BundleDescriptorRejected => "W180",
             Self::BundleArchiveUnsafe => "W181",
             Self::BundleResourceClamped => "W182",
             Self::BundleDepGraphExceeded => "W183",
@@ -182,9 +182,9 @@ pub enum WorkerOpError {
     Cancelled,
 
     #[error(
-        "bundle manifest rejected: field {field:?} is not allowed for bundle workers: {reason}"
+        "bundle package descriptor rejected: field {field:?} is not allowed for bundle workers: {reason}"
     )]
-    BundleManifestRejected { field: String, reason: String },
+    BundleDescriptorRejected { field: String, reason: String },
 
     #[error("bundle archive contains unsafe entry{}: {reason}", match entry { Some(e) => format!(" {:?}", e), None => String::new() })]
     BundleArchiveUnsafe {
@@ -257,7 +257,7 @@ impl WorkerOpError {
             Self::StartTimeout { .. } => K::StartTimeout,
             Self::StopTimeout { .. } => K::StopTimeout,
             Self::Cancelled => K::Cancelled,
-            Self::BundleManifestRejected { .. } => K::BundleManifestRejected,
+            Self::BundleDescriptorRejected { .. } => K::BundleDescriptorRejected,
             Self::BundleArchiveUnsafe { .. } => K::BundleArchiveUnsafe,
             Self::BundleDepGraphExceeded { .. } => K::BundleDepGraphExceeded,
             Self::DependencyGraphInvalid { .. } => K::DependencyGraphInvalid,
@@ -330,7 +330,7 @@ impl WorkerOpError {
                 json!({ "worker": worker, "waited_secs": waited_secs })
             }
             Self::Cancelled => json!({}),
-            Self::BundleManifestRejected { field, reason } => {
+            Self::BundleDescriptorRejected { field, reason } => {
                 json!({ "field": field, "reason": reason })
             }
             Self::BundleArchiveUnsafe { reason, entry } => {

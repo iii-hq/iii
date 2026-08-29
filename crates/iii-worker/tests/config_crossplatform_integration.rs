@@ -7,14 +7,11 @@
 //! Cross-platform config YAML tests.
 //!
 //! Verifies that config_file.rs produces identical output on Linux and macOS:
-//! byte-identical round-trips, comment preservation, merge idempotency, and
-//! path resolution through symlinks (macOS /tmp -> /private/tmp).
+//! byte-identical round-trips, comment preservation, and merge idempotency.
 
 mod common;
 
-use common::assertions::assert_paths_eq;
 use common::isolation::in_temp_dir;
-use std::path::Path;
 
 /// CFG-01: Round-trip byte identity.
 ///
@@ -112,39 +109,5 @@ fn config_merge_is_idempotent() {
             "merge(A,B) applied twice should produce byte-identical output.\nFirst:\n{}\nSecond:\n{}",
             first_result, second_result
         );
-    });
-}
-
-/// CFG-04: Path resolution cross-platform.
-///
-/// On macOS, /tmp is a symlink to /private/tmp. This test stores a worker
-/// path via append_worker_with_path, reads it back, and asserts both the
-/// stored path and the original resolve to the same canonical location.
-#[test]
-fn config_path_resolution_cross_platform() {
-    in_temp_dir(|| {
-        let dir = std::env::current_dir().unwrap();
-
-        // Store a path using the tempdir's actual path (which on macOS may be
-        // /tmp/... symlinked to /private/tmp/...)
-        let worker_path_str = dir.join("my-project").to_string_lossy().to_string();
-        std::fs::create_dir_all(dir.join("my-project")).unwrap();
-
-        iii_worker::cli::config_file::append_worker_with_path(
-            "local-worker",
-            &worker_path_str,
-            None,
-        )
-        .unwrap();
-
-        // Read the stored path back
-        let stored_path = iii_worker::cli::config_file::get_worker_path("local-worker")
-            .expect("worker path should be stored");
-
-        // The stored path is a literal string (config_file.rs does NOT canonicalize).
-        // Verify that canonicalizing both the stored path and the original path
-        // yields the same result. This is the key cross-platform check:
-        // on macOS /tmp/xxx -> /private/tmp/xxx
-        assert_paths_eq(Path::new(&stored_path), &dir.join("my-project"));
     });
 }

@@ -18,7 +18,7 @@ npx skills add iii-hq/iii --full-depth --skill iii
 
 | Surface | Name | Notes |
 |---|---|---|
-| Registry / manifest | **`iii`** | [`iii.worker.yaml`](iii.worker.yaml) `name:` field |
+| Package catalog | **`iii`** | Root [`worker-compose.yaml`](../../../../worker-compose.yaml) map key |
 | Engine runtime worker (in-process) | **`iii-engine-functions`** | Mandatory builtin; owns `engine::*` |
 | `engine::functions::list` owner for `engine::*` | **`iii-engine-functions`** | Until runtime name aligns with registry |
 
@@ -69,11 +69,11 @@ Project workers are declared in `worker-compose.yaml` and supervised by a Compos
 that daemon with its namespace:
 
 ```bash
-iii trigger -n dev compose::add worker=state
+# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
 iii trigger -n dev compose::status file=worker-compose.yaml
 iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
 iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-iii trigger -n dev compose::update file=worker-compose.yaml worker=state
+# Edit the package://<slug>@<version> reference, validate, and restart the stack.
 iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 
@@ -95,7 +95,7 @@ stdout and stderr, or `iii compose logs state --follow --namespace dev` for a li
 Run these reads before authoring a new worker — the capability you need may already exist:
 
 1. `engine::functions::list` — every function on this engine (filter with `prefix` or `search`).
-2. `directory::registry::workers::list` — every worker in the public registry. Prefer `compose::add { worker: "…" }` over re-implementing.
+2. `directory::registry::workers::list` — every worker in the public registry. Prefer `Compose catalog editing { worker: "…" }` over re-implementing.
 
 Only hand-author a worker when both come up empty.
 

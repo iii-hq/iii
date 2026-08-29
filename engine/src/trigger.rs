@@ -749,11 +749,11 @@ impl TriggerRegistry {
         );
         match known_trigger_type_provider(&trigger.trigger_type) {
             Some(worker_name) => format!(
-                "{} If this persists, the {} worker is missing — run: {}",
+                "{} If this persists, the {} worker is missing — {}",
                 base,
                 worker_name.cyan().bold(),
                 format!(
-                    "iii trigger -n <compose-daemon-namespace> compose::add worker={}",
+                    "declare package://{}@next in worker-compose.yaml and run iii compose --up",
                     worker_name
                 )
                 .green()
@@ -1717,9 +1717,8 @@ mod tests {
             assert_eq!(known_trigger_type_provider(trigger_type), Some(worker_name));
 
             let msg = TriggerRegistry::pending_trigger_warning(&make_trigger("t1", trigger_type));
-            let expected_hint = format!(
-                "iii trigger -n <compose-daemon-namespace> compose::add worker={worker_name}"
-            );
+            let expected_hint =
+                format!("declare package://{worker_name}@next in worker-compose.yaml");
             assert!(
                 msg.contains(&expected_hint),
                 "Expected hint with '{expected_hint}', got: {msg}"

@@ -685,7 +685,7 @@ async fn start_one_until_shutdown(
                 ),
             }
         }
-        crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
+        crate::config::WorkerSource::Catalog { .. } => (resolve_start(key, container)?, None),
     };
 
     let user_env = container.resolve_user_env(key)?;
@@ -1045,7 +1045,7 @@ async fn stop_one(
     //
     // The spec is the hook's own. A hook is a host shell command whatever the
     // container was, and asking `resolve_start` for one instead gated the hook
-    // on an answer only a `path://` container has: a package container's spec
+    // on an answer only a local catalog container has: a package container's spec
     // comes from what was installed, which teardown cannot resolve offline. So
     // post_run never fired for the containers most likely to need it.
     if let Some(container) = ctx.file.containers.get(key)
@@ -1224,18 +1224,21 @@ mod tests {
     use super::*;
 
     const PROJECT: &str = r#"
-namespace: orders
-containers:
-  web:
-    worker: path://./workers/web
-    start_after: [api]
-  api:
-    worker: path://./workers/api
-    start_after: [database]
-  database:
-    worker: path://./workers/database
-  lonely:
-    worker: path://./workers/lonely
+workers: {}
+stacks:
+  default:
+    namespace: orders
+    containers:
+      web:
+        worker: package://web@next
+        start_after: [api]
+      api:
+        worker: package://api@next
+        start_after: [database]
+      database:
+        worker: package://database@next
+      lonely:
+        worker: package://lonely@next
 "#;
 
     fn file() -> ComposeFile {
@@ -1324,16 +1327,19 @@ mod teardown_order_tests {
     fn a_targeted_down_stops_dependents_before_their_dependency() {
         let file = ComposeFile::parse(
             r#"
-namespace: orders
-containers:
-  web:
-    worker: path://./workers/web
-    start_after: [api]
-  api:
-    worker: path://./workers/api
-    start_after: [database]
-  database:
-    worker: path://./workers/database
+workers: {}
+stacks:
+  default:
+    namespace: orders
+    containers:
+      web:
+        worker: package://web@next
+        start_after: [api]
+      api:
+        worker: package://api@next
+        start_after: [database]
+      database:
+        worker: package://database@next
 "#,
             "/srv/app/worker-compose.yaml",
         )
@@ -1362,19 +1368,22 @@ containers:
     fn a_two_level_cascade_stops_the_far_dependent_first() {
         let file = ComposeFile::parse(
             r#"
-namespace: orders
-containers:
-  web:
-    worker: path://./workers/web
-    start_after: [api]
-  api:
-    worker: path://./workers/api
-    start_after: [database]
-  reports:
-    worker: path://./workers/reports
-    start_after: [database]
-  database:
-    worker: path://./workers/database
+workers: {}
+stacks:
+  default:
+    namespace: orders
+    containers:
+      web:
+        worker: package://web@next
+        start_after: [api]
+      api:
+        worker: package://api@next
+        start_after: [database]
+      reports:
+        worker: package://reports@next
+        start_after: [database]
+      database:
+        worker: package://database@next
 "#,
             "/srv/app/worker-compose.yaml",
         )

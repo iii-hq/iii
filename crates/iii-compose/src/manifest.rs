@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartSpec {
-    /// A shell command: the compose `run` or the manifest's `scripts.start`.
+    /// A shell command used by lifecycle hooks.
     Shell(String),
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
@@ -30,8 +30,8 @@ pub enum StartSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmSpec {
-    /// An installed registry bundle. Its manifest command is publisher-owned
-    /// and is always read and run inside the guest.
+    /// An installed registry bundle. Its descriptor-owned command is always
+    /// run inside the guest.
     Bundle {
         install_dir: PathBuf,
         exec: Vec<String>,
@@ -40,9 +40,7 @@ pub enum VmSpec {
         environment: BTreeMap<String, String>,
         resources: VmResources,
     },
-    /// A local project whose manifest selected an OCI rootfs. The compose
-    /// command may replace the manifest's `scripts.start`, but still runs in
-    /// the guest.
+    /// A local catalog worker whose descriptor selected an OCI rootfs.
     Local {
         worker_dir: PathBuf,
         exec: Vec<String>,
@@ -77,21 +75,9 @@ impl From<Option<&crate::descriptor::Resources>> for VmResources {
 
 /// Resolves how a container starts.
 ///
-/// The rule is general, not a decision per field: **where the compose file and
-/// the manifest describe the same thing, `worker-compose.yaml` wins and the
-/// manifest is the default.** The compose file is the operator's, the manifest
-/// is the worker author's, and an operator deploying a worker they did not
-/// write has to be able to override the author without editing a vendored
-/// directory. So `run` wins over `scripts.start`, and the container key wins
-/// over the manifest's `name` — the key is what reaches the child as
-/// `III_WORKER_NAME`, so a worker honouring the reserved contract registers
-/// under it whatever its manifest says.
-///
-/// A manifest that names itself differently used to be refused outright, which
-/// rejected a configuration that works. What the manifest cannot predict — a
-/// worker that hardcodes its name in code and ignores `III_WORKER_NAME` — is
-/// caught at readiness by `WORKER_NAME_MISMATCH`, which reports the name it
-/// actually took.
+/// The Compose container key is the runtime identity and reaches the child as
+/// `III_WORKER_NAME`. Startup details come only from the compiled package
+/// descriptor; the bundle itself is never inspected for configuration.
 pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     let (dir, descriptor) = match &container.worker {
         // A package has no start command until its artefact is installed, and
@@ -102,7 +88,7 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
                 container: key.to_string(),
             });
         }
-        WorkerSource::Path {
+        WorkerSource::Catalog {
             dir, descriptor, ..
         } => (dir, descriptor),
     };
@@ -179,7 +165,7 @@ pub struct ValidationReport {
 }
 
 /// Validates everything that can be checked without an engine: schema, graph,
-/// worker directories, manifests and start commands.
+/// worker directories, package descriptors and start commands.
 pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<ValidationReport> {
     let start_order = file.start_order()?;
     let mut resolved = Vec::new();
@@ -190,7 +176,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
             continue;
         };
         // Ahead of the package split on purpose: an env file is as checkable
-        // for a `package://` container as for a `path://` one, since nothing
+        // for a `package://` container as for a local catalog one, since nothing
         // here needs the worker on disk. Behind it, every rule below would
         // silently exempt half the catalogue.
         check_env_files(key, container)?;
@@ -200,7 +186,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
                 deferred_packages.push(key.clone());
                 continue;
             }
-            WorkerSource::Path { dir, .. } => dir,
+            WorkerSource::Catalog { dir, .. } => dir,
         };
 
         resolved.push(ContainerPlan {

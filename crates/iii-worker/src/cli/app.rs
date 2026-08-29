@@ -237,10 +237,6 @@ pub enum Commands {
     #[command(name = "__local-prepare", hide = true)]
     LocalPrepare,
 
-    /// Internal: host-side source watcher sidecar for local-path workers
-    #[command(name = "__watch-source", hide = true)]
-    WatchSource(WatchSourceArgs),
-
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
     #[command(name = "gen-cli-docs", hide = true)]
@@ -295,28 +291,6 @@ pub struct ExecArgs {
     /// First element is the executable; the rest are its argv.
     #[arg(last = true, value_name = "COMMAND")]
     pub command: Vec<String>,
-}
-
-/// Arguments for the hidden `__watch-source` subcommand.
-#[derive(Args, Debug)]
-pub struct WatchSourceArgs {
-    /// Worker name to restart when source files change
-    #[arg(long, value_name = "NAME")]
-    pub worker: String,
-
-    /// Absolute project directory to watch recursively
-    #[arg(long, value_name = "PATH")]
-    pub project: String,
-
-    /// Worker runs in the overlay copy-in workspace model (host project is
-    /// copied into a VM-local /workspace at boot, then /mnt/host-src is
-    /// detached). Set by `iii worker start` from the authoritative
-    /// `overlay::overlay_active()` decision. When set, the watcher always does
-    /// a full VM restart on source edits — the in-VM fast restart would re-run
-    /// the boot script against the now-detached share and fail. Absent ⇒
-    /// live-mount (legacy/bundle), where the fast restart is valid.
-    #[arg(long)]
-    pub overlay: bool,
 }
 
 /// Arguments for the `sandbox-daemon` subcommand. Started by the iii

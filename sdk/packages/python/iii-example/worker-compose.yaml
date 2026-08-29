@@ -1,32 +1,39 @@
-# namespace: default
-engine:
-  workers:
-    iii-stream:
-      port: ${STREAMS_PORT:3112}
-      host: 127.0.0.1
-      adapter:
-        name: redis
-        config:
-          redis_url: redis://localhost:6379
-containers:
-  state:
-    worker: package://api.workers.iii.dev/state
-    version: "0.22.2"
-    config_name: state
-  http:
-    worker: package://api.workers.iii.dev/http
-    version: "0.21.3"
-    config_name: http
-  pubsub:
-    worker: package://api.workers.iii.dev/pubsub
-    version: "0.21.2"
-    config_name: pubsub
-  cron:
-    worker: package://api.workers.iii.dev/cron
-    version: "0.21.9"
-    config_name: cron
+workers:
   iii-example:
-    worker: path://.
-    start_after: [state, http, pubsub, cron]
-    scripts:
-      run: uv run iii-example
+    source:
+      path: .
+      package_manifest: pyproject.toml
+    artifact:
+      kind: python-bundle
+      workspace_root: .
+      runtime: { name: python, version: 3.12.13 }
+      package_manager: { name: uv, version: 0.12.5 }
+      lockfile: uv.lock
+      install_command: [uv, sync, --frozen]
+      build_command: [uv, build]
+      include: [src/main.py]
+    runtime:
+      exec: [uv, run, iii-example]
+    registry:
+      description: Python SDK example worker
+      license: Elastic-2.0
+      tags: [example]
+      dependencies: {}
+      publish: false
+    validation:
+      interface: skipped
+stacks:
+  default:
+    namespace: default
+    containers:
+      state:
+        worker: package://state@next
+      http:
+        worker: package://http@next
+      pubsub:
+        worker: package://pubsub@next
+      cron:
+        worker: package://cron@next
+      iii-example:
+        worker: catalog://iii-example
+        start_after: [state, http, pubsub, cron]

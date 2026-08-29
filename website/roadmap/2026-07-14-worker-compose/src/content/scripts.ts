@@ -23,7 +23,7 @@ export const SCRIPT_STAGES: RevealStage[] = [
   },
   {
     label: 'spawn run',
-    caption: 'path:// worker: the compose run command. package:// binary: exec the artifact with --url --namespace --config.',
+    caption: 'catalog:// and package:// workers execute the immutable runtime command from their package descriptor.',
     rows: [
       { k: 'pid', v: '48213 · own process group' },
       { k: 'injected', v: 'III_URL · III_NAMESPACE · III_CONFIG' },
@@ -65,13 +65,13 @@ export const SCRIPT_STAGES: RevealStage[] = [
 export const SCRIPT_FIELDS = [
   { name: 'pre_start', desc: 'blocking; runs before every spawn; exit ≠ 0 or timeout fails the container.' },
   { name: 'pre_start_timeout', desc: 'default 60s; set the field only to change it; timeout kills the hook’s process group.' },
-  { name: 'run', desc: 'the supervised process. path:// only — required when the worker has no manifest. compose run wins over manifest scripts.start.' },
+  { name: 'run', desc: 'the supervised process comes from the compiled package descriptor; stacks never override it.' },
   { name: 'post_run', desc: 'fired once after the run process exits — any exit path (down, crash, rollback); not awaited; failure = warning + last_error.' },
 ] as const
 
 export const SCRIPT_RULES = [
   'run on a package:// worker → validation error (binaries start implicitly).',
-  'path:// with neither manifest nor run → error: add run: or create iii.worker.yaml.',
-  'setup/install from the manifest are never executed by compose — sandbox contract.',
+  'catalog:// resolves a worker from the root Compose catalog; package:// resolves Registry descriptors.',
+  'build/install commands come from the descriptor and are never inferred at runtime.',
   'no stop hook in v1: teardown is sigterm → grace → sigkill; post_run covers after-exit.',
 ] as const

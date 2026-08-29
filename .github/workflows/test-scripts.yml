@@ -8,7 +8,6 @@ on:
       - '.github/workflows/test-scripts.yml'
       - '.github/workflows/alpha-release.yml'
       - '.github/workflows/release-iii.yml'
-      - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'
       - 'engine/src/workers/**/skill.md'
       - 'crates/**/skills/**'
@@ -20,7 +19,6 @@ on:
       - '.github/workflows/test-scripts.yml'
       - '.github/workflows/alpha-release.yml'
       - '.github/workflows/release-iii.yml'
-      - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'
       - 'engine/src/workers/**/skill.md'
       - 'crates/**/skills/**'
@@ -38,8 +36,6 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install pytest pyyaml
-      - name: Validate release worker matrix
-        run: python3 .github/scripts/validate_release_worker_matrix.py --repo-root .
       - name: Run script tests
         working-directory: .github/scripts
         run: python -m pytest -v

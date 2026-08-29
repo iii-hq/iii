@@ -25,16 +25,15 @@ def test_trigger_registration_result_error_is_logged(caplog):
             "error": {
                 "code": "trigger_type_not_found",
                 "message": (
-                    'Trigger type "http" not found — worker http is missing. Run: '
-                    "iii trigger -n <compose-daemon-namespace> compose::add worker=http"
+                    'Trigger type "http" not found — worker http is missing. '
+                    "Declare package://http@next in worker-compose.yaml and run iii compose --up"
                 ),
             },
         },
     )
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("<compose-daemon-namespace>" in m for m in messages), messages
-    assert any("compose::add worker=http" in m for m in messages), messages
+    assert any("package://http@next" in m for m in messages), messages
     assert any("trig-1" in m for m in messages), messages
 
     client.shutdown()

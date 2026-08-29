@@ -348,8 +348,8 @@ fn digest_pinned_image(image: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-/// The version the registry hands back for `*`, so `compose::add` can pin what
-/// it just resolved rather than writing a range that drifts under the operator.
+/// The version the registry hands back for `*`, so the lock can pin what was
+/// resolved rather than retaining a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
     let (registry, name) = split_reference(reference);
     let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
@@ -631,9 +631,8 @@ fn is_path_safe(value: &str) -> bool {
 
 /// Refuses a resolve answer before anything in it reaches the filesystem.
 ///
-/// The whole graph is checked, not only the worker asked for: `compose::add`
-/// turns every node into a declaration, and each one can later be installed
-/// under its own name.
+/// The whole graph is checked, not only the requested worker: every node can
+/// later be installed independently under its own name.
 fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> Result<()> {
     let refuse = |field: &str, value: &str| ComposeError::RegistryNameRefused {
         container: container.to_string(),
@@ -654,9 +653,8 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
 
 /// The named worker out of its own graph.
 ///
-/// Installing takes only the root: what a project runs is what its compose file
-/// declares. `compose::add` is where the rest of the graph is turned into
-/// declarations, so an operator sees them before they run.
+/// Installing takes only the root: what a project runs is what its Compose file
+/// declares. The rest of the graph is retained as immutable lock data.
 async fn resolve(
     container: &str,
     registry: &str,
@@ -918,6 +916,28 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    fn resolved_binary(
+        name: &str,
+        version: &str,
+        binaries: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut descriptor: crate::descriptor::PackageDescriptor = serde_json::from_str(
+            include_str!("../tests/fixtures/package-descriptor-jcs.json"),
+        )
+        .unwrap();
+        descriptor.name = name.to_string();
+        descriptor.version = version.to_string();
+        let descriptor_sha256 = descriptor.sha256();
+        serde_json::json!({
+            "package_descriptor": descriptor,
+            "descriptor_sha256": descriptor_sha256,
+            "artifacts": {
+                "kind": "rust-binary",
+                "binaries": binaries,
+            }
+        })
+    }
+
     #[test]
     fn a_reference_without_a_host_uses_the_default_registry() {
         let (registry, name) = split_reference("state");
@@ -937,12 +957,7 @@ mod tests {
                     ResponseTemplate::new(503)
                 } else {
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                        "graph": [{
-                            "name": "state",
-                            "version": "1.0.0",
-                            "type": "binary",
-                            "binaries": {}
-                        }]
+                        "graph": [resolved_binary("state", "1.0.0", serde_json::json!({}))]
                     }))
                 }
             })
@@ -999,18 +1014,12 @@ mod tests {
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/resolve"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "graph": [{
-                    "name": "state",
-                    "version": "1.0.0",
-                    "type": "binary",
-                    "binaries": {
+                "graph": [resolved_binary("state", "1.0.0", serde_json::json!({
                         (target): {
                             "sha256": digest,
                             "url": artifact_url,
                         }
-                    },
-                    "config": {"prefix": "state"}
-                }]
+                    }))]
             })))
             .expect(2)
             .mount(&server)
@@ -1057,17 +1066,12 @@ mod tests {
                     (&second_digest, &second_url)
                 };
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "graph": [{
-                        "name": "state",
-                        "version": "1.0.0",
-                        "type": "binary",
-                        "binaries": {
+                    "graph": [resolved_binary("state", "1.0.0", serde_json::json!({
                             (target): {
                                 "sha256": digest,
                                 "url": url,
                             }
-                        }
-                    }]
+                        }))]
                 }))
             })
             .expect(2)
@@ -1229,12 +1233,11 @@ mod tests {
 
     #[test]
     fn a_dependency_is_checked_too_not_only_the_worker_asked_for() {
-        // `compose::add` declares the whole graph, and each node is installed
-        // under its own name later.
+        // Every graph node may be installed under its own name later.
         let response: ResolveResponse = serde_json::from_value(serde_json::json!({
             "graph": [
-                {"name": "state", "version": "1.0.0", "type": "binary"},
-                {"name": "../escape", "version": "1.0.0", "type": "binary"},
+                resolved_binary("state", "1.0.0", serde_json::json!({})),
+                resolved_binary("../escape", "1.0.0", serde_json::json!({})),
             ]
         }))
         .unwrap();

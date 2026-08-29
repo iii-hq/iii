@@ -144,7 +144,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// locally, pulls the OCI image and extracts it.
 ///
 /// `base_image_override` comes from `runtime.base_image` in
-/// `iii.worker.yaml`. When `Some`, the override's image ref is pulled
+/// `worker-compose.yaml`. When `Some`, the override's image ref is pulled
 /// into a slug-derived cache dir so it doesn't clobber the kind-default
 /// rootfs (e.g. a `base_image: oven/bun:1` worker gets its own
 /// `~/.iii/rootfs/oven-bun-1/` instead of replacing the shared

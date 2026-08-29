@@ -21,13 +21,9 @@ Create the importer directory the same way you created `link` in Chapter 1:
 mkdir -p bulk-importer/src
 ```
 
-Create the worker manifest and package metadata before writing its source:
-
-```yaml bulk-importer/iii.worker.yaml
-name: bulk-importer
-scripts:
-  start: pnpm start
-```
+Add `bulk-importer` to the root `worker-compose.yaml` catalog and reference it from the tutorial
+stack with `catalog://bulk-importer`. The descriptor declares its package manifest, exact Node and
+package-manager versions, build argv, bundle files, and runtime argv.
 
 ```json bulk-importer/package.json
 {
@@ -93,7 +89,7 @@ logger.info("bulk-importer ready");
 Register it with your project:
 
 ```bash
-iii trigger -n linkly compose::add worker=./bulk-importer
+# Declare the local worker under workers: and reference catalog://<slug> from the stack.
 ```
 
 ## See it work

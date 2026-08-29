@@ -454,7 +454,7 @@ fn write_worker_compose(
         ),
     };
     let contents = format!(
-        "workers:\n  {slug}:\n    source:\n      path: .\n      package_manifest: {package_manifest}\n{artifact}\n    runtime:\n      exec: {exec}\n    registry:\n      description: {slug} worker\n      license: Apache-2.0\n      tags: []\n      dependencies: {{}}\n      publish: false\n    validation:\n      interface: required\nstacks: {{}}\n"
+        "workers:\n  {slug}:\n    source:\n      path: .\n      package_manifest: {package_manifest}\n{artifact}\n    runtime:\n      exec: {exec}\n    registry:\n      description: {slug} worker\n      license: Apache-2.0\n      tags: []\n      dependencies: {{}}\n      publish: false\n    validation:\n      interface: required\nstacks:\n  default:\n    namespace: {slug}\n    containers:\n      {slug}:\n        worker: catalog://{slug}\n"
     );
     std::fs::write(path, contents)
 }

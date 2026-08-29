@@ -15,6 +15,10 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 # Durable daemon state is JSON: it is machine state, not an operator-edited file.
 serde_json = { workspace = true }
+# Package descriptors are content-addressed across Rust and JavaScript. JCS is
+# the shared byte contract (RFC 8785), including ECMAScript number rendering
+# and UTF-16 object-key ordering.
+serde_jcs = "0.2"
 dirs = { workspace = true }
 # Colour is disabled automatically when the output is not a terminal, so piped
 # output stays parseable.

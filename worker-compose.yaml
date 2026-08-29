@@ -1,0 +1,101 @@
+workers:
+  configuration:
+    source: { path: engine, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii] }
+    registry:
+      description: Register, store, and watch typed configuration values for the engine.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+  iii:
+    source: { path: engine, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii] }
+    registry:
+      description: Core engine introspection and platform authoring reference.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+  iii-observability:
+    source: { path: engine, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii] }
+    registry:
+      description: OpenTelemetry-based traces, metrics, logs, alerts, and sampling.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+  iii-stream:
+    source: { path: engine, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii] }
+    registry:
+      description: Build durable streams for real-time data subscriptions.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+  iii-worker-manager:
+    source: { path: engine, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii] }
+    registry:
+      description: WebSocket listener that SDK workers connect to.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+  iii-sandbox:
+    source: { path: crates/iii-worker, package_manifest: Cargo.toml }
+    artifact:
+      kind: rust-binary
+      binary: iii-worker
+      targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+      toolchain: { name: rust, version: 1.97.1 }
+    runtime: { exec: [iii-worker, sandbox-daemon] }
+    registry:
+      description: Spawn ephemeral microVMs for isolated commands and file operations.
+      license: Elastic-2.0
+      tags: [builtin, engine]
+      dependencies: {}
+      publish: false
+    validation: { interface: skipped }
+
+stacks:
+  default:
+    namespace: iii-builtins
+    containers: {}

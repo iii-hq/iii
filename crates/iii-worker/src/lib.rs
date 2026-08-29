@@ -14,9 +14,7 @@ pub mod core;
 pub mod daemon_exit;
 pub mod sandbox_daemon;
 
-pub use cli::app::{
-    AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, SandboxDaemonArgs, WatchSourceArgs,
-};
+pub use cli::app::{AddArgs, Cli, Commands, DEFAULT_PORT, ExecArgs, SandboxDaemonArgs};
 pub use cli::vm_boot::VmBootArgs;
 
 // Re-export under the old name so HOME-mutating tests serialize against

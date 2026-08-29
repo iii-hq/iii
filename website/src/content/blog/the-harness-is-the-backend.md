@@ -261,7 +261,7 @@ Here is where the model gets truly recursive.
 
 iii supports hardware-isolated microVM workers. The sandbox functionality
 itself is a worker with its own filesystem, network stack, and process tree.
-You create a worker with a single command: `iii worker add ./my-worker`. The
+You create a worker with a single command: a root Compose catalog entry referenced with `catalog://<slug>`. The
 sandbox worker connects to the engine, registers functions and triggers, and
 participates in the system exactly like every other worker.
 

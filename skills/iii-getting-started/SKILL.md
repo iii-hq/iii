@@ -151,17 +151,21 @@ Expected response:
 
 ## Add Existing Workers
 
-To add a capability that already exists, browse `https://workers.iii.dev/` and add it through the
-running Compose daemon:
+To add a capability that already exists, browse `https://workers.iii.dev/` and declare its Registry
+reference in the stack:
 
-```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::add worker=queue
-iii trigger -n dev compose::add worker=image-resize@0.1.2
+```yaml
+stacks:
+  default:
+    namespace: dev
+    containers:
+      state:
+        worker: package://state@next
 ```
 
-`compose::add` resolves dependencies, writes exact versions to `worker-compose.yaml`, and restarts
-the affected project. A local worker can be declared as a `path://` container or added by path.
+Registry workers use `package://`; workers authored in the root catalog use `catalog://<slug>`.
+Validate with `iii compose validate --file worker-compose.yaml`, then start with
+`iii compose --up --file worker-compose.yaml`.
 
 ## Install Agent Skills
 
@@ -185,8 +189,8 @@ live with the worker docs and registry entries.
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
 - Use `state::get` / `state::set` to persist data across function calls
-- Use `iii trigger -n <daemon> compose::add worker=<name>` when the capability already exists in
-  the worker registry
+- Declare `package://<slug>@next` in the selected stack when the capability
+  already exists in the Registry.
 
 ## Recommended Next Steps
 

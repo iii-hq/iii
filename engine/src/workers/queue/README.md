@@ -9,7 +9,7 @@ Asynchronous job processing with named queues, retries, and dead-letter support.
 > the standalone worker to Compose:
 >
 > ```bash
-> iii trigger -n dev compose::add worker=queue
+> iii trigger -n dev Compose catalog editing worker=queue
 > ```
 
 Supports two modes:
@@ -20,7 +20,7 @@ Supports two modes:
 ## Add to Compose
 
 ```bash
-iii trigger -n dev compose::add worker=queue
+# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
 ```
 
 Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).

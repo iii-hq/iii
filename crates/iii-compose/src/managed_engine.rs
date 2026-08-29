@@ -847,30 +847,26 @@ mod tests {
     use super::*;
 
     fn engine_spec() -> crate::config::EngineSpec {
-        crate::ComposeFile::parse(
-            r#"
-engine:
-  url: ws://127.0.0.1:50123
-  registration_namespace_grace_ms: 2500
-  workers:
-    iii-sandbox:
-      auto_install: false
-    configuration:
-      adapter:
-        name: fs
-        config:
-          directory: ./config
-    iii-worker-manager:
-      port: ${ENGINE_PORT:50123}
-    iii-worker-manager#rbac:
-      port: 50124
-containers: {}
+        crate::config::EngineSpec {
+            url: "ws://127.0.0.1:50123".to_string(),
+            registration_namespace_grace_ms: Some(2500),
+            workers: serde_yaml::from_str(
+                r#"
+iii-sandbox:
+  auto_install: false
+configuration:
+  adapter:
+    name: fs
+    config:
+      directory: ./config
+iii-worker-manager:
+  port: ${ENGINE_PORT:50123}
+iii-worker-manager#rbac:
+  port: 50124
 "#,
-            "/srv/app/worker-compose.yaml",
-        )
-        .unwrap()
-        .engine
-        .unwrap()
+            )
+            .unwrap(),
+        }
     }
 
     #[test]
@@ -902,18 +898,8 @@ containers: {}
 
     #[test]
     fn materialized_config_infers_worker_manager_endpoint_from_engine_url() {
-        let spec = crate::ComposeFile::parse(
-            r#"
-engine:
-  url: ws://127.0.0.1:50123
-  workers: {}
-containers: {}
-"#,
-            "/srv/app/worker-compose.yaml",
-        )
-        .unwrap()
-        .engine
-        .unwrap();
+        let mut spec = engine_spec();
+        spec.workers.clear();
         let dir = tempfile::tempdir().unwrap();
         let path = materialize_engine_config(&spec, dir.path()).unwrap();
         let document: serde_yaml::Value =
@@ -949,21 +935,11 @@ containers: {}
 
     #[test]
     fn explicit_worker_manager_port_must_match_the_engine_url() {
-        let spec = crate::ComposeFile::parse(
-            r#"
-engine:
-  url: ws://127.0.0.1:50123
-  workers:
-    iii-worker-manager:
-      host: 0.0.0.0
-      port: 60123
-containers: {}
-"#,
-            "/srv/app/worker-compose.yaml",
-        )
-        .unwrap()
-        .engine
-        .unwrap();
+        let mut spec = engine_spec();
+        spec.workers.insert(
+            "iii-worker-manager".to_string(),
+            serde_yaml::from_str("host: 0.0.0.0\nport: 60123\n").unwrap(),
+        );
 
         let error = effective_listener_endpoint(&spec)
             .expect_err("different URL and listener ports must be rejected");
@@ -973,28 +949,24 @@ containers: {}
 
     #[test]
     fn materialized_config_preserves_explicit_worker_manager_config() {
-        let spec = crate::ComposeFile::parse(
-            r#"
-engine:
-  url: ws://127.0.0.1:50123
-  workers:
-    iii-worker-manager:
-      host: 0.0.0.0
-      port: 60123
-containers: {}
-"#,
-            "/srv/app/worker-compose.yaml",
-        )
-        .unwrap()
-        .engine
-        .unwrap();
+        let mut spec = engine_spec();
+        spec.workers.insert(
+            "iii-worker-manager".to_string(),
+            serde_yaml::from_str("host: 0.0.0.0\nport: 60123\n").unwrap(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = materialize_engine_config(&spec, dir.path()).unwrap();
         let document: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
 
+        let worker_manager = document["workers"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|worker| worker["name"] == "iii-worker-manager")
+            .unwrap();
         assert_eq!(
-            document["workers"][0]["config"],
+            worker_manager["config"],
             serde_yaml::from_str::<serde_yaml::Value>(
                 r#"
 host: 0.0.0.0

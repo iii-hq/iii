@@ -271,7 +271,7 @@ impl PackageDescriptor {
                 message: "source.package_manifest must be a regular file".into(),
             });
         }
-        let version = read_package_version(&manifest).map_err(|message| {
+        let version = read_package_version(&manifest, &root).map_err(|message| {
             ComposeError::InvalidPackageDescriptor {
                 worker: name.into(),
                 message,
@@ -297,8 +297,7 @@ impl PackageDescriptor {
     }
 
     pub fn sha256(&self) -> String {
-        let value = serde_json::to_value(self).expect("descriptor is JSON");
-        hex::encode(Sha256::digest(canonical_json(&value).as_bytes()))
+        hex::encode(Sha256::digest(canonical_json(self).as_bytes()))
     }
 
     pub fn source_dir(&self, base_dir: &Path) -> PathBuf {
@@ -462,7 +461,11 @@ fn validate_definition(
             non_empty("artifact.build_command", build_command)?;
             non_empty("artifact.include", include)?;
             validate_bundle_paths(name, include)?;
-            validate_bundle_files(name, source_dir, include, false)?;
+            // Python releases may materialize an explicit, deterministic
+            // vendor/archive output during the build just like JavaScript
+            // emits its bundle. The post-build packager still requires every
+            // listed path to be a regular file before publication.
+            validate_bundle_files(name, source_dir, include, true)?;
             if definition.registry.publish {
                 require_bundle_base_image(name, &definition.runtime)?;
             }
@@ -967,7 +970,7 @@ fn canonical_existing_parent(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn read_package_version(path: &Path) -> std::result::Result<String, String> {
+fn read_package_version(path: &Path, compose_root: &Path) -> std::result::Result<String, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let name = path
@@ -979,7 +982,8 @@ fn read_package_version(path: &Path) -> std::result::Result<String, String> {
             .ok()
             .and_then(|value| value.get("version")?.as_str().map(str::to_owned))
     } else {
-        toml::from_str::<toml::Value>(&text).ok().and_then(|value| {
+        let parsed = toml::from_str::<toml::Value>(&text).ok();
+        let direct = parsed.as_ref().and_then(|value| {
             value
                 .get("package")
                 .and_then(|package| package.get("version"))
@@ -990,6 +994,20 @@ fn read_package_version(path: &Path) -> std::result::Result<String, String> {
                 })
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned)
+        });
+        let inherits_workspace = parsed.as_ref().is_some_and(|value| {
+            value
+                .get("package")
+                .and_then(|package| package.get("version"))
+                .and_then(toml::Value::as_table)
+                .and_then(|version| version.get("workspace"))
+                .and_then(toml::Value::as_bool)
+                == Some(true)
+        });
+        direct.or_else(|| {
+            inherits_workspace
+                .then(|| workspace_package_version(path, compose_root))
+                .flatten()
         })
     };
     version
@@ -997,34 +1015,33 @@ fn read_package_version(path: &Path) -> std::result::Result<String, String> {
         .ok_or_else(|| format!("{} does not declare a package version", path.display()))
 }
 
-fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            format!(
-                "{{{}}}",
-                entries
-                    .into_iter()
-                    .map(|(key, value)| format!(
-                        "{}:{}",
-                        serde_json::to_string(key).unwrap(),
-                        canonical_json(value)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
+fn workspace_package_version(manifest: &Path, compose_root: &Path) -> Option<String> {
+    let mut directory = manifest.parent()?;
+    loop {
+        if !directory.starts_with(compose_root) {
+            return None;
         }
-        serde_json::Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        other => serde_json::to_string(other).unwrap(),
+        let workspace_manifest = directory.join("Cargo.toml");
+        if workspace_manifest != manifest
+            && let Ok(text) = std::fs::read_to_string(&workspace_manifest)
+            && let Ok(value) = toml::from_str::<toml::Value>(&text)
+            && let Some(version) = value
+                .get("workspace")
+                .and_then(|workspace| workspace.get("package"))
+                .and_then(|package| package.get("version"))
+                .and_then(toml::Value::as_str)
+        {
+            return Some(version.to_owned());
+        }
+        if directory == compose_root {
+            return None;
+        }
+        directory = directory.parent()?;
     }
+}
+
+fn canonical_json<T: Serialize + ?Sized>(value: &T) -> String {
+    serde_jcs::to_string(value).expect("validated package descriptor is RFC 8785 JSON")
 }
 
 fn resolve(base: &Path, value: &str) -> PathBuf {
@@ -1053,6 +1070,23 @@ mod tests {
         let a = serde_json::json!({"b": 2, "a": {"z": 1, "c": 3}});
         let b = serde_json::json!({"a": {"c": 3, "z": 1}, "b": 2});
         assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[test]
+    fn registry_jcs_fixture_matches_cross_language_digest() {
+        let descriptor: PackageDescriptor = serde_json::from_str(include_str!(
+            "../tests/fixtures/package-descriptor-jcs.json"
+        ))
+        .unwrap();
+
+        let canonical = canonical_json(&descriptor);
+        assert!(canonical.contains("\"cpu\":2,"));
+        assert!(canonical.contains("\"fractional\":0.125"));
+        assert!(canonical.find("😀").unwrap() < canonical.find('�').unwrap());
+        assert_eq!(
+            descriptor.sha256(),
+            "46e9a0abc6dcded74e3cf39382fd6c830aae32c04664adbe86f98b95e7fdad08"
+        );
     }
 
     #[test]

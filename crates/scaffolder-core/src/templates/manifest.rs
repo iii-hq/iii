@@ -170,8 +170,8 @@ pub struct TemplateManifest {
     /// copy. Mirrors `shared_files` (same `{source, dest}` shape) but scoped to
     /// a single template: the `source` is gated by `language_files`, so only the
     /// selected language's source is ever copied, and it lands at `dest`. This
-    /// lets per-language sources (`iii.worker.ts.yaml`, `iii.worker.py.yaml`, …)
-    /// collapse onto one destination (`iii.worker.yaml`) without the consuming
+    /// lets per-language sources (for example `worker-compose.ts.yaml`)
+    /// collapse onto one destination (`worker-compose.yaml`) without the consuming
     /// CLI hardcoding the rename.
     #[serde(default)]
     pub renames: Vec<SharedFile>,

@@ -69,7 +69,7 @@ where
                 reference: reference.clone(),
                 version: spec.version.as_deref().unwrap_or("*").to_string(),
             }),
-            WorkerSource::Path { .. } => None,
+            WorkerSource::Catalog { .. } => None,
         })
         .collect();
 

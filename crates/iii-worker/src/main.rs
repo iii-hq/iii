@@ -81,7 +81,6 @@ async fn async_main() -> anyhow::Result<()> {
     // behind under ~/.iii/workers-bundle/.staging/. Clear those at
     // startup so they don't accumulate over time. Best-effort: errors
     // are logged but never propagated. See T18 in the bundle plan.
-    let _ = iii_worker::cli::bundle_download::sweep_orphans();
 
     // The `iii` dispatcher routes `iii worker sandbox ...` here, but our root
     // bin_name is "iii worker" so clap renders `Usage: iii worker sandbox`.
@@ -594,38 +593,6 @@ async fn async_main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
-        }
-        Commands::WatchSource(args) => {
-            let project = std::path::PathBuf::from(&args.project);
-            let worker = args.worker.clone();
-            // Authoritative workspace model from `iii worker start` (see
-            // WatchSourceArgs::overlay). Passed into the dispatcher so it never
-            // re-derives overlay-ness from the on-disk marker.
-            let overlay = args.overlay;
-            let watch = iii_worker::cli::source_watcher::watch_and_restart(
-                worker,
-                project,
-                move |name: &str, kind| {
-                    iii_worker::cli::source_watcher::restart_via_cli(name, kind, overlay)
-                },
-            );
-            // Engine anchor: the watcher sidecar must not outlive the engine
-            // that (transitively) spawned it — `killall -9 iii` previously
-            // left one per dev worker running forever.
-            match iii_worker::daemon_exit::engine_pid_from_env() {
-                Some(pid) => {
-                    tokio::select! {
-                        r = watch => { r?; }
-                        _ = tokio::task::spawn_blocking(move || {
-                            iii_worker::daemon_exit::blocking_wait_pid_gone(pid)
-                        }) => {
-                            eprintln!("watch-source: engine pid {pid} exited; stopping");
-                        }
-                    }
-                }
-                None => watch.await?,
-            }
-            0
         }
     };
 

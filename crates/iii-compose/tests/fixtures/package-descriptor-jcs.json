@@ -1,0 +1,52 @@
+{
+  "name": "jcs-parity",
+  "version": "1.2.3-rc.4",
+  "source": {
+    "path": "workers/jcs-parity",
+    "package_manifest": "Cargo.toml"
+  },
+  "artifact": {
+    "kind": "rust-binary",
+    "binary": "jcs-parity",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu"
+    ],
+    "toolchain": {
+      "name": "rust",
+      "version": "1.97.1"
+    }
+  },
+  "runtime": {
+    "exec": [
+      "./jcs-parity"
+    ],
+    "resources": {
+      "cpu": 2.0,
+      "memory_mib": 256
+    }
+  },
+  "registry": {
+    "description": "RFC 8785 parity café 😀",
+    "license": "MIT",
+    "tags": [
+      "parity",
+      "unicode"
+    ],
+    "dependencies": {},
+    "config": {
+      "defaults": {
+        "fractional": 0.125,
+        "unicode": {
+          "�": "replacement",
+          "😀": "grinning",
+          "é": "café"
+        }
+      }
+    },
+    "publish": true
+  },
+  "validation": {
+    "interface": "required"
+  }
+}

@@ -27,13 +27,9 @@ to gate those connections, so scaffold it the same way you scaffolded `link` in 
 mkdir -p auth/src
 ```
 
-Create the worker manifest and package metadata:
-
-```yaml auth/iii.worker.yaml
-name: auth
-scripts:
-  start: pnpm start
-```
+Add `auth` to the root `worker-compose.yaml` catalog and reference it from the tutorial stack with
+`catalog://auth`. The descriptor declares its package manifest, exact build toolchain, bundle
+files, and runtime argv.
 
 ```json auth/package.json
 {
@@ -137,10 +133,10 @@ logger.info("auth worker ready");
 A real deployment would look the token up in a session store; the shape stays the same. The token
 travels in a query parameter because browsers cannot send custom WebSocket headers.
 
-The Compose daemon exposes `compose::add`. Target the daemon serving the `linkly` namespace:
+The Compose daemon exposes editing `worker-compose.yaml`. Target the daemon serving the `linkly` namespace:
 
 ```bash
-iii trigger compose::add --namespace linkly worker=./auth
+# Declare the local worker under workers: and reference catalog://<slug> from the stack.
 ```
 
 ## Add a server-initiated delete

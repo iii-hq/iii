@@ -18,14 +18,13 @@
 //! ## What is a reference and what is not
 //!
 //! `${VAR}` and `${VAR:-default}` are expanded here, before the YAML is parsed,
-//! so they work in any value: a path, a version, a `config_override` entry.
+//! so they work in any value except a stack container's opaque `config` data.
 //!
 //! A bare `$VAR` is left alone. `scripts.run` is a shell command, and rewriting
 //! `$PWD` or `$III_WORKER_NAME` before the shell sees them would break the one
 //! field most likely to hold them.
 //!
-//! `config_override` and `engine.workers` are not expanded at all. Those
-//! blocks are not compose's
+//! Stack `config` blocks are not expanded at all. Those blocks are not compose's
 //! language: it is data compose carries to the configuration worker, which
 //! resolves `${VAR}` references of its own at read time — that is how a secret
 //! is stored as a reference rather than as a value. Expanding one here would
@@ -40,7 +39,7 @@ use std::path::Path;
 use crate::error::{ComposeError, Result};
 
 /// The one block compose carries without reading. See the module docs.
-const NOT_OURS: &str = "config_override";
+const NOT_OURS: &str = "config";
 
 /// Expands every string in a parsed compose document, except under
 /// [`NOT_OURS`].
@@ -53,21 +52,19 @@ pub fn expand_tree(
     path: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<()> {
-    expand_tree_at(value, path, lookup, 0, false)
+    expand_tree_at(value, path, lookup)
 }
 
 fn expand_tree_at(
     value: &mut serde_yaml::Value,
     path: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
-    depth: usize,
-    in_engine: bool,
 ) -> Result<()> {
     match value {
         serde_yaml::Value::String(text) => *text = expand(text, path, lookup)?,
         serde_yaml::Value::Sequence(items) => {
             for item in items {
-                expand_tree_at(item, path, lookup, depth + 1, in_engine)?;
+                expand_tree_at(item, path, lookup)?;
             }
         }
         serde_yaml::Value::Mapping(entries) => {
@@ -76,16 +73,10 @@ fn expand_tree_at(
                 // an operator naming one from the environment is not a thing
                 // compose supports.
                 let key = key.as_str();
-                if key == Some(NOT_OURS) || (in_engine && key == Some("workers")) {
+                if key == Some(NOT_OURS) {
                     continue;
                 }
-                expand_tree_at(
-                    entry,
-                    path,
-                    lookup,
-                    depth + 1,
-                    depth == 0 && key == Some("engine"),
-                )?;
+                expand_tree_at(entry, path, lookup)?;
             }
         }
         _ => {}
@@ -224,8 +215,7 @@ mod tests {
 
     #[test]
     fn a_shell_variable_is_left_for_the_shell() {
-        // `scripts.run` is the field most likely to hold one, and rewriting it
-        // here would break the command before the shell ever saw it.
+        // Bare shell-style variables are outside Compose's `${...}` contract.
         let text = "run: sh -c 'echo $PWD $III_WORKER_NAME'";
         assert_eq!(run(text, &[("PWD", "/tmp")]).unwrap(), text);
     }
@@ -276,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_file_with_nothing_to_expand_comes_back_unchanged() {
-        let text = "containers:\n  api:\n    worker: path://./api\n";
+        let text = "workers: {}\nstacks: {}\n";
         assert_eq!(run(text, &[]).unwrap(), text);
     }
     fn tree(yaml: &str, pairs: &[(&str, &str)]) -> Result<serde_yaml::Value> {
@@ -294,14 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn a_config_override_keeps_its_own_references() {
+    fn a_stack_config_keeps_its_own_references() {
         // The configuration worker resolves these at read time, which is how a
         // secret stays a reference. Expanding one here would write the value
         // into the entry that existed to avoid exactly that.
         let value = tree(
-            "containers:\n  api:\n    worker: path://${DIR}/api\n    config_override:\n      api_key: ${ANTHROPIC_API_KEY}\n      nested:\n        deep: ${ALSO_LEFT}\n",
+            "workers: {}\nstacks:\n  default:\n    namespace: dev\n    containers:\n      api:\n        worker: package://${PACKAGE}@next\n        config:\n          api_key: ${ANTHROPIC_API_KEY}\n          nested:\n            deep: ${ALSO_LEFT}\n",
             &[
-                ("DIR", "./workers"),
+                ("PACKAGE", "api"),
                 ("ANTHROPIC_API_KEY", "sk-secret"),
                 ("ALSO_LEFT", "no"),
             ],
@@ -309,18 +299,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            at(&value, &["containers", "api", "worker"]),
-            "path://./workers/api"
+            at(
+                &value,
+                &["stacks", "default", "containers", "api", "worker"]
+            ),
+            "package://api@next"
         );
         assert_eq!(
-            at(&value, &["containers", "api", "config_override", "api_key"]),
+            at(
+                &value,
+                &[
+                    "stacks",
+                    "default",
+                    "containers",
+                    "api",
+                    "config",
+                    "api_key"
+                ]
+            ),
             "${ANTHROPIC_API_KEY}",
             "the block compose only carries must come through untouched"
         );
         assert_eq!(
             at(
                 &value,
-                &["containers", "api", "config_override", "nested", "deep"]
+                &[
+                    "stacks",
+                    "default",
+                    "containers",
+                    "api",
+                    "config",
+                    "nested",
+                    "deep"
+                ]
             ),
             "${ALSO_LEFT}",
             "including below the first level"
@@ -328,31 +339,19 @@ mod tests {
     }
 
     #[test]
-    fn engine_worker_configs_keep_references_for_the_engine_parser() {
-        let mut value: serde_yaml::Value = serde_yaml::from_str(
-            "engine:\n  url: ${ENGINE_URL:-ws://localhost:49134}\n  workers:\n    iii-worker-manager:\n      port: ${PORT:49134}\n",
-        )
-        .unwrap();
-        expand_tree(&mut value, Path::new("worker-compose.yaml"), &env(&[])).unwrap();
-
-        assert_eq!(value["engine"]["url"], "ws://localhost:49134");
-        assert_eq!(
-            value["engine"]["workers"]["iii-worker-manager"]["port"],
-            "${PORT:49134}"
-        );
-    }
-
-    #[test]
-    fn a_name_missing_under_config_override_is_not_an_error() {
+    fn a_name_missing_under_stack_config_is_not_an_error() {
         // Nothing there is compose's to resolve, so nothing there can be
         // missing as far as compose is concerned.
         let value = tree(
-            "containers:\n  api:\n    config_override:\n      key: ${NOT_ON_THIS_HOST}\n",
+            "stacks:\n  default:\n    containers:\n      api:\n        config:\n          key: ${NOT_ON_THIS_HOST}\n",
             &[],
         )
         .unwrap();
         assert_eq!(
-            at(&value, &["containers", "api", "config_override", "key"]),
+            at(
+                &value,
+                &["stacks", "default", "containers", "api", "config", "key"]
+            ),
             "${NOT_ON_THIS_HOST}"
         );
     }
@@ -360,17 +359,20 @@ mod tests {
     #[test]
     fn everything_outside_that_block_still_expands() {
         let value = tree(
-            "containers:\n  api:\n    environment:\n      LEVEL: ${LEVEL}\n    env_file:\n      - ${DIR}/.env\n",
+            "workers:\n  api:\n    source:\n      path: ${DIR}/api\n    runtime:\n      environment:\n        LEVEL: ${LEVEL}\n",
             &[("LEVEL", "debug"), ("DIR", "./cfg")],
         )
         .unwrap();
         assert_eq!(
-            at(&value, &["containers", "api", "environment", "LEVEL"]),
+            at(
+                &value,
+                &["workers", "api", "runtime", "environment", "LEVEL"]
+            ),
             "debug"
         );
         assert_eq!(
-            value["containers"]["api"]["env_file"][0].as_str().unwrap(),
-            "./cfg/.env"
+            at(&value, &["workers", "api", "source", "path"]),
+            "./cfg/api"
         );
     }
 }

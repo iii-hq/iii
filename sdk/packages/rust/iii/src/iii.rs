@@ -3418,15 +3418,14 @@ mod tests {
             "function_id": "fn-1",
             "error": {
                 "code": "trigger_type_not_found",
-                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n <compose-daemon-namespace> compose::add worker=http",
+                "message": "Trigger type \"http\" not found — worker http is missing. Declare package://http@next in worker-compose.yaml and run iii compose --up",
             },
         })
         .to_string();
 
         iii.handle_message(&payload).unwrap();
 
-        assert!(logs_contain("<compose-daemon-namespace>"));
-        assert!(logs_contain("compose::add worker=http"));
+        assert!(logs_contain("package://http@next"));
         assert!(logs_contain("trig-1"));
     }
 

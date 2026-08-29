@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 /// What compose asks for, on stdin.
 #[derive(Debug, Deserialize)]
 pub struct Request {
-    /// The container key, which is also `III_WORKER_NAME`. Bundle manifests
-    /// must match it; local manifests may use another name.
+    /// The container key, which is also `III_WORKER_NAME`. Registry package
+    /// descriptors must match it; local catalog workers use the Compose key.
     pub worker_name: String,
     /// The immutable bundle install or local source directory.
     pub worker_dir: PathBuf,
@@ -36,7 +36,7 @@ pub struct Request {
     pub state_dir: PathBuf,
     /// Where the guest reaches the engine.
     pub engine_url: String,
-    /// Merged over the manifest's env, under the reserved keys the VM owns.
+    /// Merged over descriptor environment, under the reserved keys the VM owns.
     #[serde(default)]
     pub extra_env: BTreeMap<String, String>,
     /// Published into the guest at `/run/iii/config`.

@@ -97,24 +97,12 @@ pub enum ComposeError {
 
     #[error(
         "container '{container}': unsupported worker source '{source_uri}'. v1 supports \
-         path:// and package://"
+         catalog:// and package://"
     )]
     UnsupportedWorkerSource {
         container: String,
         source_uri: String,
     },
-
-    #[error("container '{container}': 'run' is only valid for path:// workers")]
-    RunNotAllowedForPackage { container: String },
-
-    #[error("container '{container}': 'pre_run_timeout' requires 'pre_run'")]
-    PreRunTimeoutWithoutPreRun { container: String },
-
-    #[error("container '{container}': invalid duration '{value}'. Use 30s, 500ms or 2m")]
-    InvalidDuration { container: String, value: String },
-
-    #[error("container '{container}': package workers require an explicit 'version'")]
-    MissingVersionForPackage { container: String },
 
     #[error(
         "container '{container}': no start command. Add 'run:' to the compose entry or \
@@ -174,31 +162,6 @@ pub enum ComposeError {
         kind: String,
     },
 
-    #[error(
-        "container '{container}': '{name}' is supplied by the engine and must not be declared \
-         under containers. {guidance}"
-    )]
-    EngineWorkerIsBuiltin {
-        container: String,
-        name: String,
-        guidance: String,
-    },
-
-    /// `compose::add` would turn a declaration into a different kind of thing.
-    /// A registry package and a local directory are not two versions of one
-    /// worker, and replacing one with the other loses whatever the operator
-    /// wrote.
-    #[error(
-        "container '{container}' is already declared as a {from} worker, and '{name}' resolves to \
-         a {to} one. Remove the entry first, or add the new worker under another name"
-    )]
-    WorkerSourceChanged {
-        container: String,
-        name: String,
-        from: String,
-        to: String,
-    },
-
     /// `iii compose --up` could not bring its project up. The container that
     /// failed has already reported itself; this is the command saying so with
     /// an exit code.
@@ -230,18 +193,6 @@ pub enum ComposeError {
         path: std::path::PathBuf,
         name: String,
     },
-
-    /// `compose::update` was given a container it cannot move.
-    #[error(
-        "container '{container}' is a {kind} worker, and only a registry package carries a \
-         version to update. Edit the file, or use compose::add to declare a package under \
-         another name"
-    )]
-    NotAPackageContainer { container: String, kind: String },
-
-    /// `worker=` did not name anything installable.
-    #[error("cannot read worker '{spec}': {reason}")]
-    InvalidWorkerSpec { spec: String, reason: String },
 
     /// A bundle on a platform with no VM to put it in.
     ///
@@ -526,10 +477,6 @@ impl ComposeError {
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
-            Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
-            Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
-            Self::InvalidDuration { .. } => "INVALID_DURATION",
-            Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
@@ -538,15 +485,11 @@ impl ComposeError {
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::RegistryNameRefused { .. } => "REGISTRY_NAME_REFUSED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
-            Self::EngineWorkerIsBuiltin { .. } => "ENGINE_WORKER_IS_BUILTIN",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
-            Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
             Self::UndefinedVariable { .. } => "UNDEFINED_VARIABLE",
             Self::UnterminatedReference { .. } => "UNTERMINATED_REFERENCE",
             Self::InvalidReference { .. } => "INVALID_REFERENCE",
             Self::ProjectDidNotStart { .. } => "PROJECT_DID_NOT_START",
-            Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
-            Self::NotAPackageContainer { .. } => "NOT_A_PACKAGE_CONTAINER",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",

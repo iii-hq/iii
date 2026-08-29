@@ -74,7 +74,7 @@ directory.
 </Info>
 
 ```bash
-iii trigger -n quickstart compose::add worker=./workers/math-worker
+# Declare the local worker under workers: and reference catalog://<slug> from the stack.
 ```
 
 The Compose daemon terminal reports the worker becoming ready:
@@ -110,7 +110,7 @@ in.
 ## 4. Start the TypeScript worker
 
 ```bash
-iii trigger -n quickstart compose::add worker=./workers/caller-worker
+# Declare the local worker under workers: and reference catalog://<slug> from the stack.
 ```
 
 The Compose daemon reports:
@@ -137,13 +137,13 @@ iii trigger math::add_two_numbers a=10 b=20
 
 ## 6. Add state
 
-`compose::add` incrementally adds workers from the registry to your running project. Add the state
+editing `worker-compose.yaml` incrementally adds workers from the registry to your running project. Add the state
 worker, which gives every function access to a persistent key-value store.
 
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger -n quickstart compose::add worker=state
+# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
 ```
 
 Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
@@ -202,7 +202,7 @@ Now let's add an HTTP worker to expose your functions as REST endpoints.
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger -n quickstart compose::add worker=http
+# Add the package://<slug>@next reference to the selected stack in worker-compose.yaml.
 ```
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:

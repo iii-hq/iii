@@ -108,7 +108,7 @@ Five concrete examples.
 
 **Replace the model catalogue with a live API.** Write a worker that registers `models::list`, `models::get`, `models::supports`. Have it fetch from your provider's catalog endpoint every N minutes and cache. Publish it. `iii worker add your-org/dynamic-models-catalog`. Stop the static models-catalog worker. The turn-orchestrator never knows the difference. It calls `iii.trigger('models::list')` and the engine routes to whichever worker registered that function id most recently.
 
-**Add a new provider.** The shape is `provider-kimi` and `provider-lmstudio` already prove out. Each is one worker that registers `provider::<name>::stream` and `provider::<name>::complete`, drains an SSE stream from the upstream API into an iii channel, and writes its model usage to llm-budget via `budget::record`. Adding a fifth provider is writing one folder with one `iii.worker.yaml` and one `register.ts`. Publish to the registry, or keep it local. The turn-orchestrator picks the provider by the run's `provider` field; new providers become available the instant the worker connects.
+**Add a new provider.** The shape is `provider-kimi` and `provider-lmstudio` already prove out. Each is one worker that registers `provider::<name>::stream` and `provider::<name>::complete`, drains an SSE stream from the upstream API into an iii channel, and writes its model usage to llm-budget via `budget::record`. Adding a fifth provider is writing one folder with one `register.ts` and declaring it in the repository's root `worker-compose.yaml`. Publish its compiled descriptor to the Registry, or run its local `catalog://` stack. The turn-orchestrator picks the provider by the run's `provider` field; new providers become available the instant the worker connects.
 
 **Serve skills from a private artifact store.** Write a worker that registers `directory::skills::get` and `directory::skills::list`, backed by your internal docs system or a private S3 bucket. Disconnect or rename the default iii-directory worker. The orchestrator's bootstrap calls `directory::skills::download` per namespace; your worker answers. The agent's "fetch the per-function skill before calling a new function" pattern keeps working unchanged because the wire shape is the same.
 
@@ -168,4 +168,3 @@ Join us in building the perfect agent harness that the modern world needs: [disc
 iii is open source. Get started at [iii.dev/docs](https://iii.dev/docs). The harness workers are at [github.com/iii-hq/workers](https://github.com/iii-hq/workers) and the engine is at [github.com/iii-hq/iii](https://github.com/iii-hq/iii).
 
 — Mike Piccolo, Founder & CEO
-
