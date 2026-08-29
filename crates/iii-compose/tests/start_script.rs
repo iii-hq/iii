@@ -19,7 +19,7 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
     let binary = tmp.path().join("fake-iii");
-    let config = tmp.path().join("worker-compose.yaml");
+    let config = tmp.path().join("config.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let child_pid_file = tmp.path().join("child.pid");
     let stopped_file = tmp.path().join("stopped");
@@ -29,7 +29,7 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
         &binary,
         "#!/bin/sh\ntrap 'printf stopped > \"$FAKE_STOP_FILE\"; exit 0' TERM INT\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do sleep 1; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\ncontainers: {}\n").unwrap();
+    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
 
     let status = Command::new("bash")
         .arg(start_script)
@@ -70,7 +70,7 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
     let binary = tmp.path().join("stubborn-iii");
-    let config = tmp.path().join("worker-compose.yaml");
+    let config = tmp.path().join("config.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let child_pid_file = tmp.path().join("child.pid");
     let log_file = tmp.path().join("engine.log");
@@ -79,7 +79,7 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
         &binary,
         "#!/usr/bin/env bash\ntrap '' TERM\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do :; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\ncontainers: {}\n").unwrap();
+    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
 
     let status = Command::new("bash")
         .arg(start_script)
@@ -111,12 +111,13 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
 }
 
 #[test]
-fn explicit_engine_overrides_the_compose_file_engine() {
+fn explicit_engine_is_forwarded_to_compose() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
     let binary = tmp.path().join("fake-iii");
-    let config = tmp.path().join("worker-compose.yaml");
+    let config = tmp.path().join("config.yaml");
+    let compose = tmp.path().join("worker-compose.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let args_file = tmp.path().join("args");
     let log_file = tmp.path().join("engine.log");
@@ -125,9 +126,10 @@ fn explicit_engine_overrides_the_compose_file_engine() {
         &binary,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\nprintf 'up: 1 of 1 changed\\n'\nwhile :; do sleep 1; done\n",
     );
+    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
     std::fs::write(
-        &config,
-        "engine: { url: ws://127.0.0.1:49134 }\ncontainers: {}\n",
+        &compose,
+        "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers: {}\n",
     )
     .unwrap();
 
@@ -135,6 +137,7 @@ fn explicit_engine_overrides_the_compose_file_engine() {
         .arg(start_script)
         .args(["--binary", binary.to_str().unwrap()])
         .args(["--config", config.to_str().unwrap()])
+        .args(["--compose-file", compose.to_str().unwrap()])
         .args(["--port", "49134"])
         .args(["--pid-file", pid_file.to_str().unwrap()])
         .args(["--log-file", log_file.to_str().unwrap()])
@@ -167,7 +170,8 @@ fn compose_file_without_engine_uses_the_cli_fallback() {
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
     let binary = tmp.path().join("fake-iii");
-    let config = tmp.path().join("worker-compose.yaml");
+    let config = tmp.path().join("config.yaml");
+    let compose = tmp.path().join("worker-compose.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let args_file = tmp.path().join("args");
     let log_file = tmp.path().join("engine.log");
@@ -176,13 +180,18 @@ fn compose_file_without_engine_uses_the_cli_fallback() {
         &binary,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\nprintf 'up: 1 of 1 changed\\n'\nwhile :; do sleep 1; done\n",
     );
-    std::fs::write(&config, "containers: {}\n").unwrap();
+    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
+    std::fs::write(
+        &compose,
+        "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers: {}\n",
+    )
+    .unwrap();
 
     let status = Command::new("bash")
         .arg(start_script)
         .args(["--binary", binary.to_str().unwrap()])
         .args(["--config", config.to_str().unwrap()])
-        .args(["--compose-file", config.to_str().unwrap()])
+        .args(["--compose-file", compose.to_str().unwrap()])
         .args(["--port", "49134"])
         .args(["--pid-file", pid_file.to_str().unwrap()])
         .args(["--log-file", log_file.to_str().unwrap()])
