@@ -9,7 +9,7 @@ description: >-
 
 The `configuration` worker is a server-side registry of named entries. Every entry has an id (e.g. `iii-stream`, `billing-service`), a human-readable name and description, a JSON Schema describing the value shape, and a JSON value validated against that schema. Workers call `configuration::register` once at startup to declare their schema and `configuration::set` to publish values; consumers call `configuration::get` / `configuration::list` to read and bind a `configuration` trigger to react to changes without polling.
 
-The default `fs` adapter persists one YAML file per id under `./config` and watches the directory for external edits, so manual edits surface as `configuration:updated` events. The `bridge` adapter delegates to a remote engine. The worker is engine-owned and may be configured at `engine.workers.configuration`.
+The default `fs` adapter persists one YAML file per id under `./config` and watches the directory for external edits, so manual edits surface as `configuration:updated` events. The `bridge` adapter delegates to a remote engine. The worker is engine-owned and may be configured as a `configuration` entry in the top-level `workers` list of `config.yaml`.
 
 A per-id TTL (off by default) cleans up entries whose last subscriber trigger has unregistered, scoped to the lifecycle of ephemeral workers that come and go without an explicit teardown step.
 

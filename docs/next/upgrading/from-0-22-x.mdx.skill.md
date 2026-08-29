@@ -47,7 +47,7 @@ For each affected subscriber:
 
 The queue implementation is no longer supplied by the engine. Before upgrading, stop publishing
 and let 0.22.x drain active work, then move `iii-queue` to the standalone `queue` Compose package.
-Keep the same `file_path` or broker settings under its `config_override`; changing the path creates
+Keep the same `file_path` or broker settings under the stack container's `config`; changing the path creates
 an empty store and leaves the old jobs behind.
 
 Follow the queue row in [Move workers from config.yaml to
@@ -64,16 +64,14 @@ the grace period expires and the connection is set to `default`.
 The default grace period is 5000 ms. Raise it if workers on slow links register but land in `default`
 unexpectedly:
 
-```yaml worker-compose.yaml
-engine:
-  registration_namespace_grace_ms: 10000
-  workers: {}
+```yaml config.yaml
+registration_namespace_grace_ms: 10000
+workers: []
 ```
 
 Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a worker environment. It
 applies to namespace resolution for all new worker connections and overrides
-`registration_namespace_grace_ms`. A directly supervised engine keeps the same field at the top
-level of `config.yaml`.
+`registration_namespace_grace_ms`. Start this engine configuration with `iii --config config.yaml`.
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 

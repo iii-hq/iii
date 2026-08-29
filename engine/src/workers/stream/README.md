@@ -7,8 +7,7 @@ When a worker triggers `stream::set`, the engine:
 2. Publishes a notification to all WebSocket clients subscribed to that stream and group
 3. Evaluates registered `stream` triggers and fires matching handlers
 
-`iii-stream` is engine-owned. Configure it under `engine.workers.iii-stream` in a managed
-`worker-compose.yaml`.
+`iii-stream` is engine-owned. Configure it in the top-level `workers` list in `config.yaml`.
 
 ## Skills
 
@@ -20,10 +19,10 @@ npx skills add iii-hq/iii --full-depth --skill iii-stream
 
 ## Sample Configuration
 
-```yaml
-engine:
-  workers:
-    iii-stream:
+```yaml config.yaml
+workers:
+  - name: iii-stream
+    config:
       port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       adapter:
@@ -31,6 +30,8 @@ engine:
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
+
+Start the engine with `iii --config config.yaml`.
 
 ## Configuration
 
@@ -46,7 +47,7 @@ engine:
 `iii-stream` registers its configuration with the builtin `configuration` worker
 under the id **`iii-stream`**, so the fields above can be read and changed at
 runtime (e.g. `configuration::set { id: "iii-stream", value: { ... } }`) without
-restarting the engine. The `engine.workers` block is the **seed** used on first boot
+restarting the engine. The `workers` list in `config.yaml` is the **seed** used on first boot
 only; afterwards the configuration entry is the runtime source of truth and a
 runtime edit survives engine restarts. Values are validated against the schema
 at set time, and `${VAR:default}` placeholders are expanded on read.

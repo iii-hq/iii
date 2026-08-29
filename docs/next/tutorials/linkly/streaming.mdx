@@ -16,13 +16,22 @@ links.
 
 `iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
 worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
-`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in the Compose
-engine configuration:
+`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in `config.yaml`:
 
-```yaml worker-compose.yaml
-engine:
-  workers:
-    iii-stream: {}
+```yaml config.yaml
+workers:
+  - name: iii-stream
+    config: {}
+```
+
+Restart the engine and reconnect the tutorial stack:
+
+```bash
+# terminal 1
+iii --config config.yaml
+
+# terminal 2
+iii compose --engine ws://127.0.0.1:49134 --up --namespace linkly --file worker-compose.yaml
 ```
 
 ```bash

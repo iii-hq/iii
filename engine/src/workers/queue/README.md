@@ -35,29 +35,34 @@ npx skills add iii-hq/workers --skill queue
 
 ## Sample Configuration
 
-```yaml
-containers:
-  queue:
-    worker: package://api.workers.iii.dev/queue
-    version: "0.21.5"
-    config_name: queue
-    config_override:
-      queue_configs:
-        default:
-          max_retries: 5
-          concurrency: 5
-          type: standard
-        payment:
-          max_retries: 10
-          concurrency: 2
-          type: fifo
-          message_group_field: transaction_id
-      adapter:
-        name: builtin
+```yaml worker-compose.yaml
+workers: {}
+stacks:
+  default:
+    namespace: default
+    containers:
+      queue:
+        worker: package://queue@0.21.5
         config:
-          store_method: file_based
-          file_path: ./data/queue_store
+          queue_configs:
+            default:
+              max_retries: 5
+              concurrency: 5
+              type: standard
+            payment:
+              max_retries: 10
+              concurrency: 2
+              type: fifo
+              message_group_field: transaction_id
+          adapter:
+            name: builtin
+            config:
+              store_method: file_based
+              file_path: ./data/queue_store
 ```
+
+With the engine running from `iii --config config.yaml`, start the stack with
+`iii compose --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml`.
 
 ## Configuration
 

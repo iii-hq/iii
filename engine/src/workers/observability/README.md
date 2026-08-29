@@ -3,9 +3,9 @@
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance
 metrics, alert rules, and trace sampling — all queryable via built-in functions.
 
-`iii-observability` is injected by the engine. Do not declare it in `config.yaml`,
-`engine.workers`, or project `containers:`. Configure its registered runtime configuration entry
-through `configuration::set`.
+`iii-observability` is injected by the engine. Do not declare it in engine `config.yaml` or in a
+Compose catalog or stack. Configure its registered runtime configuration entry through
+`configuration::set`.
 
 ## Skills
 

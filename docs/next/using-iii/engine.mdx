@@ -62,26 +62,25 @@ stops the engine so it cannot continue with a configuration different from the f
 ## Project workers
 
 HTTP, cron, queue, state, pubsub, bridge, application workers, and other registry workers belong in
-`worker-compose.yaml`. For the normal managed lifecycle, move the five engine configs into its
-direct `engine.workers` map and start the single file:
+the root `worker-compose.yaml`. With the default engine-owned worker configuration, Compose starts
+and owns the local engine:
 
 ```bash
 iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
-Keep the list-shaped `config.yaml` only when another supervisor owns the engine. In that case omit
-`engine:` from the Compose file, run the processes separately, and connect with
-`--engine <ws-url>` or `III_URL`.
+When engine-owned workers need custom configuration, start the engine from the list-shaped
+`config.yaml`, then start Compose against that external engine with `--engine <ws-url>` or
+`III_URL`. Engine configuration is never embedded in `worker-compose.yaml`.
 
 See [Workers](./workers) for Compose lifecycle operations and [Move workers from config.yaml to
 Compose](../upgrading/workers-to-compose) for existing projects.
 
 ## Environment variable expansion
 
-Values in direct `config.yaml` and `engine.workers` support `${VAR:default}`; the engine expands
-them before typing the generated YAML. Compose-owned fields such as `engine.url` use
-`${VAR:-default}`. `config_override` is likewise carried to the configuration worker without
-Compose expanding it.
+Values in `config.yaml` support `${VAR:default}`. Compose-owned catalog and stack fields use
+`${VAR:-default}`. A stack container's `config` block is carried to the configuration worker
+without Compose expanding it.
 
 ## Default configuration
 

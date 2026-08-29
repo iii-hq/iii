@@ -7,15 +7,17 @@ type: "how-to"
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
 for agent tool-calls, REPLs, and one-off jobs. They are provided by the engine-owned `iii-sandbox`
-worker. Enable it in the managed Compose file before starting the engine:
+worker. Enable it in the engine configuration before starting the engine:
 
-```yaml worker-compose.yaml
-engine:
-  workers:
-    iii-sandbox:
+```yaml config.yaml
+workers:
+  - name: iii-sandbox
+    config:
       auto_install: true
       image_allowlist: [python, node]
 ```
+
+Start the configured engine with `iii --config config.yaml`.
 
 <Note>
   This page is a quick tour of the sandbox worker. For the authoritative documentation, see the

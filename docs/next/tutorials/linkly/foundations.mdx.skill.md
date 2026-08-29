@@ -8,7 +8,8 @@ original URL.
 
 ## Create the project
 
-A iii project is a directory with a `config.yaml` file that describes your system. Create one:
+A iii project keeps its package catalog and stacks in a root `worker-compose.yaml`; engine-owned
+workers use the separate `config.yaml`. Create both through the project scaffold:
 
 ```bash
 iii project init linkly
@@ -22,32 +23,27 @@ short-code → URL mappings in a key-value store (provided by `state`). Declare 
 ready when the `link` worker reaches for them:
 
 ```yaml worker-compose.yaml
-# namespace: default
-engine:
-  workers: {}
-containers:
-  http:
-    worker: package://api.workers.iii.dev/http
-    version: "0.21.3"
-    config_name: http
-  state:
-    worker: package://api.workers.iii.dev/state
-    version: "0.22.2"
-    config_name: state
-    config_override:
-      adapter:
-        name: kv
+workers: {}
+stacks:
+  default:
+    namespace: linkly
+    containers:
+      http:
+        worker: package://http@0.21.3
+      state:
+        worker: package://state@0.22.2
         config:
-          store_method: in_memory
+          adapter:
+            name: kv
+            config:
+              store_method: in_memory
 ```
 
-The `engine:` section makes this Compose invocation own the engine. Project workers belong only
-under `containers:`.
+Package workers belong under a stack's `containers`. The engine runs separately from Compose and
+is never declared in `worker-compose.yaml`.
 
-`state` uses an in-memory store by default, so every restart starts clean. That's what we want for
-this chapter. A worker's settings live in a per-worker file under `config/`, and the engine only
-generates those files the first time it starts, so you'll make that default explicit in
-`config/state.yaml` when Compose starts the worker, a few steps from now.
+The stack passes `state` its configuration directly. The in-memory store means every worker restart
+starts clean, which is what we want for this chapter.
 
 Since the store is in-memory, every restart clears the data we're storing. That's fine here;
 [Ch. 3: Persist everything](/tutorials/linkly/persistence) swaps in durable storage.
@@ -188,36 +184,21 @@ keep different kinds of data in `state` from colliding; later chapters add more.
 
 ## Start the engine
 
-From the project root, start the engine and Compose project. The workers register their functions
-with the engine. `--up` is a `iii compose` flag, as shown in the generated
+From the project root, start the engine and Compose project in separate terminals. The workers
+register their functions with the engine. `--up` is a `iii compose` flag, as shown in the generated
 [CLI reference](/cli-reference/index#iii-compose):
 
 ```bash
-iii compose --up --namespace linkly --file worker-compose.yaml
+# terminal 1
+iii --config config.yaml
+
+# terminal 2
+iii compose --engine ws://127.0.0.1:49134 --up --namespace linkly --file worker-compose.yaml
 ```
 
-On this first start, the configuration worker creates `config/state.yaml` and `config/http.yaml`
-from each Compose container's defaults and `config_override`. From here on, edit a worker's settings
-in its `config/<worker>.yaml` file; the worker hot-reloads supported changes.
-
-## Make the in-memory store explicit
-
-Now that Compose generated `config/state.yaml`, open it. The `config_override` you declared is
-present under `value`:
-
-```yaml config/state.yaml
-id: state
-name: State
-value:
-  triggers_enabled: true
-  adapter:
-    name: kv
-    config:
-      store_method: in_memory
-```
-
-Because the store is in-memory, every restart clears the data. That's fine here; Chapter 3 swaps in
-durable storage.
+The `config` block under `stacks.default.containers.state` is the stack's explicit state-worker
+configuration. Because the store is in-memory, every state-worker restart clears the data. That's
+fine here; Chapter 3 swaps in durable storage.
 
 ## Register the worker
 
@@ -349,10 +330,10 @@ worker.registerTrigger({
 
 ### Mint a link over HTTP
 
-Save the file and the worker reloads with the new route registered. In this project,
-`config/http.yaml` configures the `http` container to listen on `127.0.0.1:3111`. This Compose
-setup does not start a separate in-process engine HTTP server. The `http` container provides the
-project HTTP API and owns the route below. Now try out your new Trigger:
+Save the file and the worker reloads with the new route registered. In this project, the `http`
+package listens on its default `127.0.0.1:3111`; override that under the container's inline `config`
+when needed. Compose does not start an in-process engine HTTP server. The `http` container provides
+the project HTTP API and owns the route below. Now try out your new Trigger:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \

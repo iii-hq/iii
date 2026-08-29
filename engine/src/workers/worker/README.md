@@ -15,15 +15,16 @@ npx skills add iii-hq/iii --full-depth --skill iii-worker-manager
 
 ## Sample Configuration
 
-```yaml
-engine:
-  workers:
-    # Main engine port — internal worker-to-worker traffic.
-    iii-worker-manager:
+```yaml config.yaml
+workers:
+  # Main engine port — internal worker-to-worker traffic.
+  - name: iii-worker-manager
+    config:
       port: 49134
 
-    # Public RBAC listener — auth, middleware, and gated registration.
-    "iii-worker-manager#rbac":
+  # Public RBAC listener — auth, middleware, and gated registration.
+  - name: "iii-worker-manager#rbac"
+    config:
       host: 0.0.0.0
       port: 49135
       middleware_function_id: my-project::middleware-function
@@ -38,6 +39,8 @@ engine:
           - metadata:
               public: true
 ```
+
+Start the engine with `iii --config config.yaml`.
 
 ## Configuration
 

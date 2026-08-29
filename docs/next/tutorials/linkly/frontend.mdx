@@ -55,21 +55,22 @@ cd auth && pnpm install && cd ..
 ## Run two listeners
 
 The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
-worker) connect there. The browser must not. Stop the running Compose process, then add two
-`iii-worker-manager` entries under `engine.workers`: the trusted one and an RBAC-gated instance on
-`3110` for browsers:
+worker) connect there. The browser must not. Stop the engine and Compose, then add two
+`iii-worker-manager` entries to `config.yaml`: the trusted one and an RBAC-gated instance on `3110`
+for browsers:
 
-```yaml worker-compose.yaml
-engine:
-  workers:
-    # Trusted listener for local workers.
-    iii-worker-manager:
+```yaml config.yaml
+workers:
+  # Trusted listener for local workers.
+  - name: iii-worker-manager
+    config:
       host: 127.0.0.1
       port: 49134
 
-    # Browser-facing listener. The auth function gates every connection; only
-    # the functions in `expose_functions` are reachable from sessions it admits.
-    iii-worker-manager#browser:
+  # Browser-facing listener. The auth function gates every connection; only
+  # the functions in `expose_functions` are reachable from sessions it admits.
+  - name: "iii-worker-manager#browser"
+    config:
       host: 127.0.0.1
       port: 3110
       rbac:
@@ -80,10 +81,14 @@ engine:
           - match("stream::*")
 ```
 
-Restart the project so Compose can materialize the changed engine configuration:
+Restart the engine with its configuration, then reconnect Compose to that engine:
 
 ```bash
-iii compose --up --namespace linkly --file worker-compose.yaml
+# terminal 1
+iii --config config.yaml
+
+# terminal 2
+iii compose --engine ws://127.0.0.1:49134 --up --namespace linkly --file worker-compose.yaml
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`
