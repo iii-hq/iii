@@ -2,7 +2,19 @@
 
 #![cfg(unix)]
 
-use std::{path::Path, process::Command};
+use std::{
+    path::Path,
+    process::Command,
+    sync::{Mutex, MutexGuard},
+};
+
+static LAUNCHER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn launcher_test_guard() -> MutexGuard<'static, ()> {
+    LAUNCHER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn write_executable(path: &Path, contents: &str) {
     use std::{io::Write as _, os::unix::fs::PermissionsExt};
@@ -30,6 +42,7 @@ fn repository_compose_fixtures_use_the_strict_stack_contract() {
 
 #[test]
 fn timeout_stops_the_started_process_and_removes_its_pid_file() {
+    let _guard = launcher_test_guard();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
@@ -81,6 +94,7 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
 
 #[test]
 fn timeout_force_kills_a_process_that_ignores_sigterm() {
+    let _guard = launcher_test_guard();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
@@ -127,6 +141,7 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
 
 #[test]
 fn explicit_engine_is_forwarded_to_compose() {
+    let _guard = launcher_test_guard();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
@@ -181,6 +196,7 @@ fn explicit_engine_is_forwarded_to_compose() {
 
 #[test]
 fn engine_config_and_compose_are_started_as_separate_processes() {
+    let _guard = launcher_test_guard();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
