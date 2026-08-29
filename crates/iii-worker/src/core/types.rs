@@ -393,6 +393,16 @@ mod tests {
     }
 
     #[test]
+    fn worker_source_rejects_local_and_oci_variants() {
+        for value in [
+            json!({ "kind": "local", "path": "./my-worker" }),
+            json!({ "kind": "oci", "reference": "ghcr.io/example/worker@sha256:abc" }),
+        ] {
+            assert!(serde_json::from_value::<WorkerSource>(value).is_err());
+        }
+    }
+
+    #[test]
     fn add_options_default_round_trip() {
         let opts = AddOptions {
             source: WorkerSource::Registry {

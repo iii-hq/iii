@@ -1480,7 +1480,7 @@ mod tests {
         assert_eq!(
             resolved.memory_max_spans,
             Some(1_000_000),
-            "built-in defaults match the former iii.worker.yaml block"
+            "built-in observability defaults remain stable"
         );
         // service_version template is expanded for the live OTEL global
         assert_eq!(

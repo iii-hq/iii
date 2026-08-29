@@ -28,19 +28,15 @@ pub async fn print(
                 Ok(())
             }
             Ok(None) => {
-                if let Some(message) = crate::legacy_worker_functions::migration_message(fn_path) {
-                    eprintln!("{} {message}", "error:".red());
-                } else {
-                    eprintln!(
-                        "{} function `{}` not found in engine registry.",
-                        "error:".red(),
-                        fn_path
-                    );
-                    eprintln!(
-                        "  {} run `iii trigger engine::functions::list` to see registered functions.",
-                        "hint:".dimmed()
-                    );
-                }
+                eprintln!(
+                    "{} function `{}` not found in engine registry.",
+                    "error:".red(),
+                    fn_path
+                );
+                eprintln!(
+                    "  {} run `iii trigger engine::functions::list` to see registered functions.",
+                    "hint:".dimmed()
+                );
                 std::process::exit(1);
             }
             Err(e) => {

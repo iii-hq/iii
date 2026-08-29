@@ -438,9 +438,7 @@ pub struct ObservabilityWorkerConfig {
 impl Default for ObservabilityWorkerConfig {
     /// Built-in defaults used when the worker is auto-injected with no
     /// `config:` block (mandatory registration) and as the
-    /// `configuration::register` seed on first boot. Mirrors the former
-    /// `iii.worker.yaml` config block so removing that block is not a
-    /// behavior change.
+    /// `configuration::register` seed on first boot.
     ///
     /// `service_version` keeps the `${SERVICE_VERSION:__III_ENGINE_VERSION__}`
     /// template so the configuration worker expands it on every

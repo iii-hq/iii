@@ -925,6 +925,13 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         );
         return 1;
     }
+    let descriptor = match descriptor_vm_spec_from_install(Path::new(worker_path), worker_name) {
+        Ok(descriptor) => descriptor,
+        Err(error) => {
+            eprintln!("{} {error}", "error:".red());
+            return 1;
+        }
+    };
     match start_worker_impl(
         worker_name,
         worker_path,
@@ -933,13 +940,76 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         /*is_bundle=*/ true,
         None,
         None,
-        None,
+        Some(descriptor),
     )
     .await
     {
         VmStart::Exit(code) => code,
         VmStart::Plan(_) => 1,
     }
+}
+
+fn descriptor_vm_spec_from_install(
+    install_dir: &Path,
+    worker_name: &str,
+) -> Result<DescriptorVmSpec, String> {
+    let descriptor_path = install_dir.join(".iii-package-descriptor.json");
+    let digest_path = install_dir.join(".iii-package-descriptor.sha256");
+    let descriptor: iii_compose::descriptor::PackageDescriptor = serde_json::from_slice(
+        &std::fs::read(&descriptor_path)
+            .map_err(|error| format!("cannot read {}: {error}", descriptor_path.display()))?,
+    )
+    .map_err(|error| format!("invalid {}: {error}", descriptor_path.display()))?;
+    let expected = std::fs::read_to_string(&digest_path)
+        .map_err(|error| format!("cannot read {}: {error}", digest_path.display()))?;
+    let actual = descriptor.sha256();
+    if expected.trim() != actual {
+        return Err(format!(
+            "package descriptor digest mismatch for {worker_name}: expected {}, calculated {actual}",
+            expected.trim()
+        ));
+    }
+    if descriptor.name != worker_name {
+        return Err(format!(
+            "package descriptor names '{}', but install target is '{worker_name}'",
+            descriptor.name
+        ));
+    }
+    if !matches!(
+        descriptor.artifact,
+        iii_compose::descriptor::Artifact::JavascriptBundle { .. }
+            | iii_compose::descriptor::Artifact::PythonBundle { .. }
+    ) {
+        return Err(format!("package {worker_name} is not a bundle artifact"));
+    }
+    let runtime = descriptor.runtime;
+    let exec = runtime
+        .exec
+        .ok_or_else(|| format!("package {worker_name} has no runtime.exec"))?;
+    let base_image = runtime
+        .base_image
+        .ok_or_else(|| format!("package {worker_name} has no runtime.base_image"))?;
+    let cpus = runtime
+        .resources
+        .as_ref()
+        .and_then(|resources| resources.cpu)
+        .map(|cpus| cpus.ceil() as u32)
+        .unwrap_or(2)
+        .max(1);
+    let memory_mib = runtime
+        .resources
+        .as_ref()
+        .and_then(|resources| resources.memory_mib)
+        .and_then(|memory| u32::try_from(memory).ok())
+        .unwrap_or(2048);
+    Ok(DescriptorVmSpec {
+        exec,
+        base_image,
+        prepare: runtime.prepare,
+        environment: runtime.environment.into_iter().collect(),
+        cpus,
+        memory_mib,
+    })
 }
 
 /// Builds the VM for a local-path worker without starting it.
@@ -1816,6 +1886,68 @@ async fn spawn_source_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_install_starts_from_descriptor_without_a_legacy_manifest() {
+        use iii_compose::descriptor::{
+            Artifact, FrontendTool, PackageDescriptor, PackageSource, RegistryMetadata, Runtime,
+            Validation, ValidationMode,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        let descriptor = PackageDescriptor {
+            name: "probe".into(),
+            version: "1.0.0".into(),
+            source: PackageSource {
+                path: ".".into(),
+                package_manifest: "package.json".into(),
+            },
+            artifact: Artifact::JavascriptBundle {
+                workspace_root: ".".into(),
+                runtime: FrontendTool {
+                    name: "node".into(),
+                    version: "22".into(),
+                },
+                package_manager: FrontendTool {
+                    name: "pnpm".into(),
+                    version: "11.13.1".into(),
+                },
+                lockfile: "pnpm-lock.yaml".into(),
+                install_command: vec!["pnpm".into(), "install".into()],
+                build_command: vec!["pnpm".into(), "build".into()],
+                include: vec!["dist/index.mjs".into()],
+            },
+            runtime: Runtime {
+                exec: Some(vec!["node".into(), "dist/index.mjs".into()]),
+                base_image: Some(format!("node@sha256:{}", "a".repeat(64))),
+                ..Runtime::default()
+            },
+            registry: RegistryMetadata {
+                description: "probe".into(),
+                license: "Apache-2.0".into(),
+                tags: Vec::new(),
+                dependencies: std::collections::BTreeMap::new(),
+                config: None,
+                publish: true,
+            },
+            validation: Validation {
+                interface: ValidationMode::Required,
+            },
+        };
+        let digest = descriptor.sha256();
+        std::fs::write(
+            temp.path().join(".iii-package-descriptor.json"),
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(temp.path().join(".iii-package-descriptor.sha256"), &digest).unwrap();
+
+        let spec = descriptor_vm_spec_from_install(temp.path(), "probe").unwrap();
+        assert_eq!(spec.exec, ["node", "dist/index.mjs"]);
+        assert_eq!(spec.base_image, format!("node@sha256:{}", "a".repeat(64)));
+        assert!(!temp.path().join("iii.worker.yaml").exists());
+    }
 
     #[test]
     fn build_local_mounts_maps_project_to_workspace() {

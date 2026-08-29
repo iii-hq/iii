@@ -139,9 +139,8 @@ struct Artifact {
 pub enum Payload {
     /// A native executable, run as a child process.
     Binary(PathBuf),
-    /// An extracted bundle directory holding `iii.worker.yaml`. The command it
-    /// declares is publisher-controlled, so it runs in a VM rather than on the
-    /// host — see `lifecycle::start_one`.
+    /// An extracted immutable bundle. Its PackageDescriptor is
+    /// publisher-controlled, so it runs in a VM rather than on the host.
     Bundle(PathBuf),
     /// A registry OCI image, always digest-pinned.
     Oci(String),
@@ -165,7 +164,29 @@ pub struct InstalledPackage {
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
     pub descriptor: crate::descriptor::PackageDescriptor,
+    pub descriptor_sha256: String,
+    pub artifact: InstalledArtifact,
     pub status: InstallStatus,
+}
+
+#[derive(Debug, Clone)]
+pub enum InstalledArtifact {
+    RustBinary {
+        artifacts: std::collections::BTreeMap<String, InstalledArtifactFile>,
+    },
+    Bundle {
+        archive_url: String,
+        sha256: String,
+    },
+    Oci {
+        image: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct InstalledArtifactFile {
+    pub url: String,
+    pub sha256: String,
 }
 
 /// The rust target triple this daemon is running on, which is the one its
@@ -274,12 +295,45 @@ async fn install_from_registry(
     let package_name = resolved.package_descriptor.name.clone();
     let package_version = resolved.package_descriptor.version.clone();
 
+    let artifact = match &resolved.artifacts {
+        ResolvedArtifacts::RustBinary { binaries } => InstalledArtifact::RustBinary {
+            artifacts: binaries
+                .iter()
+                .map(|(target, artifact)| {
+                    (
+                        target.clone(),
+                        InstalledArtifactFile {
+                            url: artifact.url.clone(),
+                            sha256: artifact.sha256.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        },
+        ResolvedArtifacts::JavascriptBundle {
+            archive_url,
+            sha256,
+        }
+        | ResolvedArtifacts::PythonBundle {
+            archive_url,
+            sha256,
+        } => InstalledArtifact::Bundle {
+            archive_url: archive_url.clone(),
+            sha256: sha256.clone(),
+        },
+        ResolvedArtifacts::OciImage { image_tag } => InstalledArtifact::Oci {
+            image: image_tag.clone(),
+        },
+    };
+
     Ok(InstalledPackage {
         name: package_name,
         version: package_version,
         payload,
         default_config,
         descriptor: resolved.package_descriptor,
+        descriptor_sha256: resolved.descriptor_sha256,
+        artifact,
         status,
     })
 }

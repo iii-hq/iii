@@ -656,9 +656,7 @@ impl Engine {
 
         let known = self.functions.namespaces_for(function_id);
         let message = if known.is_empty() {
-            crate::legacy_worker_functions::migration_message(function_id).unwrap_or_else(|| {
-                format!("Function {function_id} not found in namespace {namespace}.")
-            })
+            format!("Function {function_id} not found in namespace {namespace}.")
         } else {
             format!(
                 "Function {function_id} not found in namespace {namespace}. It is registered in \

@@ -14,13 +14,7 @@ optional:
 # Enumerates every language-specific file the template ships. Each entry
 # is gated by the root manifest's `language_files` patterns so only files
 # matching the selected language land in the scaffolded dir. Each language
-# ships its own iii.worker.<lang>.yaml; the `renames` block below collapses
-# the survivor onto iii.worker.yaml at copy time.
 files:
-  - iii.worker.ts.yaml
-  - iii.worker.js.yaml
-  - iii.worker.py.yaml
-  - iii.worker.rust.yaml
   - package.ts.json
   - package.js.json
   - tsconfig.json
@@ -31,18 +25,7 @@ files:
   - Cargo.toml
   - src/main.rs
 
-# Rename the language-tagged survivor onto its canonical destination. Only the
-# selected language's source is copied (gated by language_files), so the shared
-# destinations never collide within one scaffold.
 renames:
-  - source: iii.worker.ts.yaml
-    dest: iii.worker.yaml
-  - source: iii.worker.js.yaml
-    dest: iii.worker.yaml
-  - source: iii.worker.py.yaml
-    dest: iii.worker.yaml
-  - source: iii.worker.rust.yaml
-    dest: iii.worker.yaml
   - source: package.ts.json
     dest: package.json
   - source: package.js.json
@@ -50,5 +33,5 @@ renames:
 
 next_steps:
   - "Install deps (npm install / uv sync / cargo build)"
-  - "Edit iii.worker.yaml to declare your entry point"
-  - "Add to a parent project: iii worker add ./path/to/this-worker"
+  - "Edit worker-compose.yaml to declare build and runtime inputs"
+  - "Run locally: iii compose up --file worker-compose.yaml"

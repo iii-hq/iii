@@ -159,7 +159,8 @@ mod tests {
                 "artifact": {
                     "kind": "rust-binary",
                     "binary": "worker",
-                    "targets": ["x86_64-unknown-linux-gnu"]
+                    "targets": ["x86_64-unknown-linux-gnu"],
+                    "toolchain": { "name": "rust", "version": "1.97.1" }
                 },
                 "runtime": { "exec": ["worker"] },
                 "registry": {
@@ -172,6 +173,11 @@ mod tests {
                 "validation": { "interface": "skipped" }
             }))
             .unwrap(),
+            descriptor_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            artifact: crate::registry::InstalledArtifact::RustBinary {
+                artifacts: std::collections::BTreeMap::new(),
+            },
             status,
         }
     }
@@ -179,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn build_installs_only_registry_packages() {
         let file = ComposeFile::parse(
-            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n  state:\n    worker: package://state\n    version: 1.0.0\n  queue:\n    worker: package://queue\n    version: 2.0.0\n",
+            "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers:\n      state:\n        worker: package://state@1.0.0\n      queue:\n        worker: package://queue@2.0.0\n",
             "/srv/app/worker-compose.yaml",
         )
         .unwrap();
@@ -216,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn build_reports_the_first_declared_failure() {
         let file = ComposeFile::parse(
-            "containers:\n  first:\n    worker: package://first\n    version: 1.0.0\n  second:\n    worker: package://second\n    version: 1.0.0\n",
+            "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers:\n      first:\n        worker: package://first@1.0.0\n      second:\n        worker: package://second@1.0.0\n",
             "/srv/app/worker-compose.yaml",
         )
         .unwrap();

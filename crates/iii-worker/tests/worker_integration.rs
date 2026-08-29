@@ -34,12 +34,6 @@ fn cli_parses_all_subcommands() {
         (&["iii-worker", "sync"], |c| {
             assert!(matches!(c, Commands::Sync { .. }))
         }),
-        (&["iii-worker", "verify"], |c| {
-            assert!(matches!(c, Commands::Verify { strict: false }))
-        }),
-        (&["iii-worker", "verify", "--strict"], |c| {
-            assert!(matches!(c, Commands::Verify { strict: true }))
-        }),
         (&["iii-worker", "logs", "my-worker"], |c| {
             assert!(matches!(c, Commands::Logs { .. }))
         }),

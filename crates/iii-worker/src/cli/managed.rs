@@ -1699,6 +1699,256 @@ pub async fn handle_managed_add(
     .await
 }
 
+const PACKAGE_DESCRIPTOR_FILE: &str = ".iii-package-descriptor.json";
+const PACKAGE_DESCRIPTOR_DIGEST_FILE: &str = ".iii-package-descriptor.sha256";
+
+fn copy_package_tree(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if ty.is_dir() {
+            copy_package_tree(&entry.path(), &target)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        } else {
+            return Err(std::io::Error::other(
+                "package contains a non-regular entry",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn install_descriptor_package(
+    installed: &iii_compose::registry::InstalledPackage,
+) -> Result<(), String> {
+    use iii_compose::registry::Payload;
+
+    let default_config = installed
+        .descriptor
+        .registry
+        .config
+        .as_ref()
+        .map(|config| serde_yaml::to_string(&config.defaults).map_err(|error| error.to_string()))
+        .transpose()?;
+
+    match &installed.payload {
+        Payload::Binary(program) => {
+            let destination = super::binary_download::binary_worker_path(&installed.name);
+            std::fs::create_dir_all(super::binary_download::binary_workers_dir())
+                .map_err(|error| error.to_string())?;
+            std::fs::copy(program, &destination).map_err(|error| {
+                format!(
+                    "cannot install binary at {}: {error}",
+                    destination.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = std::fs::metadata(&destination)
+                    .map_err(|error| error.to_string())?
+                    .permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&destination, permissions)
+                    .map_err(|error| error.to_string())?;
+            }
+            super::config_file::append_worker(&installed.name, default_config.as_deref())
+                .map_err(|e| e.to_string())?;
+        }
+        Payload::Bundle(source) => {
+            let destination = super::config_file::bundle_worker_path(&installed.name);
+            let parent = super::config_file::bundle_workers_dir();
+            std::fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
+            let staging = parent.join(format!(".{}.descriptor.partial", installed.name));
+            if staging.exists() {
+                std::fs::remove_dir_all(&staging).map_err(|error| error.to_string())?;
+            }
+            copy_package_tree(source, &staging).map_err(|error| error.to_string())?;
+            std::fs::write(
+                staging.join(PACKAGE_DESCRIPTOR_FILE),
+                serde_json::to_vec_pretty(&installed.descriptor).map_err(|e| e.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            std::fs::write(
+                staging.join(PACKAGE_DESCRIPTOR_DIGEST_FILE),
+                format!("{}\n", installed.descriptor_sha256),
+            )
+            .map_err(|error| error.to_string())?;
+            let backup = parent.join(format!(".{}.descriptor.backup", installed.name));
+            if backup.exists() {
+                std::fs::remove_dir_all(&backup).map_err(|error| error.to_string())?;
+            }
+            if destination.exists() {
+                std::fs::rename(&destination, &backup).map_err(|error| error.to_string())?;
+            }
+            if let Err(error) = std::fs::rename(&staging, &destination) {
+                if backup.exists() {
+                    let _ = std::fs::rename(&backup, &destination);
+                }
+                return Err(error.to_string());
+            }
+            if backup.exists() {
+                let _ = std::fs::remove_dir_all(backup);
+            }
+            super::config_file::append_worker(&installed.name, default_config.as_deref())
+                .map_err(|e| e.to_string())?;
+        }
+        Payload::Oci(image) => {
+            super::config_file::append_worker_with_image(
+                &installed.name,
+                image,
+                default_config.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn lock_descriptor_packages(
+    installed: &[iii_compose::registry::InstalledPackage],
+    graph: &iii_compose::registry::Graph,
+) -> Result<(), String> {
+    use super::lockfile::{LockedBinaryArtifact, LockedSource, LockedWorker, LockedWorkerType};
+    use iii_compose::registry::InstalledArtifact;
+
+    let path = super::lockfile::lockfile_path();
+    let mut lock = if path.exists() {
+        super::lockfile::WorkerLockfile::read_from(path)?
+    } else {
+        super::lockfile::WorkerLockfile::default()
+    };
+    let resolved_versions: std::collections::BTreeMap<_, _> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.name.as_str(), node.version.as_str()))
+        .collect();
+    for package in installed {
+        let dependencies = graph
+            .edges
+            .iter()
+            .filter(|(from, _)| from == &package.name)
+            .filter_map(|(_, dependency)| {
+                resolved_versions
+                    .get(dependency.as_str())
+                    .map(|version| (dependency.clone(), (*version).to_string()))
+            })
+            .collect();
+        let (worker_type, source) = match &package.artifact {
+            InstalledArtifact::RustBinary { artifacts } => (
+                LockedWorkerType::Binary,
+                LockedSource::Binary {
+                    artifacts: artifacts
+                        .iter()
+                        .map(|(target, artifact)| {
+                            (
+                                target.clone(),
+                                LockedBinaryArtifact {
+                                    url: artifact.url.clone(),
+                                    sha256: artifact.sha256.clone(),
+                                },
+                            )
+                        })
+                        .collect(),
+                },
+            ),
+            InstalledArtifact::Bundle {
+                archive_url,
+                sha256,
+            } => (
+                LockedWorkerType::Bundle,
+                LockedSource::Bundle {
+                    archive_url: archive_url.clone(),
+                    sha256: sha256.clone(),
+                },
+            ),
+            InstalledArtifact::Oci { image } => (
+                LockedWorkerType::Image,
+                LockedSource::Image {
+                    image: image.clone(),
+                },
+            ),
+        };
+        lock.workers.insert(
+            package.name.clone(),
+            LockedWorker {
+                version: package.version.clone(),
+                worker_type,
+                dependencies,
+                source: Some(source),
+            },
+        );
+    }
+    lock.write_to(path)
+}
+
+async fn handle_descriptor_registry_add(
+    name: &str,
+    version: Option<&str>,
+    brief: bool,
+    force: bool,
+    reset_config: bool,
+    wait: bool,
+) -> i32 {
+    let cache = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".iii")
+        .join("package-cache");
+    let graph = match iii_compose::registry::resolve_graph(name, name, version.unwrap_or("*")).await
+    {
+        Ok(graph) => graph,
+        Err(error) => {
+            eprintln!("{} {error}", "error:".red());
+            return 1;
+        }
+    };
+    let mut packages = Vec::new();
+    for node in &graph.nodes {
+        let installed = match iii_compose::registry::install(
+            &node.name,
+            &node.name,
+            &format!("={}", node.version),
+            &cache,
+        )
+        .await
+        {
+            Ok(installed) => installed,
+            Err(error) => {
+                eprintln!("{} {error}", "error:".red());
+                return 1;
+            }
+        };
+        packages.push(installed);
+    }
+    if apply_force_replacement(name, force, reset_config).await != 0 {
+        return 1;
+    }
+    for installed in &packages {
+        if let Err(error) = install_descriptor_package(installed) {
+            eprintln!("{} {error}", "error:".red());
+            return 1;
+        }
+    }
+    if let Err(error) = lock_descriptor_packages(&packages, &graph) {
+        eprintln!("{} {error}", "error:".red());
+        return 1;
+    }
+    if !brief {
+        eprintln!(
+            "\n  {} Installed immutable Registry package {}",
+            "✓".green(),
+            name.bold()
+        );
+    }
+    finish_add(name, 0, wait, brief).await
+}
+
 /// Apply the destructive half of `--force`.
 ///
 /// Registry and manifest callers must invoke this only after their source has
@@ -1763,8 +2013,8 @@ pub async fn handle_managed_add_with_consent(
     force: bool,
     reset_config: bool,
     wait: bool,
-    assume_yes: bool,
-    can_prompt: bool,
+    _assume_yes: bool,
+    _can_prompt: bool,
 ) -> i32 {
     if image_or_name.starts_with(['.', '/', '~']) || image_or_name.contains(':') {
         eprintln!(
@@ -1776,151 +2026,15 @@ pub async fn handle_managed_add_with_consent(
 
     let (name, version) = parse_worker_input(image_or_name);
 
-    // Mandatory builtins are always injected by the engine with Rust defaults;
-    // they must not be written into config.yaml via `iii worker add`.
-    if MANDATORY_BUILTIN_NAMES.contains(&name.as_str()) {
-        if apply_force_replacement(&name, force, reset_config).await != 0 {
-            return 1;
-        }
-        if !brief {
-            eprintln!(
-                "  {} '{}' is a mandatory engine worker (always on; configure via the configuration worker, not config.yaml).",
-                "info:".cyan(),
-                name.bold()
-            );
-        }
-        return 0;
-    }
-
-    // Check for engine-builtin workers first (no network needed).
-    if let Some(default_yaml) = get_builtin_default(&name) {
-        let builtin_version = resolve_builtin_version(version.as_deref());
-        if apply_force_replacement(&name, force, reset_config).await != 0 {
-            return 1;
-        }
-        let already_exists = super::config_file::worker_exists(&name);
-        // Bare `- name:` entry: builtins boot with their Rust defaults and
-        // own their configuration through the configuration worker, so the
-        // add must not copy a default `config:` block into the project
-        // config file (it would only be re-imported on the next engine
-        // restart). iii-sandbox is the exception — its daemon consumes
-        // `config:` directly at spawn and fails closed without it, and the
-        // image allowlist is an operator security surface that belongs in
-        // the file.
-        let config_yaml = (name == "iii-sandbox").then_some(default_yaml);
-        if let Err(e) =
-            persist_engine_worker_config_and_lock(&name, builtin_version, config_yaml.as_deref())
-        {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-        if brief {
-            if already_exists {
-                eprintln!("        {} {} (updated)", "✓".green(), name.bold());
-            } else {
-                eprintln!("        {} {}", "✓".green(), name.bold());
-            }
-        } else {
-            if already_exists {
-                eprintln!(
-                    "\n  {} Worker {} updated in {}",
-                    "✓".green(),
-                    name.bold(),
-                    super::config_file::config_display_name().dimmed(),
-                );
-            } else {
-                eprintln!(
-                    "\n  {} Worker {} added to {}",
-                    "✓".green(),
-                    name.bold(),
-                    super::config_file::config_display_name().dimmed(),
-                );
-            }
-
-            // If the engine is already running, its file watcher will detect
-            // the config change and reload automatically. If it isn't, nudge
-            // the user to start it (or customize first).
-            if !is_engine_running() {
-                eprintln!("  Start the engine to run it, or edit config.yaml to customize.");
-            }
-        }
-        // Builtins run in-process with the engine; there is no detached VM
-        // or binary to watch. The Phase machinery would loop on Queued until
-        // timeout, so skip wait_for_ready for builtins even when wait=true.
-        // Fire telemetry so the registry can count this activation.
-        fire_worker_telemetry(&name, builtin_version).await;
-        return 0;
-    }
-
-    if !brief {
-        eprintln!("  Resolving {}...", name.bold());
-    }
-
-    match fetch_resolved_worker_graph(&name, version.as_deref(), None).await {
-        Ok(graph) => {
-            let roots = std::slice::from_ref(&graph.root.name);
-            let prepared = match preflight_resolved_graph(&graph, roots, assume_yes, can_prompt) {
-                Ok(prepared) => prepared,
-                Err(e) => {
-                    eprintln!("{} {}", "error:".red(), e);
-                    return 1;
-                }
-            };
-            if apply_force_replacement(&name, force, reset_config).await != 0 {
-                return 1;
-            }
-            let rc = handle_preflighted_resolved_graph_add(&graph, prepared, brief).await;
-            return finish_add(&name, rc, wait, brief).await;
-        }
-        Err(e) if should_fallback_to_legacy_registry_error(&name, &e) => {
-            tracing::debug!("falling back to single-worker registry response: {}", e);
-        }
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    }
-
-    let response = match fetch_worker_info(&name, version.as_deref()).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
-
-    if apply_force_replacement(&name, force, reset_config).await != 0 {
-        return 1;
-    }
-
-    let rc = match response {
-        WorkerInfoResponse::Binary(r) => handle_binary_add(&name, &r, brief).await,
-        WorkerInfoResponse::Oci(r) => {
-            if !brief {
-                eprintln!("  {} Resolved to {}", "✓".green(), r.image_url.dimmed());
-            }
-            handle_oci_pull_and_add(&r.name, &r.image_url, brief).await
-        }
-        WorkerInfoResponse::Bundle(r) => handle_bundle_add(&name, &r, brief).await,
-        WorkerInfoResponse::Engine(r) => {
-            // Engine workers are built into the iii binary; telemetry was already
-            // fired by fetch_worker_info via the 204 response path.
-            if let Err(e) = persist_engine_worker_config_and_lock(&r.name, &r.version, None) {
-                eprintln!("{} {}", "error:".red(), e);
-                return 1;
-            }
-            if !brief {
-                eprintln!(
-                    "\n  {} {} v{} (engine, built-in — nothing to download)",
-                    "✓".green(),
-                    r.name.bold(),
-                    r.version
-                );
-            }
-            0
-        }
-    };
-    finish_add(&name, rc, wait, brief).await
+    handle_descriptor_registry_add(
+        &name,
+        version.as_deref(),
+        brief,
+        force,
+        reset_config,
+        wait,
+    )
+    .await
 }
 
 fn should_fallback_to_legacy_registry_error(name: &str, error: &str) -> bool {

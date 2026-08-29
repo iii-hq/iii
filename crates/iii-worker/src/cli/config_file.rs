@@ -733,8 +733,8 @@ pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
 }
 
 /// Returns true when a bundle worker named `name` is already installed at the
-/// global cache path (`~/.iii/workers-bundle/{name}/`) with a valid
-/// `iii.worker.yaml` manifest.
+/// global cache path (`~/.iii/workers-bundle/{name}/`) with its compiler-owned
+/// package descriptor and digest sidecar.
 ///
 /// Bundle installs are shared machine-wide by name, not per project, so this
 /// is how a second project detects that another project already installed the
@@ -743,7 +743,9 @@ pub fn bundle_worker_path(name: &str) -> std::path::PathBuf {
 /// count as installed (manifest must be present).
 pub fn bundle_is_installed(name: &str) -> bool {
     let bundle_dir = bundle_worker_path(name);
-    bundle_dir.is_dir() && bundle_dir.join("iii.worker.yaml").is_file()
+    bundle_dir.is_dir()
+        && bundle_dir.join(".iii-package-descriptor.json").is_file()
+        && bundle_dir.join(".iii-package-descriptor.sha256").is_file()
 }
 
 /// Filesystem fallback precedence: bundle → binary → config-only.

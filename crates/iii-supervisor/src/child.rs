@@ -67,7 +67,7 @@ const RESPAWN_RETRY_DELAY: Duration = Duration::from_millis(50);
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Shell command line to run as the user's worker. Executed via
-    /// `/bin/sh -c` so the user's existing `iii.worker.yaml` run_cmd
+    /// `/bin/sh -c` so the descriptor-authored run command
     /// (e.g. `npm run dev`, `uvicorn app:main`) works verbatim.
     pub run_cmd: String,
     /// Working directory for the child. `/workspace` for local-path

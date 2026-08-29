@@ -188,7 +188,7 @@ pub async fn run(args: InitArgs) -> i32 {
     // Snapshot pre-existing files so re-init can restore user edits. The
     // scaffolder's `copy_template` is not write-if-absent; without this
     // snapshot, a second `iii worker init` would clobber an edited
-    // `iii.worker.yaml`, `package.json`, etc.
+    // language package files and source code.
     let snapshots = snapshot_existing_files(&root);
 
     // Resolve language. Three paths:
@@ -292,18 +292,6 @@ pub async fn run(args: InitArgs) -> i32 {
             );
         }
     };
-
-    // Older remote copies of the scaffold template may still emit the former
-    // per-worker metadata file. It is not a runtime input after this hard cut;
-    // remove only the file created by this scaffold and preserve a pre-existing
-    // user file during idempotent migration.
-    let retired_manifest = ["iii", "worker", "yaml"].join(".");
-    if !snapshots.contains_key(Path::new(&retired_manifest)) {
-        let path = root.join(&retired_manifest);
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     if let Err(e) = write_worker_compose(&root, &worker_name, final_lang) {
         return print_err(
@@ -474,9 +462,7 @@ fn write_worker_compose(
 /// Detect the language the scaffolder picked by sniffing the language-specific
 /// files it dropped: `Cargo.toml` -> Rust, `pyproject.toml` -> Python,
 /// `tsconfig.json` -> TypeScript, `package.json` (without `tsconfig.json`) ->
-/// JavaScript. The scaffolder renames the manifest to its canonical
-/// `iii.worker.yaml` at copy time, so it no longer carries a language tag;
-/// these sibling files are the reliable signal.
+/// JavaScript. The selected package/source files are the reliable signal.
 fn detect_language_from_yaml(root: &Path) -> Option<WorkerLanguage> {
     // File-presence heuristic. The scaffolder only drops the files matching
     // the selected language (gated by the root manifest's `language_files`),

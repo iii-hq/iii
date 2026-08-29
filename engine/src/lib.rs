@@ -11,7 +11,6 @@ pub mod config;
 pub mod engine;
 pub mod function;
 pub mod invocation;
-mod legacy_worker_functions;
 pub mod logging;
 pub mod protocol;
 pub mod services;

@@ -115,33 +115,6 @@ containers:
 }
 
 #[test]
-fn a_missing_env_file_fails_validation_before_anything_starts() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(tmp.path().join("workers/api")).unwrap();
-    std::fs::write(
-        tmp.path().join("workers/api/iii.worker.yaml"),
-        "name: api\nscripts:\n  start: cargo run\n",
-    )
-    .unwrap();
-    let file = project(
-        tmp.path(),
-        r#"
-namespace: orders
-containers:
-  api:
-    worker: path://./workers/api
-    env_file:
-      - missing.env
-"#,
-        &[],
-    );
-
-    let err = iii_compose::manifest::validate_offline(&file, "orders-test")
-        .expect_err("a missing env_file is a validation failure");
-    assert_eq!(err.code(), "MISSING_ENV_FILE");
-}
-
-#[test]
 fn a_container_without_env_resolves_to_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(

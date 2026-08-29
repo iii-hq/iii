@@ -277,6 +277,12 @@ impl PackageDescriptor {
                 message,
             }
         })?;
+        semver::Version::parse(&version).map_err(|error| {
+            ComposeError::InvalidPackageDescriptor {
+                worker: name.into(),
+                message: format!("package version must be valid semver: {error}"),
+            }
+        })?;
         validate_definition(name, &definition, &source_dir, &root)?;
         let registry = compile_registry(name, definition.registry, &source_dir)?;
         Ok(Self {

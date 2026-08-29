@@ -125,7 +125,7 @@ pub enum ComposeError {
         manifest: PathBuf,
     },
 
-    #[error("{path} is not a valid iii.worker.yaml: {message}")]
+    #[error("{path} is not valid worker metadata: {message}")]
     InvalidManifest { path: PathBuf, message: String },
 
     #[error("container '{container}': worker directory {path} does not exist")]
