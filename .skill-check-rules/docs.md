@@ -4,6 +4,8 @@ Rules for authoring and structuring the iii docs pages.
 
 ## Quadrant integrity (anti-contamination)
 
+**Severity: warning.**
+
 Each Diataxis quadrant — tutorial, how-to, reference, explanation — describes what the page is *for*. Pages drift toward neighbouring quadrants on every revision; resist it.
 
 - A how-to page that starts explaining *why* something works has drifted into explanation. Extract the reasoning to an explanation page and link to it.

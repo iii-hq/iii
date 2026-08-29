@@ -55,8 +55,9 @@ absent is unconfirmed, not wrong; at most warn (see the recognized-list check ab
 - `iii worker logs`
 - `iii worker exec`
 
-`iii worker add` accepts Registry package references only. Local source belongs in the root
-`worker-compose.yaml`, and `iii worker init` creates that file for a new worker project.
+`iii worker add` accepts Registry package references, OCI references, and local worker paths.
+Local paths use the worker's `iii.worker.yaml`; `iii worker init` scaffolds that public manifest.
+Compose remains available for multi-worker project stacks and release descriptor authoring.
 
 **`iii compose`** subcommands:
 - `iii compose init`

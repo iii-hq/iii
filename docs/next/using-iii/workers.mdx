@@ -1,12 +1,32 @@
 ---
 title: "Workers"
-description: "Add and operate project workers with iii Compose."
+description: "Add and operate workers with iii worker or Compose."
 owner: "devrel"
 type: "how-to"
 ---
 
 Workers are processes that connect to iii over WebSocket and register functions and trigger types.
 When a worker disconnects, its registrations stop being callable until it reconnects.
+
+## Manage workers with iii worker
+
+`iii worker` manages standalone worker packages through the public `iii.worker.yaml` contract. It
+accepts Registry names, OCI references, and local worker directories:
+
+```bash
+iii worker add state
+iii worker add ./workers/my-worker
+iii worker add ghcr.io/example/my-worker:latest
+iii worker list
+iii worker status state
+```
+
+`iii worker init` scaffolds a local worker manifest. Add, remove, reinstall, update, clear, start,
+stop, restart, sync, status, logs, and exec remain available. Registry dependency resolution is
+pinned in `iii.lock`; local and bundled workers keep their manifest-defined runtime behavior.
+
+Use Compose for declarative multi-worker stacks, dependency startup order, or release descriptor
+authoring. The two surfaces coexist; adopting Compose does not delete a worker's public manifest.
 
 ## Worker identity and namespaces
 
@@ -127,8 +147,9 @@ the same function and trigger mesh. Compose only owns processes declared in its 
 
 ## Migrating an existing project
 
-0.23 removed `iii worker`, `worker::*`, and engine-side startup of project workers. Follow the
-[manual migration guide](../upgrading/workers-to-compose) before starting an older project.
+Existing `iii worker` projects remain supported. To move project orchestration into a declarative
+stack, follow the [Compose catalog guide](../upgrading/workers-to-compose); keep each
+`iii.worker.yaml` for public development and package compatibility.
 
 ## Authoring workers
 

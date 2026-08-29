@@ -5,21 +5,23 @@ Rules for configuration file naming and conventions.
 ## Config file names
 
 `config.yaml` is the canonical filename for direct engine runtime configuration. The root
-`worker-compose.yaml` is the canonical source for worker catalogs, builds, package runtime,
-release metadata, validation, and project stacks. They have different consumers and never share
-state:
+`worker-compose.yaml` is the canonical source for release catalogs, descriptor builds, package
+runtime, release metadata, validation, and Compose project stacks. Public per-worker manifests
+remain a separate compatibility and development contract:
 
 - **Engine config** — `config.yaml`. The engine reads it from the cwd (the directory `iii` was started in) or from an explicit path via `iii --config /path/to/config.yaml`. The engine does not walk parent directories looking for it. Carries engine-wide settings (workers list, ports, telemetry).
 - **Worker project config** — `worker-compose.yaml`. A single root document owns `workers` and
   `stacks`; per-worker non-secret runtime defaults live under `workers.<key>.runtime`, and
   per-container overrides live under `stacks.<stack>.containers.<key>.config`.
+- **Public worker manifest** — `iii.worker.yaml`. A worker-local document used by `iii worker`,
+  local/OCI/Registry package installation, templates, and manifest-based development tooling.
 
-The two never share state or schema; their location and consumer are different.
+The three do not share a schema; their location and consumer are different.
 
-There is no per-worker manifest and no compatibility path for one. A worker's key under `workers`
-is its identity, its package manifest supplies its version, and the descriptor compiler combines
-those inputs into `release-descriptor.json`. Do not recommend adding, reading, or generating a
-per-worker manifest.
+Within a release catalog, a worker's key under `workers` is its canonical release identity, its
+package manifest supplies its version, and the descriptor compiler combines those inputs into
+`release-descriptor.json`. Release tooling must not read or fall back to `iii.worker.yaml`. This
+restriction does not apply to the public `iii worker` surface.
 
 When source content references `iii-config.yaml`, normalize to `config.yaml` in any stub. Note the rename in the decisions log if the source page is being absorbed.
 
