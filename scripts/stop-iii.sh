@@ -10,10 +10,16 @@ stop_pid_file() {
 
   local pid
   pid="$(cat "$pid_file")"
-  # start-iii.sh gives each managed process its own process group. Signal the
-  # group so shell wrappers and worker descendants cannot outlive the pid file;
-  # retain the PID fallback for files written by older launchers.
-  if kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null; then
+  local stopped=false
+  # Signal descendants and the exact recorded child independently. Group
+  # delivery succeeding does not prove that the recorded PID belongs to it.
+  if kill -TERM -- "-$pid" 2>/dev/null; then
+    stopped=true
+  fi
+  if kill -TERM "$pid" 2>/dev/null; then
+    stopped=true
+  fi
+  if [[ "$stopped" == true ]]; then
     echo "Stopped $label (PID: $pid, file: $pid_file)"
   fi
   rm -f "$pid_file"

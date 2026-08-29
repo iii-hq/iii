@@ -52,38 +52,59 @@ fi
 COMPOSE_PID_FILE="${PID_FILE}.compose.pid"
 engine_pid=""
 compose_pid=""
+engine_pgid=""
+compose_pgid=""
 ready=false
 rm -f "$COMPOSE_PID_FILE"
 : > "$LOG_FILE"
 
+isolated_process_group() {
+  local pid="$1"
+  local pgid
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" || pgid=""
+  if [[ "$pgid" == "$pid" ]]; then
+    printf '%s' "$pgid"
+  fi
+  return 0
+}
+
 process_alive() {
   local pid="$1"
-  kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null
+  local pgid="$2"
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  [[ -n "$pgid" ]] && kill -0 -- "-$pgid" 2>/dev/null
 }
 
 signal_process() {
   local signal="$1"
   local pid="$2"
-  kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null || true
+  local pgid="$3"
+
+  # Always signal the exact child. A process group is additional cleanup for
+  # descendants, never a substitute based on the assumption that PGID == PID.
+  kill "-$signal" "$pid" 2>/dev/null || true
+  if [[ -n "$pgid" ]]; then
+    kill "-$signal" -- "-$pgid" 2>/dev/null || true
+  fi
 }
 
 terminate_pid() {
   local pid="$1"
+  local pgid="$2"
   if [[ -z "$pid" ]]; then
     return
   fi
-  if ! process_alive "$pid"; then
-    return
-  fi
-  signal_process TERM "$pid"
+  signal_process TERM "$pid" "$pgid"
   for _ in $(seq 1 "$CLEANUP_GRACE_SECONDS"); do
-    if ! process_alive "$pid"; then
+    if ! process_alive "$pid" "$pgid"; then
       break
     fi
     sleep 1
   done
-  if process_alive "$pid"; then
-    signal_process KILL "$pid"
+  if process_alive "$pid" "$pgid"; then
+    signal_process KILL "$pid" "$pgid"
   fi
   wait "$pid" 2>/dev/null || true
 }
@@ -92,8 +113,8 @@ cleanup_failed_start() {
   if [[ "$ready" == true ]]; then
     return
   fi
-  terminate_pid "$compose_pid"
-  terminate_pid "$engine_pid"
+  terminate_pid "$compose_pid" "$compose_pgid"
+  terminate_pid "$engine_pid" "$engine_pgid"
   rm -f "$PID_FILE" "$COMPOSE_PID_FILE"
 }
 trap cleanup_failed_start EXIT
@@ -139,6 +160,7 @@ if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
   III_COMPOSE_STATE_DIR="$compose_state_dir" \
     "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
   compose_pid=$!
+  compose_pgid="$(isolated_process_group "$compose_pid")"
   set +m
   echo "$compose_pid" > "$PID_FILE"
   echo "Waiting for III Compose workers..."
@@ -157,6 +179,7 @@ fi
 set -m
 "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
 engine_pid=$!
+engine_pgid="$(isolated_process_group "$engine_pid")"
 set +m
 echo "$engine_pid" > "$PID_FILE"
 echo "Waiting for III Engine on port $PORT..."
@@ -179,6 +202,7 @@ set -m
 III_COMPOSE_STATE_DIR="$compose_state_dir" \
   "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
 compose_pid=$!
+compose_pgid="$(isolated_process_group "$compose_pid")"
 set +m
 echo "$compose_pid" > "$COMPOSE_PID_FILE"
 echo "Waiting for III Compose workers..."
