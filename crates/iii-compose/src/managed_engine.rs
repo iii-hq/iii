@@ -31,6 +31,8 @@ const ENGINE_LOCK_FILE: &str = "engine.lock";
 const ENGINE_CONFIG_FILE: &str = "engine-config.yaml";
 const DEFAULT_WORKER_MANAGER_HOST: &str = "0.0.0.0";
 const DEFAULT_WORKER_MANAGER_PORT: u16 = 49134;
+const ENGINE_SPAWN_ATTEMPTS: usize = 5;
+const ENGINE_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 /// The engine process owned by one foreground compose invocation.
 pub struct ManagedEngine {
@@ -114,14 +116,9 @@ impl ManagedEngine {
             source,
         })?;
 
-        let mut command = tokio::process::Command::new(executable);
-        command
-            .arg("--config")
-            .arg(config_path)
-            .stdin(Stdio::null());
-
-        let (process, output) =
-            spawn_supervised_piped(command).map_err(|err| ComposeError::EngineSpawnFailed {
+        let (process, output) = spawn_engine_process(executable, config_path)
+            .await
+            .map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not start {}: {err}", executable.display()),
             })?;
         let logs = capture_output(output, log);
@@ -184,6 +181,30 @@ impl ManagedEngine {
     pub async fn finish_logging(&self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.logs.wait()).await;
     }
+}
+
+async fn spawn_engine_process(
+    executable: &Path,
+    config_path: &Path,
+) -> std::io::Result<(Supervised, ChildOutput)> {
+    for attempt in 1..=ENGINE_SPAWN_ATTEMPTS {
+        let mut command = tokio::process::Command::new(executable);
+        command
+            .arg("--config")
+            .arg(config_path)
+            .stdin(Stdio::null());
+
+        match spawn_supervised_piped(command) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < ENGINE_SPAWN_ATTEMPTS =>
+            {
+                tokio::time::sleep(ENGINE_SPAWN_RETRY_DELAY).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final engine spawn attempt always returns")
 }
 
 #[derive(Serialize)]
@@ -1222,6 +1243,34 @@ port: 60123
             !output.contains('\u{1b}') && !output.contains("forged title"),
             "terminal escape sequence was persisted in {output:?}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn engine_spawn_retries_a_transient_executable_file_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("busy-iii");
+        let config = dir.path().join("config.yaml");
+        let log = dir.path().join("engine.log");
+        write_executable(&script, "#!/bin/sh\nexit 0\n");
+
+        let busy_writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            drop(busy_writer);
+        });
+
+        let result = ManagedEngine::spawn_with_paths(&script, &config, &log).await;
+        release.join().unwrap();
+        let engine = result.unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), engine.wait())
+            .await
+            .expect("fake engine should exit");
+
+        assert!(status.success());
     }
 
     #[cfg(unix)]
