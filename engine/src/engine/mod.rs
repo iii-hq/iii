@@ -54,9 +54,9 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// down directly (wedged reader guard).
 const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Function provided by the standalone `queue` worker for named enqueue
-/// actions. The engine owns receipt generation and uses this function only as
-/// the durable transport boundary.
+/// Function provided by the standalone `queue` worker in each project
+/// namespace. The engine owns receipt generation and uses this function only
+/// as the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
 
 /// How long a freshly connected worker's registrations wait for the namespace
@@ -1821,8 +1821,22 @@ impl Engine {
                                     enqueue_input["namespace"] =
                                         Value::String(target_namespace.clone());
                                 }
+                                // New queue workers register the provider in
+                                // the target project namespace. Old releases
+                                // registered it in `default`, so use that only
+                                // when the project-scoped provider is absent.
+                                let provider_namespace = if engine
+                                    .functions
+                                    .get(&target_namespace, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                    .is_some()
+                                {
+                                    target_namespace.as_str()
+                                } else {
+                                    DEFAULT_NAMESPACE
+                                };
                                 let result = engine
-                                    .call_with_metadata(
+                                    .call_with_metadata_ns(
+                                        provider_namespace,
                                         ENQUEUE_PROVIDER_FUNCTION_ID,
                                         enqueue_input,
                                         None,
@@ -4496,6 +4510,126 @@ mod tests {
         assert!(queued_baggage.contains("iii.session.id=s1"));
         assert!(queued_baggage.contains("iii.function.id=harness::turn"));
         assert!(!queued_baggage.contains("harness::send"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_prefers_provider_in_target_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |_input| {
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move { FunctionResult::Success(None) }
+            }),
+        );
+        engine.register_function_handler_ns(
+            "project-a",
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["namespace"], "project-a");
+        assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_falls_back_to_legacy_default_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["namespace"], "project-a");
     }
 
     #[tokio::test]
