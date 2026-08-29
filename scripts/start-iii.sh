@@ -57,14 +57,22 @@ compose_pgid=""
 ready=false
 rm -f "$COMPOSE_PID_FILE"
 : > "$LOG_FILE"
+SETSID_BINARY="$(command -v setsid || true)"
 
 isolated_process_group() {
   local pid="$1"
   local pgid
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" || pgid=""
-  if [[ "$pgid" == "$pid" ]]; then
-    printf '%s' "$pgid"
-  fi
+  for _ in {1..50}; do
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" || pgid=""
+    if [[ "$pgid" == "$pid" ]]; then
+      printf '%s' "$pgid"
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.01
+  done
   return 0
 }
 
@@ -119,6 +127,21 @@ cleanup_failed_start() {
 }
 trap cleanup_failed_start EXIT
 
+fail_start() {
+  local message="$1"
+  local log_heading="$2"
+  echo "$message"
+  echo "$log_heading"
+  cat "$LOG_FILE"
+
+  # Do not rely solely on EXIT trap semantics for the expected timeout path.
+  # Hosted shells may be torn down while background jobs are still attached;
+  # cleanup must finish before this function returns control to the caller.
+  cleanup_failed_start
+  trap - EXIT
+  exit 1
+}
+
 wait_for_engine() {
   local pid="$1"
   for _ in $(seq 1 "$TIMEOUT"); do
@@ -156,12 +179,19 @@ fi
 if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
   compose_args+=(--engine "$ENGINE_URL" --up --file "$COMPOSE_FILE")
   compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
-  set -m
-  III_COMPOSE_STATE_DIR="$compose_state_dir" \
-    "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
+  if [[ -n "$SETSID_BINARY" ]]; then
+    III_COMPOSE_STATE_DIR="$compose_state_dir" \
+      "$SETSID_BINARY" "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
+  else
+    set -m
+    III_COMPOSE_STATE_DIR="$compose_state_dir" \
+      "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
+  fi
   compose_pid=$!
   compose_pgid="$(isolated_process_group "$compose_pid")"
-  set +m
+  if [[ -z "$SETSID_BINARY" ]]; then
+    set +m
+  fi
   echo "$compose_pid" > "$PID_FILE"
   echo "Waiting for III Compose workers..."
   if wait_for_compose "$compose_pid"; then
@@ -169,25 +199,29 @@ if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
     ready=true
     exit 0
   fi
-  echo "ERROR: III Compose failed to start within ${TIMEOUT}s"
-  echo "--- Compose log ---"
-  cat "$LOG_FILE"
-  exit 1
+  fail_start \
+    "ERROR: III Compose failed to start within ${TIMEOUT}s" \
+    "--- Compose log ---"
 fi
 
 # Engine config and worker-compose are deliberately separate contracts.
-set -m
-"$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
+if [[ -n "$SETSID_BINARY" ]]; then
+  "$SETSID_BINARY" "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
+else
+  set -m
+  "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
+fi
 engine_pid=$!
 engine_pgid="$(isolated_process_group "$engine_pid")"
-set +m
+if [[ -z "$SETSID_BINARY" ]]; then
+  set +m
+fi
 echo "$engine_pid" > "$PID_FILE"
 echo "Waiting for III Engine on port $PORT..."
 if ! wait_for_engine "$engine_pid"; then
-  echo "ERROR: III Engine failed to start on port $PORT within ${TIMEOUT}s"
-  echo "--- Engine log ---"
-  cat "$LOG_FILE"
-  exit 1
+  fail_start \
+    "ERROR: III Engine failed to start on port $PORT within ${TIMEOUT}s" \
+    "--- Engine log ---"
 fi
 
 if [[ -z "$COMPOSE_FILE" ]]; then
@@ -198,12 +232,19 @@ fi
 
 compose_args+=(--engine "ws://127.0.0.1:${PORT}" --up --file "$COMPOSE_FILE")
 compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
-set -m
-III_COMPOSE_STATE_DIR="$compose_state_dir" \
-  "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
+if [[ -n "$SETSID_BINARY" ]]; then
+  III_COMPOSE_STATE_DIR="$compose_state_dir" \
+    "$SETSID_BINARY" "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
+else
+  set -m
+  III_COMPOSE_STATE_DIR="$compose_state_dir" \
+    "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
+fi
 compose_pid=$!
 compose_pgid="$(isolated_process_group "$compose_pid")"
-set +m
+if [[ -z "$SETSID_BINARY" ]]; then
+  set +m
+fi
 echo "$compose_pid" > "$COMPOSE_PID_FILE"
 echo "Waiting for III Compose workers..."
 if wait_for_compose "$compose_pid"; then
@@ -212,7 +253,6 @@ if wait_for_compose "$compose_pid"; then
   exit 0
 fi
 
-echo "ERROR: III Compose failed to start within ${TIMEOUT}s"
-echo "--- Engine and Compose log ---"
-cat "$LOG_FILE"
-exit 1
+fail_start \
+  "ERROR: III Compose failed to start within ${TIMEOUT}s" \
+  "--- Engine and Compose log ---"

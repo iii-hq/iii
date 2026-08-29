@@ -25,6 +25,16 @@ fn write_executable(path: &Path, contents: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+fn assert_process_exited(pid: i32, description: &str) {
+    for _ in 0..100 {
+        if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("{description} process {pid} survived launcher cleanup");
+}
+
 #[test]
 fn repository_compose_fixtures_use_the_strict_stack_contract() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -50,12 +60,13 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
     let config = tmp.path().join("config.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let child_pid_file = tmp.path().join("child.pid");
+    let descendant_pid_file = tmp.path().join("descendant.pid");
     let stopped_file = tmp.path().join("stopped");
     let log_file = tmp.path().join("engine.log");
 
     write_executable(
         &binary,
-        "#!/bin/sh\ntrap 'printf stopped > \"$FAKE_STOP_FILE\"; exit 0' TERM INT\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do sleep 1; done\n",
+        "#!/bin/sh\ntrap 'printf stopped > \"$FAKE_STOP_FILE\"; exit 0' TERM INT\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nsleep 300 &\nprintf '%s' \"$!\" > \"$FAKE_DESCENDANT_PID_FILE\"\nwait \"$!\"\n",
     );
     std::fs::write(&config, "workers: []\n").unwrap();
 
@@ -68,6 +79,7 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
         .args(["--log-file", log_file.to_str().unwrap()])
         .args(["--timeout", "1"])
         .env("FAKE_PID_FILE", &child_pid_file)
+        .env("FAKE_DESCENDANT_PID_FILE", &descendant_pid_file)
         .env("FAKE_STOP_FILE", &stopped_file)
         .status()
         .unwrap();
@@ -86,10 +98,12 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    assert!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(child_pid), None).is_err(),
-        "started process {child_pid} survived the timeout"
-    );
+    let descendant_pid = std::fs::read_to_string(descendant_pid_file)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert_process_exited(child_pid, "started child");
+    assert_process_exited(descendant_pid, "started descendant");
 }
 
 #[test]
@@ -102,11 +116,12 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
     let config = tmp.path().join("config.yaml");
     let pid_file = tmp.path().join("launcher.pid");
     let child_pid_file = tmp.path().join("child.pid");
+    let descendant_pid_file = tmp.path().join("descendant.pid");
     let log_file = tmp.path().join("engine.log");
 
     write_executable(
         &binary,
-        "#!/usr/bin/env bash\ntrap '' TERM\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do :; done\n",
+        "#!/usr/bin/env bash\ntrap '' TERM\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\n( trap '' TERM; while :; do :; done ) &\nprintf '%s' \"$!\" > \"$FAKE_DESCENDANT_PID_FILE\"\nwait \"$!\"\n",
     );
     std::fs::write(&config, "workers: []\n").unwrap();
 
@@ -119,6 +134,7 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
         .args(["--log-file", log_file.to_str().unwrap()])
         .args(["--timeout", "1"])
         .env("FAKE_PID_FILE", &child_pid_file)
+        .env("FAKE_DESCENDANT_PID_FILE", &descendant_pid_file)
         .env("III_START_CLEANUP_GRACE_SECONDS", "1")
         .status()
         .unwrap();
@@ -133,10 +149,12 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    assert!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(child_pid), None).is_err(),
-        "SIGTERM-ignoring process {child_pid} survived SIGKILL escalation"
-    );
+    let descendant_pid = std::fs::read_to_string(descendant_pid_file)
+        .unwrap()
+        .parse::<i32>()
+        .unwrap();
+    assert_process_exited(child_pid, "SIGTERM-ignoring child");
+    assert_process_exited(descendant_pid, "SIGTERM-ignoring descendant");
 }
 
 #[test]
