@@ -37,9 +37,7 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
-if grep -Eq '^engine:[[:space:]]*' "$CONFIG"; then
-  COMPOSE_FILE="$CONFIG"
-elif [[ -z "$COMPOSE_FILE" ]]; then
+if [[ -z "$COMPOSE_FILE" ]]; then
   candidate="${CONFIG%.*}.worker-compose.yaml"
   if [[ -f "$candidate" ]]; then
     COMPOSE_FILE="$candidate"
