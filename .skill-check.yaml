@@ -7,6 +7,8 @@ docs:
   exclude:
     - "docs/next/changelog/**"
     - "docs/next/tutorials/linkly/_workspace/**"
+rules:
+  path: .skill-check-rules
 ai_check:
   provider: anthropic
   model: claude-sonnet-4-6

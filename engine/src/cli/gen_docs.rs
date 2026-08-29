@@ -14,7 +14,7 @@ use std::path::Path;
 
 use iii_clap_docs::{Delegated, PageMeta};
 
-/// The `console` and `cloud` subcommands are passthrough stubs
+/// The `console`, `cloud`, and `worker` subcommands are passthrough stubs
 /// here (a bare `Vec<String>`); their real command trees live in the
 /// dispatched binaries. Link to those binaries' own sections of the
 /// combined page instead of rendering an empty `[ARGS]...` section.
@@ -35,6 +35,13 @@ fn delegated() -> BTreeMap<String, Delegated> {
                    which is temporarily maintained outside this repository; run `iii cloud --help` for its \
                    current surface."
                 .to_string(),
+        },
+    );
+    map.insert(
+        "worker".to_string(),
+        Delegated {
+            link: Some("#iii-worker".to_string()),
+            note: "Install and manage immutable Registry worker packages.".to_string(),
         },
     );
     map

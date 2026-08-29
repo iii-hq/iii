@@ -15,14 +15,16 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | Subcommand | What it does |
 | --- | --- |
 | `iii compose` | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
+| `iii worker` | Install and manage immutable worker packages from the Registry. |
 | `iii trigger` | Invoke a registered function on a running engine. |
 | `iii project` | Scaffold projects and generate Docker assets. |
 | `iii console` | Launch the iii web console. |
 | `iii cloud` | Manage hosted iii deployments. |
 | `iii update` | Update iii and its managed support binaries. |
 
-`iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
-[Workers](./workers). The `worker::*` function surface was removed with it.
+`iii worker add <registry-ref>` remains available for immutable Registry packages, and
+`iii worker init` creates a root `worker-compose.yaml`. Declare local source and project stacks
+through `iii compose`; see [Workers](./workers).
 
 Running `iii` with no subcommand starts only the engine from `./config.yaml` or `--config`. Use
 `iii compose --up` for the normal project lifecycle:
@@ -46,7 +48,7 @@ inside `worker-compose.yaml`; update one with editing the package reference:
 
 ```bash
 # Edit the package://<slug>@<version> reference, validate, and restart the stack.
-# Edit the package://<slug>@<version> reference, validate, and restart the stack.
+iii compose validate --file worker-compose.yaml
 ```
 
 Run `iii update --list-targets` to list the binaries the installer can update.

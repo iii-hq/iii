@@ -153,6 +153,17 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Install and manage immutable worker packages
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
+    Worker {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
@@ -211,6 +222,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Trigger(_)) => "trigger".to_string(),
         Some(Commands::Console { args }) => passthrough_command_path("console", args),
         Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
+        Some(Commands::Worker { args }) => passthrough_command_path("worker", args),
         Some(Commands::Project(args)) => match args.action {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
@@ -370,6 +382,11 @@ async fn main() -> anyhow::Result<()> {
                 cli::handle_dispatch("cloud", args, cli_args.no_update_check, &[]).await;
             std::process::exit(exit_code);
         }
+        Some(Commands::Worker { args }) => {
+            let exit_code =
+                cli::handle_dispatch("worker", args, cli_args.no_update_check, &[]).await;
+            std::process::exit(exit_code);
+        }
         Some(Commands::Project(args)) => {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
@@ -507,12 +524,10 @@ mod tests {
     }
 
     #[test]
-    fn worker_is_no_longer_a_public_command() {
-        let result = Cli::try_parse_from(["iii", "worker", "add", "http"]);
-        assert!(
-            result.is_err(),
-            "iii worker must be rejected by the root CLI"
-        );
+    fn worker_dispatches_registry_package_commands() {
+        let cli = Cli::try_parse_from(["iii", "worker", "add", "http@1.0.0"])
+            .expect("iii worker must remain a public passthrough command");
+        assert_eq!(cli_usage_command_path(&cli), "worker add");
     }
 
     #[test]
