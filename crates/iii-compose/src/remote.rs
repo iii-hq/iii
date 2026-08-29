@@ -39,7 +39,7 @@ use crate::{
 /// Payload accepted by every `compose::*` function. All fields optional: the
 /// bare call is the common one.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ComposeRequest {
     /// Which daemon the caller believed they were reaching.
     ///
@@ -52,6 +52,12 @@ pub struct ComposeRequest {
     /// Which project: its compose file, and the only thing that names one. A
     /// daemon started inside a project may leave it out.
     pub file: Option<String>,
+    /// Canonical root worker-compose.yaml path for local stack operations.
+    pub path: Option<String>,
+    /// Named stack within the root worker-compose.yaml.
+    pub stack: Option<String>,
+    /// Wait for readiness before returning. Defaults to true.
+    pub wait: Option<bool>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
     /// The worker a call is about.
@@ -94,11 +100,20 @@ struct DaemonOptions {
 struct LifecycleOptions {
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
-    file: Option<String>,
-    /// Restrict the lifecycle operation to one container.
-    container: Option<String>,
+    /// Root worker-compose.yaml on the daemon host.
+    path: String,
+    /// Named stack. Omit for `default`, or when the file has one stack.
+    stack: Option<String>,
+    /// Wait for worker readiness before returning. Defaults to true.
+    wait: Option<bool>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ValidateOptions {
+    namespace: Option<String>,
+    path: String,
+    stack: Option<String>,
 }
 
 /// Request fields used by project read operations.
@@ -379,12 +394,14 @@ async fn dispatch(
     }
 
     let file = request.file.as_ref().map(std::path::PathBuf::from);
+    let stack_path = request.path.as_ref().map(std::path::PathBuf::from);
 
     match operation {
         Operation::Up => match daemon
-            .up(
-                file.as_deref(),
-                request.container.as_deref(),
+            .up_stack(
+                required_path(stack_path.as_deref(), "compose::up")?,
+                request.stack.as_deref(),
+                None,
                 operation_id(),
             )
             .await
@@ -437,9 +454,10 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Down => match daemon
-            .down(
-                file.as_deref(),
-                request.container.as_deref(),
+            .down_stack(
+                required_path(stack_path.as_deref(), "compose::down")?,
+                request.stack.as_deref(),
+                None,
                 operation_id(),
             )
             .await
@@ -492,7 +510,13 @@ async fn dispatch(
         // Validation is a question about a file, so it holds nothing: naming a
         // file here must not leave the daemon owning a project, and must not
         // write the durable state that would bind that id to it.
-        Operation::Validate => match daemon.validate(file.as_deref()).await {
+        Operation::Validate => match daemon
+            .validate_stack(
+                required_path(stack_path.as_deref(), "compose::validate")?,
+                request.stack.as_deref(),
+            )
+            .await
+        {
             Ok(report) => Ok(json!({
                 "namespace": report.namespace,
                 "start_order": report.start_order,
@@ -504,6 +528,17 @@ async fn dispatch(
             request.function_id.as_deref(),
         ))),
     }
+}
+
+fn required_path<'a>(
+    path: Option<&'a std::path::Path>,
+    function: &str,
+) -> Result<Option<&'a std::path::Path>, Error> {
+    path.map(Some).ok_or_else(|| Error::Remote {
+        code: "INVALID_COMPOSE_REQUEST".to_string(),
+        message: format!("{function} requires path=<worker-compose.yaml>"),
+        stacktrace: None,
+    })
 }
 
 /// Serialize the generated root schema into the value carried over the wire.
@@ -660,7 +695,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::validate",
-                schema_for_value::<ProjectOptions>(),
+                schema_for_value::<ValidateOptions>(),
                 schema_for_value::<ValidateOutcome>(),
             ),
             (

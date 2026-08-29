@@ -259,7 +259,12 @@ impl Daemon {
                 cwd: std::env::current_dir().unwrap_or_default(),
             });
         }
-        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        let compose = ComposeFile::load(file)?;
+        self.project_from(compose).await
+    }
+
+    async fn project_from(&self, compose: ComposeFile) -> Result<Arc<Project>> {
+        let key = compose.identity.clone();
 
         // The map lock is held only long enough to claim the cell. Loading under
         // it would make one slow project block `compose::list` and every other
@@ -270,7 +275,6 @@ impl Daemon {
         };
 
         cell.get_or_try_init(|| async {
-            let compose = ComposeFile::load(file)?;
             self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
@@ -332,10 +336,20 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
+        self.up_stack(file, None, container, operation_id).await
+    }
+
+    pub async fn up_stack(
+        &self,
+        file: Option<&Path>,
+        stack: Option<&str>,
+        container: Option<&str>,
+        operation_id: String,
+    ) -> Result<OpResult> {
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
+        let current = ComposeFile::load_stack(file, stack)?;
         self.engine_policy.validate_project(&current)?;
-        let project = self.project(file).await?;
+        let project = self.project_from(current).await?;
         Ok(project.up(container, operation_id).await)
     }
 
@@ -782,9 +796,20 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
+        self.down_stack(file, None, container, operation_id).await
+    }
+
+    pub async fn down_stack(
+        &self,
+        file: Option<&Path>,
+        stack: Option<&str>,
+        container: Option<&str>,
+        operation_id: String,
+    ) -> Result<OpResult> {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
-        let project = self.project(path).await?;
+        let current = ComposeFile::load_stack(path, stack)?;
+        let project = self.project_from(current).await?;
         Ok(project.down(container, operation_id).await)
     }
 
@@ -804,6 +829,14 @@ impl Daemon {
     /// The file is read and answered for, and nothing is kept: this is the
     /// call a CI job makes, and it must not leave the daemon holding a project.
     pub async fn validate(&self, file: Option<&Path>) -> Result<crate::manifest::ValidationReport> {
+        self.validate_stack(file, None).await
+    }
+
+    pub async fn validate_stack(
+        &self,
+        file: Option<&Path>,
+        stack: Option<&str>,
+    ) -> Result<crate::manifest::ValidationReport> {
         let file = self.resolve_file(file)?;
         if file.is_relative() && !file.exists() {
             return Err(ComposeError::RelativeFileMissing {
@@ -811,7 +844,7 @@ impl Daemon {
                 cwd: std::env::current_dir().unwrap_or_default(),
             });
         }
-        let compose = ComposeFile::load(file)?;
+        let compose = ComposeFile::load_stack(file, stack)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)

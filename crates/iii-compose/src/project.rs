@@ -83,7 +83,7 @@ impl Project {
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
-        let store = StateStore::for_project(daemon_namespace, &file.path)?;
+        let store = StateStore::for_project(daemon_namespace, &file.identity)?;
         let file_path = file.path.clone();
 
         let recovered = store.load()?;
@@ -91,10 +91,10 @@ impl Project {
             // The directory is derived from the path, so this only fires on a
             // slug collision — and adopting another project's children is
             // exactly what it must not do.
-            state.check_binding(&file.path)?;
+            state.check_binding(&file.identity)?;
         }
         let mut state =
-            recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
+            recovered.unwrap_or_else(|| DaemonState::new(&file.identity, &project_namespace));
         state.namespace = project_namespace.clone();
         let log_dir = store.dir().join("logs");
         let logs = LogStore::open(log_dir.clone()).map_err(|source| ComposeError::Io {

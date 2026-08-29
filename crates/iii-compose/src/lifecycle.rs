@@ -651,7 +651,16 @@ async fn start_one_until_shutdown(
                 // The start command is the bundle's own, read from its manifest
                 // inside the VM. Nothing on the host runs it.
                 crate::registry::Payload::Bundle(install_dir) => (
-                    StartSpec::Vm(VmSpec::Bundle { install_dir }),
+                    StartSpec::Vm(VmSpec::Bundle {
+                        install_dir,
+                        exec: installed
+                            .descriptor
+                            .runtime
+                            .exec
+                            .clone()
+                            .unwrap_or_default(),
+                        base_image: installed.descriptor.runtime.base_image.clone(),
+                    }),
                     installed.default_config,
                 ),
             }
@@ -792,11 +801,12 @@ async fn vm_command(
     config: Option<&ResolvedConfig>,
 ) -> std::result::Result<tokio::process::Command, String> {
     let (worker_dir, run_override, prepare_command) = match start {
-        StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
+        StartSpec::Vm(VmSpec::Bundle {
+            install_dir, exec, ..
+        }) => (install_dir, Some(exec.as_slice()), "__bundle-prepare"),
         StartSpec::Vm(VmSpec::Local {
-            worker_dir,
-            run_override,
-        }) => (worker_dir, run_override.as_deref(), "__local-prepare"),
+            worker_dir, exec, ..
+        }) => (worker_dir, Some(exec.as_slice()), "__local-prepare"),
         _ => return Err("not a VM container".to_string()),
     };
 
@@ -841,7 +851,7 @@ async fn vm_command(
         "engine_url": ctx.engine_url,
         "extra_env": env,
         "config_dir": config_dir,
-        "run_override": run_override,
+        "exec": run_override,
     });
 
     let plan = prepare_vm(prepare_command, &request).await?;

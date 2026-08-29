@@ -24,6 +24,18 @@ pub enum ComposeError {
     #[error("{path} is not valid compose YAML: {message}")]
     Yaml { path: PathBuf, message: String },
 
+    #[error("worker '{worker}' has an invalid package descriptor: {message}")]
+    InvalidPackageDescriptor { worker: String, message: String },
+
+    #[error("stack '{stack}' is not declared in worker-compose.yaml")]
+    UnknownStack { stack: String },
+
+    #[error("worker-compose.yaml declares multiple stacks; pass stack=<name>")]
+    AmbiguousStack,
+
+    #[error("container '{container}' references catalog worker '{worker}', which is not declared")]
+    UnknownCatalogWorker { container: String, worker: String },
+
     #[error("containers must declare at least one worker")]
     EmptyContainers,
 
@@ -494,6 +506,10 @@ impl ComposeError {
             // the one that really is about a compose file.
             Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
+            Self::InvalidPackageDescriptor { .. } => "INVALID_PACKAGE_DESCRIPTOR",
+            Self::UnknownStack { .. } => "UNKNOWN_STACK",
+            Self::AmbiguousStack => "AMBIGUOUS_STACK",
+            Self::UnknownCatalogWorker { .. } => "UNKNOWN_CATALOG_WORKER",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",

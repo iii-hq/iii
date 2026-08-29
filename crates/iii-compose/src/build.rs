@@ -152,6 +152,26 @@ mod tests {
             version: "1.0.0".to_string(),
             payload: Payload::Binary("/tmp/worker".into()),
             default_config: None,
+            descriptor: serde_json::from_value(serde_json::json!({
+                "name": "worker",
+                "version": "1.0.0",
+                "source": { "path": ".", "package_manifest": "Cargo.toml" },
+                "artifact": {
+                    "kind": "rust-binary",
+                    "binary": "worker",
+                    "targets": ["x86_64-unknown-linux-gnu"]
+                },
+                "runtime": { "exec": ["worker"] },
+                "registry": {
+                    "description": "test worker",
+                    "license": "MIT",
+                    "tags": [],
+                    "dependencies": {},
+                    "publish": false
+                },
+                "validation": { "interface": "skipped" }
+            }))
+            .unwrap(),
             status,
         }
     }

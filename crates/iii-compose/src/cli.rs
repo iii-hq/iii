@@ -78,10 +78,42 @@ pub struct ComposeCli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ComposeSubcommand {
+    /// Create a strict root worker-compose.yaml catalog.
+    Init(InitCli),
+    /// Compile and validate the root catalog and one stack without starting it.
+    Validate(ValidateCli),
+    /// Compile one catalog worker into an immutable release descriptor.
+    Descriptor(DescriptorCli),
     /// Download every registry package declared by the compose file.
     Build(BuildCli),
     /// Read retained worker stdout and stderr from a running Compose daemon.
     Logs(ComposeLogsCli),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct InitCli {
+    #[arg(short = 'f', long, value_name = "PATH", default_value = DEFAULT_COMPOSE_FILE)]
+    pub file: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ValidateCli {
+    #[arg(short = 'f', long, value_name = "PATH", default_value = DEFAULT_COMPOSE_FILE)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub stack: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DescriptorCli {
+    #[arg(short = 'f', long, value_name = "PATH", default_value = DEFAULT_COMPOSE_FILE)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub worker: String,
+    #[arg(long)]
+    pub source_sha: String,
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub output: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -145,8 +177,23 @@ fn parse_tail(value: &str) -> std::result::Result<usize, String> {
 /// What an invocation resolved to, after the flag combination is checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeCommand {
+    Init {
+        file: PathBuf,
+    },
+    Validate {
+        file: PathBuf,
+        stack: Option<String>,
+    },
+    Descriptor {
+        file: PathBuf,
+        worker: String,
+        source_sha: String,
+        output: String,
+    },
     /// Download registry packages without starting an engine or a worker.
-    Build { file: PathBuf },
+    Build {
+        file: PathBuf,
+    },
     /// Serve `compose::*` in the foreground.
     Serve {
         explicit_engine_url: Option<String>,
@@ -176,6 +223,19 @@ impl ComposeCli {
     pub fn plan(&self) -> Result<ComposeCommand> {
         if let Some(command) = &self.command {
             return match command {
+                ComposeSubcommand::Init(args) => Ok(ComposeCommand::Init {
+                    file: args.file.clone(),
+                }),
+                ComposeSubcommand::Validate(args) => Ok(ComposeCommand::Validate {
+                    file: args.file.clone(),
+                    stack: args.stack.clone(),
+                }),
+                ComposeSubcommand::Descriptor(args) => Ok(ComposeCommand::Descriptor {
+                    file: args.file.clone(),
+                    worker: args.worker.clone(),
+                    source_sha: args.source_sha.clone(),
+                    output: args.output.clone(),
+                }),
                 ComposeSubcommand::Build(args) => {
                     if self.engine.is_some() || self.ns.is_some() || self.up || self.file.is_some()
                     {

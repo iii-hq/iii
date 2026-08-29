@@ -24,6 +24,7 @@ pub mod config;
 pub mod configuration;
 pub mod daemon;
 pub mod dag;
+pub mod descriptor;
 pub mod edit;
 pub mod engine;
 pub mod error;
@@ -44,8 +45,12 @@ mod shutdown;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
+pub use cli::{
+    BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand, DescriptorCli,
+    InitCli, ValidateCli,
+};
 pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
+pub use descriptor::{PackageDescriptor, ReleaseDescriptor, WorkerDefinition};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport, VmSpec};
 
@@ -111,6 +116,35 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
+        ComposeCommand::Init { file } => match init_compose_file(&file) {
+            Ok(()) => 0,
+            Err(err) => report_error(&err),
+        },
+        ComposeCommand::Validate { file, stack } => {
+            match validate_project_stack(&file, stack.as_deref()) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "namespace": report.namespace,
+                            "start_order": report.start_order,
+                            "deferred_packages": report.deferred_packages,
+                        })
+                    );
+                    0
+                }
+                Err(err) => report_error(&err),
+            }
+        }
+        ComposeCommand::Descriptor {
+            file,
+            worker,
+            source_sha,
+            output,
+        } => match write_release_descriptor(&file, &worker, &source_sha, &output) {
+            Ok(()) => 0,
+            Err(err) => report_error(&err),
+        },
         ComposeCommand::Build { file } => match build::build(&file).await {
             Ok(_) => 0,
             Err(err) => report_error(&err),
@@ -146,6 +180,61 @@ pub async fn run(cli: ComposeCli) -> i32 {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
+    }
+}
+
+pub fn validate_project_stack(
+    file: &std::path::Path,
+    stack: Option<&str>,
+) -> Result<ValidationReport> {
+    let compose = ComposeFile::load_stack(file, stack)?;
+    let namespace = namespace::project_namespace(None, compose.namespace.as_deref());
+    manifest::validate_offline(&compose, &namespace)
+}
+
+fn init_compose_file(file: &std::path::Path) -> Result<()> {
+    if file.exists() {
+        return Err(ComposeError::Io {
+            path: file.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "refusing to overwrite existing compose file",
+            ),
+        });
+    }
+    let template = "workers: {}\nstacks:\n  default:\n    namespace: default\n    containers: {}\n";
+    std::fs::write(file, template).map_err(|source| ComposeError::Io {
+        path: file.to_path_buf(),
+        source,
+    })
+}
+
+fn write_release_descriptor(
+    file: &std::path::Path,
+    worker: &str,
+    source_sha: &str,
+    output: &str,
+) -> Result<()> {
+    let catalog = ComposeFile::load_catalog(file)?;
+    let package = catalog
+        .get(worker)
+        .ok_or_else(|| ComposeError::UnknownCatalogWorker {
+            container: "<descriptor>".to_string(),
+            worker: worker.to_string(),
+        })?;
+    let bytes =
+        serde_json::to_vec_pretty(&package.release_descriptor(source_sha)).map_err(|error| {
+            ComposeError::InvalidPackageDescriptor {
+                worker: worker.to_string(),
+                message: error.to_string(),
+            }
+        })?;
+    if output == "-" {
+        println!("{}", String::from_utf8_lossy(&bytes));
+        Ok(())
+    } else {
+        let path = std::path::PathBuf::from(output);
+        std::fs::write(&path, bytes).map_err(|source| ComposeError::Io { path, source })
     }
 }
 

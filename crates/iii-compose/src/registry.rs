@@ -32,10 +32,6 @@ use crate::error::{ComposeError, Result};
 /// Registry used when a `package://` reference names no host.
 pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
 
-/// A bundle archive carries its manifest at the root; the start command lives
-/// there rather than in the compose file.
-pub const BUNDLE_MANIFEST: &str = "iii.worker.yaml";
-
 /// Registry resolution is small and idempotent. A short transport outage or
 /// overloaded server should not roll back an otherwise healthy project.
 const RESOLVE_ATTEMPTS: usize = 3;
@@ -82,6 +78,8 @@ struct ResolvedWorker {
     /// The worker's own default configuration, if it ships one.
     #[serde(default)]
     config: Option<serde_json::Value>,
+    package_descriptor: crate::descriptor::PackageDescriptor,
+    descriptor_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +116,7 @@ pub struct InstalledPackage {
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
+    pub descriptor: crate::descriptor::PackageDescriptor,
     pub status: InstallStatus,
 }
 
@@ -182,6 +181,7 @@ async fn install_from_registry(
     let target = host_target();
 
     let resolved = resolve(container, registry, name, version_range, target).await?;
+    validate_descriptor(container, &resolved)?;
 
     let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
@@ -226,6 +226,7 @@ async fn install_from_registry(
         version: resolved.version,
         payload,
         default_config,
+        descriptor: resolved.package_descriptor,
         status,
     })
 }
@@ -361,10 +362,7 @@ async fn install_bundle(
         "{}-{}-bundle-{digest}",
         resolved.name, resolved.version
     ));
-    // The manifest is the bundle's entry point, so its presence is what makes
-    // an install dir a cache hit — not the first executable, which a bundle
-    // need not have at all.
-    if install_dir.join(BUNDLE_MANIFEST).is_file() {
+    if is_populated(&install_dir) {
         return Ok((install_dir, InstallStatus::Cached));
     }
     remove_invalid_install(&install_dir)?;
@@ -375,7 +373,7 @@ async fn install_bundle(
     };
     download_and_extract(container, &artifact, &install_dir).await?;
 
-    if !install_dir.join(BUNDLE_MANIFEST).is_file() {
+    if !is_populated(&install_dir) {
         return Err(ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
             name: resolved.name.clone(),
@@ -383,6 +381,21 @@ async fn install_bundle(
         });
     }
     Ok((install_dir, InstallStatus::Downloaded))
+}
+
+fn validate_descriptor(container: &str, resolved: &ResolvedWorker) -> Result<()> {
+    if resolved.package_descriptor.name != resolved.name
+        || resolved.package_descriptor.version != resolved.version
+        || resolved.package_descriptor.sha256() != resolved.descriptor_sha256
+    {
+        return Err(ComposeError::PackageNotResolved {
+            container: container.to_string(),
+            name: resolved.name.clone(),
+            range: resolved.version.clone(),
+            message: "the registry package descriptor identity or SHA-256 is invalid".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Returns the normalized digest used as the immutable part of a cache key.
