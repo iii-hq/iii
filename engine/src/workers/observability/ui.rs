@@ -8,9 +8,9 @@
 //!
 //! The observability worker lives inside the engine rather than in a worker
 //! process, so it owns its Console UI bindings directly in the engine trigger
-//! registry. The Console trigger provider may connect before or after this
-//! module; the registry parks the bindings until `console:script` and
-//! `console:style` become available.
+//! registry. Console providers are namespace-scoped, while the built-in
+//! content function lives in `default`; one binding is therefore installed
+//! for every namespace that provides `console:script` / `console:style`.
 
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    protocol::ErrorBody,
+    protocol::{DEFAULT_NAMESPACE, ErrorBody},
     trigger::Trigger,
 };
 
@@ -85,36 +85,87 @@ pub fn register_function(engine: &Arc<Engine>) {
     );
 }
 
-/// Register the engine-owned asset bindings.
-pub async fn register_triggers(engine: &Engine) -> anyhow::Result<()> {
-    for (id, trigger_type, path) in [
-        (PAGE_TRIGGER_ID, "console:script", PAGE_PATH),
-        (STYLES_TRIGGER_ID, "console:style", STYLES_PATH),
-    ] {
-        let (trigger_namespace, home_namespace, provider_namespace) =
-            Trigger::internal_namespaces();
+fn asset_for_trigger_type(trigger_type: &str) -> Option<(&'static str, &'static str)> {
+    match trigger_type {
+        "console:script" => Some((PAGE_TRIGGER_ID, PAGE_PATH)),
+        "console:style" => Some((STYLES_TRIGGER_ID, STYLES_PATH)),
+        _ => None,
+    }
+}
 
-        engine
-            .trigger_registry
-            .register_trigger(Trigger {
-                id: id.to_string(),
-                trigger_type: trigger_type.to_string(),
-                function_id: CONTENT_FUNCTION_ID.to_string(),
-                config: json!({ "path": path }),
-                worker_id: None,
-                metadata: Some(json!({
-                    "internal": true,
-                    "source": "builtin",
-                })),
-                namespace: crate::protocol::default_namespace(),
-                trigger_namespace,
-                home_namespace,
-                provider_namespace,
-            })
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("failed to register Console UI asset {path}: {error:?}")
-            })?;
+fn namespaced_trigger_id(base_id: &str, provider_namespace: &str) -> String {
+    if provider_namespace == DEFAULT_NAMESPACE {
+        base_id.to_string()
+    } else {
+        format!("{base_id}@{provider_namespace}")
+    }
+}
+
+/// Ensure the engine-owned asset binding exists for one Console provider.
+///
+/// This runs immediately before a Console trigger type is registered. On the
+/// first connection the binding parks briefly and is drained by that type
+/// registration; on reconnect it already exists and the trigger registry
+/// replays it to the replacement provider.
+pub(crate) async fn register_trigger_for_provider(
+    engine: &Engine,
+    trigger_type: &str,
+    provider_namespace: &str,
+) -> anyhow::Result<()> {
+    let Some((base_id, path)) = asset_for_trigger_type(trigger_type) else {
+        return Ok(());
+    };
+    let id = namespaced_trigger_id(base_id, provider_namespace);
+
+    if engine.trigger_registry.triggers.contains_key(&id)
+        || engine.trigger_registry.pending_triggers.contains_key(&id)
+    {
+        return Ok(());
+    }
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id,
+            trigger_type: trigger_type.to_string(),
+            function_id: CONTENT_FUNCTION_ID.to_string(),
+            config: json!({ "path": path }),
+            worker_id: None,
+            metadata: Some(json!({
+                "internal": true,
+                "source": "builtin",
+            })),
+            // The content function is engine-owned and remains in `default`.
+            namespace: crate::protocol::default_namespace(),
+            // The provider is strict so one project's asset cannot be sent to
+            // another project's Console when both share an engine.
+            trigger_namespace: Some(provider_namespace.to_string()),
+            home_namespace: provider_namespace.to_string(),
+            provider_namespace: provider_namespace.to_string(),
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to register Console UI asset {path} in namespace {provider_namespace}: {error:?}"
+            )
+        })?;
+
+    Ok(())
+}
+
+/// Register bindings for Console providers that already exist (for example
+/// when the observability worker is hot-reloaded after Console connected).
+pub async fn register_triggers(engine: &Engine) -> anyhow::Result<()> {
+    let providers: Vec<(String, String)> = engine
+        .trigger_registry
+        .trigger_types
+        .iter()
+        .filter(|entry| asset_for_trigger_type(&entry.value().id).is_some())
+        .map(|entry| (entry.value().id.clone(), entry.value().namespace.clone()))
+        .collect();
+
+    for (trigger_type, provider_namespace) in providers {
+        register_trigger_for_provider(engine, &trigger_type, &provider_namespace).await?;
     }
 
     Ok(())
@@ -160,10 +211,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_registration_is_deferred_until_console_provider_exists() {
+    async fn trigger_registration_waits_until_console_provider_exists() {
         let engine = Engine::new();
         register_triggers(&engine)
             .await
-            .expect("missing Console provider should park, not fail");
+            .expect("missing Console provider should be a no-op");
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+    }
+
+    #[test]
+    fn namespaced_ids_preserve_the_default_ids_and_isolate_projects() {
+        assert_eq!(
+            namespaced_trigger_id(PAGE_TRIGGER_ID, DEFAULT_NAMESPACE),
+            PAGE_TRIGGER_ID
+        );
+        assert_eq!(
+            namespaced_trigger_id(PAGE_TRIGGER_ID, "harness-ns"),
+            "iii-observability::ui-page@harness-ns"
+        );
     }
 }
