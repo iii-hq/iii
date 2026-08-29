@@ -64,11 +64,10 @@ pub enum EngineMode {
 
 /// Resolves the engine URL and ownership after the compose file is parsed.
 ///
-/// An explicit CLI URL always selects an external engine. Without one, an
-/// `engine:` section is managed only when `--up` starts that file; a bare
-/// daemon connects to its URL without taking ownership. File configuration
-/// wins over the process environment, and the local engine address is the
-/// final fallback.
+/// An explicit CLI URL always selects an external engine. `--up` owns a local
+/// engine when neither the CLI nor the environment selects an existing one;
+/// a bare daemon only connects. The strict Compose contract does not embed
+/// engine process configuration.
 pub fn resolve_engine_mode(
     file: Option<&ComposeFile>,
     start: bool,
@@ -87,6 +86,12 @@ pub fn resolve_engine_mode(
         };
     }
 
+    if start && file.is_some() && environment_engine_url.is_none() {
+        return EngineMode::Managed {
+            url: config::DEFAULT_ENGINE_URL.to_string(),
+        };
+    }
+
     let url = file
         .and_then(|file| file.engine.as_ref())
         .map(|engine| engine.url.as_str())
@@ -95,6 +100,14 @@ pub fn resolve_engine_mode(
     EngineMode::External {
         url: url.to_string(),
     }
+}
+
+fn managed_engine_spec(file: &ComposeFile) -> EngineSpec {
+    file.engine.clone().unwrap_or_else(|| EngineSpec {
+        url: config::DEFAULT_ENGINE_URL.to_string(),
+        registration_namespace_grace_ms: None,
+        workers: std::collections::BTreeMap::new(),
+    })
 }
 
 /// Validates a compose project offline: schema, dependency graph, worker
@@ -575,13 +588,10 @@ async fn serve(
 
     let engine_policy = match &engine_mode {
         EngineMode::Managed { .. } => {
-            let Some(policy) = initial_file
+            let owner = initial_file
                 .as_ref()
-                .and_then(daemon::EnginePolicy::managed)
-            else {
-                unreachable!("managed mode is selected only from an engine section");
-            };
-            policy
+                .expect("managed mode is selected only from a compose file");
+            daemon::EnginePolicy::managed(owner, managed_engine_spec(owner))
         }
         EngineMode::External { .. } => {
             match initial_file.as_ref().filter(|file| file.engine.is_some()) {
@@ -604,10 +614,8 @@ async fn serve(
             let Some(owner) = initial_file.as_ref() else {
                 unreachable!("managed mode is selected only from a compose file");
             };
-            let Some(spec) = owner.engine.as_ref() else {
-                unreachable!("managed mode is selected only from an engine section");
-            };
-            let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
+            let spec = managed_engine_spec(owner);
+            let engine = managed_engine::ManagedEngine::start(&spec, &daemon_namespace).await?;
             println!("engine {}", "started".green());
             println!("  {} {}", "pid:".dimmed(), engine.pid());
             println!("  {} {}", "owner:".dimmed(), owner.path.display());
@@ -853,7 +861,10 @@ fn report_error(err: &ComposeError) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace};
+    use super::{
+        ComposeFile, EngineMode, load_invocation_file, resolve_daemon_namespace,
+        resolve_engine_mode,
+    };
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
@@ -892,6 +903,33 @@ mod tests {
         assert_eq!(
             loaded.and_then(|file| file.namespace).as_deref(),
             Some("orders")
+        );
+    }
+
+    #[test]
+    fn compose_up_owns_a_default_engine_without_legacy_fields() {
+        let compose = compose_with_namespace();
+        assert_eq!(
+            resolve_engine_mode(Some(&compose), true, None, None),
+            EngineMode::Managed {
+                url: super::config::DEFAULT_ENGINE_URL.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn compose_up_respects_an_external_engine_selection() {
+        let compose = compose_with_namespace();
+        assert_eq!(
+            resolve_engine_mode(
+                Some(&compose),
+                true,
+                None,
+                Some("ws://engine.example:49134"),
+            ),
+            EngineMode::External {
+                url: "ws://engine.example:49134".to_string(),
+            }
         );
     }
 }

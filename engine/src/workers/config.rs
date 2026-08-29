@@ -1384,6 +1384,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn repository_engine_fixtures_use_the_strict_engine_contract() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "sdk/fixtures/config-test.yaml",
+            "sdk/fixtures/config-bridge.yaml",
+            "sdk/fixtures/config-bridge-backend.yaml",
+            "engine/config.remote-kv.yaml",
+        ] {
+            EngineConfig::config_file(root.join(relative).to_str().unwrap())
+                .unwrap_or_else(|error| panic!("{relative}: {error}"));
+        }
+    }
+
     // =========================================================================
     // 1. expand_env_vars tests
     // =========================================================================

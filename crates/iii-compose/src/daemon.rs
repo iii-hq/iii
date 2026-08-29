@@ -57,11 +57,11 @@ pub enum EnginePolicy {
 }
 
 impl EnginePolicy {
-    pub fn managed(file: &ComposeFile) -> Option<Self> {
-        file.engine.as_ref().map(|spec| Self::Managed {
+    pub fn managed(file: &ComposeFile, spec: EngineSpec) -> Self {
+        Self::Managed {
             owner: file.path.clone(),
-            spec: spec.clone(),
-        })
+            spec,
+        }
     }
 
     pub fn external_from_file(file: &ComposeFile) -> Self {
@@ -104,7 +104,7 @@ impl EnginePolicy {
             }
             Self::ExternalFile { .. } => Ok(()),
             Self::Managed { owner, spec } if &path == owner => {
-                if engine == Some(spec) {
+                if engine.is_none() || engine == Some(spec) {
                     Ok(())
                 } else {
                     Err(ComposeError::EngineRestartRequired { path })

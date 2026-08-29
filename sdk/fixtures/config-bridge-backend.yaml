@@ -1,26 +1,20 @@
-namespace: default
-engine:
-  url: ws://127.0.0.1:49198
-  workers:
-    configuration:
+workers:
+  - name: configuration
+    config:
       adapter:
         name: fs
         config:
           directory: ./data/config-bridge-backend-configuration
-    iii-worker-manager:
+
+  - name: iii-worker-manager
+    config:
       port: 49198
-    iii-stream:
+
+  - name: iii-stream
+    config:
       port: 3113
       host: 0.0.0.0
       adapter:
         name: kv
         config:
           store_method: in_memory
-containers:
-  pubsub:
-    worker: package://api.workers.iii.dev/pubsub
-    version: "0.21.2"
-    config_name: pubsub
-    config_override:
-      adapter:
-        name: local

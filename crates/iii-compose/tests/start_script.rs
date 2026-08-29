@@ -14,6 +14,21 @@ fn write_executable(path: &Path, contents: &str) {
 }
 
 #[test]
+fn repository_compose_fixtures_use_the_strict_stack_contract() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for relative in [
+        "sdk/fixtures/config-test.worker-compose.yaml",
+        "sdk/fixtures/config-bridge.worker-compose.yaml",
+        "sdk/fixtures/config-bridge-backend.worker-compose.yaml",
+        "engine/config.prod.worker-compose.yaml",
+        "engine/worker-compose.remote-kv.yaml",
+    ] {
+        iii_compose::config::ComposeFile::load(root.join(relative))
+            .unwrap_or_else(|error| panic!("{relative}: {error}"));
+    }
+}
+
+#[test]
 fn timeout_stops_the_started_process_and_removes_its_pid_file() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
@@ -29,7 +44,7 @@ fn timeout_stops_the_started_process_and_removes_its_pid_file() {
         &binary,
         "#!/bin/sh\ntrap 'printf stopped > \"$FAKE_STOP_FILE\"; exit 0' TERM INT\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do sleep 1; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
+    std::fs::write(&config, "workers: []\n").unwrap();
 
     let status = Command::new("bash")
         .arg(start_script)
@@ -79,7 +94,7 @@ fn timeout_force_kills_a_process_that_ignores_sigterm() {
         &binary,
         "#!/usr/bin/env bash\ntrap '' TERM\nprintf '%s' \"$$\" > \"$FAKE_PID_FILE\"\nwhile :; do :; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
+    std::fs::write(&config, "workers: []\n").unwrap();
 
     let status = Command::new("bash")
         .arg(start_script)
@@ -126,7 +141,7 @@ fn explicit_engine_is_forwarded_to_compose() {
         &binary,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\nprintf 'up: 1 of 1 changed\\n'\nwhile :; do sleep 1; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
+    std::fs::write(&config, "workers: []\n").unwrap();
     std::fs::write(
         &compose,
         "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers: {}\n",
@@ -165,7 +180,7 @@ fn explicit_engine_is_forwarded_to_compose() {
 }
 
 #[test]
-fn compose_file_without_engine_uses_the_cli_fallback() {
+fn engine_config_and_compose_are_started_as_separate_processes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let start_script = root.join("scripts/start-iii.sh");
     let tmp = tempfile::tempdir().unwrap();
@@ -173,14 +188,17 @@ fn compose_file_without_engine_uses_the_cli_fallback() {
     let config = tmp.path().join("config.yaml");
     let compose = tmp.path().join("worker-compose.yaml");
     let pid_file = tmp.path().join("launcher.pid");
-    let args_file = tmp.path().join("args");
+    let engine_args_file = tmp.path().join("engine-args");
+    let compose_args_file = tmp.path().join("compose-args");
     let log_file = tmp.path().join("engine.log");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
 
     write_executable(
         &binary,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\nprintf 'up: 1 of 1 changed\\n'\nwhile :; do sleep 1; done\n",
+        "#!/bin/sh\nif [ \"${1:-}\" = compose ]; then\n  printf '%s\\n' \"$@\" > \"$FAKE_COMPOSE_ARGS_FILE\"\n  printf 'up: 1 of 1 changed\\n'\nelse\n  printf '%s\\n' \"$@\" > \"$FAKE_ENGINE_ARGS_FILE\"\nfi\nwhile :; do sleep 1; done\n",
     );
-    std::fs::write(&config, "engine: { workers: {} }\n").unwrap();
+    std::fs::write(&config, "workers: []\n").unwrap();
     std::fs::write(
         &compose,
         "workers: {}\nstacks:\n  default:\n    namespace: test\n    containers: {}\n",
@@ -192,28 +210,55 @@ fn compose_file_without_engine_uses_the_cli_fallback() {
         .args(["--binary", binary.to_str().unwrap()])
         .args(["--config", config.to_str().unwrap()])
         .args(["--compose-file", compose.to_str().unwrap()])
-        .args(["--port", "49134"])
+        .args(["--port", &port])
         .args(["--pid-file", pid_file.to_str().unwrap()])
         .args(["--log-file", log_file.to_str().unwrap()])
         .args(["--timeout", "3"])
-        .env("FAKE_ARGS_FILE", &args_file)
+        .env("FAKE_ENGINE_ARGS_FILE", &engine_args_file)
+        .env("FAKE_COMPOSE_ARGS_FILE", &compose_args_file)
         .status()
         .unwrap();
 
     assert!(status.success());
-    let args = std::fs::read_to_string(args_file).unwrap();
-    assert!(!args.contains("--engine\n"));
-    assert!(args.contains("--up\n--file\n"));
+    let engine_args = std::fs::read_to_string(engine_args_file).unwrap();
+    assert!(engine_args.contains("--config\n"));
+    assert!(engine_args.contains(config.to_str().unwrap()));
+    let compose_args = std::fs::read_to_string(compose_args_file).unwrap();
+    assert!(compose_args.contains(&format!("--engine\nws://127.0.0.1:{port}\n")));
+    assert!(compose_args.contains("--up\n--file\n"));
 
-    let child_pid = std::fs::read_to_string(&pid_file)
+    let engine_pid = std::fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
         .parse::<i32>()
         .unwrap();
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(child_pid),
-        nix::sys::signal::Signal::SIGTERM,
-    )
-    .unwrap();
-    std::fs::remove_file(pid_file).unwrap();
+    let compose_pid_file = std::path::PathBuf::from(format!("{}.compose.pid", pid_file.display()));
+    let compose_pid = std::fs::read_to_string(&compose_pid_file)
+        .unwrap()
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    let stop_script = root.join("scripts/stop-iii.sh");
+    assert!(
+        Command::new("bash")
+            .arg(stop_script)
+            .arg(&pid_file)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(!pid_file.exists());
+    assert!(!compose_pid_file.exists());
+    for pid in [engine_pid, compose_pid] {
+        for _ in 0..20 {
+            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err(),
+            "launcher process {pid} survived stop-iii.sh"
+        );
+    }
 }

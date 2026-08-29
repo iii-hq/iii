@@ -1,0 +1,11 @@
+workers: {}
+
+stacks:
+  default:
+    namespace: default
+    containers:
+      pubsub:
+        worker: package://api.workers.iii.dev/pubsub@0.21.2
+        config:
+          adapter:
+            name: local

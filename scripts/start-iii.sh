@@ -44,73 +44,131 @@ if [[ -z "$COMPOSE_FILE" ]]; then
   fi
 fi
 
-if [[ -n "$COMPOSE_FILE" ]]; then
-  if [[ ! -f "$COMPOSE_FILE" ]]; then
-    echo "Compose file not found: $COMPOSE_FILE" >&2
-    exit 1
-  fi
-  compose_args=(compose)
-  if [[ -n "$ENGINE_URL" ]]; then
-    compose_args+=(--engine "$ENGINE_URL")
-  fi
-  if [[ -n "$COMPOSE_NAMESPACE" ]]; then
-    compose_args+=(--namespace "$COMPOSE_NAMESPACE")
-  fi
-  compose_args+=(--up --file "$COMPOSE_FILE")
-  compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
-  III_COMPOSE_STATE_DIR="$compose_state_dir" \
-    "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
-else
-  "$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
+if [[ -n "$COMPOSE_FILE" && ! -f "$COMPOSE_FILE" ]]; then
+  echo "Compose file not found: $COMPOSE_FILE" >&2
+  exit 1
 fi
-started_pid=$!
-echo "$started_pid" > "$PID_FILE"
 
+COMPOSE_PID_FILE="${PID_FILE}.compose.pid"
+engine_pid=""
+compose_pid=""
 ready=false
-cleanup_failed_start() {
-  if [[ "$ready" == true ]]; then
+rm -f "$COMPOSE_PID_FILE"
+: > "$LOG_FILE"
+
+terminate_pid() {
+  local pid="$1"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
     return
   fi
-
-  if kill -0 "$started_pid" 2>/dev/null; then
-    kill "$started_pid" 2>/dev/null || true
-  fi
+  kill "$pid" 2>/dev/null || true
   for _ in $(seq 1 "$CLEANUP_GRACE_SECONDS"); do
-    if ! kill -0 "$started_pid" 2>/dev/null; then
+    if ! kill -0 "$pid" 2>/dev/null; then
       break
     fi
     sleep 1
   done
-  if kill -0 "$started_pid" 2>/dev/null; then
-    kill -KILL "$started_pid" 2>/dev/null || true
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
   fi
-  wait "$started_pid" 2>/dev/null || true
-  rm -f "$PID_FILE"
+  wait "$pid" 2>/dev/null || true
+}
+
+cleanup_failed_start() {
+  if [[ "$ready" == true ]]; then
+    return
+  fi
+  terminate_pid "$compose_pid"
+  terminate_pid "$engine_pid"
+  rm -f "$PID_FILE" "$COMPOSE_PID_FILE"
 }
 trap cleanup_failed_start EXIT
 
+wait_for_engine() {
+  local pid="$1"
+  for _ in $(seq 1 "$TIMEOUT"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 1
+    fi
+    if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_compose() {
+  local pid="$1"
+  for _ in $(seq 1 "$TIMEOUT"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 1
+    fi
+    if grep -Eq '^up: (nothing to do|[0-9]+ of [0-9]+ changed)' "$LOG_FILE"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+compose_args=(compose)
+if [[ -n "$COMPOSE_NAMESPACE" ]]; then
+  compose_args+=(--namespace "$COMPOSE_NAMESPACE")
+fi
+
+# An explicit --engine is owned by the caller. Start only Compose against it.
+if [[ -n "$COMPOSE_FILE" && -n "$ENGINE_URL" ]]; then
+  compose_args+=(--engine "$ENGINE_URL" --up --file "$COMPOSE_FILE")
+  compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
+  III_COMPOSE_STATE_DIR="$compose_state_dir" \
+    "$BINARY" "${compose_args[@]}" > "$LOG_FILE" 2>&1 &
+  compose_pid=$!
+  echo "$compose_pid" > "$PID_FILE"
+  echo "Waiting for III Compose workers..."
+  if wait_for_compose "$compose_pid"; then
+    echo "III Compose workers are ready (PID: $compose_pid)"
+    ready=true
+    exit 0
+  fi
+  echo "ERROR: III Compose failed to start within ${TIMEOUT}s"
+  echo "--- Compose log ---"
+  cat "$LOG_FILE"
+  exit 1
+fi
+
+# Engine config and worker-compose are deliberately separate contracts.
+"$BINARY" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
+engine_pid=$!
+echo "$engine_pid" > "$PID_FILE"
 echo "Waiting for III Engine on port $PORT..."
-for _ in $(seq 1 "$TIMEOUT"); do
-  pid="$(cat "$PID_FILE")"
-  if ! kill -0 "$pid" 2>/dev/null; then
-    break
-  fi
+if ! wait_for_engine "$engine_pid"; then
+  echo "ERROR: III Engine failed to start on port $PORT within ${TIMEOUT}s"
+  echo "--- Engine log ---"
+  cat "$LOG_FILE"
+  exit 1
+fi
 
-  if [[ -n "$COMPOSE_FILE" ]] && grep -Eq '^up: (nothing to do|[0-9]+ of [0-9]+ changed)' "$LOG_FILE"; then
-    echo "III Engine and Compose workers are ready (PID: $pid)"
-    ready=true
-    exit 0
-  fi
+if [[ -z "$COMPOSE_FILE" ]]; then
+  echo "III Engine is ready on port $PORT (PID: $engine_pid)"
+  ready=true
+  exit 0
+fi
 
-  if [[ -z "$COMPOSE_FILE" ]] && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
-    echo "III Engine is ready on port $PORT (PID: $(cat "$PID_FILE"))"
-    ready=true
-    exit 0
-  fi
-  sleep 1
-done
+compose_args+=(--engine "ws://127.0.0.1:${PORT}" --up --file "$COMPOSE_FILE")
+compose_state_dir="${III_COMPOSE_STATE_DIR:-${PID_FILE}.compose}"
+III_COMPOSE_STATE_DIR="$compose_state_dir" \
+  "$BINARY" "${compose_args[@]}" >> "$LOG_FILE" 2>&1 &
+compose_pid=$!
+echo "$compose_pid" > "$COMPOSE_PID_FILE"
+echo "Waiting for III Compose workers..."
+if wait_for_compose "$compose_pid"; then
+  echo "III Engine and Compose workers are ready (engine PID: $engine_pid, compose PID: $compose_pid)"
+  ready=true
+  exit 0
+fi
 
-echo "ERROR: III Engine failed to start on port $PORT within ${TIMEOUT}s"
-echo "--- Engine log ---"
+echo "ERROR: III Compose failed to start within ${TIMEOUT}s"
+echo "--- Engine and Compose log ---"
 cat "$LOG_FILE"
 exit 1

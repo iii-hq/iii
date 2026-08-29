@@ -1,0 +1,37 @@
+workers: {}
+
+stacks:
+  default:
+    namespace: default
+    containers:
+      state:
+        worker: package://api.workers.iii.dev/state@0.22.2
+        config:
+          adapter:
+            name: kv
+            config:
+              store_method: file_based
+              file_path: ./data/state_store.db
+      http:
+        worker: package://api.workers.iii.dev/http@0.21.3
+        config:
+          host: 0.0.0.0
+          port: 3199
+          default_timeout: 30000
+      pubsub:
+        worker: package://api.workers.iii.dev/pubsub@0.21.2
+        config:
+          adapter:
+            name: local
+      cron:
+        worker: package://api.workers.iii.dev/cron@0.21.9
+        config:
+          adapter:
+            name: local
+      queue:
+        worker: package://api.workers.iii.dev/queue@0.21.5
+        config:
+          adapter:
+            name: builtin
+            config:
+              store_method: in_memory
