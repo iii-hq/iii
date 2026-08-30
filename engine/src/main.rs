@@ -219,6 +219,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Compose(args)) => match &args.command {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
+            Some(iii_compose::ComposeSubcommand::Add(_)) => "compose add".to_string(),
             None => "compose".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),

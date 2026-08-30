@@ -62,6 +62,11 @@ impl ShutdownSignal {
         Ok(Self { receiver })
     }
 
+    /// Adapts an existing latched cancellation source to lifecycle shutdown.
+    pub(crate) fn from_receiver(receiver: watch::Receiver<bool>) -> Self {
+        Self { receiver }
+    }
+
     pub(crate) fn requested(&self) -> bool {
         *self.receiver.borrow()
     }

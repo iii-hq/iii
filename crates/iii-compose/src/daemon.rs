@@ -23,6 +23,8 @@ use std::{
     time::Duration,
 };
 
+use futures::StreamExt;
+
 use serde_json::Value;
 use tokio::sync::{Mutex, OnceCell};
 
@@ -182,6 +184,8 @@ pub struct Daemon {
     /// Different projects can still change in parallel, while two edits to one
     /// file cannot overwrite each other after reading the same source text.
     mutations: Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>,
+    /// Long-running mutations publish progress independently of their caller.
+    pub operations: crate::operation::OperationManager,
     /// Set by `compose::stop`. The serve loop reads it and leaves through the
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
@@ -220,10 +224,11 @@ impl Daemon {
             daemon_namespace,
             project_namespace_override,
             engine_url,
-            engine,
+            engine: Arc::clone(&engine),
             engine_policy,
             projects: Mutex::new(BTreeMap::new()),
             mutations: Mutex::new(BTreeMap::new()),
+            operations: crate::operation::OperationManager::new(engine.client()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
         });
 
@@ -402,11 +407,62 @@ impl Daemon {
         // Dependencies first and the worker last: with no `start_after`, start
         // order is declaration order, so this is what makes a worker start
         // after the things it calls.
+        let mut expanded = futures::stream::iter(asked.clone().into_iter().enumerate().map(
+            |(index, worker)| async move {
+                let graph = self.expand(&worker).await;
+                (index, graph)
+            },
+        ))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+        expanded.sort_by_key(|(index, _)| *index);
         let mut wanted = Vec::new();
-        for worker in &asked {
-            wanted.extend(self.expand(worker).await?);
+        for (_, graph) in expanded {
+            wanted.extend(graph?);
         }
         let wanted = coalesce_expanded(wanted)?;
+
+        // Acquire registry artifacts before taking either the file mutation lock
+        // or the project's runtime lock. `lifecycle::start_one` calls install
+        // again, but that second call is a cheap verified cache hit.
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let operation = crate::operation::active(&operation_id);
+        let installs: Vec<(String, String, String)> = wanted
+            .iter()
+            .filter_map(|worker| match &worker.source {
+                crate::edit::Source::Package {
+                    reference,
+                    version: Some(version),
+                } => Some((worker.key.clone(), reference.clone(), version.clone())),
+                _ => None,
+            })
+            .collect();
+        let acquired: Vec<Result<()>> =
+            futures::stream::iter(installs.into_iter().map(|(key, reference, version)| {
+                let package_cache = package_cache.clone();
+                let operation = operation.clone();
+                async move {
+                    if let Some(operation) = operation {
+                        operation
+                            .emit(
+                                Some(&key),
+                                "installing",
+                                format!("acquiring {reference}@{version}"),
+                            )
+                            .await;
+                    }
+                    crate::registry::install(&key, &reference, &version, &package_cache)
+                        .await
+                        .map(|_| ())
+                }
+            }))
+            .buffer_unordered(4)
+            .collect()
+            .await;
+        for result in acquired {
+            result?;
+        }
 
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
@@ -864,6 +920,7 @@ impl Daemon {
     /// down mid-reply would leave them holding a broken socket instead of an
     /// answer.
     pub async fn request_stop(&self) -> serde_json::Value {
+        self.operations.cancel_all().await;
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
