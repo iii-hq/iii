@@ -440,28 +440,21 @@ impl Daemon {
         let container = requested[0].clone();
 
         if added.is_empty() && replaced.is_empty() {
-            let detail = if requested.len() == 1 {
-                "already declared at this version"
-            } else {
-                "all workers are already declared at these versions"
-            };
-            return Ok(serde_json::json!({
-                "status": "ok",
-                "container": container,
-                "workers": requested,
-                "changed": false,
-                "detail": detail,
-            }));
+            return Ok(mutation_outcome(
+                OpStatus::Ok,
+                false,
+                Some(&container),
+                Some(&requested),
+                wanted
+                    .iter()
+                    .find(|worker| worker.key == container)
+                    .and_then(|worker| match &worker.source {
+                        crate::edit::Source::Package { version, .. } => version.clone(),
+                        crate::edit::Source::Path { .. } => None,
+                    }),
+                std::iter::empty::<&OpResult>(),
+            ));
         }
-        let action = match (added.is_empty(), replaced.is_empty()) {
-            (false, true) => format!("added {}", added.join(", ")),
-            (true, false) => format!("replaced {}", replaced.join(", ")),
-            _ => format!(
-                "added {}; replaced {}",
-                added.join(", "),
-                replaced.join(", ")
-            ),
-        };
         let edited = &edited;
 
         // Parsed before it is written, so a splice that would not load leaves
@@ -483,17 +476,22 @@ impl Daemon {
         } else {
             OpStatus::Ok
         };
-        Ok(serde_json::json!({
-            "status": status,
-            "container": container,
-            "workers": requested,
-            "changed": true,
-            "declared": added,
-            "detail": action,
-            "down": Value::Null,
-            "restarted": serde_json::to_value(&restarted).unwrap_or(Value::Null),
-            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
-        }))
+        let version = wanted
+            .iter()
+            .find(|worker| worker.key == container)
+            .and_then(|worker| match &worker.source {
+                crate::edit::Source::Package { version, .. } => version.clone(),
+                crate::edit::Source::Path { .. } => None,
+            });
+        let operations = restarted.iter().chain(std::iter::once(&up));
+        Ok(mutation_outcome(
+            status,
+            true,
+            Some(&container),
+            Some(&requested),
+            version,
+            operations,
+        ))
     }
 
     /// The worker asked for, plus everything it needs, in start order.
@@ -579,7 +577,6 @@ impl Daemon {
             Some(version) => version.clone(),
             None => crate::registry::latest_version(&asked.key, reference).await?,
         };
-        let current = container.version.clone();
 
         // The declared dependencies come along unchanged. An update moves a
         // version; rewriting the graph on the way is `compose::add`'s job, and
@@ -595,13 +592,14 @@ impl Daemon {
 
         let edited = match crate::edit::upsert_container(&text, &new)? {
             crate::edit::Outcome::Unchanged => {
-                return Ok(serde_json::json!({
-                    "status": "ok",
-                    "container": asked.key,
-                    "changed": false,
-                    "version": wanted,
-                    "detail": format!("already at {wanted}"),
-                }));
+                return Ok(mutation_outcome(
+                    OpStatus::Ok,
+                    false,
+                    Some(&asked.key),
+                    None,
+                    Some(wanted),
+                    std::iter::empty::<&OpResult>(),
+                ));
             }
             crate::edit::Outcome::Replaced { text, .. } => text,
             // `upsert_container` only adds when the key is absent, and the key
@@ -620,17 +618,14 @@ impl Daemon {
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
-        let from = current.unwrap_or_else(|| "unpinned".to_string());
-        Ok(serde_json::json!({
-            "status": up.status,
-            "container": asked.key,
-            "changed": true,
-            "from": from,
-            "to": wanted,
-            "detail": format!("{} from {from} to {wanted}", asked.key),
-            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
-            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
-        }))
+        Ok(mutation_outcome(
+            up.status,
+            true,
+            Some(&asked.key),
+            None,
+            Some(wanted),
+            [&down, &up].into_iter(),
+        ))
     }
 
     /// Removes one declared worker and reconciles the running project.
@@ -678,14 +673,14 @@ impl Daemon {
         let (down, up) = project
             .reconcile_removal(current, worker, operation_id)
             .await;
-        Ok(serde_json::json!({
-            "status": up.status,
-            "container": worker,
-            "changed": true,
-            "detail": format!("removed {worker}"),
-            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
-            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
-        }))
+        Ok(mutation_outcome(
+            up.status,
+            true,
+            Some(worker),
+            None,
+            None,
+            [&down, &up].into_iter(),
+        ))
     }
 
     /// Stops a project and starts it again, or bounces one container of it.
@@ -710,21 +705,25 @@ impl Daemon {
         if let Some(key) = container {
             let project = self.project(path).await?;
             let result = project.restart_one(key, operation_id).await;
-            return Ok(serde_json::json!({
-                "status": result.status,
-                "container": key,
-                "changed": result.changed,
-                "restarted": serde_json::to_value(&result).unwrap_or(Value::Null),
-            }));
+            return Ok(mutation_outcome(
+                result.status,
+                result.changed,
+                Some(key),
+                None,
+                None,
+                std::iter::once(&result),
+            ));
         }
 
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
-        Ok(serde_json::json!({
-            "status": up.status,
-            "changed": down.changed || up.changed,
-            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
-            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
-        }))
+        Ok(mutation_outcome(
+            up.status,
+            down.changed || up.changed,
+            None,
+            None,
+            None,
+            [&down, &up].into_iter(),
+        ))
     }
 
     /// The two halves of a restart, with the project re-read between them.
@@ -928,6 +927,75 @@ impl Daemon {
             }
         });
     }
+}
+
+/// Project internal reconciliation results into the small public mutation contract.
+/// Full per-container state remains available through status, logs, and daemon tracing.
+pub(crate) fn mutation_outcome<'a>(
+    status: OpStatus,
+    changed: bool,
+    worker: Option<&str>,
+    workers: Option<&[String]>,
+    version: Option<String>,
+    operations: impl Iterator<Item = &'a OpResult>,
+) -> Value {
+    let requested: std::collections::BTreeSet<&str> = workers
+        .unwrap_or(&[])
+        .iter()
+        .map(String::as_str)
+        .chain(worker)
+        .collect();
+    let operations = operations.collect::<Vec<_>>();
+    let affected_workers = operations
+        .iter()
+        .flat_map(|operation| &operation.containers)
+        .filter(|result| result.changed && !requested.contains(result.container.as_str()))
+        .map(|result| result.container.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let error = operations
+        .iter()
+        .flat_map(|operation| &operation.containers)
+        .filter_map(|result| result.error.as_ref())
+        .next()
+        .map(|error| {
+            let message = if error.code == "CHILD_EXITED_BEFORE_REGISTRATION" {
+                "Worker exited before registration".to_string()
+            } else {
+                error
+                    .message
+                    .split(". It last said:\n")
+                    .next()
+                    .unwrap_or(&error.message)
+                    .to_string()
+            };
+            serde_json::json!({ "code": error.code, "message": message })
+        });
+
+    let mut outcome = serde_json::Map::from_iter([
+        ("status".to_string(), serde_json::json!(status)),
+        ("changed".to_string(), serde_json::json!(changed)),
+    ]);
+    if let Some(worker) = worker {
+        outcome.insert("worker".to_string(), serde_json::json!(worker));
+    }
+    if let Some(workers) = workers.filter(|workers| workers.len() > 1) {
+        outcome.insert("workers".to_string(), serde_json::json!(workers));
+    }
+    if let Some(version) = version {
+        outcome.insert("version".to_string(), serde_json::json!(version));
+    }
+    if !affected_workers.is_empty() {
+        outcome.insert(
+            "affected_workers".to_string(),
+            serde_json::json!(affected_workers),
+        );
+    }
+    if let Some(error) = error {
+        outcome.insert("error".to_string(), error);
+    }
+    Value::Object(outcome)
 }
 
 /// What every compose daemon registers as.
@@ -1360,5 +1428,68 @@ mod tests {
 
         let mode = file.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+}
+
+#[cfg(test)]
+mod mutation_outcome_tests {
+    use super::*;
+    use crate::{
+        lifecycle::{ContainerResult, OpError},
+        state::ChildStatus,
+    };
+
+    #[test]
+    fn concise_outcome_omits_healthy_containers_and_log_tails() {
+        let result = OpResult {
+            operation_id: "diagnostic-only".into(),
+            status: OpStatus::Failed,
+            changed: true,
+            containers: vec![
+                ContainerResult {
+                    container: "queue".into(),
+                    state: ChildStatus::Ready,
+                    changed: false,
+                    error: None,
+                },
+                ContainerResult {
+                    container: "console".into(),
+                    state: ChildStatus::Ready,
+                    changed: true,
+                    error: None,
+                },
+                ContainerResult {
+                    container: "tailscale".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(OpError {
+                        code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+                        message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+                    }),
+                },
+            ],
+        };
+
+        let outcome = mutation_outcome(
+            OpStatus::Failed,
+            true,
+            Some("tailscale"),
+            None,
+            Some("0.1.3-experimental".into()),
+            std::iter::once(&result),
+        );
+
+        assert_eq!(outcome["status"], "failed");
+        assert_eq!(outcome["worker"], "tailscale");
+        assert_eq!(outcome["affected_workers"], serde_json::json!(["console"]));
+        assert_eq!(outcome["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
+        assert_eq!(
+            outcome["error"]["message"],
+            "Worker exited before registration"
+        );
+        let encoded = outcome.to_string();
+        for internal in ["operation_id", "containers", "queue", "retry secret output"] {
+            assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
+        }
     }
 }

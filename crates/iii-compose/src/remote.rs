@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use crate::{
     daemon::Daemon,
     error::ComposeError,
-    lifecycle::{OpResult, OpStatus},
+    lifecycle::OpStatus,
     logs::{LogCursor, LogStream, LogsOutcome},
     project::ContainerStatus,
 };
@@ -236,55 +236,26 @@ struct StopOutcome {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, JsonSchema)]
-struct AddOutcome {
+struct MutationOutcome {
     status: OpStatus,
-    /// The first requested worker. This keeps the single-worker response
-    /// contract stable.
-    container: String,
-    /// Every requested worker. Present in responses from list-aware daemons.
+    changed: bool,
+    /// The primary worker named by a targeted mutation.
+    worker: Option<String>,
+    /// Every explicitly requested worker when more than one was supplied.
     workers: Option<Vec<String>>,
-    changed: bool,
-    detail: String,
-    declared: Option<Vec<String>>,
-    down: Option<OpResult>,
-    restarted: Option<Vec<OpResult>>,
-    up: Option<OpResult>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, JsonSchema)]
-struct RemoveOutcome {
-    status: OpStatus,
-    container: String,
-    changed: bool,
-    detail: String,
-    down: OpResult,
-    up: OpResult,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, JsonSchema)]
-struct UpdateOutcome {
-    status: OpStatus,
-    container: String,
-    changed: bool,
-    detail: String,
+    /// Resolved package version when the mutation resolves one.
     version: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
-    down: Option<OpResult>,
-    up: Option<OpResult>,
+    /// Other workers that the mutation had to change.
+    affected_workers: Option<Vec<String>>,
+    /// Concise failure for the first worker that could not reach its target state.
+    error: Option<MutationError>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, JsonSchema)]
-struct RestartOutcome {
-    status: OpStatus,
-    container: Option<String>,
-    changed: bool,
-    restarted: Option<OpResult>,
-    down: Option<OpResult>,
-    up: Option<OpResult>,
+struct MutationError {
+    code: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -389,7 +360,14 @@ async fn dispatch(
             )
             .await
         {
-            Ok(result) => Ok(to_value(&result)),
+            Ok(result) => Ok(crate::daemon::mutation_outcome(
+                result.status,
+                result.changed,
+                request.container.as_deref(),
+                None,
+                None,
+                std::iter::once(&result),
+            )),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Add => {
@@ -444,7 +422,14 @@ async fn dispatch(
             )
             .await
         {
-            Ok(result) => Ok(to_value(&result)),
+            Ok(result) => Ok(crate::daemon::mutation_outcome(
+                result.status,
+                result.changed,
+                request.container.as_deref(),
+                None,
+                None,
+                std::iter::once(&result),
+            )),
             Err(err) => Err(compose_error(&err)),
         },
         // Every project this daemon holds. No id: this is the call an operator
@@ -631,12 +616,12 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::up",
                 schema_for_value::<LifecycleOptions>(),
-                schema_for_value::<OpResult>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::down",
                 schema_for_value::<LifecycleOptions>(),
-                schema_for_value::<OpResult>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::list",
@@ -666,22 +651,22 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::add",
                 add_options_schema(),
-                schema_for_value::<AddOutcome>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::remove",
                 schema_for_value::<WorkerOptions>(),
-                schema_for_value::<RemoveOutcome>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::restart",
                 schema_for_value::<RestartOptions>(),
-                schema_for_value::<RestartOutcome>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::update",
                 schema_for_value::<WorkerOptions>(),
-                schema_for_value::<UpdateOutcome>(),
+                schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::schema",
@@ -916,5 +901,29 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("containers:"))
         );
+    }
+
+    #[test]
+    fn mutation_schemas_do_not_expose_reconciliation_internals() {
+        for id in [
+            "compose::up",
+            "compose::down",
+            "compose::add",
+            "compose::remove",
+            "compose::restart",
+            "compose::update",
+        ] {
+            let properties = schema_entry(id).2.as_ref().unwrap()["properties"]
+                .as_object()
+                .unwrap();
+            for internal in ["operation_id", "containers", "up", "down", "restarted"] {
+                assert!(
+                    !properties.contains_key(internal),
+                    "{id} exposes internal field {internal}"
+                );
+            }
+            assert!(properties.contains_key("status"));
+            assert!(properties.contains_key("changed"));
+        }
     }
 }
