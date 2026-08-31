@@ -320,25 +320,6 @@ pub fn failed(key: &str, code: &str, message: &str) {
     ));
 }
 
-/// Render pushed progress in the dedicated `iii compose add` client process.
-/// Remote daemon reconciliation itself uses the normal lifecycle tree above.
-pub fn progress_event(event: &crate::operation::ProgressEvent) {
-    match (event.container.as_deref(), event.phase.as_str()) {
-        (
-            Some(container),
-            "starting" | "installing" | "configuring" | "preparing" | "registering",
-        ) => starting(container, &event.detail),
-        (Some(container), "ready") => ready(container, Duration::from_millis(event.elapsed_ms)),
-        (Some(container), "failed") => failed(container, "START_FAILED", &event.detail),
-        (None, "accepted" | "resolving") => line(&format!("{} {}", RUNNING.cyan(), event.detail)),
-        (None, "complete") if event.detail.contains("ready") => {
-            line(&format!("{} {}", OK.green(), event.detail))
-        }
-        (None, "complete") => line(&format!("{} {}", FAILED.red(), event.detail)),
-        _ => {}
-    }
-}
-
 /// Already in the desired state — nothing was done to it.
 pub fn unchanged(key: &str, what: &str) {
     if set(key, RowState::Skipped(what.to_string())) {
