@@ -72,6 +72,7 @@ const NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS: &[&str] = &[
     "engine::queue::dlq_messages",
 ];
 
+/// Returns whether a function is an official namespace-scoped queue provider.
 fn is_namespace_scoped_queue_function(function_id: &str) -> bool {
     NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS.contains(&function_id)
 }
