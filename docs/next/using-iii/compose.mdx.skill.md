@@ -497,7 +497,8 @@ validation.
 
 A path worker normally runs as a host process. A non-empty `runtime.base_image` in its
 `iii.worker.yaml` selects a local VM instead. The worker's `scripts.install` and start command then
-run inside that image, and compose keeps the VM state inside the project. An invalid image reference
+run inside that image, and compose keeps the VM state inside the project. Host source edits are
+synced live into the VM's workspace; see [Scripts](#scripts). An invalid image reference
 fails the start instead of falling back to the host or to another image.
 
 ### Worker kinds
@@ -542,8 +543,23 @@ The start command for a `path://` container is `run`, then `scripts.start` from 
 `iii.worker.yaml`. A container with neither fails with `MISSING_START_COMMAND`.
 
 When the manifest declares `runtime.base_image`, the same precedence applies inside the VM: `run`
-replaces `scripts.start`, but it never moves the worker back to the host. Host source changes do not
-automatically restart this VM. Use `compose::restart worker=<container>` after a source change.
+replaces `scripts.start`, but it never moves the worker back to the host.
+
+Host source edits are synced live into the VM's `/workspace`. Each changed file, directory, or
+symlink is written inside the guest, and a removal on the host removes the entry in the guest. Because
+those writes originate in the guest, its kernel emits native filesystem events, so a watch-based
+start command restarts the process on its own:
+
+```yaml
+scripts:
+  run: npx tsx watch src/index.ts
+```
+
+The VM itself never restarts for a source change, and `compose::restart` is no longer needed after
+one. Dependency and build directories such as `node_modules`, `target`, and `.venv` stay VM-local:
+they are excluded from the initial copy and from later synchronization, so `scripts.install` output
+inside the guest is never overwritten from the host. Bundle workers mount an immutable install, so
+nothing is watched or synced for them.
 
 Where the two files describe the same thing, `worker-compose.yaml` wins and the manifest is the
 default. `run` overrides `scripts.start`, and the container key overrides the manifest's `name`: the
