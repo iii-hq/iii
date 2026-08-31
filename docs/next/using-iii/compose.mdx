@@ -386,9 +386,10 @@ engine:
 containers:
   database_1: # Worker names do not need to match package names
     worker: package://database
+    version: "0.21.4"
   api:
     worker: path://./workers/api
-    start_after: [database]
+    start_after: [database_1]
     config_name: shop-api
     config_override:
       log_level: debug
