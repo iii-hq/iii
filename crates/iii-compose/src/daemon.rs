@@ -464,7 +464,20 @@ impl Daemon {
             result?;
         }
 
+        if operation
+            .as_ref()
+            .is_some_and(|operation| operation.is_cancelled())
+        {
+            return Err(ComposeError::OperationCancelled { operation_id });
+        }
+
         let _mutation = self.lock_mutation(path).await;
+        if operation
+            .as_ref()
+            .is_some_and(|operation| operation.is_cancelled())
+        {
+            return Err(ComposeError::OperationCancelled { operation_id });
+        }
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -520,9 +533,14 @@ impl Daemon {
 
         let current = ComposeFile::load(path)?;
         let project = self.project(path).await?;
-        let (restarted, up) = project
+        let (restarted, up, interrupted) = project
             .reconcile_file(current, &restart, operation_id)
             .await;
+        if interrupted {
+            return Err(ComposeError::OperationCancelled {
+                operation_id: up.operation_id,
+            });
+        }
         let status = if up.status == OpStatus::Failed
             || restarted
                 .iter()

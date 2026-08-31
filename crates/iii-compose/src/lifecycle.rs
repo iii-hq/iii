@@ -108,7 +108,6 @@ pub struct LifecycleCtx<'a> {
 
 /// What one container's start produced: which one, how long it took, and
 /// whether it came up.
-
 enum StartAttempt {
     Ready(ChildRecord, Supervised),
     Failed(ComposeError),
@@ -356,37 +355,80 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
+    restart_one_inner(ctx, children, records, key, operation_id, None)
+        .await
+        .expect("restart without a shutdown signal cannot be interrupted")
+}
+
+pub(crate) async fn restart_one_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<OpResult> {
+    restart_one_inner(ctx, children, records, key, operation_id, Some(shutdown)).await
+}
+
+async fn restart_one_inner(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: Option<crate::shutdown::ShutdownSignal>,
+) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
         let error = ComposeError::UnknownContainer {
             container: key.to_string(),
         };
         report::summary_failed("restart", error.code(), began.elapsed());
-        return failed_op(operation_id, Some(key), &error);
+        return Some(failed_op(operation_id, Some(key), &error));
+    }
+    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+        return None;
     }
 
     report::plan(&[(key.to_string(), 0)]);
     stop_one(ctx, children, records, key).await;
+    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+        report::plan_done();
+        return None;
+    }
 
     // The child is gone, but the engine learns that from a socket closing and
     // not from us. Starting into that window makes the replacement collide
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    if let Err(error) = await_name_release(ctx, key).await {
+    let released = if let Some(mut signal) = shutdown.clone() {
+        tokio::select! {
+            biased;
+            _ = signal.wait() => {
+                report::plan_done();
+                return None;
+            }
+            result = await_name_release(ctx, key) => result,
+        }
+    } else {
+        await_name_release(ctx, key).await
+    };
+    if let Err(error) = released {
         report::failed(key, error.code(), &error.to_string());
         report::plan_done();
         report::summary_failed("restart", error.code(), began.elapsed());
-        return failed_op(operation_id, Some(key), &error);
+        return Some(failed_op(operation_id, Some(key), &error));
     }
 
     report::starting(key, "starting");
     let started = Instant::now();
-    let outcome = start_one(ctx, key).await;
+    let outcome = start_one_attempt(ctx, key, shutdown, Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
-        Ok((record, child)) => {
+        StartAttempt::Ready(record, child) => {
             report::ready(key, took);
             records.insert(key.to_string(), record);
             children.insert(key.to_string(), child);
@@ -397,7 +439,7 @@ pub async fn restart_one(
                 error: None,
             }
         }
-        Err(error) => {
+        StartAttempt::Failed(error) => {
             report::failed(
                 key,
                 error.code(),
@@ -405,7 +447,7 @@ pub async fn restart_one(
             );
             report::plan_done();
             report::summary_failed("restart", error.code(), began.elapsed());
-            return OpResult {
+            return Some(OpResult {
                 operation_id,
                 status: OpStatus::Failed,
                 changed: false,
@@ -415,18 +457,22 @@ pub async fn restart_one(
                     changed: false,
                     error: Some(OpError::from(&error)),
                 }],
-            };
+            });
+        }
+        StartAttempt::Interrupted => {
+            report::plan_done();
+            return None;
         }
     };
 
     report::plan_done();
     report::summary_ok("restart", 1, 1, began.elapsed());
-    OpResult {
+    Some(OpResult {
         operation_id,
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
-    }
+    })
 }
 
 /// Stops one container because its declaration is being removed.
@@ -566,24 +612,6 @@ pub async fn down(
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
-    }
-}
-
-/// Resolves config, runs `pre_run`, spawns, and waits for the engine to see
-/// the child. Every step before the spawn can fail without leaving a process
-/// behind.
-/// Starts one container and hands back the child rather than filing it.
-///
-/// The caller owns the map, because containers with no dependency between them
-/// start together and a shared `&mut` would serialise exactly what this exists
-/// to overlap.
-async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Supervised)> {
-    match start_one_attempt(ctx, key, None, None).await {
-        StartAttempt::Ready(record, child) => Ok((record, child)),
-        StartAttempt::Failed(error) => Err(error),
-        StartAttempt::Interrupted => {
-            unreachable!("a start without a shutdown signal cannot be interrupted")
-        }
     }
 }
 
@@ -944,25 +972,26 @@ async fn prepare_vm(
         .spawn()
         .map_err(|err| format!("cannot run {}: {err}", program.display()))?;
 
-    let body = request.to_string();
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(body.as_bytes())
-            .await
-            .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
-        // Dropped here: the prepare command reads to end of file, so it would wait
-        // forever on a pipe compose still holds open.
-        drop(stdin);
-    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20 * 60), async {
+        let body = request.to_string();
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(body.as_bytes())
+                .await
+                .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
+            // Dropped here: the prepare command reads to end of file, so it would wait
+            // forever on a pipe compose still holds open.
+            drop(stdin);
+        }
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(20 * 60),
-        child.wait_with_output(),
-    )
+        child
+            .wait_with_output()
+            .await
+            .map_err(|err| format!("iii-worker did not answer: {err}"))
+    })
     .await
-    .map_err(|_| "iii-worker VM preparation timed out after 20 minutes".to_string())?
-    .map_err(|err| format!("iii-worker did not answer: {err}"))?;
+    .map_err(|_| "iii-worker VM preparation timed out after 20 minutes".to_string())??;
 
     if !output.status.success() {
         let reason = String::from_utf8_lossy(&output.stderr);

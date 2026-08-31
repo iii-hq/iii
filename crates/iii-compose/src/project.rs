@@ -464,7 +464,7 @@ impl Project {
         file: ComposeFile,
         restart: &[String],
         operation_id: String,
-    ) -> (Vec<OpResult>, OpResult) {
+    ) -> (Vec<OpResult>, OpResult, bool) {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
@@ -489,52 +489,77 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
+        let operation = crate::operation::active(&operation_id);
+        let shutdown = operation.as_ref().map(|operation| {
+            crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation())
+        });
         let mut restarted = Vec::with_capacity(restart.len());
+        let mut interrupted = false;
         for key in restart {
-            restarted.push(
-                lifecycle::restart_one(
+            let result = if let Some(shutdown) = shutdown.clone() {
+                lifecycle::restart_one_until_shutdown(
                     &ctx,
                     children,
                     &mut state.containers,
                     key,
                     format!("{operation_id}-restart-{key}"),
+                    shutdown,
                 )
-                .await,
-            );
+                .await
+            } else {
+                Some(
+                    lifecycle::restart_one(
+                        &ctx,
+                        children,
+                        &mut state.containers,
+                        key,
+                        format!("{operation_id}-restart-{key}"),
+                    )
+                    .await,
+                )
+            };
+            let Some(result) = result else {
+                interrupted = true;
+                break;
+            };
+            restarted.push(result);
         }
-        let up = if let Some(operation) = crate::operation::active(&operation_id) {
-            let shutdown = crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation());
-            lifecycle::up_until_shutdown(
+        let up_operation_id = format!("{operation_id}-up");
+        let up = if interrupted {
+            OpResult {
+                operation_id: up_operation_id,
+                status: crate::lifecycle::OpStatus::Failed,
+                changed: false,
+                containers: Vec::new(),
+            }
+        } else if let Some(shutdown) = shutdown {
+            let result = lifecycle::up_until_shutdown(
                 &ctx,
                 children,
                 &mut state.containers,
                 None,
-                format!("{operation_id}-up"),
+                up_operation_id.clone(),
                 shutdown,
             )
-            .await
-            .unwrap_or_else(|| OpResult {
-                operation_id: format!("{operation_id}-up"),
+            .await;
+            if result.is_none() {
+                interrupted = true;
+            }
+            result.unwrap_or_else(|| OpResult {
+                operation_id: up_operation_id,
                 status: crate::lifecycle::OpStatus::Failed,
                 changed: false,
                 containers: Vec::new(),
             })
         } else {
-            lifecycle::up(
-                &ctx,
-                children,
-                &mut state.containers,
-                None,
-                format!("{operation_id}-up"),
-            )
-            .await
+            lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
         };
 
         let snapshot = state.clone();
         drop(file);
         drop(inner);
         let _ = self.store.save(&snapshot);
-        (restarted, up)
+        (restarted, up, interrupted)
     }
 
     /// Applies a removal without dropping supervision of surviving containers.

@@ -214,6 +214,10 @@ impl Operation {
     pub fn cancellation(&self) -> watch::Receiver<bool> {
         self.cancel.subscribe()
     }
+    /// Reports whether cancellation has been requested for this operation.
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancel.borrow()
+    }
     pub fn cancel(&self) {
         let _ = self.cancel.send(true);
     }
@@ -309,6 +313,15 @@ pub struct OperationManager {
     operations: RwLock<BTreeMap<String, Arc<Operation>>>,
     emitter: ProgressEmitter,
 }
+
+/// The caller-selected operation id is already registered in this daemon.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("compose operation '{operation_id}' already exists")]
+pub struct OperationIdAlreadyExists {
+    /// The id that is still owned by the first operation.
+    pub operation_id: String,
+}
+
 impl OperationManager {
     pub fn new(client: &IIIClient) -> Self {
         Self {
@@ -316,21 +329,38 @@ impl OperationManager {
             emitter: ProgressEmitter::register(client),
         }
     }
+    /// Creates an operation with a generated unique id.
     pub async fn create(&self, requested: usize) -> Arc<Operation> {
-        self.create_with_id(format!("compose:{}", uuid::Uuid::new_v4()), requested)
-            .await
+        loop {
+            let id = format!("compose:{}", uuid::Uuid::new_v4());
+            if let Ok(operation) = self.create_with_id(id, requested).await {
+                return operation;
+            }
+        }
     }
-    pub async fn create_with_id(&self, id: String, requested: usize) -> Arc<Operation> {
+    /// Creates an operation with a caller-selected id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationIdAlreadyExists`] without replacing the first
+    /// operation when `id` is already registered.
+    pub async fn create_with_id(
+        &self,
+        id: String,
+        requested: usize,
+    ) -> std::result::Result<Arc<Operation>, OperationIdAlreadyExists> {
+        let mut operations = self.operations.write().await;
+        if operations.contains_key(&id) {
+            return Err(OperationIdAlreadyExists { operation_id: id });
+        }
+
         let op = Operation::new(id.clone(), requested, self.emitter.clone());
-        self.operations
-            .write()
-            .await
-            .insert(id.clone(), Arc::clone(&op));
+        operations.insert(id.clone(), Arc::clone(&op));
         active_operations()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, Arc::downgrade(&op));
-        op
+        Ok(op)
     }
     pub async fn get(&self, id: &str) -> Option<Arc<Operation>> {
         self.operations.read().await.get(id).cloned()
@@ -372,6 +402,31 @@ mod tests {
         assert!(Arc::ptr_eq(
             &active("compose:test-root-restart-worker").unwrap(),
             &root
+        ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_id_keeps_the_first_operation() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let manager = OperationManager::new(&client);
+        let id = format!("compose:test-{}", uuid::Uuid::new_v4());
+
+        let first = manager
+            .create_with_id(id.clone(), 1)
+            .await
+            .expect("first operation should be created");
+        let error = match manager.create_with_id(id.clone(), 2).await {
+            Ok(_) => panic!("duplicate operation should be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.operation_id, id);
+        assert!(Arc::ptr_eq(
+            &manager
+                .get(&id)
+                .await
+                .expect("first operation should remain"),
+            &first
         ));
     }
 }

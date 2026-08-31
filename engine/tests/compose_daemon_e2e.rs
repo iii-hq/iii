@@ -201,6 +201,27 @@ async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, reg
     .unwrap_or_else(|_| panic!("worker {namespace}/{name} did not reach registered={registered}"));
 }
 
+async fn wait_for_operation(port: u16, namespace: Option<&str>, operation_id: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let snapshot = call_in(
+                port,
+                namespace,
+                "compose::operation",
+                json!({ "operation_id": operation_id }),
+            )
+            .await
+            .expect("compose::operation should answer");
+            if snapshot["status"] != "running" {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("operation {operation_id} did not finish"))
+}
+
 fn operation_containers(operation: &Value) -> Vec<&str> {
     let mut names = operation["containers"]
         .as_array()
@@ -285,7 +306,8 @@ async fn schema_introspection_is_callable_and_matches_engine_metadata() {
     assert_eq!(schemas.len(), 1, "the filter returns one entry: {schema}");
     assert_eq!(schemas[0]["function_id"], "compose::up");
     assert!(schemas[0]["request"]["properties"]["file"].is_object());
-    assert!(schemas[0]["response"]["properties"]["containers"].is_object());
+    assert!(schemas[0]["response"]["properties"]["changed"].is_object());
+    assert!(schemas[0]["response"]["properties"]["containers"].is_null());
     assert_eq!(schemas[0]["default_timeout_ms"], 600_000);
     assert_eq!(schemas[0]["idempotent"], true);
 
@@ -485,16 +507,19 @@ containers:
     let (result, (existing, database, web)) = tokio::join!(add, ready);
     let result = result.expect("compose::add should answer");
 
-    assert_eq!(result["status"], "ok", "{result}");
-    assert_eq!(result["workers"], json!(["database", "web"]), "{result}");
-    assert_eq!(result["worker"], "database", "{result}");
-    assert_eq!(result["changed"], true, "{result}");
-    for internal in ["containers", "down", "restarted", "up", "operation_id"] {
+    assert_eq!(result["status"], "accepted", "{result}");
+    assert_eq!(result["requested"], 2, "{result}");
+    let operation_id = result["operation_id"]
+        .as_str()
+        .expect("accepted add should name its operation");
+    for internal in ["containers", "down", "restarted", "up", "changed"] {
         assert!(
             result.get(internal).is_none(),
             "mutation leaked {internal}: {result}"
         );
     }
+    let operation = wait_for_operation(port, None, operation_id).await;
+    assert_eq!(operation["status"], "succeeded", "{operation}");
     let status = call(
         port,
         "compose::status",
@@ -609,13 +634,17 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
     let (result, worker) = tokio::join!(add, ready);
     let result = result.expect("compose::add should answer");
 
-    assert_eq!(result["status"], "ok", "{result}");
-    assert_eq!(result["changed"], true, "{result}");
-    assert_eq!(result["worker"], "state", "{result}");
+    assert_eq!(result["status"], "accepted", "{result}");
+    assert_eq!(result["requested"], 1, "{result}");
+    let operation_id = result["operation_id"]
+        .as_str()
+        .expect("accepted add should name its operation");
     assert!(
         result.get("up").is_none(),
         "mutation leaked internals: {result}"
     );
+    let operation = wait_for_operation(port, Some(daemon_namespace), operation_id).await;
+    assert_eq!(operation["status"], "succeeded", "{operation}");
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
     assert!(
@@ -703,11 +732,6 @@ containers:
     let (up, (foundation, keep, discard)) = tokio::join!(up, ready);
     let up = up.expect("compose::up should answer");
     assert_eq!(up["status"], "ok", "project did not start: {up}");
-    assert_eq!(
-        operation_containers(&up),
-        vec!["discard", "foundation", "keep"],
-        "initial up used the wrong worker set: {up}"
-    );
 
     let before = call(
         port,
@@ -716,6 +740,11 @@ containers:
     )
     .await
     .expect("status before remove");
+    assert_eq!(
+        operation_containers(&before),
+        vec!["discard", "foundation", "keep"],
+        "initial up used the wrong worker set: {before}"
+    );
     let pid = |status: &Value, key: &str| {
         status["containers"]
             .as_array()

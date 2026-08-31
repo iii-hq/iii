@@ -297,9 +297,26 @@ struct SchemaResponse {
 /// Registers the control surface. Every id is verbatim — compose never renames
 /// a function.
 pub fn register(daemon: &Arc<Daemon>) {
+    register_matching(daemon, |_| true);
+}
+
+/// Registers operations that cannot conflict with the foreground renderer.
+pub fn register_controls(daemon: &Arc<Daemon>) {
+    register_matching(daemon, |operation| !operation.is_mutation());
+}
+
+/// Registers operations that mutate projects after foreground startup ends.
+pub fn register_mutations(daemon: &Arc<Daemon>) {
+    register_matching(daemon, Operation::is_mutation);
+}
+
+fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) {
     let client = daemon.engine().client();
 
     for &(name, kind) in REGISTERED_OPERATIONS {
+        if !include(kind) {
+            continue;
+        }
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
         let guard_name = name.to_string();
@@ -327,8 +344,17 @@ enum Operation {
     Restart,
     Update,
     Schema,
-    OperationStatus,
+    Snapshot,
     Cancel,
+}
+
+impl Operation {
+    fn is_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::Up | Self::Down | Self::Add | Self::Remove | Self::Restart | Self::Update
+        )
+    }
 }
 
 /// Canonical list of functions exposed by the compose daemon.
@@ -345,7 +371,7 @@ const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("restart", Operation::Restart),
     ("update", Operation::Update),
     ("schema", Operation::Schema),
-    ("operation", Operation::OperationStatus),
+    ("operation", Operation::Snapshot),
     ("cancel", Operation::Cancel),
 ];
 
@@ -406,15 +432,18 @@ async fn dispatch(
             }
 
             let requested = workers.len();
+            let operation_id = request
+                .operation_id
+                .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
             let operation = daemon
                 .operations
-                .create_with_id(
-                    request
-                        .operation_id
-                        .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4())),
-                    requested,
-                )
-                .await;
+                .create_with_id(operation_id.clone(), requested)
+                .await
+                .map_err(|_| Error::Remote {
+                    code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
+                    message: format!("compose operation '{operation_id}' already exists"),
+                    stacktrace: None,
+                })?;
             let operation_id = operation.id().to_string();
             operation
                 .emit(
@@ -426,15 +455,11 @@ async fn dispatch(
 
             let daemon_task = Arc::clone(&daemon);
             let task_operation_id = operation_id.clone();
-            let cancellation = operation.cancellation();
             tokio::spawn(async move {
                 operation
                     .emit(None, "resolving", "resolving dependency trees")
                     .await;
-                let result = daemon_task
-                    .add(file.as_deref(), &workers, task_operation_id)
-                    .await;
-                if *cancellation.borrow() {
+                if operation.is_cancelled() {
                     operation
                         .finish(
                             crate::operation::OperationStatus::Cancelled,
@@ -443,6 +468,9 @@ async fn dispatch(
                         .await;
                     return;
                 }
+                let result = daemon_task
+                    .add(file.as_deref(), &workers, task_operation_id)
+                    .await;
                 match result {
                     Ok(value) => {
                         let failed = value.get("status").and_then(Value::as_str) == Some("failed");
@@ -460,6 +488,14 @@ async fn dispatch(
                                 },
                             )
                             .await;
+                    }
+                    Err(ComposeError::OperationCancelled { .. }) => {
+                        operation
+                            .finish(
+                                crate::operation::OperationStatus::Cancelled,
+                                "operation cancelled",
+                            )
+                            .await
                     }
                     Err(error) => {
                         operation
@@ -574,7 +610,7 @@ async fn dispatch(
         Operation::Schema => Ok(to_value(&build_schema_response(
             request.function_id.as_deref(),
         ))),
-        Operation::OperationStatus => {
+        Operation::Snapshot => {
             let id = request
                 .progress_operation_id
                 .or(request.operation_id)
