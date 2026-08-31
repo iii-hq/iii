@@ -62,6 +62,20 @@ async fn read_pid_file(path: &Path) -> u32 {
 }
 
 #[tokio::test]
+async fn managed_workers_do_not_inherit_terminal_stdin() {
+    let tmp = tempfile::tempdir().unwrap();
+    // `read` would receive SIGTTIN when this background process group inherited
+    // Compose's controlling terminal. Null stdin makes it observe EOF and exit.
+    let child = spawn("read value", tmp.path());
+    let pid = child.pid;
+    let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+        .await
+        .expect("stdin read should not stop the managed worker");
+    assert!(!status.success());
+    assert!(wait_until_gone(pid).await);
+}
+
+#[tokio::test]
 async fn stop_takes_down_grandchildren_too() {
     let tmp = tempfile::tempdir().unwrap();
     // The worker spawns its own child, as a language runtime or build tool
