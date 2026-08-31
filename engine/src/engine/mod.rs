@@ -1803,45 +1803,57 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let mut enqueue_input = serde_json::json!({
-                                    "queue": queue.clone(),
-                                    "function_id": function_id.clone(),
-                                    "data": data,
-                                    "messageReceiptId": message_receipt_id.clone(),
-                                    "traceparent": traceparent.clone(),
-                                    "baggage": queued_baggage,
-                                });
-                                // The standalone queue predates namespaces and
-                                // strictly rejects unknown request fields. Keep
-                                // the default namespace wire-compatible with
-                                // those releases; only a non-default target
-                                // needs the additive field understood by a
-                                // namespace-aware queue provider.
-                                if target_namespace != DEFAULT_NAMESPACE {
-                                    enqueue_input["namespace"] =
-                                        Value::String(target_namespace.clone());
-                                }
-                                // New queue workers register the provider in
-                                // the target project namespace. Old releases
-                                // registered it in `default`, so use that only
-                                // when the project-scoped provider is absent.
-                                let provider_namespace = if engine
+                                let has_target_provider = engine
                                     .functions
                                     .get(&target_namespace, ENQUEUE_PROVIDER_FUNCTION_ID)
-                                    .is_some()
+                                    .is_some();
+                                let has_legacy_default_provider = target_namespace
+                                    != DEFAULT_NAMESPACE
+                                    && engine
+                                        .functions
+                                        .get(DEFAULT_NAMESPACE, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                        .is_some();
+
+                                // A legacy provider in `default` rejects the
+                                // additive namespace field. Omitting the field
+                                // would enqueue the target function in the
+                                // wrong namespace, so fail before invoking it.
+                                let result = if !has_target_provider && has_legacy_default_provider
                                 {
-                                    target_namespace.as_str()
+                                    Err(ErrorBody::new(
+                                        "queue_provider_namespace_unsupported",
+                                        format!(
+                                            "The queue provider in `{DEFAULT_NAMESPACE}` cannot \
+                                             enqueue functions in namespace `{target_namespace}`. \
+                                             Update the queue worker to a namespace-aware release \
+                                             and register it in `{target_namespace}`."
+                                        ),
+                                    ))
                                 } else {
-                                    DEFAULT_NAMESPACE
+                                    let mut enqueue_input = serde_json::json!({
+                                        "queue": queue.clone(),
+                                        "function_id": function_id.clone(),
+                                        "data": data,
+                                        "messageReceiptId": message_receipt_id.clone(),
+                                        "traceparent": traceparent.clone(),
+                                        "baggage": queued_baggage,
+                                    });
+                                    // The default namespace remains compatible
+                                    // with old providers. A scoped provider gets
+                                    // the namespace needed by its consumer.
+                                    if target_namespace != DEFAULT_NAMESPACE {
+                                        enqueue_input["namespace"] =
+                                            Value::String(target_namespace.clone());
+                                    }
+                                    engine
+                                        .call_with_metadata_ns(
+                                            &target_namespace,
+                                            ENQUEUE_PROVIDER_FUNCTION_ID,
+                                            enqueue_input,
+                                            None,
+                                        )
+                                        .await
                                 };
-                                let result = engine
-                                    .call_with_metadata_ns(
-                                        provider_namespace,
-                                        ENQUEUE_PROVIDER_FUNCTION_ID,
-                                        enqueue_input,
-                                        None,
-                                    )
-                                    .await;
 
                                 if let Some(invocation_id) = invocation_id {
                                     match result {
@@ -4579,21 +4591,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_action_falls_back_to_legacy_default_provider() {
+    async fn enqueue_action_rejects_legacy_provider_for_namespaced_target() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
-        let captured = Arc::new(Mutex::new(None));
-        let captured_for_handler = captured.clone();
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
 
         engine.register_function_handler(
             make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
             super::Handler::new(move |input| {
-                let captured = captured_for_handler.clone();
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
                 async move {
-                    *captured.lock().unwrap() = Some(input);
-                    FunctionResult::Success(None)
+                    if input.get("namespace").is_some() {
+                        FunctionResult::Failure(crate::protocol::ErrorBody::new(
+                            "unknown_field",
+                            "legacy provider rejects the namespace field",
+                        ))
+                    } else {
+                        FunctionResult::Success(None)
+                    }
                 }
             }),
         );
@@ -4623,13 +4641,19 @@ mod tests {
             .expect("channel should produce an invocation result");
         match outbound {
             Outbound::Protocol(Message::InvocationResult { error, .. }) => {
-                assert!(error.is_none());
+                let error = error.expect("namespaced enqueue must reject a legacy provider");
+                assert_eq!(error.code, "enqueue_error");
+                assert!(error.message.contains("namespace-aware release"));
+                assert!(error.message.contains("project-a"));
             }
             other => panic!("expected InvocationResult, got {other:?}"),
         }
 
-        let input = captured.lock().unwrap().clone().unwrap();
-        assert_eq!(input["namespace"], "project-a");
+        assert_eq!(
+            legacy_calls.load(Ordering::SeqCst),
+            0,
+            "legacy provider must not receive a namespaced enqueue"
+        );
     }
 
     #[tokio::test]

@@ -348,7 +348,7 @@ fn apply_managed_identity_from_env(metadata: &mut WorkerMetadata) {
     if metadata.namespace.is_none() {
         metadata.namespace = std::env::var("III_NAMESPACE")
             .ok()
-            .filter(|namespace| !namespace.is_empty());
+            .filter(|namespace| !namespace.trim().is_empty());
     }
 }
 
@@ -968,6 +968,7 @@ impl IIIClient {
         Self::with_identity(address, metadata, WorkerIdentityMode::Managed)
     }
 
+    /// Create a client with explicit control over managed environment identity.
     pub(crate) fn with_identity(
         address: &str,
         mut metadata: WorkerMetadata,
@@ -3291,6 +3292,16 @@ mod tests {
             IIIClient::with_identity("ws://127.0.0.1:0", metadata, WorkerIdentityMode::Explicit);
 
         assert_eq!(iii.namespace().as_deref(), Some("remote-namespace"));
+    }
+
+    #[test]
+    fn managed_identity_ignores_whitespace_only_namespace() {
+        let env = ScopedEnvVar::new("III_NAMESPACE");
+        env.set(" \t ");
+
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", WorkerMetadata::default());
+
+        assert!(iii.namespace().is_none());
     }
 
     #[test]
