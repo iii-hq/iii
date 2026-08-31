@@ -502,14 +502,33 @@ impl Project {
                 .await,
             );
         }
-        let up = lifecycle::up(
-            &ctx,
-            children,
-            &mut state.containers,
-            None,
-            format!("{operation_id}-up"),
-        )
-        .await;
+        let up = if let Some(operation) = crate::operation::active(&operation_id) {
+            let shutdown = crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation());
+            lifecycle::up_until_shutdown(
+                &ctx,
+                children,
+                &mut state.containers,
+                None,
+                format!("{operation_id}-up"),
+                shutdown,
+            )
+            .await
+            .unwrap_or_else(|| OpResult {
+                operation_id: format!("{operation_id}-up"),
+                status: crate::lifecycle::OpStatus::Failed,
+                changed: false,
+                containers: Vec::new(),
+            })
+        } else {
+            lifecycle::up(
+                &ctx,
+                children,
+                &mut state.containers,
+                None,
+                format!("{operation_id}-up"),
+            )
+            .await
+        };
 
         let snapshot = state.clone();
         drop(file);
@@ -657,27 +676,38 @@ impl Project {
 
     /// Current state of every declared container, for `compose::status`.
     pub async fn status(&self) -> Vec<ContainerStatus> {
-        let inner = self.inner.lock().await;
         let file = self.file.read().await;
+        let inner = self.inner.try_lock().ok();
+        let stored = if inner.is_none() {
+            self.store.load().ok().flatten()
+        } else {
+            None
+        };
         file.containers
             .keys()
             .map(|key| {
-                let record = inner.state.containers.get(key);
-                let running = inner
-                    .children
-                    .get(key)
-                    .is_some_and(|c| matches!(c.poll(), crate::process::Outcome::Running));
+                let record = inner
+                    .as_ref()
+                    .and_then(|inner| inner.state.containers.get(key))
+                    .or_else(|| stored.as_ref().and_then(|state| state.containers.get(key)));
+                let running = inner.as_ref().is_some_and(|inner| {
+                    inner.children.get(key).is_some_and(|child| {
+                        matches!(child.poll(), crate::process::Outcome::Running)
+                    })
+                });
                 ContainerStatus {
                     container: key.clone(),
-                    state: match (running, record.map(|r| r.status)) {
+                    state: match (running, record.map(|record| record.status)) {
                         (true, _) => ChildStatus::Ready,
                         (false, Some(status)) => status,
                         (false, None) => ChildStatus::Stopped,
                     },
-                    pid: record.map(|r| r.pid),
-                    owned: inner.children.contains_key(key),
+                    pid: record.map(|record| record.pid),
+                    owned: inner
+                        .as_ref()
+                        .is_some_and(|inner| inner.children.contains_key(key)),
                     log_path: self.logs.path(key),
-                    last_error: record.and_then(|r| r.last_error.clone()),
+                    last_error: record.and_then(|record| record.last_error.clone()),
                 }
             })
             .collect()
