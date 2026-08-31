@@ -14,48 +14,26 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
-worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
-`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in the Compose
-engine configuration:
+`iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
+manages the streaming. `iii-stream` must start with the engine, so stop Compose and uncomment the
+Ch. 5 lines under `engine.workers` and the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
 engine:
+  url: ws://127.0.0.1:49134
   workers:
     iii-stream: {}
+
+containers:
+  click-streamer:
+    worker: path://./click-streamer
+    start_after: [pubsub]
 ```
+
+Install the worker's dependencies once:
 
 ```bash
-mkdir -p click-streamer/src
-```
-
-Create the worker manifest and package metadata:
-
-```yaml click-streamer/iii.worker.yaml
-name: click-streamer
-scripts:
-  start: pnpm start
-```
-
-```json click-streamer/package.json
-{
-  "name": "click-streamer",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "tsx watch src/index.ts"
-  },
-  "dependencies": {
-    "iii-sdk": "0.21.4",
-    "@iii-dev/helpers": "0.21.4",
-    "tsx": "^4.22.3"
-  }
-}
-```
-
-```bash
-cd click-streamer && pnpm install && cd ..
+cd click-streamer && npm install && cd ..
 ```
 
 ## Broadcast clicks in real time
@@ -135,10 +113,10 @@ worker.registerTrigger({
 logger.info("click-streamer ready");
 ```
 
-Register it with your project:
+Start the project again:
 
 ```bash
-iii trigger -n linkly compose::add worker=./click-streamer
+iii compose --up --file worker-compose.yaml
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.

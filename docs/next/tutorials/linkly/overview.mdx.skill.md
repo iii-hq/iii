@@ -17,6 +17,22 @@ each other's functions through the engine. You add capability without rewriting 
   triggers, and workers before you begin.
 </Note>
 
+## Choose your path
+
+Both paths build the same system from the same `linkly` template.
+
+- [Agentic](/tutorials/linkly/agentic) gives an AI agent one prompt per chapter and reviews what it
+  writes.
+- [Exploration](/tutorials/linkly/foundations) writes each chapter by hand, with the reasoning
+  behind every step.
+
+Create the project first:
+
+```bash
+iii project init linkly --template linkly
+cd linkly
+```
+
 ## Ch. 1: Foundations
 
 Build a custom `link` worker with `link::create` and `link::resolve`, store links in memory, then

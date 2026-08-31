@@ -1,0 +1,226 @@
+---
+title: "Agentic"
+description: "Build Linkly chapter by chapter with an AI agent, using one prompt per chapter."
+owner: "devrel"
+type: "tutorial"
+---
+
+This path builds Linkly with an AI agent. Each chapter below gives you a prompt to paste, the
+`worker-compose.yaml` block to enable, and the commands that show the result.
+
+The `linkly` template holds the code for every chapter, commented out, with the chapter and step
+above each block. The agent uncomments the blocks a chapter needs and comments out the versions the
+chapter replaces.
+
+## Set up the agent
+
+The iii `harness` runs a coding agent inside the console. Uncomment the agent blocks in
+`worker-compose.yaml`, put your provider key in `.env`, and start the project:
+
+```bash
+iii compose --up --file worker-compose.yaml
+```
+
+Open the console at [http://127.0.0.1:3113](http://127.0.0.1:3113) and start a session. The
+[install recipes](/install) list every provider the harness supports.
+
+Any coding agent with access to the project directory works the same way.
+
+## Ch. 1: Foundations
+
+<CodeGroup>
+
+```text Prompt
+Read worker-compose.yaml and link/src/index.ts in this iii project.
+
+In link/src/index.ts, uncomment every block tagged "Ch. 1". Leave every other block commented.
+
+Then run `cd link && npm install && cd ..` and start the project with
+`iii compose --up --file worker-compose.yaml`.
+```
+
+</CodeGroup>
+
+Check the result:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
+curl -i http://127.0.0.1:3111/s/iii
+```
+
+`POST /links` returns `201` with the code, and `GET /s/iii` returns `302` to `https://iii.dev`.
+
+[Ch. 1: Foundations](/tutorials/linkly/foundations) explains `registerWorker`, `registerFunction`,
+and `registerTrigger`.
+
+## Ch. 2: Observe everything
+
+<CodeGroup>
+
+```text Prompt
+Send five redirects through http://127.0.0.1:3111/s/iii, then read the traces the engine collected
+with `iii trigger engine::traces::list`. Show me the span tree for one redirect with
+`iii trigger engine::traces::tree`.
+```
+
+</CodeGroup>
+
+Open the console's traces tab to see the same data.
+
+[Ch. 2: Observe everything](/tutorials/linkly/observability) explains what the engine records.
+
+## Ch. 3: Persist everything
+
+<CodeGroup>
+
+```text Prompt
+Stop Compose. In worker-compose.yaml, uncomment the Ch. 3 block and the `start_after: [database]`
+line under `link`.
+
+In link/src/index.ts, uncomment every block tagged "Ch. 3" and comment out the Ch. 1 versions of
+the functions the Ch. 3 blocks replace.
+
+Start the project again.
+```
+
+</CodeGroup>
+
+Check the result:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'iii'"
+```
+
+The query returns three clicks, and they survive a restart.
+
+[Ch. 3: Persist everything](/tutorials/linkly/persistence) explains the cache-then-database read
+path.
+
+## Ch. 4: Make it durable
+
+<CodeGroup>
+
+```text Prompt
+Stop Compose. In worker-compose.yaml, uncomment the Ch. 4 block and the `analytics` database entry
+under the Ch. 3 block's config_override.
+
+In link/src/index.ts, uncomment every block tagged "Ch. 4" and comment out the versions they
+replace. In analytics/src/main.py, uncomment the Ch. 4 block.
+
+Run `cd analytics && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..`,
+then start the project again.
+```
+
+</CodeGroup>
+
+Check the result:
+
+```bash
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev/$n\",\"code\":\"link$n\"}"
+done
+iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
+curl -s -X PUT http://127.0.0.1:3111/links/link1 \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev/updated"}'
+iii trigger link::resolve code=link1
+```
+
+The Python worker counts five links, and `link::resolve` returns the updated URL because the durable
+subscriber refreshed the cache.
+
+[Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues, durable pub/sub, and
+regular pub/sub.
+
+## Ch. 5: Stream live clicks
+
+<CodeGroup>
+
+```text Prompt
+Stop Compose. In worker-compose.yaml, uncomment the Ch. 5 lines under `engine.workers` and the Ch. 5
+block under `containers`.
+
+In click-streamer/src/index.ts, uncomment the Ch. 5 block. In link/src/index.ts, uncomment the
+Ch. 5 version of link::record_click and comment out the Ch. 3 version.
+
+Run `cd click-streamer && npm install && cd ..`, then start the project again.
+```
+
+</CodeGroup>
+
+Check the result:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+iii trigger stream::list stream_name=clicks group_id=all
+```
+
+Every redirect appears in the `clicks` stream.
+
+[Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and `TriggerAction.Void()`.
+
+## Ch. 6: Move bulk data with channels
+
+<CodeGroup>
+
+```text Prompt
+Stop Compose. In worker-compose.yaml, uncomment the Ch. 6 block.
+
+In bulk-importer/src/index.ts and channel-client/import-links.js, uncomment the Ch. 6 blocks.
+
+Run `cd bulk-importer && npm install && cd ..` and `cd channel-client && npm install && cd ..`,
+then start the project again.
+```
+
+</CodeGroup>
+
+Check the result:
+
+```bash
+cd channel-client && node import-links.js && cd ..
+iii trigger link::resolve code=mylink
+```
+
+The uploader reports two imported links, and both resolve.
+
+[Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) explains channels and
+`createChannel`.
+
+## Ch. 7: Bring in the browser
+
+<CodeGroup>
+
+```text Prompt
+Stop Compose. In worker-compose.yaml, uncomment the Ch. 7 block and the Ch. 7 lines under
+`engine.workers`.
+
+In auth/src/index.ts, uncomment the Ch. 7 block. In link/src/index.ts, uncomment every block tagged
+"Ch. 7".
+
+Run `cd auth && npm install && cd ..`. Then create the frontend with
+`npm create vite@latest frontend -- --template react-ts`, install `iii-browser-sdk` in it, and write
+frontend/src/iii.ts and frontend/src/App.tsx as described in
+https://iii.dev/docs/next/tutorials/linkly/frontend.
+
+Start the project again, then run `npm run dev` in frontend/.
+```
+
+</CodeGroup>
+
+Check the result: shorten a link in the browser, follow it a few times to watch the live counter,
+then ask the server to delete it:
+
+```bash
+iii trigger link::request_delete code=<code>
+```
+
+The browser shows a confirm prompt, and the delete happens after you accept.
+
+[Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the RBAC listener, the auth
+function, and browser-registered functions.
