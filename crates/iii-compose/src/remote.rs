@@ -29,9 +29,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    daemon::Daemon,
+    daemon::{Daemon, MutationOutcome},
     error::ComposeError,
-    lifecycle::OpStatus,
     logs::{LogCursor, LogStream, LogsOutcome},
     project::ContainerStatus,
 };
@@ -240,30 +239,6 @@ struct StopOutcome {
     stopping: Vec<String>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, JsonSchema)]
-struct MutationOutcome {
-    status: OpStatus,
-    changed: bool,
-    /// The primary worker named by a targeted mutation.
-    worker: Option<String>,
-    /// Every explicitly requested worker when more than one was supplied.
-    workers: Option<Vec<String>>,
-    /// Resolved package version when the mutation resolves one.
-    version: Option<String>,
-    /// Other workers that the mutation had to change.
-    affected_workers: Option<Vec<String>>,
-    /// Concise failure for the first worker that could not reach its target state.
-    error: Option<MutationError>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, JsonSchema)]
-struct MutationError {
-    code: String,
-    message: String,
-}
-
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct CancelOutcome {
     operation_id: String,
@@ -409,14 +384,14 @@ async fn dispatch(
             )
             .await
         {
-            Ok(result) => Ok(crate::daemon::mutation_outcome(
+            Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
                 request.container.as_deref(),
                 None,
                 None,
                 std::iter::once(&result),
-            )),
+            ))),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Add => {
@@ -428,6 +403,7 @@ async fn dispatch(
                 return daemon
                     .add(file.as_deref(), &[], operation_id())
                     .await
+                    .map(|outcome| to_value(&outcome))
                     .map_err(|err| compose_error(&err));
             }
 
@@ -472,8 +448,8 @@ async fn dispatch(
                     .add(file.as_deref(), &workers, task_operation_id)
                     .await;
                 match result {
-                    Ok(value) => {
-                        let failed = value.get("status").and_then(Value::as_str) == Some("failed");
+                    Ok(outcome) => {
+                        let failed = outcome.is_failed();
                         operation
                             .finish(
                                 if failed {
@@ -514,7 +490,7 @@ async fn dispatch(
             .remove(file.as_deref(), request.worker.as_deref(), operation_id())
             .await
         {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Restart => match daemon
@@ -526,14 +502,14 @@ async fn dispatch(
             )
             .await
         {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Update => match daemon
             .update(file.as_deref(), request.worker.as_deref(), operation_id())
             .await
         {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Down => match daemon
@@ -544,14 +520,14 @@ async fn dispatch(
             )
             .await
         {
-            Ok(result) => Ok(crate::daemon::mutation_outcome(
+            Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
                 request.container.as_deref(),
                 None,
                 None,
                 std::iter::once(&result),
-            )),
+            ))),
             Err(err) => Err(compose_error(&err)),
         },
         // Every project this daemon holds. No id: this is the call an operator

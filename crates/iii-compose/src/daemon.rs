@@ -25,7 +25,6 @@ use std::{
 
 use futures::StreamExt;
 
-use serde_json::Value;
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
@@ -384,7 +383,7 @@ impl Daemon {
         file: Option<&Path>,
         workers: &[String],
         operation_id: String,
-    ) -> Result<Value> {
+    ) -> Result<MutationOutcome> {
         if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
@@ -509,7 +508,7 @@ impl Daemon {
         let container = requested[0].clone();
 
         if added.is_empty() && replaced.is_empty() {
-            return Ok(mutation_outcome(
+            return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 Some(&container),
@@ -559,7 +558,7 @@ impl Daemon {
                 crate::edit::Source::Path { .. } => None,
             });
         let operations = restarted.iter().chain(std::iter::once(&up));
-        Ok(mutation_outcome(
+        Ok(MutationOutcome::from_operations(
             status,
             true,
             Some(&container),
@@ -607,7 +606,7 @@ impl Daemon {
         file: Option<&Path>,
         worker: Option<&str>,
         operation_id: String,
-    ) -> Result<Value> {
+    ) -> Result<MutationOutcome> {
         let Some(worker) = worker else {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
@@ -667,7 +666,7 @@ impl Daemon {
 
         let edited = match crate::edit::upsert_container(&text, &new)? {
             crate::edit::Outcome::Unchanged => {
-                return Ok(mutation_outcome(
+                return Ok(MutationOutcome::from_operations(
                     OpStatus::Ok,
                     false,
                     Some(&asked.key),
@@ -693,7 +692,7 @@ impl Daemon {
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
-        Ok(mutation_outcome(
+        Ok(MutationOutcome::from_operations(
             up.status,
             true,
             Some(&asked.key),
@@ -714,7 +713,7 @@ impl Daemon {
         file: Option<&Path>,
         worker: Option<&str>,
         operation_id: String,
-    ) -> Result<Value> {
+    ) -> Result<MutationOutcome> {
         let Some(worker) = worker.map(str::trim).filter(|worker| !worker.is_empty()) else {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
@@ -748,7 +747,7 @@ impl Daemon {
         let (down, up) = project
             .reconcile_removal(current, worker, operation_id)
             .await;
-        Ok(mutation_outcome(
+        Ok(MutationOutcome::from_operations(
             up.status,
             true,
             Some(worker),
@@ -774,13 +773,13 @@ impl Daemon {
         file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
-    ) -> Result<Value> {
+    ) -> Result<MutationOutcome> {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
             let project = self.project(path).await?;
             let result = project.restart_one(key, operation_id).await;
-            return Ok(mutation_outcome(
+            return Ok(MutationOutcome::from_operations(
                 result.status,
                 result.changed,
                 Some(key),
@@ -791,7 +790,7 @@ impl Daemon {
         }
 
         let (down, up) = self.restart_project(file, None, &operation_id).await?;
-        Ok(mutation_outcome(
+        Ok(MutationOutcome::from_operations(
             up.status,
             down.changed || up.changed,
             None,
@@ -1005,73 +1004,101 @@ impl Daemon {
     }
 }
 
-/// Project internal reconciliation results into the small public mutation contract.
+/// The public result of a compose mutation.
+///
 /// Full per-container state remains available through status, logs, and daemon tracing.
-pub(crate) fn mutation_outcome<'a>(
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct MutationOutcome {
     status: OpStatus,
     changed: bool,
-    worker: Option<&str>,
-    workers: Option<&[String]>,
+    /// The primary worker named by a targeted mutation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker: Option<String>,
+    /// Every explicitly requested worker when more than one was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workers: Option<Vec<String>>,
+    /// Resolved package version when the mutation resolves one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
-    operations: impl Iterator<Item = &'a OpResult>,
-) -> Value {
-    let requested: std::collections::BTreeSet<&str> = workers
-        .unwrap_or(&[])
-        .iter()
-        .map(String::as_str)
-        .chain(worker)
-        .collect();
-    let operations = operations.collect::<Vec<_>>();
-    let affected_workers = operations
-        .iter()
-        .flat_map(|operation| &operation.containers)
-        .filter(|result| result.changed && !requested.contains(result.container.as_str()))
-        .map(|result| result.container.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let error = operations
-        .iter()
-        .flat_map(|operation| &operation.containers)
-        .filter_map(|result| result.error.as_ref())
-        .next()
-        .map(|error| {
-            let message = if error.code == "CHILD_EXITED_BEFORE_REGISTRATION" {
-                "Worker exited before registration".to_string()
-            } else {
-                error
-                    .message
-                    .split(". It last said:\n")
-                    .next()
-                    .unwrap_or(&error.message)
-                    .to_string()
-            };
-            serde_json::json!({ "code": error.code, "message": message })
-        });
+    /// Other workers that the mutation had to change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    affected_workers: Option<Vec<String>>,
+    /// Concise failure for the first worker that could not reach its target state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<MutationError>,
+}
 
-    let mut outcome = serde_json::Map::from_iter([
-        ("status".to_string(), serde_json::json!(status)),
-        ("changed".to_string(), serde_json::json!(changed)),
-    ]);
-    if let Some(worker) = worker {
-        outcome.insert("worker".to_string(), serde_json::json!(worker));
+impl MutationOutcome {
+    /// Projects internal reconciliation results into the small mutation contract.
+    pub(crate) fn from_operations<'a>(
+        status: OpStatus,
+        changed: bool,
+        worker: Option<&str>,
+        workers: Option<&[String]>,
+        version: Option<String>,
+        operations: impl Iterator<Item = &'a OpResult>,
+    ) -> Self {
+        let requested: std::collections::BTreeSet<&str> = workers
+            .unwrap_or(&[])
+            .iter()
+            .map(String::as_str)
+            .chain(worker)
+            .collect();
+        let mut affected_workers = std::collections::BTreeSet::new();
+        let mut error = None;
+
+        for result in operations.flat_map(|operation| &operation.containers) {
+            if result.changed && !requested.contains(result.container.as_str()) {
+                affected_workers.insert(result.container.clone());
+            }
+            if error.is_none() {
+                error = result.error.as_ref().map(MutationError::from);
+            }
+        }
+
+        Self {
+            status,
+            changed,
+            worker: worker.map(str::to_owned),
+            workers: workers
+                .filter(|workers| workers.len() > 1)
+                .map(|workers| workers.to_vec()),
+            version,
+            affected_workers: (!affected_workers.is_empty())
+                .then(|| affected_workers.into_iter().collect()),
+            error,
+        }
     }
-    if let Some(workers) = workers.filter(|workers| workers.len() > 1) {
-        outcome.insert("workers".to_string(), serde_json::json!(workers));
+
+    pub(crate) fn is_failed(&self) -> bool {
+        self.status == OpStatus::Failed
     }
-    if let Some(version) = version {
-        outcome.insert("version".to_string(), serde_json::json!(version));
+}
+
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema, PartialEq, Eq)]
+struct MutationError {
+    code: String,
+    message: String,
+}
+
+impl From<&crate::lifecycle::OpError> for MutationError {
+    fn from(error: &crate::lifecycle::OpError) -> Self {
+        let message = if error.code == "CHILD_EXITED_BEFORE_REGISTRATION" {
+            "Worker exited before registration".to_string()
+        } else {
+            error
+                .message
+                .split(". It last said:\n")
+                .next()
+                .unwrap_or(&error.message)
+                .to_string()
+        };
+
+        Self {
+            code: error.code.clone(),
+            message,
+        }
     }
-    if !affected_workers.is_empty() {
-        outcome.insert(
-            "affected_workers".to_string(),
-            serde_json::json!(affected_workers),
-        );
-    }
-    if let Some(error) = error {
-        outcome.insert("error".to_string(), error);
-    }
-    Value::Object(outcome)
 }
 
 /// What every compose daemon registers as.
@@ -1546,7 +1573,7 @@ mod mutation_outcome_tests {
             ],
         };
 
-        let outcome = mutation_outcome(
+        let outcome = MutationOutcome::from_operations(
             OpStatus::Failed,
             true,
             Some("tailscale"),
@@ -1555,15 +1582,17 @@ mod mutation_outcome_tests {
             std::iter::once(&result),
         );
 
-        assert_eq!(outcome["status"], "failed");
-        assert_eq!(outcome["worker"], "tailscale");
-        assert_eq!(outcome["affected_workers"], serde_json::json!(["console"]));
-        assert_eq!(outcome["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
+        let encoded = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(encoded["status"], "failed");
+        assert_eq!(encoded["worker"], "tailscale");
+        assert_eq!(encoded["affected_workers"], serde_json::json!(["console"]));
+        assert_eq!(encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
         assert_eq!(
-            outcome["error"]["message"],
+            encoded["error"]["message"],
             "Worker exited before registration"
         );
-        let encoded = outcome.to_string();
+        assert!(encoded.get("workers").is_none());
+        let encoded = encoded.to_string();
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
