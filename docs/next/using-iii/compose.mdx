@@ -575,8 +575,8 @@ iii compose build [-f, --file <PATH>]
 
 `build` reads and validates the compose file, then downloads every `package://` worker into the same
 cache used by `compose::up`. The file defaults to `./worker-compose.yaml`. The command does not
-connect to an engine, start a worker, or run lifecycle hooks. Local `path://` workers and built-in
-engine workers need no registry download and are skipped.
+connect to an engine, start a worker, or run lifecycle hooks. Local `path://` workers and
+engine-managed workers need no registry download and are skipped.
 
 ```bash
 iii compose build --file worker-compose.yaml
