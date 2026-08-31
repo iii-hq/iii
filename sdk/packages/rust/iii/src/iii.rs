@@ -23,7 +23,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, oneshot},
     time::{Instant, interval, sleep, sleep_until},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
@@ -258,8 +258,9 @@ pub struct TelemetryOptions {
 pub struct WorkerMetadata {
     pub runtime: String,
     pub version: String,
-    /// Worker name reported to the engine. A non-empty `III_WORKER_NAME`
-    /// overrides this value when the client is created.
+    /// Worker name reported to the engine. In managed identity mode, a
+    /// non-empty `III_WORKER_NAME` overrides this value when the client is
+    /// created.
     pub name: String,
     pub os: String,
     /// One-line, human/LLM-readable summary of what this worker does.
@@ -274,8 +275,8 @@ pub struct WorkerMetadata {
     pub isolation: Option<String>,
     /// Namespace this worker belongs to, and therefore the one its calls and
     /// its trigger bindings resolve in unless they name another. Absent means
-    /// the engine applies its default namespace. Resolved from
-    /// `InitOptions.namespace` / `III_NAMESPACE` (see [`resolve_namespace`]).
+    /// the engine applies its default namespace. Managed clients also use
+    /// `III_NAMESPACE` when no explicit namespace is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 }
@@ -304,11 +305,7 @@ impl Default for WorkerMetadata {
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
-            // III_WORKER_NAME carries the orchestrator-assigned name (set by
-            // iii-worker for engine-managed workers). The engine matches live
-            // registrations by name, so that identity must win over the
-            // hostname:pid fallback.
-            name: worker_name_from_env().unwrap_or_else(|| format!("{}:{}", hostname, pid)),
+            name: format!("{}:{}", hostname, pid),
             os: os_info,
             description: None,
             pid: Some(pid),
@@ -320,15 +317,22 @@ impl Default for WorkerMetadata {
             isolation: std::env::var("III_ISOLATION")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            // III_NAMESPACE carries the namespace for managed workers, the same
-            // way III_WORKER_NAME carries the name. Absent leaves routing to the
-            // engine's default namespace. `InitOptions.namespace` overrides this
-            // (see `resolve_namespace`).
-            namespace: std::env::var("III_NAMESPACE")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            namespace: None,
         }
     }
+}
+
+/// Selects where a worker connection gets its engine identity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkerIdentityMode {
+    /// Use the supervisor-managed `III_WORKER_NAME` and `III_NAMESPACE` values
+    /// when present. This is the default for normal worker connections.
+    #[default]
+    Managed,
+    /// Keep the name from [`WorkerMetadata`] and the namespace from explicit
+    /// options or metadata. Process-wide identity environment variables are
+    /// ignored. Use this for auxiliary connections created by one worker.
+    Explicit,
 }
 
 fn worker_name_from_env() -> Option<String> {
@@ -337,9 +341,14 @@ fn worker_name_from_env() -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-fn apply_worker_name_from_env(metadata: &mut WorkerMetadata) {
+fn apply_managed_identity_from_env(metadata: &mut WorkerMetadata) {
     if let Some(managed_name) = worker_name_from_env() {
         metadata.name = managed_name;
+    }
+    if metadata.namespace.is_none() {
+        metadata.namespace = std::env::var("III_NAMESPACE")
+            .ok()
+            .filter(|namespace| !namespace.trim().is_empty());
     }
 }
 
@@ -933,6 +942,8 @@ struct IIIInner {
     /// frame); required by the engine to authorize the reattach — ids alone
     /// are publicly discoverable.
     reattach_token: Mutex<Option<String>>,
+    identity_mode: WorkerIdentityMode,
+    registration_changed: Notify,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -951,10 +962,21 @@ impl IIIClient {
 
     /// Create a new III with custom worker metadata.
     ///
-    /// A non-empty `III_WORKER_NAME` overrides `metadata.name` so an
-    /// orchestrator can assign the worker identity.
-    pub fn with_metadata(address: &str, mut metadata: WorkerMetadata) -> Self {
-        apply_worker_name_from_env(&mut metadata);
+    /// Non-empty managed identity environment variables override matching
+    /// metadata fields so an orchestrator can assign the worker identity.
+    pub fn with_metadata(address: &str, metadata: WorkerMetadata) -> Self {
+        Self::with_identity(address, metadata, WorkerIdentityMode::Managed)
+    }
+
+    /// Create a client with explicit control over managed environment identity.
+    pub(crate) fn with_identity(
+        address: &str,
+        mut metadata: WorkerMetadata,
+        identity_mode: WorkerIdentityMode,
+    ) -> Self {
+        if identity_mode == WorkerIdentityMode::Managed {
+            apply_managed_identity_from_env(&mut metadata);
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = IIIInner {
             address: address.into(),
@@ -975,6 +997,8 @@ impl IIIClient {
             timings: Mutex::new(ConnTimings::default()),
             worker_id: Mutex::new(None),
             reattach_token: Mutex::new(None),
+            identity_mode,
+            registration_changed: Notify::new(),
         };
         Self {
             inner: Arc::new(inner),
@@ -988,9 +1012,12 @@ impl IIIClient {
 
     /// Set custom worker metadata (call before connect).
     ///
-    /// A non-empty `III_WORKER_NAME` overrides `metadata.name`.
+    /// In managed identity mode, process-wide identity environment variables
+    /// override the matching metadata fields.
     pub fn set_metadata(&self, mut metadata: WorkerMetadata) {
-        apply_worker_name_from_env(&mut metadata);
+        if self.inner.identity_mode == WorkerIdentityMode::Managed {
+            apply_managed_identity_from_env(&mut metadata);
+        }
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
     }
 
@@ -1027,6 +1054,39 @@ impl IIIClient {
     /// reconnect once this is populated.
     pub fn fatal_error(&self) -> Option<Error> {
         self.inner.fatal_error.lock_or_recover().clone()
+    }
+
+    /// Wait until the engine accepts this worker's initial registration.
+    ///
+    /// Returns [`Error::RegistrationRejected`] for a fatal identity conflict,
+    /// [`Error::Timeout`] when the deadline expires, and
+    /// [`Error::NotConnected`] when called before the client starts or after it
+    /// stops.
+    pub async fn wait_until_registered(&self, timeout: Duration) -> Result<(), Error> {
+        if !self.inner.started.load(Ordering::SeqCst) {
+            return Err(Error::NotConnected);
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            let notified = self.inner.registration_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if let Some(err) = self.fatal_error() {
+                return Err(err);
+            }
+            if self.inner.worker_id.lock_or_recover().is_some() {
+                return Ok(());
+            }
+            if !self.inner.running.load(Ordering::SeqCst) {
+                return Err(Error::NotConnected);
+            }
+
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Err(Error::Timeout);
+            }
+        }
     }
 
     /// Set custom HTTP headers for the WebSocket handshake (call before connect).
@@ -1106,6 +1166,7 @@ impl IIIClient {
     /// ```
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+        self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
 
@@ -1136,6 +1197,7 @@ impl IIIClient {
     /// ```
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+        self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
     }
@@ -2002,6 +2064,7 @@ impl IIIClient {
                 tracing::debug!(worker_id = %worker_id, "Worker registered");
                 *self.inner.worker_id.lock_or_recover() = Some(worker_id);
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
+                self.inner.registration_changed.notify_waiters();
             }
             Message::RegistrationRejected {
                 code,
@@ -2127,6 +2190,7 @@ impl IIIClient {
         *self.inner.fatal_error.lock_or_recover() = Some(err);
         self.set_connection_state(IIIConnectionState::Failed);
         self.inner.running.store(false, Ordering::SeqCst);
+        self.inner.registration_changed.notify_waiters();
     }
 
     fn handle_invocation_result(
@@ -3159,7 +3223,7 @@ mod tests {
         assert_eq!(explicit_name, "explicit-worker");
 
         env.set("managed-worker");
-        assert_eq!(WorkerMetadata::default().name, "managed-worker");
+        assert_ne!(WorkerMetadata::default().name, "managed-worker");
 
         let metadata = WorkerMetadata {
             name: "explicit-worker".to_string(),
@@ -3190,6 +3254,54 @@ mod tests {
             .name
             .clone();
         assert_eq!(replaced_name, "managed-worker");
+    }
+
+    #[test]
+    fn explicit_identity_preserves_metadata_name() {
+        let env = ScopedEnvVar::new("III_WORKER_NAME");
+        env.set("managed-worker");
+
+        let metadata = WorkerMetadata {
+            name: "remote-bridge".to_string(),
+            ..WorkerMetadata::default()
+        };
+        let iii =
+            IIIClient::with_identity("ws://127.0.0.1:0", metadata, WorkerIdentityMode::Explicit);
+        let resolved_name = iii
+            .inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+
+        assert_eq!(resolved_name, "remote-bridge");
+    }
+
+    #[test]
+    fn explicit_identity_preserves_metadata_namespace() {
+        let env = ScopedEnvVar::new("III_NAMESPACE");
+        env.set("managed-namespace");
+
+        let metadata = WorkerMetadata {
+            namespace: Some("remote-namespace".to_string()),
+            ..WorkerMetadata::default()
+        };
+        let iii =
+            IIIClient::with_identity("ws://127.0.0.1:0", metadata, WorkerIdentityMode::Explicit);
+
+        assert_eq!(iii.namespace().as_deref(), Some("remote-namespace"));
+    }
+
+    #[test]
+    fn managed_identity_ignores_whitespace_only_namespace() {
+        let env = ScopedEnvVar::new("III_NAMESPACE");
+        env.set(" \t ");
+
+        let iii = IIIClient::with_metadata("ws://127.0.0.1:0", WorkerMetadata::default());
+
+        assert!(iii.namespace().is_none());
     }
 
     #[test]
@@ -3462,11 +3574,9 @@ mod tests {
         );
 
         env.set("orders");
-        // III_NAMESPACE flows into worker metadata, mirroring III_WORKER_NAME.
-        assert_eq!(
-            WorkerMetadata::default().namespace.as_deref(),
-            Some("orders")
-        );
+        // Raw metadata has no process-wide identity until a managed client is
+        // created from it.
+        assert!(WorkerMetadata::default().namespace.is_none());
         // Env is the fallback when no explicit option is given.
         assert_eq!(resolve_namespace(None).as_deref(), Some("orders"));
         // options.namespace beats the env var.
@@ -3586,6 +3696,47 @@ mod tests {
             }
             other => panic!("expected RegistrationRejected, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn wait_until_registered_completes_after_engine_accepts_worker() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.started.store(true, Ordering::SeqCst);
+        iii.inner.running.store(true, Ordering::SeqCst);
+        let waiter = {
+            let iii = iii.clone();
+            tokio::spawn(async move { iii.wait_until_registered(Duration::from_secs(1)).await })
+        };
+
+        tokio::task::yield_now().await;
+        let payload = json!({
+            "type": "workerregistered",
+            "worker_id": "worker-accepted",
+            "reattach_token": "secret",
+        })
+        .to_string();
+        iii.handle_message(&payload).unwrap();
+
+        assert!(waiter.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn wait_until_registered_returns_registration_rejection() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.started.store(true, Ordering::SeqCst);
+        iii.inner.running.store(true, Ordering::SeqCst);
+        let payload = json!({
+            "type": "registrationrejected",
+            "code": "WORKER_NAMESPACE_CONFLICT",
+            "namespace": "orders",
+            "worker_name": "checkout",
+            "owner_worker_id": "worker-abc",
+        })
+        .to_string();
+        iii.handle_message(&payload).unwrap();
+
+        let result = iii.wait_until_registered(Duration::from_secs(1)).await;
+        assert!(matches!(result, Err(Error::RegistrationRejected { .. })));
     }
 
     #[test]

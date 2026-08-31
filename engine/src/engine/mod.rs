@@ -54,9 +54,9 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// down directly (wedged reader guard).
 const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Function provided by the standalone `queue` worker for named enqueue
-/// actions. The engine owns receipt generation and uses this function only as
-/// the durable transport boundary.
+/// Function provided by the standalone `queue` worker in each project
+/// namespace. The engine owns receipt generation and uses this function only
+/// as the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
 
 /// How long a freshly connected worker's registrations wait for the namespace
@@ -641,6 +641,11 @@ impl Engine {
     /// the target of an invoke depend on who is asking, which is exactly the
     /// ambiguity namespaces exist to remove.
     ///
+    /// The sole compatibility exception is the immutable built-in
+    /// `iii-observability` UI content callback: published Console workers do
+    /// not preserve its explicit `default` target and invoke it from their
+    /// project namespace. No user function participates in that fallback.
+    ///
     /// A miss keeps the pre-existing `function_not_found` code (SDKs and the
     /// `Enqueue` provider-missing DX branch both match on it) and only enriches
     /// the message with the namespaces where the id *does* exist.
@@ -651,6 +656,19 @@ impl Engine {
     ) -> Result<Function, ErrorBody> {
         let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
         if let Some(function) = self.functions.get(namespace, function_id) {
+            return Ok(function);
+        }
+
+        // Console releases published before namespace-aware trigger callbacks
+        // invoke injected UI content in the Console worker's project namespace,
+        // even when the binding targets `default`. This function serves only
+        // immutable embedded JS/CSS, so let that one legacy callback resolve to
+        // its canonical engine-owned registration without weakening namespace
+        // isolation for any other function.
+        if namespace != DEFAULT_NAMESPACE
+            && function_id == crate::workers::observability::ui::CONTENT_FUNCTION_ID
+            && let Some(function) = self.functions.get(DEFAULT_NAMESPACE, function_id)
+        {
             return Ok(function);
         }
 
@@ -1282,6 +1300,29 @@ impl Engine {
                     }
                 }
 
+                // Built-in UI functions live in the engine's `default`
+                // namespace, but Console trigger providers live with their
+                // Compose project. Install one strict asset binding for this
+                // provider before publishing the type, so the pending drain
+                // below delivers it to the correct Console. Existing bindings
+                // are left alone and get replayed by register_trigger_type on
+                // reconnect.
+                if let Err(error) =
+                    crate::workers::observability::ui::register_trigger_for_provider(
+                        self,
+                        &reg_id,
+                        &provider_namespace,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        trigger_type_id = %reg_id,
+                        namespace = %provider_namespace,
+                        "failed to bind built-in observability UI to Console provider"
+                    );
+                }
+
                 let mut trigger_type = TriggerType::new_ns(
                     provider_namespace,
                     reg_id,
@@ -1803,31 +1844,57 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let mut enqueue_input = serde_json::json!({
-                                    "queue": queue.clone(),
-                                    "function_id": function_id.clone(),
-                                    "data": data,
-                                    "messageReceiptId": message_receipt_id.clone(),
-                                    "traceparent": traceparent.clone(),
-                                    "baggage": queued_baggage,
-                                });
-                                // The standalone queue predates namespaces and
-                                // strictly rejects unknown request fields. Keep
-                                // the default namespace wire-compatible with
-                                // those releases; only a non-default target
-                                // needs the additive field understood by a
-                                // namespace-aware queue provider.
-                                if target_namespace != DEFAULT_NAMESPACE {
-                                    enqueue_input["namespace"] =
-                                        Value::String(target_namespace.clone());
-                                }
-                                let result = engine
-                                    .call_with_metadata(
-                                        ENQUEUE_PROVIDER_FUNCTION_ID,
-                                        enqueue_input,
-                                        None,
-                                    )
-                                    .await;
+                                let has_target_provider = engine
+                                    .functions
+                                    .get(&target_namespace, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                    .is_some();
+                                let has_legacy_default_provider = target_namespace
+                                    != DEFAULT_NAMESPACE
+                                    && engine
+                                        .functions
+                                        .get(DEFAULT_NAMESPACE, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                        .is_some();
+
+                                // A legacy provider in `default` rejects the
+                                // additive namespace field. Omitting the field
+                                // would enqueue the target function in the
+                                // wrong namespace, so fail before invoking it.
+                                let result = if !has_target_provider && has_legacy_default_provider
+                                {
+                                    Err(ErrorBody::new(
+                                        "queue_provider_namespace_unsupported",
+                                        format!(
+                                            "The queue provider in `{DEFAULT_NAMESPACE}` cannot \
+                                             enqueue functions in namespace `{target_namespace}`. \
+                                             Update the queue worker to a namespace-aware release \
+                                             and register it in `{target_namespace}`."
+                                        ),
+                                    ))
+                                } else {
+                                    let mut enqueue_input = serde_json::json!({
+                                        "queue": queue.clone(),
+                                        "function_id": function_id.clone(),
+                                        "data": data,
+                                        "messageReceiptId": message_receipt_id.clone(),
+                                        "traceparent": traceparent.clone(),
+                                        "baggage": queued_baggage,
+                                    });
+                                    // The default namespace remains compatible
+                                    // with old providers. A scoped provider gets
+                                    // the namespace needed by its consumer.
+                                    if target_namespace != DEFAULT_NAMESPACE {
+                                        enqueue_input["namespace"] =
+                                            Value::String(target_namespace.clone());
+                                    }
+                                    engine
+                                        .call_with_metadata_ns(
+                                            &target_namespace,
+                                            ENQUEUE_PROVIDER_FUNCTION_ID,
+                                            enqueue_input,
+                                            None,
+                                        )
+                                        .await
+                                };
 
                                 if let Some(invocation_id) = invocation_id {
                                     match result {
@@ -4499,6 +4566,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enqueue_action_prefers_provider_in_target_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |_input| {
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move { FunctionResult::Success(None) }
+            }),
+        );
+        engine.register_function_handler_ns(
+            "project-a",
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["namespace"], "project-a");
+        assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_rejects_legacy_provider_for_namespaced_target() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if input.get("namespace").is_some() {
+                        FunctionResult::Failure(crate::protocol::ErrorBody::new(
+                            "unknown_field",
+                            "legacy provider rejects the namespace field",
+                        ))
+                    } else {
+                        FunctionResult::Success(None)
+                    }
+                }
+            }),
+        );
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                let error = error.expect("namespaced enqueue must reject a legacy provider");
+                assert_eq!(error.code, "enqueue_error");
+                assert!(error.message.contains("namespace-aware release"));
+                assert!(error.message.contains("project-a"));
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        assert_eq!(
+            legacy_calls.load(Ordering::SeqCst),
+            0,
+            "legacy provider must not receive a namespaced enqueue"
+        );
+    }
+
+    #[tokio::test]
     async fn enqueue_action_fails_closed_without_queue_provider() {
         ensure_default_meter();
         let engine = Engine::new();
@@ -5927,6 +6126,195 @@ mod tests {
             engine.trigger_registry.trigger_types.is_empty(),
             "a provider with no namespace to serve must not be filed anywhere"
         );
+    }
+
+    #[tokio::test]
+    async fn published_console_can_resolve_builtin_observability_content_from_project_namespace() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        crate::workers::observability::ui::register_function(&engine);
+
+        let function = engine
+            .resolve_function(
+                Some("harness-ns"),
+                crate::workers::observability::ui::CONTENT_FUNCTION_ID,
+            )
+            .expect("published Console callback should resolve canonical content");
+        let page = function
+            .call_handler(
+                None,
+                json!({ "path": crate::workers::observability::ui::PAGE_PATH }),
+                None,
+            )
+            .await;
+        let FunctionResult::Success(Some(page)) = page else {
+            panic!("resolved content handler should serve the page");
+        };
+        assert_eq!(page["content_type"], "text/javascript; charset=utf-8");
+
+        let Err(unrelated) = engine.resolve_function(Some("harness-ns"), "unrelated::default-only")
+        else {
+            panic!("compatibility fallback must not apply to other functions");
+        };
+        assert_eq!(unrelated.code, "function_not_found");
+    }
+
+    #[tokio::test]
+    async fn console_provider_receives_builtin_observability_assets_in_its_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        crate::workers::observability::ui::register_triggers(&engine)
+            .await
+            .expect("no Console provider is a valid initial state");
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+
+        for (trigger_type, expected_id, expected_path) in [
+            (
+                "console:script",
+                "iii-observability::ui-page@harness-ns",
+                "iii-observability/page.js",
+            ),
+            (
+                "console:style",
+                "iii-observability::ui-styles@harness-ns",
+                "iii-observability/styles.css",
+            ),
+        ] {
+            engine
+                .router_msg(
+                    &provider,
+                    &Message::RegisterTriggerType {
+                        id: trigger_type.to_string(),
+                        description: format!("{trigger_type} provider"),
+                        trigger_request_format: None,
+                        call_request_format: None,
+                        namespace: Some("harness-ns".to_string()),
+                    },
+                )
+                .await
+                .expect("Console trigger type should register");
+
+            let outbound = provider_rx
+                .try_recv()
+                .expect("Console provider should receive the built-in asset binding");
+            let Outbound::Protocol(Message::RegisterTrigger {
+                id,
+                function_id,
+                config,
+                namespace,
+                trigger_namespace,
+                ..
+            }) = outbound
+            else {
+                panic!("expected RegisterTrigger, got {outbound:?}");
+            };
+
+            assert_eq!(id, expected_id);
+            assert_eq!(function_id, "iii-observability::ui-content");
+            assert_eq!(config["path"], expected_path);
+            assert_eq!(
+                namespace.as_deref(),
+                None,
+                "the canonical content function lives in default"
+            );
+            assert_eq!(trigger_namespace.as_deref(), Some("harness-ns"));
+
+            let stored = engine
+                .trigger_registry
+                .triggers
+                .get(expected_id)
+                .expect("asset binding should be live");
+            assert_eq!(stored.provider_namespace, "harness-ns");
+            assert_eq!(stored.namespace, DEFAULT_NAMESPACE);
+        }
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(
+            provider_rx.try_recv().is_err(),
+            "assets must bind once each"
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_observability_assets_are_isolated_and_replayed_per_console_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let register_script = |namespace: &str| Message::RegisterTriggerType {
+            id: "console:script".to_string(),
+            description: "Console script provider".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+            namespace: Some(namespace.to_string()),
+        };
+
+        let (a_tx, mut a_rx) = mpsc::channel::<Outbound>(8);
+        let provider_a = WorkerConnection::new(a_tx);
+        engine
+            .router_msg(&provider_a, &register_script("project-a"))
+            .await
+            .expect("project A provider should register");
+
+        let (b_tx, mut b_rx) = mpsc::channel::<Outbound>(8);
+        let provider_b = WorkerConnection::new(b_tx);
+        engine
+            .router_msg(&provider_b, &register_script("project-b"))
+            .await
+            .expect("project B provider should register");
+
+        let asset_id = |outbound: Outbound| match outbound {
+            Outbound::Protocol(Message::RegisterTrigger { id, .. }) => id,
+            other => panic!("expected RegisterTrigger, got {other:?}"),
+        };
+        assert_eq!(
+            asset_id(a_rx.try_recv().expect("project A asset")),
+            "iii-observability::ui-page@project-a"
+        );
+        assert_eq!(
+            asset_id(b_rx.try_recv().expect("project B asset")),
+            "iii-observability::ui-page@project-b"
+        );
+
+        assert_eq!(
+            engine
+                .trigger_registry
+                .triggers
+                .get("iii-observability::ui-page@project-a")
+                .expect("project A binding")
+                .provider_namespace,
+            "project-a"
+        );
+        assert_eq!(
+            engine
+                .trigger_registry
+                .triggers
+                .get("iii-observability::ui-page@project-b")
+                .expect("project B binding")
+                .provider_namespace,
+            "project-b"
+        );
+
+        // A replacement provider gets the existing binding replayed exactly
+        // once; the observability hook must not create a duplicate.
+        let (replacement_tx, mut replacement_rx) = mpsc::channel::<Outbound>(8);
+        let replacement = WorkerConnection::new(replacement_tx);
+        engine
+            .router_msg(&replacement, &register_script("project-a"))
+            .await
+            .expect("replacement provider should register");
+        assert_eq!(
+            asset_id(replacement_rx.try_recv().expect("replayed project A asset")),
+            "iii-observability::ui-page@project-a"
+        );
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "replacement must receive one replay"
+        );
+        assert_eq!(engine.trigger_registry.triggers.len(), 2);
     }
 
     #[tokio::test]

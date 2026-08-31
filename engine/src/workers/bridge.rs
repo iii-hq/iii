@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use iii_sdk::InitOptions;
+use iii_sdk::{InitOptions, WorkerIdentityMode};
 
 /// `InitOptions` for an engine-internal bridge adapter connection.
 ///
@@ -17,6 +17,7 @@ pub(crate) fn bridge_init_options(worker_name: &str) -> InitOptions {
             name: worker_name.to_string(),
             ..Default::default()
         }),
+        identity: WorkerIdentityMode::Explicit,
         ..Default::default()
     }
 }

@@ -13,8 +13,8 @@ pub mod types;
 /// Public runtime/worker types. (Stage 1 submodule grouping.)
 pub mod runtime {
     pub use crate::iii::{
-        FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
-        WorkerMetadata,
+        FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef,
+        WorkerIdentityMode, WorkerInfo, WorkerMetadata,
     };
 }
 
@@ -47,7 +47,7 @@ pub mod errors {
 
 pub use error::{Error, InvocationError};
 pub use iii::TelemetryOptions;
-pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
+pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType, WorkerIdentityMode};
 pub use iii_helpers::queue::EnqueueResult;
 pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
@@ -64,16 +64,16 @@ pub use types::{StreamRequest, StreamResponse};
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
-    /// Custom worker metadata. Auto-detected if `None`. A non-empty
-    /// `III_WORKER_NAME` overrides `metadata.name`.
+    /// Custom worker metadata. Auto-detected if `None`. In managed identity
+    /// mode, process-wide identity variables override matching fields.
     pub metadata: Option<iii::WorkerMetadata>,
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<iii_helpers::observability::OtelConfig>,
-    /// Namespace this worker belongs to. Resolution order:
-    /// `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its
-    /// default namespace).
+    /// Namespace this worker belongs to. In managed mode, resolution order is
+    /// `namespace` > env `III_NAMESPACE` > `None`. In explicit mode, the
+    /// environment is not used.
     ///
     /// It scopes more than the registration. The worker and its functions
     /// register here, and everything the worker does afterwards follows it: a
@@ -81,6 +81,10 @@ pub struct InitOptions {
     /// [`IIIClient::register_trigger`] binds here, unless the call names
     /// another namespace.
     pub namespace: Option<String>,
+    /// Selects whether process-wide managed identity variables can override
+    /// this connection's metadata. Auxiliary connections should use
+    /// [`WorkerIdentityMode::Explicit`].
+    pub identity: WorkerIdentityMode,
 }
 
 /// Register the worker with a iii instance, returns a connected worker client.
@@ -144,17 +148,23 @@ pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
         headers,
         otel,
         namespace,
+        identity,
     } = options;
 
-    let iii = if let Some(metadata) = metadata {
-        IIIClient::with_metadata(address, metadata)
-    } else {
-        IIIClient::new(address)
-    };
+    let iii = IIIClient::with_identity(address, metadata.unwrap_or_default(), identity);
 
-    // options.namespace > III_NAMESPACE > None (engine applies its default).
-    if let Some(ns) = iii::resolve_namespace(namespace) {
-        iii.set_namespace(ns);
+    match identity {
+        WorkerIdentityMode::Managed => {
+            // options.namespace > III_NAMESPACE > None (engine applies its default).
+            if let Some(ns) = iii::resolve_namespace(namespace) {
+                iii.set_namespace(ns);
+            }
+        }
+        WorkerIdentityMode::Explicit => {
+            if let Some(ns) = namespace {
+                iii.set_namespace(ns);
+            }
+        }
     }
 
     if let Some(h) = headers {

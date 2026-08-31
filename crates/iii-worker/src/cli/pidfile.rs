@@ -232,7 +232,6 @@ mod tests {
     fn known_call_sites_route_through_module() {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let cases: &[(&str, &str)] = &[
-            ("src/cli/local_worker.rs", "pidfile::write_pid_file"),
             ("src/cli/managed.rs", "pidfile::write_pid_file"),
             (
                 "src/cli/worker_manager/libkrun.rs",

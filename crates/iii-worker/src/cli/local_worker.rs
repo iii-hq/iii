@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use super::project::{ProjectInfo, WORKER_MANIFEST, load_project_info};
 use super::rootfs::clone_rootfs;
 
+const PREPARED_MARKER_VERSION: &str = "workspace-copy-in-v1";
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Shared helpers (extracted from dev.rs)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -53,6 +55,10 @@ pub fn engine_url_for_runtime(
     _lan_ip: &Option<String>,
 ) -> String {
     format!("ws://localhost:{}", port)
+}
+
+fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
+    std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == PREPARED_MARKER_VERSION)
 }
 
 /// Ensure the terminal is in cooked (canonical) mode with proper input and
@@ -167,14 +173,9 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
 /// the separate `/opt/iii/supervisor` binary and its install plumbing
 /// that this function used to emit as `exec /opt/iii/supervisor ...`.
 ///
-/// `is_bundle` controls dep-directory bind-mount behavior:
-///   * local-path workers (false): bind-mount VM-local dirs over
-///     /workspace/{node_modules,.venv,target,dist,...} so dependency
-///     installs run inside the guest without polluting the host repo.
-///   * bundle workers (true): SKIP the bind-mount block entirely. The
-///     bundle is immutable and ships vendored deps (a bundle's
-///     `dist/index.js` IS the worker; masking it with an empty rootfs
-///     dir breaks the boot).
+/// `is_bundle` controls workspace behavior:
+///   * local-path workers copy host source into a guest-local `/workspace`;
+///   * bundle workers mount their immutable install directory at `/workspace`.
 pub fn build_libkrun_local_script(
     project: &ProjectInfo,
     prepared: bool,
@@ -182,34 +183,24 @@ pub fn build_libkrun_local_script(
     overlay: bool,
 ) -> String {
     let env_exports = build_env_exports(&project.env);
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts = vec![
+        "set -e".to_string(),
+        "export HOME=${HOME:-/root}".to_string(),
+        "export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string(),
+        "export LANG=${LANG:-C.UTF-8}".to_string(),
+    ];
 
-    parts.push("set -e".to_string());
-    parts.push("export HOME=${HOME:-/root}".to_string());
-    parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
-    parts.push("export LANG=${LANG:-C.UTF-8}".to_string());
-
-    // Workspace strategy (three cases):
+    // Workspace strategy:
     //
     //  - BUNDLE: the immutable install dir is mounted live at /workspace via
     //    virtiofs; vendored deps ship inside it, so no dep handling is needed.
     //
-    //  - OVERLAY local (W1 copy-in): the host project is mounted READ-ONLY at
-    //    /mnt/host-src and COPIED into a VM-local /workspace (on the ext4
-    //    upper). Dep installs (node_modules, .venv, …) and build outputs land
-    //    in the VM-local /workspace and persist across restarts on the upper —
-    //    and the host project is never WRITTEN, so the empty dep-dir folders
-    //    the bind-mount model created in the host repo no longer appear. Host
-    //    edits propagate via the source watcher restarting the VM (which
-    //    re-copies). The dep dirs are excluded from the copy so VM-local deps
-    //    survive a re-copy and host clutter isn't pulled in.
-    //
-    //  - LEGACY local: host project mounted live at /workspace (virtiofs) with
-    //    dep dirs bind-mounted from the rootfs to keep their writes VM-local.
-    //    Tradeoff: each bind target must exist, so a `mkdir /workspace/$d`
-    //    creates an empty dir in the host repo (the bug W1 fixes for overlay).
-    //    We tried overlayfs with a virtiofs lower and hit errno 102 (copy-up
-    //    fails for PassthroughFs reads); bind-mounts sidestep that.
+    //  - LOCAL: the host project is mounted temporarily at /mnt/host-src and
+    //    copied into /workspace. The share is detached before user code runs.
+    //    Later changes arrive over `iii.source-sync` and are written by
+    //    iii-init, which makes the guest kernel emit native inotify events.
+    //    Dependency and build directories remain VM-local and are excluded
+    //    from both the initial copy and later synchronization.
     //
     // The mountpoint checks guard against iii-init's mount_virtiofs_shares()
     // swallowing a mount failure as a warning (leaving the path
@@ -227,7 +218,7 @@ cd /workspace
 echo "iii: workspace ready (bundle worker; dep-dir bind-mounts skipped — vendored deps are shipped in the bundle)" >&2"#
                 .to_string(),
         );
-    } else if overlay {
+    } else {
         parts.push(
             r#"SRC=/mnt/host-src
 mkdir -p /workspace
@@ -256,55 +247,27 @@ find /workspace -mindepth 1 -maxdepth 1 \
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there.
 ( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
-# Enforce "host project untouched": DETACH the host source now that it's copied
-# in, so worker code cannot write back to the host repo via /mnt/host-src. cd
-# out first so the mount isn't busy. The unmount is FATAL: the share is mounted
-# read-write, so if we can't detach it we refuse to run user code rather than
-# risk mutating the host repo. The host-side watcher re-copies on the next boot.
+# Enforce "host project untouched": detach the initial source share before
+# user code runs. Later edits arrive as file operations over iii.source-sync.
 cd /
 umount "$SRC" || { echo "iii: ERROR could not detach $SRC; refusing to run with host source writable" >&2; exit 1; }
+mkdir -p /run/iii
+touch /run/iii/source-ready
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
-                .to_string(),
-        );
-    } else {
-        parts.push(
-            r#"if ! { mountpoint -q /workspace 2>/dev/null || awk '$5 == "/workspace" && / - virtiofs /' /proc/self/mountinfo | grep -q .; }; then
-  echo "iii: ERROR /workspace is not a virtiofs mountpoint (share missing or mount failed)" >&2
-  echo "--- III_VIRTIOFS_MOUNTS=${III_VIRTIOFS_MOUNTS:-<unset>} ---" >&2
-  cat /proc/self/mountinfo >&2 2>/dev/null || cat /proc/mounts >&2 2>/dev/null || mount >&2
-  exit 1
-fi
-DEPS_ROOT=/var/iii/deps
-for d in node_modules .venv target dist __pycache__ .pytest_cache .next; do
-  mkdir -p "$DEPS_ROOT/$d"
-  if [ ! -e "/workspace/$d" ]; then
-    mkdir "/workspace/$d"
-  elif [ ! -d "/workspace/$d" ]; then
-    echo "iii: WARN /workspace/$d exists but is not a directory, skipping bind" >&2
-    continue
-  fi
-  mount --bind "$DEPS_ROOT/$d" "/workspace/$d"
-done
-cd /workspace
-echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
                 .to_string(),
         );
     }
 
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
-    // Host source changes are handled by the host-side `__watch-source`
-    // sidecar (see source_watcher.rs), which restarts the whole VM on
-    // change. In-VM watchers are not expected to detect host edits, so
-    // no polling env vars are exported here — they'd just add overhead
-    // and couldn't help tsx 4.x anyway (tsx uses fs.watch with no
-    // polling fallback, and doesn't depend on chokidar).
+    // Host source changes are transported into /workspace by iii-init. The
+    // resulting guest-side filesystem operations produce normal inotify
+    // events; the command declared by the worker owns restart behavior.
 
     // Provisioning (setup + install) gating:
-    //   - legacy: the host decides via `prepared` — it can see the marker in
-    //     the per-worker clone (`managed_dir/var/.iii-prepared`) and omits the
-    //     block entirely once prepared.
+    //   - legacy: the host validates the versioned marker in the per-worker
+    //     clone and omits the block once the current workspace layout is ready.
     //   - overlay: the marker lives on the persistent ext4 upper, which the
     //     host CANNOT see (it's inside a block device). So always emit the
     //     block but guard it IN-GUEST on the marker. The upper persists across
@@ -321,15 +284,20 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
             prov.push_str(&project.install_cmd);
             prov.push('\n');
         }
-        // `&& sync` flushes the just-installed deps + the marker from the guest
-        // page cache to the ext4 upper (/dev/vdb) the instant install finishes.
+        // `sync` flushes the just-installed deps + the marker from the guest
+        // page cache to the ext4 upper (/dev/vdb) after install finishes.
         // Without it, a worker that exits within ext4's ~5s commit window tears
         // the VM down before the write lands, losing both and re-running install
         // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
         // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
         // after install but before the worker exits.
         parts.push(format!(
-            "if [ ! -e /var/.iii-prepared ]; then\n{prov}mkdir -p /var && touch /var/.iii-prepared && sync\nfi"
+            r#"if [ "$(cat /var/.iii-prepared 2>/dev/null || true)" != "{PREPARED_MARKER_VERSION}" ]; then
+rm -f /var/.iii-prepared
+{prov}mkdir -p /var
+printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared
+sync
+fi"#
         ));
         // Host-visible readiness: /opt/iii is a virtiofs mount of the host's
         // managed_dir/runtime, so the host (status / `--wait`) can see this
@@ -343,7 +311,9 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
         if !project.install_cmd.is_empty() {
             parts.push(project.install_cmd.clone());
         }
-        parts.push("mkdir -p /var && touch /var/.iii-prepared".to_string());
+        parts.push(format!(
+            r#"mkdir -p /var && printf '%s\n' '{PREPARED_MARKER_VERSION}' > /var/.iii-prepared"#
+        ));
     }
 
     // Exec the user command directly. When the host has configured a
@@ -880,7 +850,6 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         worker_name,
         worker_path,
         port,
-        /*disable_watcher=*/ false,
         /*is_bundle=*/ false,
         None,
         None,
@@ -896,8 +865,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
 /// Start a bundle worker VM. Same libkrun rails as
 /// `start_local_worker`, but two bundle-specific behaviors apply:
 ///
-/// 1. The host-side source watcher is NOT spawned (bundle is
-///    immutable; nothing to watch).
+/// 1. Source synchronization is not enabled because the bundle is immutable.
 /// 2. Resources from `iii.worker.yaml` are clamped against the
 ///    bundle resource caps BEFORE libkrun boot. The install-time
 ///    clamp (handle_bundle_add) only emits a warning; without this
@@ -921,7 +889,6 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         worker_name,
         worker_path,
         port,
-        /*disable_watcher=*/ true,
         /*is_bundle=*/ true,
         None,
         None,
@@ -953,10 +920,6 @@ pub async fn local_vm_command(
         // The guest reaches the engine through `over.engine_url`; no port is
         // derived here.
         0,
-        // Compose supervises the VM itself. A detached, name-keyed watcher
-        // could restart a different project that uses the same container key.
-        /*disable_watcher=*/
-        true,
         /*is_bundle=*/ false,
         Some(over),
         run_override,
@@ -1030,7 +993,6 @@ pub async fn bundle_vm_command(
         // The guest reaches the engine through `over.engine_url`; no port is
         // derived here.
         0,
-        /*disable_watcher=*/ true,
         /*is_bundle=*/ true,
         Some(over),
         None,
@@ -1049,10 +1011,8 @@ pub async fn bundle_vm_command(
 
 /// Shared body for `start_local_worker` and `start_bundle_worker`.
 ///
-/// Three flags differ between callers:
-///   * `disable_watcher` — bundle installs are immutable, so the
-///     host-side source watcher is suppressed.
-///   * `is_bundle` — when true, resources are parsed and clamped via
+/// `is_bundle` changes resource and workspace handling: when true, resources
+/// are parsed and clamped via
 ///     `bundle_download::parse_bundle_resources` (saturating + capped)
 ///     rather than the permissive `parse_manifest_resources`. Local
 ///     workers continue to honor whatever the user wrote.
@@ -1096,7 +1056,6 @@ async fn start_worker_impl(
     worker_name: &str,
     worker_path: &str,
     port: u16,
-    disable_watcher: bool,
     is_bundle: bool,
     over: Option<VmOverride<'_>>,
     run_override: Option<&str>,
@@ -1304,14 +1263,9 @@ async fn start_worker_impl(
         }
     }
 
-    // 5. Workspace staging. The actual strategy lives in the boot script
-    //    (build_libkrun_local_script) and depends on mode:
-    //      - legacy/bundle: the host project (or install dir) is shared LIVE at
-    //        guest /workspace via virtiofs; legacy also bind-mounts dep dirs
-    //        VM-local.
-    //      - overlay: the host project is shared at /mnt/host-src and COPIED
-    //        into a VM-local /workspace on the ext4 upper (W1 copy-in), so the
-    //        host repo is never written.
+    // 5. Workspace staging. Bundle installs are shared live at `/workspace`.
+    //    Local workers use `/mnt/host-src` only for initial copy-in, in both
+    //    legacy and overlay modes, so the host repo is never written.
     //    Pre-create the managed-dir mountpoint so the legacy clone (which IS
     //    the guest root) has /workspace to mount onto; harmless under overlay.
     let workspace_dir = managed_dir.join("workspace");
@@ -1325,16 +1279,29 @@ async fn start_worker_impl(
         return VmStart::Exit(1);
     }
 
-    // Check the .iii-prepared marker. Silent when true — the boot script
-    //    skips setup_cmd/install_cmd and nothing user-visible is happening
-    //    in the fast path. Printing a "Using cached deps" banner every
-    //    start made it look like install was running every restart (it
-    //    wasn't), which confused users reading watcher.log tails.
-    // Derive from the already-resolved `managed_dir` (built behind the strict
-    // home_dir() guard above) rather than re-resolving via worker name, so the
-    // marker check can't diverge from the dir this function actually uses.
+    // An empty marker from the former bind-mounted dependency layout is stale:
+    // its packages live under /var/iii/deps, while copy-in workers load them
+    // from /workspace. Remove stale markers before boot so status cannot report
+    // Ready while the replacement install is still running.
     let prepared_marker = super::managed::prepared_marker_in(&managed_dir);
-    let is_prepared = prepared_marker.exists();
+    let is_prepared = prepared_marker_matches_current_workspace(&prepared_marker);
+    if !is_prepared {
+        match std::fs::remove_file(&prepared_marker) {
+            Ok(()) => {
+                tracing::debug!(marker = %prepared_marker.display(), "removed stale prepared marker");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!(
+                    "{} Could not remove stale prepared marker {}: {}",
+                    "error:".red(),
+                    prepared_marker.display(),
+                    error
+                );
+                return VmStart::Exit(1);
+            }
+        }
+    }
 
     // 6. Build env with engine URL + OCI env + config.yaml env
     let engine_url = match over.as_ref() {
@@ -1507,11 +1474,10 @@ async fn start_worker_impl(
         parse_manifest_resources(&manifest_path)
     };
 
-    // W1 copy-in (overlay local only): share the host project READ-ONLY at
-    // /mnt/host-src and let the boot script copy it into a VM-local /workspace,
-    // so dep installs/build outputs never write the host repo (no empty dep
-    // folders). Bundles and legacy keep the live /workspace virtiofs mount.
-    let copy_in = overlay && !is_bundle;
+    // Local workers always copy into /workspace. This is required for native
+    // guest file events: later host changes are applied by iii-init rather than
+    // appearing as out-of-band mutations on a live virtiofs mount.
+    let copy_in = !is_bundle;
     let workspace_guest = if copy_in {
         "/mnt/host-src"
     } else {
@@ -1574,8 +1540,7 @@ async fn start_worker_impl(
     };
 
     // A caller with its own supervisor takes the built command and stops here:
-    // spawning, waiting and stopping are its job, and the source watcher below
-    // has nothing to watch on an immutable install.
+    // spawning, waiting, and stopping are its job.
     if over.is_some() {
         return match super::worker_manager::libkrun::build_vm_command(
             exec_path,
@@ -1588,6 +1553,7 @@ async fn start_worker_impl(
             rootfs_mode,
             rootfs_upper,
             &mounts,
+            (!is_bundle).then_some(project_path),
         ) {
             Ok(built) => VmStart::Plan(Box::new(built)),
             Err(e) => {
@@ -1597,7 +1563,6 @@ async fn start_worker_impl(
         };
     }
 
-    let managed_dir_for_watcher = managed_dir.clone();
     let exit_code = super::worker_manager::libkrun::run_dev(
         kind,
         worker_path,
@@ -1613,125 +1578,11 @@ async fn start_worker_impl(
         true,
         worker_name,
         &mounts,
+        (!is_bundle).then_some(project_path),
     )
     .await;
 
-    // Spawn the host-side source watcher sidecar. Virtiofs doesn't
-    // propagate inotify, so in-VM watchers (tsx watch, node --watch,
-    // cargo watch, etc.) don't see host edits — we watch from the host
-    // and re-invoke `iii-worker start` on change to kill+restart.
-    //
-    // Only spawn after the VM was successfully started; otherwise a
-    // watcher fire would race into kill_stale_worker against nothing.
-    //
-    // Bundle workers (disable_watcher=true) skip this entirely: the
-    // install dir is immutable and there is nothing to watch.
-    if !disable_watcher
-        && exit_code == 0
-        && let Err(e) =
-            spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher, overlay).await
-    {
-        eprintln!(
-            "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
-            "warning:".yellow(),
-            e
-        );
-    }
-
     VmStart::Exit(exit_code)
-}
-
-// Sidecar pidfile writes delegate to super::pidfile::write_pid_file for
-// unified hardening across all managed-dir pidfiles. See that module
-// for rationale; in short, O_NOFOLLOW + 0o600 on Unix so a symlink
-// pre-planted at watch.pid can't redirect our write to a sensitive
-// target.
-use super::pidfile::write_pid_file;
-
-/// Spawn the hidden `__watch-source` sidecar process, detached, with
-/// its PID recorded so `kill_stale_worker` can reap it on stop.
-async fn spawn_source_watcher(
-    worker_name: &str,
-    project_path: &Path,
-    managed_dir: &Path,
-    overlay: bool,
-) -> std::io::Result<()> {
-    use std::path::PathBuf;
-
-    // If a watcher is already running for this worker (stale PID file
-    // from a crashed previous start), reap it first so we don't stack
-    // sidecars that fight over the same project dir. Delegates to the
-    // grace-period reaper in managed.rs so both reap paths stay in sync.
-    super::managed::reap_source_watcher(worker_name).await;
-
-    let pid_file = managed_dir.join("watch.pid");
-    let self_exe = std::env::current_exe()?;
-    let logs_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".iii/logs")
-        .join(worker_name);
-    std::fs::create_dir_all(&logs_dir)?;
-    // Lock log dir to 0o700 so another local user can't traverse in and
-    // plant a symlink at watcher.log pointing at, e.g., ~/.ssh/authorized_keys.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(0o700));
-    }
-    let log_path = logs_dir.join("watcher.log");
-    let mut log_opts = std::fs::OpenOptions::new();
-    log_opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NOFOLLOW on the final path component so a pre-planted
-        // symlink (by another local user with dir-traverse access)
-        // can't redirect our appends to an arbitrary file.
-        log_opts.custom_flags(nix::libc::O_NOFOLLOW);
-        // Create as 0o600 — owner-only.
-        log_opts.mode(0o600);
-    }
-    let log_file = log_opts.open(&log_path)?;
-    let log_file2 = log_file.try_clone()?;
-
-    let project_abs =
-        std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
-
-    let mut cmd = std::process::Command::new(&self_exe);
-    cmd.arg("__watch-source")
-        .arg("--worker")
-        .arg(worker_name)
-        .arg("--project")
-        .arg(&project_abs)
-        .stdin(std::process::Stdio::null())
-        .stdout(log_file)
-        .stderr(log_file2);
-    // Hand the authoritative workspace model to the watcher so it never has to
-    // re-derive overlay-ness from the (best-effort, ambiguous) .iii-layout
-    // marker. Only passed when overlay; absence means live-mount.
-    if overlay {
-        cmd.arg("--overlay");
-    }
-
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            nix::unistd::setsid().map_err(std::io::Error::other)?;
-            Ok(())
-        });
-    }
-
-    let child = cmd.spawn()?;
-    let pid = child.id();
-    write_pid_file(&pid_file, pid);
-
-    eprintln!(
-        "  {} source watcher online (pid: {})",
-        "\u{2713}".green(),
-        pid
-    );
-    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1827,11 +1678,11 @@ mod tests {
         assert!(script.contains("npm install"));
         assert!(script.contains("node server.js"));
         assert!(script.contains(".iii-prepared"));
-        assert!(script.contains("mount --bind"));
-        assert!(script.contains("/var/iii/deps"));
+        assert!(script.contains("SRC=/mnt/host-src"));
+        assert!(script.contains("touch /run/iii/source-ready"));
+        assert!(!script.contains("mount --bind"));
         assert!(script.contains("node_modules"));
-        // Polling env vars were removed — the host-side __watch-source
-        // sidecar handles reload-on-edit by restarting the whole VM.
+        // The guest receives real file operations over iii.source-sync.
         assert!(!script.contains("CHOKIDAR_USEPOLLING"));
         assert!(!script.contains("WATCHFILES_FORCE_POLLING"));
         assert!(!script.contains("TSC_WATCHFILE"));
@@ -1854,7 +1705,42 @@ mod tests {
         assert!(!script.contains("apt-get install nodejs"));
         assert!(!script.contains("npm install"));
         assert!(script.contains("node server.js"));
-        assert!(script.contains("mount --bind"));
+        assert!(script.contains("SRC=/mnt/host-src"));
+        assert!(script.contains("touch /run/iii/source-ready"));
+    }
+
+    #[test]
+    fn legacy_empty_prepared_marker_reruns_install_after_copy_in_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join(".iii-prepared");
+        std::fs::write(&marker, "").unwrap();
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: String::new(),
+            install_cmd: "npm install".to_string(),
+            run_cmd: "npm run start".to_string(),
+            env: HashMap::new(),
+            base_image: None,
+        };
+
+        let script = build_libkrun_local_script(
+            &project,
+            prepared_marker_matches_current_workspace(&marker),
+            /*is_bundle=*/ false,
+            /*overlay=*/ false,
+        );
+
+        assert!(script.contains("npm install"));
+    }
+
+    #[test]
+    fn current_prepared_marker_matches_copy_in_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join(".iii-prepared");
+        std::fs::write(&marker, PREPARED_MARKER_VERSION).unwrap();
+
+        assert!(prepared_marker_matches_current_workspace(&marker));
     }
 
     #[test]
@@ -1874,16 +1760,18 @@ mod tests {
         let script = build_libkrun_local_script(
             &project, /*prepared=*/ true, /*is_bundle=*/ false, true,
         );
-        assert!(script.contains("if [ ! -e /var/.iii-prepared ]; then"));
+        assert!(script.contains("cat /var/.iii-prepared"));
+        assert!(script.contains(PREPARED_MARKER_VERSION));
+        assert!(script.contains("rm -f /var/.iii-prepared"));
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
         // Durability: the marker write is followed by `sync` so deps + marker
         // flush to the ext4 upper before a fast worker exit tears the VM down.
-        assert!(script.contains("touch /var/.iii-prepared && sync"));
+        assert!(script.contains("printf '%s\\n'"));
+        assert!(script.contains("sync\nfi"));
         assert!(script.contains("node server.js"));
-        // W1 copy-in: overlay copies host source from /mnt/host-src into a
-        // VM-local /workspace and does NOT bind-mount dep dirs (which would
-        // mkdir empty folders in the host repo).
+        // Local workers copy host source from /mnt/host-src into /workspace
+        // and do not bind-mount dependency directories.
         assert!(script.contains("SRC=/mnt/host-src"));
         assert!(script.contains("tar -cf -"));
         // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
@@ -1907,9 +1795,7 @@ mod tests {
     }
 
     #[test]
-    fn build_libkrun_local_script_legacy_still_uses_bind_loop() {
-        // Legacy (overlay=false) keeps the live /workspace + dep bind-mounts;
-        // W1 copy-in is overlay-only.
+    fn build_libkrun_local_script_legacy_uses_copy_in_for_native_events() {
         let project = ProjectInfo {
             name: "test".to_string(),
             kind: Some("typescript".to_string()),
@@ -1922,9 +1808,10 @@ mod tests {
         let script = build_libkrun_local_script(
             &project, /*prepared=*/ false, /*is_bundle=*/ false, false,
         );
-        assert!(script.contains("mount --bind"));
-        assert!(script.contains("/var/iii/deps"));
-        assert!(!script.contains("SRC=/mnt/host-src"));
+        assert!(!script.contains("mount --bind"));
+        assert!(!script.contains("/var/iii/deps"));
+        assert!(script.contains("SRC=/mnt/host-src"));
+        assert!(script.contains("touch /run/iii/source-ready"));
     }
 
     #[test]

@@ -2144,6 +2144,7 @@ impl ObservabilityWorker {
                 });
 
                 let engine = engine.clone();
+                let namespace = trigger.namespace.clone();
                 let function_id = trigger.function_id.clone();
                 // Trigger metadata must ride along (state/stream/cron parity):
                 // remote consumers key delivery routing on it.
@@ -2151,7 +2152,7 @@ impl ObservabilityWorker {
 
                 tokio::spawn(async move {
                     let _ = engine
-                        .call_with_metadata(&function_id, log_data, metadata)
+                        .call_with_metadata_ns(&namespace, &function_id, log_data, metadata)
                         .await;
                 });
             }
@@ -2324,11 +2325,11 @@ impl ObservabilityWorker {
     /// `{ trace_ids: [...] }` payload — the distinct traces touched in the
     /// window that match its filter — rather than per-span full payloads.
     ///
-    /// The handler is invoked fire-and-forget via `engine.call`; results are
-    /// ignored. NOTE: that `engine.call` is itself instrumented as a span, so
-    /// the subscriber MUST exclude trigger-delivery spans before they reach
-    /// here (see `run_trace_trigger_subscriber`) or the trigger would re-fire
-    /// on its own delivery — an unbounded feedback loop.
+    /// The handler is invoked fire-and-forget in the trigger's function
+    /// namespace; results are ignored. NOTE: that engine call is itself
+    /// instrumented as a span, so the subscriber MUST exclude trigger-delivery
+    /// spans before they reach here (see `run_trace_trigger_subscriber`) or the
+    /// trigger would re-fire on its own delivery — an unbounded feedback loop.
     async fn fire_trace_triggers(
         triggers: &Arc<OtelTraceTriggers>,
         engine: &Arc<Engine>,
@@ -2354,6 +2355,7 @@ impl ObservabilityWorker {
 
             let payload = serde_json::json!({ "trace_ids": trace_ids });
             let engine = engine.clone();
+            let namespace = trigger.namespace.clone();
             let function_id = trigger.function_id.clone();
             // Trigger metadata must ride along (state/stream/cron parity):
             // remote consumers key delivery routing on it.
@@ -2361,7 +2363,7 @@ impl ObservabilityWorker {
 
             tokio::spawn(async move {
                 let _ = engine
-                    .call_with_metadata(&function_id, payload, metadata)
+                    .call_with_metadata_ns(&namespace, &function_id, payload, metadata)
                     .await;
             });
         }
@@ -4749,13 +4751,15 @@ mod tests {
         }
     }
 
-    fn register_metadata_capture(
+    fn register_metadata_capture_ns(
         engine: &Arc<Engine>,
+        namespace: &str,
         function_id: &str,
     ) -> Arc<std::sync::Mutex<Vec<Option<Value>>>> {
         let captured: Arc<std::sync::Mutex<Vec<Option<Value>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        engine.register_function(
+        engine.register_function_ns(
+            namespace,
             crate::engine::RegisterFunctionRequest {
                 function_id: function_id.to_string(),
                 description: None,
@@ -4778,23 +4782,24 @@ mod tests {
         }
     }
 
-    /// Trace trigger deliveries must carry the trigger's registered
-    /// metadata, matching the state/stream/cron fan-outs: remote consumers
-    /// (e.g. session-wake harnesses) key delivery routing on it, and a bare
-    /// `engine.call` (metadata: None) silently starves their gate.
+    /// Trace trigger deliveries must resolve the function in the trigger's
+    /// namespace and carry the trigger's registered metadata, matching the
+    /// state/stream/cron fan-outs. Remote consumers (e.g. session-wake
+    /// harnesses) depend on both for routing.
     #[tokio::test]
-    async fn fire_trace_triggers_delivers_trigger_metadata() {
+    async fn fire_trace_triggers_delivers_to_namespace_with_metadata() {
         // `engine.call` instruments invocations via the global meter; without
         // it the fire-and-forget delivery tasks panic and no payload arrives.
         metrics::ensure_default_meter();
 
         let engine = Arc::new(Engine::new());
-        let captured = register_metadata_capture(&engine, "test::trace-meta");
+        let namespace = "harness-ns";
+        let captured = register_metadata_capture_ns(&engine, namespace, "test::trace-meta");
 
         let triggers = Arc::new(OtelTraceTriggers::new());
         triggers.triggers.write().await.insert(Trigger {
             id: "t-meta".to_string(),
-            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            namespace: namespace.to_string(),
             trigger_type: TRACE_TRIGGER_TYPE.to_string(),
             function_id: "test::trace-meta".to_string(),
             config: serde_json::json!({}),
@@ -4816,19 +4821,20 @@ mod tests {
         );
     }
 
-    /// Log trigger deliveries must carry the trigger's registered metadata,
-    /// for the same reason as the trace path.
+    /// Log trigger deliveries have the same namespace and metadata contract as
+    /// the trace path.
     #[tokio::test]
-    async fn log_trigger_delivery_carries_trigger_metadata() {
+    async fn log_trigger_delivery_uses_namespace_and_metadata() {
         metrics::ensure_default_meter();
 
         let engine = Arc::new(Engine::new());
-        let captured = register_metadata_capture(&engine, "test::log-meta");
+        let namespace = "harness-ns";
+        let captured = register_metadata_capture_ns(&engine, namespace, "test::log-meta");
 
         let triggers = Arc::new(OtelLogTriggers::new());
         triggers.triggers.write().await.insert(Trigger {
             id: "t-log-meta".to_string(),
-            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            namespace: namespace.to_string(),
             trigger_type: LOG_TRIGGER_TYPE.to_string(),
             function_id: "test::log-meta".to_string(),
             config: serde_json::json!({ "level": "all" }),
