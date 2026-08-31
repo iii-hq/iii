@@ -82,21 +82,6 @@ pub enum ComposeSubcommand {
     Build(BuildCli),
     /// Read retained worker stdout and stderr from a running Compose daemon.
     Logs(ComposeLogsCli),
-    /// Add registry workers and stream their dependency-tree progress.
-    Add(ComposeAddCli),
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ComposeAddCli {
-    /// Worker names, name@version references, registry references, or paths.
-    #[arg(required = true, value_name = "WORKER")]
-    pub workers: Vec<String>,
-    #[arg(long, value_name = "URL")]
-    pub engine: Option<String>,
-    #[arg(short = 'n', long = "namespace", value_name = "NS")]
-    pub namespace: Option<String>,
-    #[arg(short = 'f', long, value_name = "PATH")]
-    pub file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -184,13 +169,6 @@ pub enum ComposeCommand {
         follow: bool,
         stream: Option<LogStream>,
     },
-    /// Add workers through a running daemon and render pushed tree progress.
-    Add {
-        explicit_engine_url: Option<String>,
-        explicit_daemon_namespace: Option<String>,
-        file: Option<PathBuf>,
-        workers: Vec<String>,
-    },
 }
 
 impl ComposeCli {
@@ -215,12 +193,6 @@ impl ComposeCli {
                     tail: logs.tail.min(crate::logs::MAX_TAIL_LINES),
                     follow: logs.follow,
                     stream: logs.stream,
-                }),
-                ComposeSubcommand::Add(add) => Ok(ComposeCommand::Add {
-                    explicit_engine_url: add.engine.clone().filter(|url| !url.trim().is_empty()),
-                    explicit_daemon_namespace: validated_namespace(add.namespace.as_deref())?,
-                    file: add.file.clone(),
-                    workers: add.workers.clone(),
                 }),
             };
         }
