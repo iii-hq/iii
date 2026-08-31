@@ -533,12 +533,13 @@ impl Daemon {
 
         let current = ComposeFile::load(path)?;
         let project = self.project(path).await?;
+        let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
             .reconcile_file(current, &restart, operation_id)
             .await;
         if interrupted {
             return Err(ComposeError::OperationCancelled {
-                operation_id: up.operation_id,
+                operation_id: root_operation_id,
             });
         }
         let status = if up.status == OpStatus::Failed

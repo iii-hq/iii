@@ -393,29 +393,13 @@ async fn restart_one_inner(
 
     report::plan(&[(key.to_string(), 0)]);
     stop_one(ctx, children, records, key).await;
-    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
-        report::plan_done();
-        return None;
-    }
 
     // The child is gone, but the engine learns that from a socket closing and
     // not from us. Starting into that window makes the replacement collide
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    let released = if let Some(mut signal) = shutdown.clone() {
-        tokio::select! {
-            biased;
-            _ = signal.wait() => {
-                report::plan_done();
-                return None;
-            }
-            result = await_name_release(ctx, key) => result,
-        }
-    } else {
-        await_name_release(ctx, key).await
-    };
-    if let Err(error) = released {
+    if let Err(error) = await_name_release(ctx, key).await {
         report::failed(key, error.code(), &error.to_string());
         report::plan_done();
         report::summary_failed("restart", error.code(), began.elapsed());
@@ -424,7 +408,9 @@ async fn restart_one_inner(
 
     report::starting(key, "starting");
     let started = Instant::now();
-    let outcome = start_one_attempt(ctx, key, shutdown, Some(&operation_id)).await;
+    // Once the old worker has stopped, finish its replacement before observing
+    // cancellation again. Returning early here would persist a stopped worker.
+    let outcome = start_one_attempt(ctx, key, None, Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
@@ -460,8 +446,7 @@ async fn restart_one_inner(
             });
         }
         StartAttempt::Interrupted => {
-            report::plan_done();
-            return None;
+            unreachable!("replacement startup has no interrupt signal")
         }
     };
 

@@ -435,7 +435,7 @@ pub enum ComposeError {
     )]
     UnknownProject { id: String },
 
-    #[error("compose operation '{operation_id}' was cancelled")]
+    #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
     /// A relative `file=` that missed. The path is resolved by the daemon, in
@@ -571,3 +571,17 @@ impl ComposeError {
 }
 
 pub type Result<T> = std::result::Result<T, ComposeError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_message_does_not_expose_the_operation_id() {
+        let error = ComposeError::OperationCancelled {
+            operation_id: "caller-selected-id".to_string(),
+        };
+
+        assert_eq!(error.to_string(), "operation cancelled");
+    }
+}
