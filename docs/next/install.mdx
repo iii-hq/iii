@@ -162,16 +162,10 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-cmd">
       <span className="iii-qs-prompt">$</span>
-      <span>iii --config config.yaml</span>
+      <span>iii compose --up</span>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-comment"># New terminal, same folder</div>
-    <div className="iii-qs-cmd">
-      <span className="iii-qs-prompt">$</span>
-      <span>iii compose --engine ws://127.0.0.1:49134</span>
-    </div>
-    <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Third terminal, same folder</div>
     <div className="iii-qs-slot" data-qs="none">
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -249,7 +243,7 @@ agents within your iii system. You can add a provider worker later at any time.
   </div>
 </div>
 
-{/* llm-only: The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init iii-app && cd iii-app`, start `iii --config config.yaml`, and in a second terminal start `iii compose --engine ws://127.0.0.1:49134`. In a third terminal, add `harness`, `console`, and `provider-<name>` one at a time with `iii trigger compose::add worker=<name>`, then open http://localhost:3113. Export the provider credential in the terminal that runs the engine before starting it. Without an llm, add only `console`. */}
+{/* llm-only: The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init iii-app && cd iii-app`, start `iii compose --up` (it starts and manages the engine), and in a second terminal add `harness`, `console`, and `provider-<name>` in one `iii trigger compose::add worker=harness worker=console worker=provider-<name>` command, then open http://localhost:3113. Export the provider credential in the terminal that runs `iii compose --up` before starting it. Without an llm, add only `console`. */}
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 
