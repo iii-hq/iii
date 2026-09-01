@@ -659,11 +659,6 @@ impl Engine {
     /// the target of an invoke depend on who is asking, which is exactly the
     /// ambiguity namespaces exist to remove.
     ///
-    /// The sole compatibility exception is the immutable built-in
-    /// `iii-observability` UI content callback: published Console workers do
-    /// not preserve its explicit `default` target and invoke it from their
-    /// project namespace. No user function participates in that fallback.
-    ///
     /// A miss keeps the pre-existing `function_not_found` code (SDKs and the
     /// `Enqueue` provider-missing DX branch both match on it) and only enriches
     /// the message with the namespaces where the id *does* exist.
@@ -674,19 +669,6 @@ impl Engine {
     ) -> Result<Function, ErrorBody> {
         let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
         if let Some(function) = self.functions.get(namespace, function_id) {
-            return Ok(function);
-        }
-
-        // Console releases published before namespace-aware trigger callbacks
-        // invoke injected UI content in the Console worker's project namespace,
-        // even when the binding targets `default`. This function serves only
-        // immutable embedded JS/CSS, so let that one legacy callback resolve to
-        // its canonical engine-owned registration without weakening namespace
-        // isolation for any other function.
-        if namespace != DEFAULT_NAMESPACE
-            && function_id == crate::workers::observability::ui::CONTENT_FUNCTION_ID
-            && let Some(function) = self.functions.get(DEFAULT_NAMESPACE, function_id)
-        {
             return Ok(function);
         }
 
@@ -1316,29 +1298,6 @@ impl Engine {
                             }
                         }
                     }
-                }
-
-                // Built-in UI functions live in the engine's `default`
-                // namespace, but Console trigger providers live with their
-                // Compose project. Install one strict asset binding for this
-                // provider before publishing the type, so the pending drain
-                // below delivers it to the correct Console. Existing bindings
-                // are left alone and get replayed by register_trigger_type on
-                // reconnect.
-                if let Err(error) =
-                    crate::workers::observability::ui::register_trigger_for_provider(
-                        self,
-                        &reg_id,
-                        &provider_namespace,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        trigger_type_id = %reg_id,
-                        namespace = %provider_namespace,
-                        "failed to bind built-in observability UI to Console provider"
-                    );
                 }
 
                 let mut trigger_type = TriggerType::new_ns(
@@ -6167,195 +6126,6 @@ mod tests {
             engine.trigger_registry.trigger_types.is_empty(),
             "a provider with no namespace to serve must not be filed anywhere"
         );
-    }
-
-    #[tokio::test]
-    async fn published_console_can_resolve_builtin_observability_content_from_project_namespace() {
-        ensure_default_meter();
-        let engine = Arc::new(Engine::new());
-        crate::workers::observability::ui::register_function(&engine);
-
-        let function = engine
-            .resolve_function(
-                Some("harness-ns"),
-                crate::workers::observability::ui::CONTENT_FUNCTION_ID,
-            )
-            .expect("published Console callback should resolve canonical content");
-        let page = function
-            .call_handler(
-                None,
-                json!({ "path": crate::workers::observability::ui::PAGE_PATH }),
-                None,
-            )
-            .await;
-        let FunctionResult::Success(Some(page)) = page else {
-            panic!("resolved content handler should serve the page");
-        };
-        assert_eq!(page["content_type"], "text/javascript; charset=utf-8");
-
-        let Err(unrelated) = engine.resolve_function(Some("harness-ns"), "unrelated::default-only")
-        else {
-            panic!("compatibility fallback must not apply to other functions");
-        };
-        assert_eq!(unrelated.code, "function_not_found");
-    }
-
-    #[tokio::test]
-    async fn console_provider_receives_builtin_observability_assets_in_its_namespace() {
-        ensure_default_meter();
-        let engine = Engine::new();
-
-        crate::workers::observability::ui::register_triggers(&engine)
-            .await
-            .expect("no Console provider is a valid initial state");
-        assert!(engine.trigger_registry.pending_triggers.is_empty());
-
-        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
-        let provider = WorkerConnection::new(provider_tx);
-
-        for (trigger_type, expected_id, expected_path) in [
-            (
-                "console:script",
-                "iii-observability::ui-page@harness-ns",
-                "iii-observability/page.js",
-            ),
-            (
-                "console:style",
-                "iii-observability::ui-styles@harness-ns",
-                "iii-observability/styles.css",
-            ),
-        ] {
-            engine
-                .router_msg(
-                    &provider,
-                    &Message::RegisterTriggerType {
-                        id: trigger_type.to_string(),
-                        description: format!("{trigger_type} provider"),
-                        trigger_request_format: None,
-                        call_request_format: None,
-                        namespace: Some("harness-ns".to_string()),
-                    },
-                )
-                .await
-                .expect("Console trigger type should register");
-
-            let outbound = provider_rx
-                .try_recv()
-                .expect("Console provider should receive the built-in asset binding");
-            let Outbound::Protocol(Message::RegisterTrigger {
-                id,
-                function_id,
-                config,
-                namespace,
-                trigger_namespace,
-                ..
-            }) = outbound
-            else {
-                panic!("expected RegisterTrigger, got {outbound:?}");
-            };
-
-            assert_eq!(id, expected_id);
-            assert_eq!(function_id, "iii-observability::ui-content");
-            assert_eq!(config["path"], expected_path);
-            assert_eq!(
-                namespace.as_deref(),
-                None,
-                "the canonical content function lives in default"
-            );
-            assert_eq!(trigger_namespace.as_deref(), Some("harness-ns"));
-
-            let stored = engine
-                .trigger_registry
-                .triggers
-                .get(expected_id)
-                .expect("asset binding should be live");
-            assert_eq!(stored.provider_namespace, "harness-ns");
-            assert_eq!(stored.namespace, DEFAULT_NAMESPACE);
-        }
-
-        assert!(engine.trigger_registry.pending_triggers.is_empty());
-        assert!(
-            provider_rx.try_recv().is_err(),
-            "assets must bind once each"
-        );
-    }
-
-    #[tokio::test]
-    async fn builtin_observability_assets_are_isolated_and_replayed_per_console_namespace() {
-        ensure_default_meter();
-        let engine = Engine::new();
-
-        let register_script = |namespace: &str| Message::RegisterTriggerType {
-            id: "console:script".to_string(),
-            description: "Console script provider".to_string(),
-            trigger_request_format: None,
-            call_request_format: None,
-            namespace: Some(namespace.to_string()),
-        };
-
-        let (a_tx, mut a_rx) = mpsc::channel::<Outbound>(8);
-        let provider_a = WorkerConnection::new(a_tx);
-        engine
-            .router_msg(&provider_a, &register_script("project-a"))
-            .await
-            .expect("project A provider should register");
-
-        let (b_tx, mut b_rx) = mpsc::channel::<Outbound>(8);
-        let provider_b = WorkerConnection::new(b_tx);
-        engine
-            .router_msg(&provider_b, &register_script("project-b"))
-            .await
-            .expect("project B provider should register");
-
-        let asset_id = |outbound: Outbound| match outbound {
-            Outbound::Protocol(Message::RegisterTrigger { id, .. }) => id,
-            other => panic!("expected RegisterTrigger, got {other:?}"),
-        };
-        assert_eq!(
-            asset_id(a_rx.try_recv().expect("project A asset")),
-            "iii-observability::ui-page@project-a"
-        );
-        assert_eq!(
-            asset_id(b_rx.try_recv().expect("project B asset")),
-            "iii-observability::ui-page@project-b"
-        );
-
-        assert_eq!(
-            engine
-                .trigger_registry
-                .triggers
-                .get("iii-observability::ui-page@project-a")
-                .expect("project A binding")
-                .provider_namespace,
-            "project-a"
-        );
-        assert_eq!(
-            engine
-                .trigger_registry
-                .triggers
-                .get("iii-observability::ui-page@project-b")
-                .expect("project B binding")
-                .provider_namespace,
-            "project-b"
-        );
-
-        // A replacement provider gets the existing binding replayed exactly
-        // once; the observability hook must not create a duplicate.
-        let (replacement_tx, mut replacement_rx) = mpsc::channel::<Outbound>(8);
-        let replacement = WorkerConnection::new(replacement_tx);
-        engine
-            .router_msg(&replacement, &register_script("project-a"))
-            .await
-            .expect("replacement provider should register");
-        assert_eq!(
-            asset_id(replacement_rx.try_recv().expect("replayed project A asset")),
-            "iii-observability::ui-page@project-a"
-        );
-        assert!(
-            replacement_rx.try_recv().is_err(),
-            "replacement must receive one replay"
-        );
-        assert_eq!(engine.trigger_registry.triggers.len(), 2);
     }
 
     #[tokio::test]
