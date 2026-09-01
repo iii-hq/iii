@@ -167,9 +167,10 @@ A project that fails to start due to a project-related issue ends the command wi
 
 ### Adding workers
 
-`compose::add` declares one or more workers in the compose file and reconciles the project once. On
-the CLI, repeat `worker=` for each worker. Each value takes a registry package name (`state`), a
-package name with a version (`state@0.21.4`), or a directory (`./workers/api`).
+`compose::add worker=state worker=./workers/api` declares one or more workers in the compose file
+and reconciles the project once. On the CLI, repeat `worker=` for each worker. Each value takes a
+registry package name (`state`), a package name with a version (`state@0.21.4`), or a directory
+(`./workers/api`).
 
 A JSON payload for this function can use a single list: `{ "workers": ["database", "web"] }`.
 
