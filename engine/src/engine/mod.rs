@@ -54,10 +54,28 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// down directly (wedged reader guard).
 const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Function provided by the standalone `queue` worker for named enqueue
-/// actions. The engine owns receipt generation and uses this function only as
-/// the durable transport boundary.
+/// Function provided by the standalone `queue` worker in each project
+/// namespace. The engine owns receipt generation and uses this function only
+/// as the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
+
+/// Engine-shaped functions that the standalone queue worker provides inside
+/// each project namespace. These IDs are safe exceptions to the reserved
+/// `engine::*` rule because queue dispatch resolves them in an explicit target
+/// namespace; all other `engine::*` registrations remain restricted to
+/// `default`.
+const NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS: &[&str] = &[
+    ENQUEUE_PROVIDER_FUNCTION_ID,
+    "engine::queue::list_topics",
+    "engine::queue::topic_stats",
+    "engine::queue::dlq_topics",
+    "engine::queue::dlq_messages",
+];
+
+/// Returns whether a function is an official namespace-scoped queue provider.
+fn is_namespace_scoped_queue_function(function_id: &str) -> bool {
+    NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS.contains(&function_id)
+}
 
 /// How long a freshly connected worker's registrations wait for the namespace
 /// to arrive before the engine gives up and files them under
@@ -1844,31 +1862,57 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let mut enqueue_input = serde_json::json!({
-                                    "queue": queue.clone(),
-                                    "function_id": function_id.clone(),
-                                    "data": data,
-                                    "messageReceiptId": message_receipt_id.clone(),
-                                    "traceparent": traceparent.clone(),
-                                    "baggage": queued_baggage,
-                                });
-                                // The standalone queue predates namespaces and
-                                // strictly rejects unknown request fields. Keep
-                                // the default namespace wire-compatible with
-                                // those releases; only a non-default target
-                                // needs the additive field understood by a
-                                // namespace-aware queue provider.
-                                if target_namespace != DEFAULT_NAMESPACE {
-                                    enqueue_input["namespace"] =
-                                        Value::String(target_namespace.clone());
-                                }
-                                let result = engine
-                                    .call_with_metadata(
-                                        ENQUEUE_PROVIDER_FUNCTION_ID,
-                                        enqueue_input,
-                                        None,
-                                    )
-                                    .await;
+                                let has_target_provider = engine
+                                    .functions
+                                    .get(&target_namespace, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                    .is_some();
+                                let has_legacy_default_provider = target_namespace
+                                    != DEFAULT_NAMESPACE
+                                    && engine
+                                        .functions
+                                        .get(DEFAULT_NAMESPACE, ENQUEUE_PROVIDER_FUNCTION_ID)
+                                        .is_some();
+
+                                // A legacy provider in `default` rejects the
+                                // additive namespace field. Omitting the field
+                                // would enqueue the target function in the
+                                // wrong namespace, so fail before invoking it.
+                                let result = if !has_target_provider && has_legacy_default_provider
+                                {
+                                    Err(ErrorBody::new(
+                                        "queue_provider_namespace_unsupported",
+                                        format!(
+                                            "The queue provider in `{DEFAULT_NAMESPACE}` cannot \
+                                             enqueue functions in namespace `{target_namespace}`. \
+                                             Update the queue worker to a namespace-aware release \
+                                             and register it in `{target_namespace}`."
+                                        ),
+                                    ))
+                                } else {
+                                    let mut enqueue_input = serde_json::json!({
+                                        "queue": queue.clone(),
+                                        "function_id": function_id.clone(),
+                                        "data": data,
+                                        "messageReceiptId": message_receipt_id.clone(),
+                                        "traceparent": traceparent.clone(),
+                                        "baggage": queued_baggage,
+                                    });
+                                    // The default namespace remains compatible
+                                    // with old providers. A scoped provider gets
+                                    // the namespace needed by its consumer.
+                                    if target_namespace != DEFAULT_NAMESPACE {
+                                        enqueue_input["namespace"] =
+                                            Value::String(target_namespace.clone());
+                                    }
+                                    engine
+                                        .call_with_metadata_ns(
+                                            &target_namespace,
+                                            ENQUEUE_PROVIDER_FUNCTION_ID,
+                                            enqueue_input,
+                                            None,
+                                        )
+                                        .await
+                                };
 
                                 if let Some(invocation_id) = invocation_id {
                                     match result {
@@ -2164,7 +2208,10 @@ impl Engine {
                 // builtins. In `default` the ownership conflict with the builtin
                 // already blocks the shadow; outside it there is nothing to
                 // conflict with, so reserve the prefix here.
-                if reg_id.starts_with("engine::") && namespace != DEFAULT_NAMESPACE {
+                if reg_id.starts_with("engine::")
+                    && namespace != DEFAULT_NAMESPACE
+                    && !is_namespace_scoped_queue_function(&reg_id)
+                {
                     tracing::warn!(
                         worker_id = %worker.id,
                         function_id = %reg_id,
@@ -3948,7 +3995,7 @@ mod tests {
     /// bare id. In `default` the ownership conflict with the real builtin guards
     /// it instead, so `engine::*` there is allowed.
     #[tokio::test]
-    async fn register_function_reserves_engine_prefix_outside_default() {
+    async fn register_function_reserves_non_provider_engine_prefix_outside_default() {
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -3959,25 +4006,45 @@ mod tests {
         engine.begin_namespace_resolution(&worker);
         engine.resolve_connection_namespace(&worker, "orders").await;
 
-        let reserved = Message::RegisterFunction {
-            id: "engine::log::info".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        };
-        engine
-            .dispatch_msg(&worker, &reserved)
-            .await
-            .expect("dispatch");
-        assert!(
+        for function_id in ["engine::log::info", "engine::queue::custom"] {
+            let reserved = Message::RegisterFunction {
+                id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
             engine
-                .functions
-                .get("orders", "engine::log::info")
-                .is_none(),
-            "a reserved engine::* id must not register outside default"
-        );
+                .dispatch_msg(&worker, &reserved)
+                .await
+                .expect("dispatch");
+            assert!(
+                engine.functions.get("orders", function_id).is_none(),
+                "reserved function {function_id} must not register outside default"
+            );
+        }
+
+        // Queue providers are the narrow exception: enqueue dispatch and the
+        // queue administration API resolve them in the project namespace.
+        for function_id in super::NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS {
+            let queue_provider = Message::RegisterFunction {
+                id: (*function_id).to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
+            engine
+                .dispatch_msg(&worker, &queue_provider)
+                .await
+                .expect("dispatch queue provider");
+            assert!(
+                engine.functions.get("orders", function_id).is_some(),
+                "queue provider {function_id} must register in a project namespace"
+            );
+        }
 
         // The same-shaped id in `default` is allowed.
         let (tx2, _rx2) = mpsc::channel::<Outbound>(8);
@@ -4537,6 +4604,138 @@ mod tests {
         assert!(queued_baggage.contains("iii.session.id=s1"));
         assert!(queued_baggage.contains("iii.function.id=harness::turn"));
         assert!(!queued_baggage.contains("harness::send"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_prefers_provider_in_target_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |_input| {
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move { FunctionResult::Success(None) }
+            }),
+        );
+        engine.register_function_handler_ns(
+            "project-a",
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["namespace"], "project-a");
+        assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_rejects_legacy_provider_for_namespaced_target() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let legacy_calls_for_handler = legacy_calls.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                legacy_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if input.get("namespace").is_some() {
+                        FunctionResult::Failure(crate::protocol::ErrorBody::new(
+                            "unknown_field",
+                            "legacy provider rejects the namespace field",
+                        ))
+                    } else {
+                        FunctionResult::Success(None)
+                    }
+                }
+            }),
+        );
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                    namespace: Some("project-a".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                let error = error.expect("namespaced enqueue must reject a legacy provider");
+                assert_eq!(error.code, "enqueue_error");
+                assert!(error.message.contains("namespace-aware release"));
+                assert!(error.message.contains("project-a"));
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+
+        assert_eq!(
+            legacy_calls.load(Ordering::SeqCst),
+            0,
+            "legacy provider must not receive a namespaced enqueue"
+        );
     }
 
     #[tokio::test]

@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
             headers: None,
             // Resolved from III_NAMESPACE by the SDK when unset.
             namespace: None,
+            identity: Default::default(),
         },
     );
 
