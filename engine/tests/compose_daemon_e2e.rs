@@ -306,8 +306,10 @@ async fn schema_introspection_is_callable_and_matches_engine_metadata() {
     assert_eq!(schemas.len(), 1, "the filter returns one entry: {schema}");
     assert_eq!(schemas[0]["function_id"], "compose::up");
     assert!(schemas[0]["request"]["properties"]["file"].is_object());
-    assert!(schemas[0]["response"]["properties"]["changed"].is_object());
-    assert!(schemas[0]["response"]["properties"]["containers"].is_null());
+    assert!(schemas[0]["response"]["anyOf"].is_array());
+    let completed = &schemas[0]["response"]["definitions"]["MutationOutcome"]["properties"];
+    assert!(completed["changed"].is_object());
+    assert!(completed["containers"].is_null());
     assert_eq!(schemas[0]["default_timeout_ms"], 600_000);
     assert_eq!(schemas[0]["idempotent"], true);
 
