@@ -8,12 +8,9 @@ type: "how-to"
 Every call in a iii system passes through the engine: function invocations, trigger firings, and
 channel messages all flow across it. Because every worker communicates through the engine, it can
 trace work as it moves from one worker to the next, giving you observability across the whole system
-without each worker instrumenting itself. The `iii-observability` worker turns that information into
-OpenTelemetry traces, metrics, and logs:
-
-```bash
-iii worker add iii-observability
-```
+without each worker instrumenting itself. The automatically supplied `iii-observability` worker
+turns that information into OpenTelemetry traces, metrics, and logs. Do not declare it in either
+`config.yaml` or `worker-compose.yaml`.
 
 <Note>
   This page is a quick tour. For the complete configuration and the full list of query functions,
@@ -96,10 +93,16 @@ it handles a call. Built-in `engine::*` functions are not traced by default (set
 `III_OTEL_TRACE_BUILTINS=true` to include them), so call a worker function first to produce a trace.
 The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
 
-```bash
-# add the sandbox worker if you don't have it yet
-iii worker add iii-sandbox
+```yaml worker-compose.yaml
+engine:
+  workers:
+    iii-sandbox: {}
+```
 
+Start this file with `iii compose --up` before calling the sandbox function. `iii-sandbox` is an
+engine-owned exception, so it belongs under the top-level `engine.workers`, not under `containers`.
+
+```bash
 # run something to produce a trace
 iii trigger sandbox::run image=python lang=python code='print(1)'
 
@@ -120,7 +123,7 @@ iii trigger engine::traces::tree trace_id=$TID
 
 ## Health and clearing
 
-Check engine health, or clear stored telemetry while developing:
+Check engine health, or clear stored observability data while developing:
 
 ```bash
 # overall health status
@@ -146,5 +149,5 @@ iii trigger engine::traces::list | jq '.total'
 
 ## Seeing it in the console
 
-The [console](../using-iii/console) renders this telemetry visually, traces, logs, and metrics for a running
+The [console](../using-iii/console) renders this observability data visually, traces, logs, and metrics for a running
 system, so you usually do not query the functions above by hand during development.

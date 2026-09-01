@@ -50,12 +50,19 @@ workers:
       rbac:
         auth_function_id: auth::browser
         expose_functions:
-          - match("link::create")
-          - match("stream::*")
+          - match: "link::create"
+            namespace: browser
+          - match: "stream::*"
+            namespace: browser
 ```
 
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
 to connect (or reject it if authorization fails). That is covered in the next section.
+
+<Warning>
+  `auth_function_id` resolves in the `default` namespace. Register the auth worker there. An auth
+  worker in another namespace makes the listener reject every connection.
+</Warning>
 
 `expose_functions` is the allowlist of function IDs a session may call. Each entry is either a glob
 `match("...")` on the function ID or a `metadata:` selector that matches any function registered
@@ -63,11 +70,28 @@ with that metadata:
 
 ```yaml
 expose_functions:
-  - match("public::*") # any function under the public:: namespace
+  - match("public::*") # any function with the public:: id prefix
   - match("engine::functions::list") # one specific function
   - metadata:
       public: true # any function whose metadata.public is true
 ```
+
+### Namespace-scoped function rules
+
+An `expose_functions` rule without a namespace applies to `default` only. Add `namespace` when the
+session must call a function in another namespace:
+
+```yaml
+expose_functions:
+  - match: "orders::*"
+    namespace: orders
+  - metadata:
+      public: true
+    namespace: analytics
+```
+
+The `match` value supports `*` wildcards for the function id. The `namespace` value is an exact
+match and does not support wildcards. Add one rule for each namespace that the session can access.
 
 A function's [`metadata`](./functions#attach-metadata) is an arbitrary JSON object set when the
 function is registered, so you can shape it however your access model needs and gate on exactly the
@@ -185,13 +209,46 @@ The returned object is an `AuthResult`:
 
 | Field                             | Meaning                                                          |
 | --------------------------------- | ---------------------------------------------------------------- |
-| `allowed_functions`               | Function IDs to allow in addition to `expose_functions`.         |
+| `namespaces`                      | Grants per namespace: `{ "orders": ["svc::*"] }`. See below.     |
+| `allowed_functions`               | Function IDs to allow in addition to `expose_functions`, in `default` only. |
 | `forbidden_functions`             | Function IDs to deny even if they match. Takes precedence.       |
 | `allowed_trigger_types`           | Trigger types the session may bind. Omit to allow all.           |
 | `allow_trigger_type_registration` | Whether the session may register new trigger types.              |
 | `allow_function_registration`     | Whether the session may register functions (defaults to `true`). |
 | `context`                         | Arbitrary object forwarded to the middleware on every call.      |
 | `function_registration_prefix`    | Optional prefix applied to every function the session registers. |
+
+### Scope a session to namespaces
+
+`namespaces` maps a namespace to the function IDs the session may call inside it. An entry accepts
+an exact ID or a wildcard, in either the bare or the `match("...")` spelling `expose_functions`
+uses:
+
+```json
+{
+  "namespaces": {
+    "orders": ["svc::*", "billing::charge"],
+    "analytics": []
+  }
+}
+```
+
+The keys carry a second meaning: they are the namespaces the session may declare on
+`engine::workers::register`. A session holding this result registers in `orders` or `analytics`;
+declaring `default`, or any other namespace, is refused with `FORBIDDEN`. An entry with an empty
+list, like `analytics` above, grants the namespace and no functions inside it -- the session may
+register there and reaches only what `expose_functions` exposes.
+
+Return an empty `namespaces` (or omit it) to leave the session unscoped: it declares any namespace,
+and only `allowed_functions` and `expose_functions` apply.
+
+<Warning>
+  `allowed_functions` applies in `default` only. A grant listed there does not answer in `orders`,
+  even for a session scoped to it. Put per-namespace grants in `namespaces`.
+</Warning>
+
+`forbidden_functions` is the exception: it holds in every namespace, and it wins over both
+`namespaces` and the infrastructure functions every worker needs.
 
 ## Connect a client
 
@@ -202,7 +259,9 @@ WebSocket headers, so the token travels as a query parameter, the same one `auth
 import { registerWorker } from "iii-browser-sdk";
 
 const token = import.meta.env.VITE_BROWSER_TOKEN ?? "dev-token";
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`);
+export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`, {
+  namespace: "browser",
+});
 ```
 
 The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.
@@ -223,7 +282,8 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
     rbac:
       auth_function_id: auth::browser
       expose_functions:
-        - match("link::create")
+        - match: "link::create"
+          namespace: browser
 ```
 
 <Tabs>

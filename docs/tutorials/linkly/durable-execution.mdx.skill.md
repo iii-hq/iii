@@ -13,7 +13,7 @@ This chapter uses two workers. `queue` is already in your project from `iii proj
 `pubsub` now; you publish your first event to it later in the chapter:
 
 ```bash
-iii worker add pubsub
+iii trigger -n linkly compose::add worker=pubsub
 ```
 
 ## Make redirects fast with a queue
@@ -95,7 +95,7 @@ functionality yet, so we'll add that and an HTTP endpoint for it too.
 ### Publish on link.created
 
 Publish an event whenever a link is created or its target changes. Inside `link::create`, after the
-database write and `state::set`, trigger the built-in `publish` function:
+database write and `state::set`, trigger the `publish` function:
 
 ```typescript {3-6} src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -210,16 +210,28 @@ runtimes. So this time we'll create an analytics worker in Python to count links
 
 ### Create a new worker
 
-Scaffold a Python worker the same way you scaffolded the `link` worker in Chapter 1. That generates
-an `analytics/` worker with a `src/main.py` example, and a `iii.worker.yaml` manifest.
+Create a Python worker the same way you created the `link` worker in Chapter 1. It needs an
+`analytics/src/main.py` entrypoint and an `iii.worker.yaml` manifest.
 
 ```bash
-iii worker init analytics --language python
+mkdir -p analytics/src && touch analytics/src/main.py
+```
+
+Create its manifest. The install step supplies the SDK, observability helper, and source watcher
+inside the worker runtime:
+
+```yaml analytics/iii.worker.yaml
+name: analytics
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  install: pip install iii-sdk==0.21.4 iii-helpers==0.21.4 watchfiles
+  start: watchfiles 'python src/main.py'
 ```
 
 ### Subscribe to link.created events
 
-Replace the example `src/main.py` with this one that subscribes to `link.created` events and keeps
+Create `analytics/src/main.py` with this code, which subscribes to `link.created` events and keeps
 count of every time that a new short link is created:
 
 <Accordion title="analytics/src/main.py">
@@ -284,20 +296,6 @@ print("Analytics worker started")
 
 </Accordion>
 
-### Configure the worker
-
-The existing worker manifest at `analytics/iii.worker.yaml` will work for our purposes:
-
-```yaml iii.worker.yaml
-name: analytics
-runtime:
-  # Base OCI image used as the worker rootfs.
-  base_image: docker.io/iiidev/python:latest
-scripts:
-  install: pip install -e .
-  start: watchfiles 'python src/main.py'
-```
-
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
 Add an `analytics` database to the `database` worker's config file, alongside the `primary` one from
 Chapter 3. Edit `config/database.yaml` and add the second entry under `value: databases:`, then
@@ -318,10 +316,10 @@ value:
       url: sqlite:./data/analytics.db
 ```
 
-Finally, add the new analytics worker to your `config.yaml`:
+Finally, add the new analytics worker to Compose:
 
 ```bash
-iii worker add ./analytics
+iii trigger -n linkly compose::add worker=./analytics
 ```
 
 ### See it work

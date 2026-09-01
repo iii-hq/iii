@@ -2,10 +2,15 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox` worker:
+for agent tool-calls, REPLs, and one-off jobs. They are provided by the engine-owned `iii-sandbox`
+worker. Enable it in the managed Compose file before starting the engine:
 
-```bash
-iii worker add iii-sandbox
+```yaml worker-compose.yaml
+engine:
+  workers:
+    iii-sandbox:
+      auto_install: true
+      image_allowlist: [python, node]
 ```
 
 <Note>
@@ -123,31 +128,6 @@ iii trigger sandbox::fs::rm sandbox_id=$SB path=$D/app.py
 iii trigger sandbox::stop sandbox_id=$SB
 ```
 
-## Moving files in and out
-
-To copy a file between the host and a running sandbox, use the local `iii worker sandbox`
-file-transfer commands. These admin CLI commands are distinct from the `sandbox::*` trigger API used
-through the engine:
-
-```bash
-# boot a sandbox and capture its id
-SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
-
-# make a file to send
-echo 'hello from host' > ./local.txt
-
-# host -> sandbox
-iii worker sandbox upload "$SB" ./local.txt /remote.txt
-
-# remove the local copy
-rm ./local.txt
-
-# retrieve it from the sandbox
-iii worker sandbox download "$SB" /remote.txt ./remote.txt
-
-# -> hello from host
-cat ./remote.txt
-
-# stop the sandbox
-iii trigger sandbox::stop sandbox_id=$SB
-```
+For programmatic file transfer, use `sandbox::fs::write` and `sandbox::fs::read` from the previous
+section. Both operations stream through iii data channels, so they are also suitable for binary or
+larger payloads when called through an SDK.
