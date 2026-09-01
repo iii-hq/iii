@@ -3,38 +3,192 @@
 # Agentic
 
 
-This path builds Linkly with an AI agent. Each chapter below gives you a prompt to paste, the
-`worker-compose.yaml` block to enable, and the commands that show the result.
+This path builds Linkly with an AI agent. You give the agent one prompt per chapter; it writes the
+workers, and you check the result with the same commands the by-hand path uses.
 
-The `linkly` template holds the code for every chapter, commented out, with the chapter and step
-above each block. The agent uncomments the blocks a chapter needs and comments out the versions the
-chapter replaces.
+The scaffold is a starting point, not the answer: a `link` worker stub and the agent stack. The
+agent writes every function, and creates each new worker as you reach its chapter.
 
 ## Set up the agent
 
-The iii `harness` runs a coding agent inside the console. Uncomment the agent blocks in
-`worker-compose.yaml`, put your provider key in `.env`, and start the project:
+Create the project from the agentic scaffold:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii project init linkly --template linkly-agentic
+cd linkly
 ```
 
-Open the console at [http://127.0.0.1:3113](http://127.0.0.1:3113) and start a session. The
-[install recipes](/install) list every provider the harness supports.
+The `harness` worker runs a coding agent inside the [console](/using-iii/console). It reaches models
+through `llm-router`, which reads your provider key from `.env`. Add the key for the provider you
+use, then start the engine and the agent stack:
 
-Any coding agent with access to the project directory works the same way.
+```bash
+iii compose --up
+```
+
+Now add your provider and open the console. Select your provider for the exact commands:
+
+<div className="iii-qs" role="group" aria-label="provider setup">
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" defaultChecked />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai-codex" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-deepseek" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-kimi" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openrouter" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-xai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-zai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-github-copilot" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
+
+<div className="iii-qs-head">
+  <span className="iii-qs-title">select your llm provider</span>
+  <div className="iii-qs-picker">
+    <label className="iii-qs-pill" htmlFor="qs-anthropic">
+      anthropic
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai">
+      openai api
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai-codex">
+      openai codex
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-deepseek">
+      deepseek
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-kimi">
+      kimi (moonshot)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openrouter">
+      openrouter
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-xai">
+      xai (grok)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-zai">
+      z.ai
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-github-copilot">
+      github copilot
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-llamacpp">
+      llama.cpp (local)
+    </label>
+  </div>
+</div>
+
+  <div className="iii-qs-body">
+    <div className="iii-qs-slot" data-qs="anthropic">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ANTHROPIC_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-anthropic</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai-codex">
+      <div className="iii-qs-comment"># No api key. This provider uses your chatgpt subscription.</div>
+      <div className="iii-qs-comment"># Sign in with the codex cli first, so ~/.codex/auth.json exists:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>codex login</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai-codex</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="deepseek">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>DEEPSEEK_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-deepseek</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="kimi">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>MOONSHOT_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-kimi</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openrouter">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENROUTER_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openrouter</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="xai">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>XAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-xai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="zai">
+      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ZAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-zai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="github-copilot">
+      <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-github-copilot</span></div>
+      <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger provider::github-copilot::login::start</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="llamacpp">
+      <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default.</div>
+      <div className="iii-qs-comment"># A key is only needed when llama-server runs with --api-key:</div>
+      <div className="iii-qs-cmd"><span>LLAMACPP_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-llamacpp</span></div>
+    </div>
+
+    <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-comment"># Open the console:</div>
+    <div className="iii-qs-cmd"><span>http://127.0.0.1:3113</span></div>
+
+  </div>
+</div>
+
+Open the console, start a session, and paste the Chapter 1 prompt.
+
+The [install recipes](/install) list every provider the harness supports. Any coding agent with
+access to the project directory works too; point it at this folder and use the same prompts.
+
+<Note>
+  The agent runs inside the harness, under this same Compose daemon. It adds workers with
+  `iii trigger compose::add worker=<name>`, which starts them without restarting the stack it is
+  running in. It never restarts Compose. The `link` worker reloads on its own when its file changes.
+</Note>
 
 ## Ch. 1: Foundations
 
 <CodeGroup>
 
 ```text Prompt
-Read worker-compose.yaml and link/src/index.ts in this iii project.
+Build the link worker in link/src/index.ts of this iii project.
 
-In link/src/index.ts, uncomment every block tagged "Ch. 1". Leave every other block commented.
+Add two functions:
+- link::create({ url, code? }): generate a 6-character short code when none is given, make the url
+  absolute (add https:// when it has no scheme), store { url } in the state worker under scope
+  "links" key <code> with state::set, and return { code, url }.
+- link::resolve({ code }): read it back with state::get and return { url } or { url: null }.
 
-Then run `cd link && npm install && cd ..` and start the project with
-`iii compose --up --file worker-compose.yaml`.
+Then expose them over HTTP through the http worker:
+- an http::create function and a POST /links trigger that calls link::create.
+- an http::redirect function and a GET /s/:code trigger that resolves the code and returns a 302 to
+  the url, or 404 when it is unknown.
+
+Run `cd link && npm install && cd ..`. The link worker reloads on save. Do not restart Compose.
+
+The reference for this chapter is https://iii.dev/docs/next/tutorials/linkly/foundations.
 ```
 
 </CodeGroup>
@@ -73,13 +227,19 @@ Open the console's traces tab to see the same data.
 <CodeGroup>
 
 ```text Prompt
-Stop Compose. In worker-compose.yaml, uncomment the Ch. 3 block and the `start_after: [database]`
-line under `link`.
+Add durable storage so links and clicks survive a restart, with state kept in front as a read cache.
 
-In link/src/index.ts, uncomment every block tagged "Ch. 3" and comment out the Ch. 1 versions of
-the functions the Ch. 3 blocks replace.
+Add the database worker with `iii trigger compose::add worker=database`, then configure it for a
+SQLite database named "primary" at sqlite:./data/iii.db.
 
-Start the project again.
+In link/src/index.ts:
+- at startup, create a links table and a clicks table if they do not exist.
+- link::create also inserts the link row into the database.
+- link::resolve reads state first, falls back to the database, and warms the cache on a hit.
+- add link::record_click that inserts a row into clicks, and have http::redirect call it.
+
+Add workers with compose::add so you do not restart the stack. The reference is
+https://iii.dev/docs/next/tutorials/linkly/persistence.
 ```
 
 </CodeGroup>
@@ -103,14 +263,19 @@ path.
 <CodeGroup>
 
 ```text Prompt
-Stop Compose. In worker-compose.yaml, uncomment the Ch. 4 block and the `analytics` database entry
-under the Ch. 3 block's config_override.
+Make redirects fast and add analytics.
 
-In link/src/index.ts, uncomment every block tagged "Ch. 4" and comment out the versions they
-replace. In analytics/src/main.py, uncomment the Ch. 4 block.
+- Add the queue worker (compose::add worker=queue) with a standard "clicks" queue, and enqueue click
+  records instead of writing them inline on the redirect path.
+- Add the pubsub worker (compose::add worker=pubsub). link::create publishes a link.created event.
+- Add a second SQLite database named "analytics" for the analytics worker.
+- Create a Python analytics worker that subscribes to link.created and counts links per day, and add
+  it with `iii trigger compose::add worker=./analytics`.
+- Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
+  from a durable subscriber.
 
-Run `cd analytics && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..`,
-then start the project again.
+Add workers with compose::add. The reference is
+https://iii.dev/docs/next/tutorials/linkly/durable-execution.
 ```
 
 </CodeGroup>
@@ -139,13 +304,15 @@ regular pub/sub.
 <CodeGroup>
 
 ```text Prompt
-Stop Compose. In worker-compose.yaml, uncomment the Ch. 5 lines under `engine.workers` and the Ch. 5
-block under `containers`.
+Push every click to subscribers in real time.
 
-In click-streamer/src/index.ts, uncomment the Ch. 5 block. In link/src/index.ts, uncomment the
-Ch. 5 version of link::record_click and comment out the Ch. 3 version.
+- Enable the iii-stream engine worker.
+- Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with
+  `iii trigger compose::add worker=./click-streamer`.
+- Have link::record_click publish each click so the streamer broadcasts it.
 
-Run `cd click-streamer && npm install && cd ..`, then start the project again.
+Add workers with compose::add. The reference is
+https://iii.dev/docs/next/tutorials/linkly/streaming.
 ```
 
 </CodeGroup>
@@ -168,12 +335,15 @@ Every redirect appears in the `clicks` stream.
 <CodeGroup>
 
 ```text Prompt
-Stop Compose. In worker-compose.yaml, uncomment the Ch. 6 block.
+Bulk-load links from a CSV in a single streamed upload over a channel.
 
-In bulk-importer/src/index.ts and channel-client/import-links.js, uncomment the Ch. 6 blocks.
+- Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
+  each. Add it with `iii trigger compose::add worker=./bulk-importer`.
+- Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
+  of links to the importer.
 
-Run `cd bulk-importer && npm install && cd ..` and `cd channel-client && npm install && cd ..`,
-then start the project again.
+Add workers with compose::add. The reference is
+https://iii.dev/docs/next/tutorials/linkly/channels.
 ```
 
 </CodeGroup>
@@ -181,7 +351,7 @@ then start the project again.
 Check the result:
 
 ```bash
-cd channel-client && node import-links.js && cd ..
+cd channel-client && npm install && node import-links.js && cd ..
 iii trigger link::resolve code=mylink
 ```
 
@@ -195,18 +365,21 @@ The uploader reports two imported links, and both resolve.
 <CodeGroup>
 
 ```text Prompt
-Stop Compose. In worker-compose.yaml, uncomment the Ch. 7 block and the Ch. 7 lines under
-`engine.workers`.
+Turn a browser tab into a worker.
 
-In auth/src/index.ts, uncomment the Ch. 7 block. In link/src/index.ts, uncomment every block tagged
-"Ch. 7".
+- Add the two iii-worker-manager listeners: the trusted local one, and a browser-facing one on port
+  3110 with an RBAC allowlist gated by auth::browser.
+- Create an auth worker with an auth::browser function that admits browser connections, and add it
+  with `iii trigger compose::add worker=./auth`.
+- Add link::delete and link::request_delete: request_delete asks a browser-registered
+  user::confirm_destructive_op before deleting.
+- Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
+  react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
+  connect to the browser listener, call link::create, subscribe to the click stream, and register
+  user::confirm_destructive_op.
 
-Run `cd auth && npm install && cd ..`. Then create the frontend with
-`npm create vite@latest frontend -- --template react-ts`, install `iii-browser-sdk` in it, and write
-frontend/src/iii.ts and frontend/src/App.tsx as described in
+Add workers with compose::add. Run `npm run dev` in frontend/. The reference is
 https://iii.dev/docs/next/tutorials/linkly/frontend.
-
-Start the project again, then run `npm run dev` in frontend/.
 ```
 
 </CodeGroup>
