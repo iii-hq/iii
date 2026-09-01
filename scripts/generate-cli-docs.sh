@@ -50,9 +50,9 @@ To turn the usage data off, do one of these:
 - Create the file `~/.iii/telemetry_dev_optout`. The engine reads this file whatever starts the process.
 - Set `telemetry.enabled: false` in the engine configuration.
 
-The engine also turns the usage data off automatically in a CI environment.
+The engine also turns the usage data off automatically if it detects that it is in a CICD environment.
 
-This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs). To turn OpenTelemetry off, set `OTEL_ENABLED=false`.
+This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
 TELEMETRY_MDX
 } > "$OUT_FILE"
 

@@ -1059,6 +1059,36 @@ state:
         }
     }
 
+    #[test]
+    #[serial]
+    fn test_is_dev_optout_with_marker_file() {
+        // The user creates ~/.iii/telemetry_dev_optout by hand; iii never
+        // writes it. Point HOME at a tempdir and create the marker there.
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::remove_var("III_TELEMETRY_DEV");
+            env::set_var("HOME", dir.path());
+        }
+
+        let iii_dir = dir.path().join(".iii");
+        std::fs::create_dir_all(&iii_dir).unwrap();
+
+        assert!(
+            !is_dev_optout(),
+            "no opt-out before the marker file exists"
+        );
+
+        std::fs::write(iii_dir.join("telemetry_dev_optout"), "").unwrap();
+        assert!(
+            is_dev_optout(),
+            "should detect dev opt-out once the marker file exists"
+        );
+
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
     // =========================================================================
     // detect_client_type
     // =========================================================================
