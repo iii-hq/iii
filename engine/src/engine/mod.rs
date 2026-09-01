@@ -59,6 +59,24 @@ const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// as the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
 
+/// Engine-shaped functions that the standalone queue worker provides inside
+/// each project namespace. These IDs are safe exceptions to the reserved
+/// `engine::*` rule because queue dispatch resolves them in an explicit target
+/// namespace; all other `engine::*` registrations remain restricted to
+/// `default`.
+const NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS: &[&str] = &[
+    ENQUEUE_PROVIDER_FUNCTION_ID,
+    "engine::queue::list_topics",
+    "engine::queue::topic_stats",
+    "engine::queue::dlq_topics",
+    "engine::queue::dlq_messages",
+];
+
+/// Returns whether a function is an official namespace-scoped queue provider.
+fn is_namespace_scoped_queue_function(function_id: &str) -> bool {
+    NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS.contains(&function_id)
+}
+
 /// How long a freshly connected worker's registrations wait for the namespace
 /// to arrive before the engine gives up and files them under
 /// [`DEFAULT_NAMESPACE`].
@@ -2190,7 +2208,10 @@ impl Engine {
                 // builtins. In `default` the ownership conflict with the builtin
                 // already blocks the shadow; outside it there is nothing to
                 // conflict with, so reserve the prefix here.
-                if reg_id.starts_with("engine::") && namespace != DEFAULT_NAMESPACE {
+                if reg_id.starts_with("engine::")
+                    && namespace != DEFAULT_NAMESPACE
+                    && !is_namespace_scoped_queue_function(&reg_id)
+                {
                     tracing::warn!(
                         worker_id = %worker.id,
                         function_id = %reg_id,
@@ -3974,7 +3995,7 @@ mod tests {
     /// bare id. In `default` the ownership conflict with the real builtin guards
     /// it instead, so `engine::*` there is allowed.
     #[tokio::test]
-    async fn register_function_reserves_engine_prefix_outside_default() {
+    async fn register_function_reserves_non_provider_engine_prefix_outside_default() {
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -3985,25 +4006,45 @@ mod tests {
         engine.begin_namespace_resolution(&worker);
         engine.resolve_connection_namespace(&worker, "orders").await;
 
-        let reserved = Message::RegisterFunction {
-            id: "engine::log::info".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        };
-        engine
-            .dispatch_msg(&worker, &reserved)
-            .await
-            .expect("dispatch");
-        assert!(
+        for function_id in ["engine::log::info", "engine::queue::custom"] {
+            let reserved = Message::RegisterFunction {
+                id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
             engine
-                .functions
-                .get("orders", "engine::log::info")
-                .is_none(),
-            "a reserved engine::* id must not register outside default"
-        );
+                .dispatch_msg(&worker, &reserved)
+                .await
+                .expect("dispatch");
+            assert!(
+                engine.functions.get("orders", function_id).is_none(),
+                "reserved function {function_id} must not register outside default"
+            );
+        }
+
+        // Queue providers are the narrow exception: enqueue dispatch and the
+        // queue administration API resolve them in the project namespace.
+        for function_id in super::NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS {
+            let queue_provider = Message::RegisterFunction {
+                id: (*function_id).to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
+            engine
+                .dispatch_msg(&worker, &queue_provider)
+                .await
+                .expect("dispatch queue provider");
+            assert!(
+                engine.functions.get("orders", function_id).is_some(),
+                "queue provider {function_id} must register in a project namespace"
+            );
+        }
 
         // The same-shaped id in `default` is allowed.
         let (tx2, _rx2) = mpsc::channel::<Outbound>(8);

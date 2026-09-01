@@ -10,6 +10,7 @@ name = "iii_compose"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "0.1"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

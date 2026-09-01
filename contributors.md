@@ -15,3 +15,4 @@ The following users make all of their contributions to iii under the Apache 2 li
 - @SeCuReDmE-main-dev
 - @SimonFoobar648
 - @kriptoburak
+- @jeffersongoncalves
