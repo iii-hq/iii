@@ -438,6 +438,9 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    #[error("no compose operation '{operation_id}' is retained by this daemon")]
+    UnknownOperation { operation_id: String },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -560,6 +563,7 @@ impl ComposeError {
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::UnknownOperation { .. } => "UNKNOWN_OPERATION",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",

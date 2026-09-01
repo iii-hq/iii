@@ -80,6 +80,8 @@ pub struct ComposeRequest {
     pub progress_operation_id: Option<String>,
     /// Function or file contract requested by `compose::schema`.
     pub function_id: Option<String>,
+    /// Return after acceptance instead of waiting for completion.
+    pub wait: Option<bool>,
 }
 
 /// Request fields used by daemon-wide operations.
@@ -102,6 +104,8 @@ struct LifecycleOptions {
     file: Option<String>,
     /// Restrict the lifecycle operation to one container.
     container: Option<String>,
+    /// Set false to return an operation id and receive completion by trigger.
+    wait: Option<bool>,
 }
 
 /// Request fields used by project read operations.
@@ -131,6 +135,8 @@ struct AddOptions {
     worker: Option<String>,
     /// Caller-selected operation id for race-free progress subscription.
     operation_id: Option<String>,
+    /// Set false to return an operation id and receive completion by trigger.
+    wait: Option<bool>,
 }
 
 /// Request fields used by single-worker compose-file edits.
@@ -145,6 +151,8 @@ struct WorkerOptions {
     /// Worker name, `name@version`, registry reference, or local path. The
     /// accepted form depends on the operation.
     worker: String,
+    /// Set false to return an operation id and receive completion by trigger.
+    wait: Option<bool>,
 }
 
 /// `compose::restart` accepts either spelling for one container.
@@ -160,6 +168,24 @@ struct RestartOptions {
     container: Option<String>,
     /// Alias for `container`.
     worker: Option<String>,
+    /// Set false to return an operation id and receive completion by trigger.
+    wait: Option<bool>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct OperationGetOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
+    /// Operation id returned by an asynchronous compose mutation.
+    operation_id: String,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct OperationListOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
 }
 
 /// Request fields used by `compose::logs`.
@@ -249,7 +275,30 @@ struct CancelOutcome {
 struct AddAcceptedOutcome {
     operation_id: String,
     status: String,
+    state: String,
     requested: usize,
+    function_id: String,
+    trigger: CompletionTriggerHint,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct CompletionTriggerHint {
+    #[serde(rename = "type")]
+    trigger_type: String,
+    config: crate::operation::CompletionSubscription,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct OperationListOutcome {
+    operations: Vec<crate::operation::OperationSnapshot>,
+}
+
+#[allow(dead_code)]
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum AsyncOperationResponse<T> {
+    Completed(T),
+    Accepted(AddAcceptedOutcome),
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -294,12 +343,12 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
         }
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
-        let guard_name = name.to_string();
+        let function_id = function.clone();
 
         let registration = RegisterFunction::new_async(move |request: ComposeRequest| {
             let daemon = Arc::clone(&daemon);
-            let guard_name = guard_name.clone();
-            async move { dispatch(daemon, kind, guard_name, request).await }
+            let function_id = function_id.clone();
+            async move { dispatch(daemon, kind, function_id, request).await }
         });
         client.register_function(function.clone(), describe_op(registration, &function));
     }
@@ -318,6 +367,8 @@ enum Operation {
     Remove,
     Restart,
     Update,
+    OperationsGet,
+    OperationsList,
     Schema,
     Snapshot,
     Cancel,
@@ -329,6 +380,14 @@ impl Operation {
             self,
             Self::Up | Self::Down | Self::Add | Self::Remove | Self::Restart | Self::Update
         )
+    }
+
+    fn runs_async(self, wait: Option<bool>) -> bool {
+        self.is_mutation()
+            && match wait {
+                Some(wait) => !wait,
+                None => matches!(self, Self::Add),
+            }
     }
 }
 
@@ -345,6 +404,8 @@ const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("remove", Operation::Remove),
     ("restart", Operation::Restart),
     ("update", Operation::Update),
+    ("operations::get", Operation::OperationsGet),
+    ("operations::list", Operation::OperationsList),
     ("schema", Operation::Schema),
     ("operation", Operation::Snapshot),
     ("cancel", Operation::Cancel),
@@ -366,7 +427,7 @@ async fn dispatch(
             code: "WRONG_DAEMON".to_string(),
             message: format!(
                 "this daemon serves namespace '{}', not '{addressed}'. The namespace is a flag, \
-                 not a payload field: iii trigger compose::{function} --namespace {addressed} …",
+                 not a payload field: iii trigger {function} --namespace {addressed} …",
                 daemon.daemon_namespace
             ),
             stacktrace: None,
@@ -374,6 +435,17 @@ async fn dispatch(
     }
 
     let file = request.file.as_ref().map(std::path::PathBuf::from);
+
+    if operation.runs_async(request.wait) {
+        if matches!(operation, Operation::Add) && operation_targets(&request).is_empty() {
+            return daemon
+                .add(file.as_deref(), &[], operation_id())
+                .await
+                .map(|outcome| to_value(&outcome))
+                .map_err(|error| compose_error(&error));
+        }
+        return start_async_mutation(daemon, operation, function, request).await;
+    }
 
     match operation {
         Operation::Up => match daemon
@@ -399,92 +471,11 @@ async fn dispatch(
                 .workers
                 .or_else(|| request.worker.map(|worker| vec![worker]))
                 .unwrap_or_default();
-            if workers.is_empty() {
-                return daemon
-                    .add(file.as_deref(), &[], operation_id())
-                    .await
-                    .map(|outcome| to_value(&outcome))
-                    .map_err(|err| compose_error(&err));
-            }
-
-            let requested = workers.len();
-            let operation_id = request
-                .operation_id
-                .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
-            let operation = daemon
-                .operations
-                .create_with_id(operation_id.clone(), requested)
+            daemon
+                .add(file.as_deref(), &workers, operation_id())
                 .await
-                .map_err(|_| Error::Remote {
-                    code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
-                    message: format!("compose operation '{operation_id}' already exists"),
-                    stacktrace: None,
-                })?;
-            let operation_id = operation.id().to_string();
-            operation
-                .emit(
-                    None,
-                    "accepted",
-                    format!("adding {requested} requested workers"),
-                )
-                .await;
-
-            let daemon_task = Arc::clone(&daemon);
-            let task_operation_id = operation_id.clone();
-            tokio::spawn(async move {
-                operation
-                    .emit(None, "resolving", "resolving dependency trees")
-                    .await;
-                if operation.is_cancelled() {
-                    operation
-                        .finish(
-                            crate::operation::OperationStatus::Cancelled,
-                            "operation cancelled",
-                        )
-                        .await;
-                    return;
-                }
-                let result = daemon_task
-                    .add(file.as_deref(), &workers, task_operation_id)
-                    .await;
-                match result {
-                    Ok(outcome) => {
-                        let failed = outcome.is_failed();
-                        operation
-                            .finish(
-                                if failed {
-                                    crate::operation::OperationStatus::Failed
-                                } else {
-                                    crate::operation::OperationStatus::Succeeded
-                                },
-                                if failed {
-                                    "one or more workers failed"
-                                } else {
-                                    "all requested workers are ready"
-                                },
-                            )
-                            .await;
-                    }
-                    Err(ComposeError::OperationCancelled { .. }) => {
-                        operation
-                            .finish(
-                                crate::operation::OperationStatus::Cancelled,
-                                "operation cancelled",
-                            )
-                            .await
-                    }
-                    Err(error) => {
-                        operation
-                            .finish(crate::operation::OperationStatus::Failed, error.to_string())
-                            .await
-                    }
-                }
-            });
-            Ok(json!({
-                "operation_id": operation_id,
-                "status": "accepted",
-                "requested": requested
-            }))
+                .map(|outcome| to_value(&outcome))
+                .map_err(|error| compose_error(&error))
         }
         Operation::Remove => match daemon
             .remove(file.as_deref(), request.worker.as_deref(), operation_id())
@@ -583,6 +574,22 @@ async fn dispatch(
             })),
             Err(err) => Err(compose_error(&err)),
         },
+        Operation::OperationsGet => {
+            let id = request.operation_id.ok_or_else(|| Error::Remote {
+                code: "INVALID_REQUEST".to_string(),
+                message: "compose::operations::get requires operation_id".to_string(),
+                stacktrace: None,
+            })?;
+            let operation = daemon.operations.get(&id).await.ok_or_else(|| {
+                compose_error(&ComposeError::UnknownOperation {
+                    operation_id: id.clone(),
+                })
+            })?;
+            Ok(to_value(&operation.snapshot().await))
+        }
+        Operation::OperationsList => Ok(to_value(&OperationListOutcome {
+            operations: daemon.operations.snapshots().await,
+        })),
         Operation::Schema => Ok(to_value(&build_schema_response(
             request.function_id.as_deref(),
         ))),
@@ -606,6 +613,177 @@ async fn dispatch(
             Ok(json!({ "operation_id": id, "cancelled": daemon.operations.cancel(&id).await }))
         }
     }
+}
+
+async fn start_async_mutation(
+    daemon: Arc<Daemon>,
+    operation_kind: Operation,
+    function_id: String,
+    request: ComposeRequest,
+) -> Result<Value, Error> {
+    let targets = operation_targets(&request);
+    let requested = targets.len().max(1);
+    let operation_id = request
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
+    let operation = daemon
+        .operations
+        .create_with_id(operation_id.clone(), requested)
+        .await
+        .map_err(|_| Error::Remote {
+            code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
+            message: format!("compose operation '{operation_id}' already exists"),
+            stacktrace: None,
+        })?;
+    operation
+        .emit(
+            None,
+            "accepted",
+            format!("accepted {function_id} for {requested} requested target(s)"),
+        )
+        .await;
+
+    let accepted = AddAcceptedOutcome {
+        operation_id: operation_id.clone(),
+        status: "accepted".to_string(),
+        state: "accepted".to_string(),
+        requested,
+        function_id: function_id.clone(),
+        trigger: CompletionTriggerHint {
+            trigger_type: crate::operation::COMPLETION_TRIGGER_TYPE.to_string(),
+            config: crate::operation::CompletionSubscription {
+                operation_id: operation_id.clone(),
+            },
+        },
+    };
+
+    tokio::spawn(async move {
+        operation
+            .emit(None, "running", format!("running {function_id}"))
+            .await;
+        if operation.is_cancelled() {
+            operation
+                .finish(
+                    crate::operation::OperationStatus::Cancelled,
+                    "operation cancelled",
+                )
+                .await;
+            return;
+        }
+
+        match run_mutation(daemon, operation_kind, request, operation_id).await {
+            Ok(outcome) => {
+                let failed = outcome.is_failed();
+                operation
+                    .finish(
+                        if failed {
+                            crate::operation::OperationStatus::Failed
+                        } else {
+                            crate::operation::OperationStatus::Succeeded
+                        },
+                        if failed {
+                            "one or more workers failed"
+                        } else {
+                            "compose operation completed"
+                        },
+                    )
+                    .await;
+            }
+            Err(ComposeError::OperationCancelled { .. }) => {
+                operation
+                    .finish(
+                        crate::operation::OperationStatus::Cancelled,
+                        "operation cancelled",
+                    )
+                    .await;
+            }
+            Err(error) => {
+                operation
+                    .finish(crate::operation::OperationStatus::Failed, error.to_string())
+                    .await;
+            }
+        }
+    });
+
+    Ok(to_value(&accepted))
+}
+
+async fn run_mutation(
+    daemon: Arc<Daemon>,
+    operation: Operation,
+    request: ComposeRequest,
+    operation_id: String,
+) -> crate::Result<MutationOutcome> {
+    let file = request.file.as_ref().map(std::path::PathBuf::from);
+    match operation {
+        Operation::Up => daemon
+            .up(file.as_deref(), request.container.as_deref(), operation_id)
+            .await
+            .map(|result| {
+                MutationOutcome::from_operations(
+                    result.status,
+                    result.changed,
+                    request.container.as_deref(),
+                    None,
+                    None,
+                    std::iter::once(&result),
+                )
+            }),
+        Operation::Add => {
+            let workers = request
+                .workers
+                .or_else(|| request.worker.map(|worker| vec![worker]))
+                .unwrap_or_default();
+            daemon.add(file.as_deref(), &workers, operation_id).await
+        }
+        Operation::Remove => {
+            daemon
+                .remove(file.as_deref(), request.worker.as_deref(), operation_id)
+                .await
+        }
+        Operation::Restart => {
+            daemon
+                .restart(
+                    file.as_deref(),
+                    request.container.as_deref().or(request.worker.as_deref()),
+                    operation_id,
+                )
+                .await
+        }
+        Operation::Update => {
+            daemon
+                .update(file.as_deref(), request.worker.as_deref(), operation_id)
+                .await
+        }
+        Operation::Down => daemon
+            .down(file.as_deref(), request.container.as_deref(), operation_id)
+            .await
+            .map(|result| {
+                MutationOutcome::from_operations(
+                    result.status,
+                    result.changed,
+                    request.container.as_deref(),
+                    None,
+                    None,
+                    std::iter::once(&result),
+                )
+            }),
+        _ => unreachable!("run_mutation called for a read operation"),
+    }
+}
+
+fn operation_targets(request: &ComposeRequest) -> Vec<String> {
+    let mut targets = request.workers.clone().unwrap_or_default();
+    if let Some(target) = request
+        .worker
+        .as_ref()
+        .or(request.container.as_ref())
+        .filter(|target| !targets.contains(target))
+    {
+        targets.push(target.clone());
+    }
+    targets
 }
 
 /// Serialize the generated root schema into the value carried over the wire.
@@ -652,11 +830,12 @@ fn op_description(function_id: &str) -> &'static str {
     match function_id {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
-             Repeated calls leave ready containers running."
+             Repeated calls leave ready containers running. Set wait=false for asynchronous \
+             completion."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
-             reverse dependency order."
+             reverse dependency order. Set wait=false for asynchronous completion."
         }
         "compose::list" => "List every project loaded by this compose daemon.",
         "compose::status" => {
@@ -677,20 +856,24 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::add" => {
             "Declare one or more workers and their registry dependencies in the compose \
-             file, pin resolved versions, then reconcile changed workers once."
+             file, pin resolved versions, then reconcile changed workers once. Add is asynchronous \
+             by default; set wait=true to wait for completion."
         }
         "compose::remove" => {
             "Remove one declared worker and dependency references to it, stop \
-             only that worker, then reconcile anything already missing."
+             only that worker, then reconcile anything already missing. Set wait=false for \
+             asynchronous completion."
         }
         "compose::restart" => {
             "Restart the whole project, or restart one named container without \
-             changing its dependency graph."
+             changing its dependency graph. Set wait=false for asynchronous completion."
         }
         "compose::update" => {
             "Move one declared package worker to a requested or latest version, \
-             then restart the project."
+             then restart the project. Set wait=false for asynchronous completion."
         }
+        "compose::operations::get" => "Return one retained Compose operation snapshot.",
+        "compose::operations::list" => "List retained Compose operation snapshots.",
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
              Optional function_id filters one entry. The worker-compose.yaml \
@@ -722,6 +905,7 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
         "compose::remove" => (600_000, true),
         "compose::restart" => (600_000, false),
         "compose::update" => (600_000, false),
+        "compose::operations::get" | "compose::operations::list" => (10_000, true),
         "compose::schema" | "worker-compose.yaml" => (10_000, true),
         "compose::operation" | "compose::cancel" => (10_000, true),
         _ => (30_000, false),
@@ -738,12 +922,12 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::up",
                 schema_for_value::<LifecycleOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
             ),
             (
                 "compose::down",
                 schema_for_value::<LifecycleOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
             ),
             (
                 "compose::list",
@@ -773,22 +957,32 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::add",
                 add_options_schema(),
-                schema_for_value::<AddAcceptedOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
             ),
             (
                 "compose::remove",
                 schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
             ),
             (
                 "compose::restart",
                 schema_for_value::<RestartOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
             ),
             (
                 "compose::update",
                 schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                schema_for_value::<AsyncOperationResponse<MutationOutcome>>(),
+            ),
+            (
+                "compose::operations::get",
+                schema_for_value::<OperationGetOptions>(),
+                schema_for_value::<crate::operation::OperationSnapshot>(),
+            ),
+            (
+                "compose::operations::list",
+                schema_for_value::<OperationListOptions>(),
+                schema_for_value::<OperationListOutcome>(),
             ),
             (
                 "compose::schema",
@@ -957,6 +1151,7 @@ mod tests {
         assert!(up.contains_key("namespace"));
         assert!(up.contains_key("file"));
         assert!(up.contains_key("container"));
+        assert!(up.contains_key("wait"));
         assert!(!up.contains_key("worker"));
 
         let (_, add, _) = schema_entry("compose::add");
@@ -965,6 +1160,8 @@ mod tests {
         assert!(add.contains_key("file"));
         assert!(add.contains_key("workers"));
         assert!(add.contains_key("worker"));
+        assert!(add.contains_key("operation_id"));
+        assert!(add.contains_key("wait"));
         assert!(!add.contains_key("container"));
         assert_eq!(add["workers"]["minItems"], 1);
         let alternatives = schema_entry("compose::add").1.as_ref().unwrap()["anyOf"]
@@ -1044,7 +1241,12 @@ mod tests {
             "compose::restart",
             "compose::update",
         ] {
-            let properties = schema_entry(id).2.as_ref().unwrap()["properties"]
+            let response = schema_entry(id).2.as_ref().unwrap();
+            assert!(
+                response["anyOf"].is_array(),
+                "{id} must expose sync and async outcomes"
+            );
+            let properties = response["definitions"]["MutationOutcome"]["properties"]
                 .as_object()
                 .unwrap();
             for internal in ["operation_id", "containers", "up", "down", "restarted"] {
@@ -1060,12 +1262,32 @@ mod tests {
 
     #[test]
     fn add_response_is_an_observable_operation_admission() {
-        let properties = schema_entry("compose::add").2.as_ref().unwrap()["properties"]
+        let response = schema_entry("compose::add").2.as_ref().unwrap();
+        let properties = response["definitions"]["AddAcceptedOutcome"]["properties"]
             .as_object()
             .unwrap();
         assert!(properties.contains_key("operation_id"));
         assert!(properties.contains_key("status"));
+        assert!(properties.contains_key("state"));
         assert!(properties.contains_key("requested"));
+        assert!(properties.contains_key("trigger"));
         assert!(!properties.contains_key("containers"));
+    }
+
+    #[test]
+    fn wait_controls_async_mutations_without_changing_add_default() {
+        for operation in [
+            Operation::Up,
+            Operation::Down,
+            Operation::Add,
+            Operation::Remove,
+            Operation::Restart,
+            Operation::Update,
+        ] {
+            assert!(operation.runs_async(Some(false)));
+            assert!(!operation.runs_async(Some(true)));
+        }
+        assert!(Operation::Add.runs_async(None));
+        assert!(!Operation::Restart.runs_async(None));
     }
 }

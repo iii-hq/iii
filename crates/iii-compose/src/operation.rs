@@ -16,17 +16,25 @@ use std::{
 
 use iii_sdk::{
     Error, IIIClient, RegisterTriggerType,
-    protocol::{TriggerAction, TriggerRequest},
+    protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata},
     trigger::{TriggerConfig, TriggerHandler},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, watch};
 
+/// Fires once when a Compose operation reaches a terminal state.
+pub const COMPLETION_TRIGGER_TYPE: &str = "compose::operation";
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProgressSubscription {
     /// Operation to follow. Omit to receive every operation from this daemon.
     pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompletionSubscription {
+    pub operation_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -129,6 +137,132 @@ impl ProgressEmitter {
     }
 }
 
+#[derive(Default)]
+struct CompletionState {
+    bindings: BTreeMap<String, TriggerConfig>,
+    terminal: BTreeMap<String, OperationSnapshot>,
+}
+
+#[derive(Clone)]
+struct CompletionEmitter {
+    client: IIIClient,
+    state: Arc<Mutex<CompletionState>>,
+}
+
+impl CompletionEmitter {
+    fn register(client: &IIIClient) -> Self {
+        let emitter = Self {
+            client: client.clone(),
+            state: Arc::new(Mutex::new(CompletionState::default())),
+        };
+        client.register_trigger_type(
+            RegisterTriggerType::new(
+                COMPLETION_TRIGGER_TYPE,
+                "Fires when the named Compose operation reaches a terminal state",
+                CompletionTriggers {
+                    emitter: emitter.clone(),
+                },
+            )
+            .trigger_request_format::<CompletionSubscription>()
+            .call_request_format::<OperationSnapshot>(),
+        );
+        emitter
+    }
+
+    async fn subscribe(&self, config: TriggerConfig) -> Result<(), Error> {
+        let subscription = completion_subscription(&config)?;
+        let terminal = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            match state.terminal.get(&subscription.operation_id).cloned() {
+                Some(snapshot) => Some(snapshot),
+                None => {
+                    state.bindings.insert(config.id.clone(), config.clone());
+                    None
+                }
+            }
+        };
+        if let Some(snapshot) = terminal {
+            self.deliver(config, snapshot).await;
+        }
+        Ok(())
+    }
+
+    fn unsubscribe(&self, config: &TriggerConfig) {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .bindings
+            .remove(&config.id);
+    }
+
+    async fn publish(&self, snapshot: &OperationSnapshot) {
+        let bindings = {
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state
+                .terminal
+                .insert(snapshot.operation_id.clone(), snapshot.clone());
+            let ids = state
+                .bindings
+                .iter()
+                .filter_map(|(id, config)| {
+                    completion_subscription(config)
+                        .ok()
+                        .filter(|subscription| subscription.operation_id == snapshot.operation_id)
+                        .map(|_| id.clone())
+                })
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| state.bindings.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        let deliveries = bindings
+            .into_iter()
+            .map(|config| self.deliver(config, snapshot.clone()));
+        futures::future::join_all(deliveries).await;
+    }
+
+    async fn deliver(&self, config: TriggerConfig, snapshot: OperationSnapshot) {
+        let mut request: TriggerRequestWithMetadata = TriggerRequest {
+            function_id: config.function_id,
+            payload: serde_json::to_value(snapshot).unwrap_or_default(),
+            action: Some(TriggerAction::Void),
+            timeout_ms: Some(5_000),
+        }
+        .into();
+        if let Some(metadata) = config.metadata {
+            request = request.metadata(metadata);
+        }
+        if let Some(namespace) = config.namespace {
+            request = request.namespace(namespace);
+        }
+        let _ = self.client.trigger(request).await;
+    }
+}
+
+struct CompletionTriggers {
+    emitter: CompletionEmitter,
+}
+
+#[async_trait::async_trait]
+impl TriggerHandler for CompletionTriggers {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.emitter.subscribe(config).await
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+        self.emitter.unsubscribe(&config);
+        Ok(())
+    }
+}
+
+fn completion_subscription(config: &TriggerConfig) -> Result<CompletionSubscription, Error> {
+    serde_json::from_value(config.config.clone()).map_err(|error| Error::Remote {
+        code: "INVALID_TRIGGER_CONFIG".to_string(),
+        message: format!("compose::operation requires operation_id: {error}"),
+        stacktrace: None,
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationStatus {
@@ -187,10 +321,16 @@ pub struct Operation {
     state: RwLock<State>,
     cancel: watch::Sender<bool>,
     emitter: ProgressEmitter,
+    completion: CompletionEmitter,
 }
 
 impl Operation {
-    fn new(id: String, requested: usize, emitter: ProgressEmitter) -> Arc<Self> {
+    fn new(
+        id: String,
+        requested: usize,
+        emitter: ProgressEmitter,
+        completion: CompletionEmitter,
+    ) -> Arc<Self> {
         let (cancel, _) = watch::channel(false);
         Arc::new(Self {
             id,
@@ -206,6 +346,7 @@ impl Operation {
             }),
             cancel,
             emitter,
+            completion,
         })
     }
     pub fn id(&self) -> &str {
@@ -293,6 +434,7 @@ impl Operation {
             event
         };
         self.emitter.publish(&event).await;
+        self.completion.publish(&self.snapshot().await).await;
     }
     pub async fn snapshot(&self) -> OperationSnapshot {
         let s = self.state.read().await;
@@ -312,6 +454,7 @@ impl Operation {
 pub struct OperationManager {
     operations: RwLock<BTreeMap<String, Arc<Operation>>>,
     emitter: ProgressEmitter,
+    completion: CompletionEmitter,
 }
 
 /// The caller-selected operation id is already registered in this daemon.
@@ -327,6 +470,7 @@ impl OperationManager {
         Self {
             operations: RwLock::new(BTreeMap::new()),
             emitter: ProgressEmitter::register(client),
+            completion: CompletionEmitter::register(client),
         }
     }
     /// Creates an operation with a generated unique id.
@@ -354,7 +498,12 @@ impl OperationManager {
             return Err(OperationIdAlreadyExists { operation_id: id });
         }
 
-        let op = Operation::new(id.clone(), requested, self.emitter.clone());
+        let op = Operation::new(
+            id.clone(),
+            requested,
+            self.emitter.clone(),
+            self.completion.clone(),
+        );
         operations.insert(id.clone(), Arc::clone(&op));
         active_operations()
             .lock()
@@ -364,6 +513,21 @@ impl OperationManager {
     }
     pub async fn get(&self, id: &str) -> Option<Arc<Operation>> {
         self.operations.read().await.get(id).cloned()
+    }
+    pub async fn snapshots(&self) -> Vec<OperationSnapshot> {
+        let operations = self
+            .operations
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut snapshots = Vec::with_capacity(operations.len());
+        for operation in operations {
+            snapshots.push(operation.snapshot().await);
+        }
+        snapshots.reverse();
+        snapshots
     }
     pub async fn cancel(&self, id: &str) -> bool {
         let Some(op) = self.get(id).await else {
@@ -392,7 +556,11 @@ mod tests {
             client,
             bindings: Arc::new(Mutex::new(BTreeMap::new())),
         };
-        let root = Operation::new("compose:test-root".into(), 1, emitter);
+        let completion = CompletionEmitter {
+            client: IIIClient::new("ws://127.0.0.1:1/ws"),
+            state: Arc::new(Mutex::new(CompletionState::default())),
+        };
+        let root = Operation::new("compose:test-root".into(), 1, emitter, completion);
         active_operations()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -428,5 +596,52 @@ mod tests {
                 .expect("first operation should remain"),
             &first
         ));
+    }
+
+    #[tokio::test]
+    async fn terminal_snapshot_is_retained_for_late_completion_subscribers() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let completion_state = Arc::new(Mutex::new(CompletionState::default()));
+        let operation = Operation::new(
+            "compose:terminal".into(),
+            1,
+            ProgressEmitter {
+                client: client.clone(),
+                bindings: Arc::new(Mutex::new(BTreeMap::new())),
+            },
+            CompletionEmitter {
+                client,
+                state: Arc::clone(&completion_state),
+            },
+        );
+
+        operation.emit(None, "running", "operation started").await;
+        assert!(
+            completion_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .terminal
+                .is_empty(),
+            "non-terminal progress must not wake completion subscribers"
+        );
+
+        operation
+            .finish(OperationStatus::Succeeded, "operation completed")
+            .await;
+
+        let state = completion_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = state
+            .terminal
+            .get("compose:terminal")
+            .expect("terminal snapshot should be retained");
+        assert_eq!(snapshot.status, OperationStatus::Succeeded);
+        assert!(
+            snapshot
+                .last_event
+                .as_ref()
+                .is_some_and(|event| event.terminal)
+        );
     }
 }
