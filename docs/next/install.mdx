@@ -69,20 +69,24 @@ any other provider in `worker-compose.yaml` later.
 </div>
 
   <div className="iii-qs-body">
-    <div className="iii-qs-comment"># Install iii & create a harness project</div>
+    <div className="iii-qs-comment"># Install iii</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</span>
       </div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii project init my-harness --template harness && cd my-harness</span>
-      </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-slot" data-qs="none">
-      <div className="iii-qs-comment"># No llm needed now. Add a provider key to .env whenever you want agents; the console starts either way.</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>iii project init my-app && cd my-app</span>
+      </div>
+      <div className="iii-qs-comment"># No llm. The base template starts just the console.</div>
     </div>
     <div className="iii-qs-slot" data-qs="openai">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># provider-openai is enabled by default. Set OPENAI_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -90,6 +94,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="anthropic">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># provider-anthropic is enabled by default. Set ANTHROPIC_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -97,6 +105,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># No api key. Uses your chatgpt subscription. Sign in with the codex cli so ~/.codex/auth.json exists:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -109,6 +121,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="deepseek">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Enable provider-deepseek in worker-compose.yaml, then set DEEPSEEK_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -120,6 +136,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Enable provider-kimi in worker-compose.yaml, then set MOONSHOT_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -131,6 +151,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Enable provider-openrouter in worker-compose.yaml, then set OPENROUTER_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -142,6 +166,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="xai">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Enable provider-xai in worker-compose.yaml, then set XAI_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -153,6 +181,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="zai">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Enable provider-zai in worker-compose.yaml, then set ZAI_API_KEY in .env:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -164,6 +196,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="github-copilot">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models. Enable the provider in worker-compose.yaml:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -171,6 +207,10 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="llamacpp">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default. Enable the provider in worker-compose.yaml:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
@@ -183,7 +223,7 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Start the engine and the whole harness stack</div>
+    <div className="iii-qs-comment"># Start the engine and your project</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>{'iii compose --up'}</span>
@@ -197,7 +237,6 @@ any other provider in `worker-compose.yaml` later.
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-comment"># Open your browser to http://localhost:3113</div>
-
   </div>
 </div>
 
