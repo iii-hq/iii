@@ -27,24 +27,6 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "npm"
-    directory: "/docs"
-    schedule:
-      interval: "weekly"
-    groups:
-      all-npm-docs:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "npm"
-    directory: "/website"
-    schedule:
-      interval: "weekly"
-    groups:
-      all-npm-website:
-        patterns:
-          - "*"
-
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
