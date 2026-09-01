@@ -59,6 +59,22 @@ scripts/                         Build and CI scripts
 
 **Workspaces:** `Cargo.toml` (Rust), `pnpm-workspace.yaml` (JS/TS), `turbo.json` (build orchestration).
 
+## Docs (Mintlify/MDX)
+
+- **`--` renders as an em dash.** Mintlify's smart typography turns a double
+  hyphen into `—` in rendered text. Any command with a `--flag` (`--up`,
+  `--template`, `--api-key`) shown outside a Markdown code span — for example in
+  a JSX `<span>` — must be wrapped in a JSX string expression so it renders
+  verbatim: `<span>{'iii compose --up'}</span>`. Inside plain Markdown backticks
+  it is already safe.
+- Vale bans em dashes (`Terminology.EmDash`) and phrases like "out of the box"
+  (`Terminology.SlopMagic`) in prose. Rewrite with commas, parentheses, periods,
+  or colons, and name the explicit default.
+- After editing a `docs/next/*.mdx`, regenerate its skill artifact with
+  `iii-skill-render --write docs/next/<page>.mdx`. Versioned copies under
+  `docs/<version>/` are out of skill-render scope, so bring changes forward to
+  them (and their `.skill.md`) by hand.
+
 ## Boundaries
 
 ### Always
