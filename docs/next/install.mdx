@@ -13,7 +13,7 @@ The recipe below installs the engine, creates a project from the harness templat
 Select your llm provider, or select **no llm**. The harness project ships
 [console](./using-iii/console), the browser ui for your running system, and the
 [harness](https://workers.iii.dev/workers/harness) worker for agentic development and running agents
-inside your iii system. `provider-openai` and `provider-anthropic` are enabled out of the box; enable
+inside your iii system. `provider-openai` and `provider-anthropic` are enabled by default; enable
 any other provider in `worker-compose.yaml` later.
 
 <div className="iii-qs" role="group" aria-label="quickstart recipe">
@@ -97,7 +97,7 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
-      <div className="iii-qs-comment"># No api key — uses your chatgpt subscription. Sign in with the codex cli so ~/.codex/auth.json exists:</div>
+      <div className="iii-qs-comment"># No api key. Uses your chatgpt subscription. Sign in with the codex cli so ~/.codex/auth.json exists:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>codex login</span>
@@ -164,7 +164,7 @@ any other provider in `worker-compose.yaml` later.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="github-copilot">
-      <div className="iii-qs-comment"># No api key — your github copilot subscription grants the models. Enable the provider in worker-compose.yaml:</div>
+      <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models. Enable the provider in worker-compose.yaml:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>nano worker-compose.yaml</span>
