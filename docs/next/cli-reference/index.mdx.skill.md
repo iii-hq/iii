@@ -193,3 +193,17 @@ iii console [OPTIONS]
 | `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
 | `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
 | `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |
+
+## Telemetry
+
+The engine sends anonymous usage data by default. This data helps to improve iii and contains no personal information.
+
+To turn the usage data off, do one of these:
+
+- Set `III_TELEMETRY_ENABLED` to `false`, `0`, `no`, or `off` before you start `iii`. Letter case does not matter, and leading or trailing spaces are ignored. Any other value, or no value, keeps the usage data on.
+- Create the file `~/.iii/telemetry_dev_optout`. The engine reads this file whatever starts the process.
+- Set `telemetry.enabled: false` in the engine configuration.
+
+The engine also turns the usage data off automatically in a CI environment.
+
+This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs). To turn OpenTelemetry off, set `OTEL_ENABLED=false`.

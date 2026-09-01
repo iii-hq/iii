@@ -295,9 +295,7 @@ fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
         return Some(DisableReason::Config);
     }
 
-    if let Ok(env_val) = std::env::var("III_TELEMETRY_ENABLED")
-        && (env_val == "false" || env_val == "0")
-    {
+    if environment::env_opt_out() {
         return Some(DisableReason::UserOptOut);
     }
 

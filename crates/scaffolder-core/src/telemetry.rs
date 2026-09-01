@@ -55,9 +55,20 @@ fn read_device_id() -> Option<String> {
     state.identity.device_id.filter(|id| !id.is_empty())
 }
 
+/// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring
+/// surrounding whitespace. Kept in sync with the engine's
+/// `telemetry::environment::env_opt_out`; the two crates share no dependency.
+fn is_falsey(val: &str) -> bool {
+    matches!(
+        val.trim().to_ascii_lowercase().as_str(),
+        "false" | "0" | "no" | "off"
+    )
+}
+
 pub fn is_telemetry_disabled() -> bool {
-    if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
-        && (val == "false" || val == "0")
+    if std::env::var("III_TELEMETRY_ENABLED")
+        .map(|val| is_falsey(&val))
+        .unwrap_or(false)
     {
         return true;
     }
