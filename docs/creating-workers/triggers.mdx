@@ -214,7 +214,7 @@ worker that publishes the real `http` trigger type. The publisher worker:
 
       const url = process.env.III_URL;
       if (!url) throw new Error("III_URL must be set");
-      const worker = registerWorker(url);
+      const worker = registerWorker(url, { namespace: "orders" });
 
       type MiniHttpConfig = {
         api_path: string; // leading slash, e.g. "/orders"
@@ -251,7 +251,10 @@ worker that publishes the real `http` trigger type. The publisher worker:
 
       worker = register_worker(
           os.environ.get("III_URL"),
-          InitOptions(worker_name="mini-http-worker"),
+          InitOptions(
+              worker_name="mini-http-worker",
+              namespace="orders",
+          ),
       )
 
       bindings: dict[str, TriggerConfig] = {}
@@ -281,7 +284,13 @@ worker that publishes the real `http` trigger type. The publisher worker:
       };
 
       let url = std::env::var("III_URL").expect("III_URL must be set");
-      let worker = register_worker(&url, InitOptions::default());
+      let worker = register_worker(
+          &url,
+          InitOptions {
+              namespace: Some("orders".into()),
+              ..Default::default()
+          },
+      );
 
       #[derive(Default)]
       struct HttpHandler {

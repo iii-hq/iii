@@ -11,13 +11,33 @@ The `queue` worker decouples producers from consumers: a function publishes a me
 topic and returns right away, and any function subscribed to that topic processes the message in the
 background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
 
+## Before adding the worker
+
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
+running in separate terminals before using any of the commands below. If this project does not have
+a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+
 ```bash
-iii worker add queue
+# terminal 1
+iii --config config.yaml
+
+# terminal 2, from the directory that contains worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134
+```
+
+`iii compose` is an intentional verbless daemon invocation, documented in the
+[CLI reference](../cli-reference/index#iii-compose). The `-n` used below is the short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger).
+
+Run the remaining commands from a third terminal in that same project directory:
+
+```bash
+iii trigger -n dev compose::add worker=queue
 ```
 
 <Note>
-  This page is a quick tour. For the full functionality of the queue worker see the [queue worker
-  docs](https://workers.iii.dev/workers/queue).
+  This page covers common queue patterns. For the complete configuration and trigger API, see the
+  [queue worker docs](https://workers.iii.dev/workers/queue).
 </Note>
 
 ## Named Queues
@@ -27,28 +47,10 @@ number of retries then you can use `TriggerAction.Enqueue` to place that operati
 
 ### Creating a Queue
 
-Queues are defined in the `queue` worker's config under `queue_configs`:
-
-```yaml
-- name: queue
-  config:
-    queue_configs:
-      email-jobs:
-        max_retries: 3
-        concurrency: 10
-        type: standard
-```
-
-Each `queue_configs` entry accepts:
-
-| Field                 | Default    | Description                                                                                                                                            |
-| --------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `max_retries`         | `3`        | Delivery attempts before the message moves to the DLQ.                                                                                                 |
-| `concurrency`         | `10`       | Jobs processed in parallel. Must be at least `1`; the schema rejects `0`, so a named queue cannot be paused this way. `fifo` queues force this to `1`. |
-| `type`                | `standard` | `standard` (concurrent) or `fifo` (ordered within a message group).                                                                                    |
-| `message_group_field` | none       | Required for `fifo`: payload field whose value determines the ordering group.                                                                          |
-| `backoff_ms`          | `1000`     | Base retry delay in milliseconds; exponential.                                                                                                         |
-| `poll_interval_ms`    | `100`      | Worker poll interval in milliseconds.                                                                                                                  |
+Create a named queue called `email-jobs` by following the
+[queue worker configuration reference](https://workers.iii.dev/workers/queue), then use that name
+when enqueueing functions below. The worker reference owns the accepted fields, defaults, and FIFO
+options.
 
 ### Enqueue functions
 
@@ -114,13 +116,8 @@ The engine runs the function once per message, passing the published `data` as t
 Returning normally acknowledges the message; throwing nacks it, so it is retried and eventually
 dead-lettered.
 
-1. In a worker, register the consumer function and subscribe it to the topic. If you do not have a
-   worker yet, scaffold one with [`iii worker init`](./workers#scaffold-a-new-worker), then edit its
-   source:
-
-```bash
-iii worker init email-worker --language typescript
-```
+In a worker, register the consumer function and subscribe it to the topic. If you do not have a
+worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -129,7 +126,10 @@ iii worker init email-worker --language typescript
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { workerName: "email-worker" });
+    const worker = registerWorker(url, {
+      workerName: "email-worker",
+      namespace: "orders",
+    });
 
     // receives the `data` from each published message
     worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
@@ -152,7 +152,7 @@ iii worker init email-worker --language typescript
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="email-worker"),
+        InitOptions(worker_name="email-worker", namespace="orders"),
     )
 
     # receives the `data` from each published message
@@ -185,7 +185,13 @@ iii worker init email-worker --language typescript
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     // receives the `data` from each published message
     worker.register_function("email::send", RegisterFunction::new(|_msg: Email| {
@@ -204,10 +210,10 @@ iii worker init email-worker --language typescript
   </Tab>
 </Tabs>
 
-2. Add the worker to start it:
+Add the worker to start it:
 
 ```bash
-iii worker add ./email-worker
+iii trigger -n dev compose::add worker=./email-worker
 ```
 
 ### Publishing a message
@@ -227,24 +233,22 @@ iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.co
 
 ### Retries and delivery
 
-The `durable:subscriber` trigger's `config` controls how each subscriber consumes:
-
-| Field                   | Default  | Description                                                                                                 |
-| ----------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| `topic`                 | required | Topic to consume. `queue` is accepted as an alias.                                                          |
-| `condition_function_id` | none     | Function invoked with the message before the handler; returning `false` skips the handler for that message. |
-| `queue_config`          | none     | Per-subscriber delivery tuning (below).                                                                     |
+The examples use the `topic` to choose what to consume and `queue_config` to tune delivery for
+one subscriber. See the
+[`durable:subscriber` reference](https://workers.iii.dev/workers/queue) for the complete trigger
+schema, including filtering and adapter-specific options.
 
 A failed delivery retries with exponential backoff (1 second, then 2 seconds) for up to 3 attempts,
 then the message dead-letters.
 
-`queue_config` accepts the following fields:
+Each subscriber's durable queue is scoped by the subscribing worker's namespace, so two subscribers
+of the same topic and function id in different namespaces are two queues that each receive every
+published event, rather than two competing consumers of one queue.
 
-| Field         | Default      | Description                                                                                               |
-| ------------- | ------------ | --------------------------------------------------------------------------------------------------------- |
-| `type`        | `concurrent` | `concurrent` processes messages in parallel; `fifo` processes them strictly one at a time.                |
-| `concurrency` | `10`         | In-flight invocations in `concurrent` mode. `0` pauses consumption. Ignored by `fifo`.                    |
-| `maxPriority` | none         | RabbitMQ adapter only: declares the subscriber's queue as a priority queue with this many levels (1-255). |
+<Warning>
+  RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
+  0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
+</Warning>
 
 For example, to process messages strictly one at a time instead of concurrently, register the
 trigger with a `fifo` queue:
@@ -285,8 +289,8 @@ trigger with a `fifo` queue:
 
 These commands list both kinds of queue. A pub/sub topic appears once a function subscribes to it,
 and shows `broker_type: "builtin"`. (Publishing to a topic that nothing subscribes to does not
-register it, so there is nothing to inspect.) A named queue appears as soon as its `queue_configs`
-entry is defined, and shows `broker_type: "function_queue"`.
+register it, so there is nothing to inspect.) A configured named queue appears with
+`broker_type: "function_queue"`.
 
 List every topic (this inspects the `emails` topic from above):
 
@@ -300,7 +304,7 @@ iii trigger engine::queue::list_topics
 
 Get stats for the topic (`depth` is messages waiting for the consumer, `dlq_depth` is
 dead-lettered). A topic whose consumer keeps up sits at `depth: 0`. For a named queue,
-`consumer_count` reports its configured `concurrency` slots (`10` for `email-jobs`):
+`consumer_count` reports its active delivery slots:
 
 ```bash
 iii trigger engine::queue::topic_stats topic=emails

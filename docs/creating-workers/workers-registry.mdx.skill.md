@@ -6,14 +6,18 @@
 {/* Note: move this up */}
 
 The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live so
-other iii projects can install them with `iii worker add <name>`.
+other iii projects can declare them in `worker-compose.yaml` or add them with `compose::add`.
+
+Compose is a CLI and daemon subsystem, not a registry worker. Its daemon registers `compose::*`,
+uses `worker-compose.yaml` as the project manifest, and uses `-n` / `--namespace` to select the
+daemon that receives a trigger.
 
 ## Publish a worker
 
 Publishing a worker uploads its binary or OCI image to the registry, records its semver version, and
 makes the worker installable by name from any iii project.
 
-{/* TODO: capture the canonical publish command (likely `iii worker publish` or similar), the authentication requirements, and the metadata the registry expects (description, repo URL, supported platforms, etc.). */}
+{/* TODO: capture the registry's canonical publish API, authentication requirements, and expected metadata (description, repo URL, supported platforms, etc.). */}
 
 ## Version your worker
 
@@ -38,9 +42,9 @@ supported host without separate publications per platform.
 
 Bundle workers are a third artifact kind alongside `binary` and `image`. The registry serves a
 single `tar.gz` archive that contains the worker's bundled source plus an `iii.worker.yaml` manifest
-at the archive root. `iii worker add <name>` downloads, verifies a SHA-256 checksum, extracts the
-archive into `~/.iii/workers-bundle/<name>/`, and runs it through the existing libkrun rails (the
-same sandbox path used by local-path workers, minus the host-side source watcher).
+at the archive root. Compose downloads it, verifies its SHA-256 checksum, extracts it into the
+daemon's versioned package cache, and runs it through the libkrun rails without a host-side source
+watcher.
 
 Use a bundle when:
 
@@ -49,8 +53,8 @@ Use a bundle when:
 - You want artifacts measured in KB, not MB. Only the bundled source travels in the archive; the
   runtime ships with the engine-allowlisted base image (`docker.io/iiidev/node:latest` or
   `docker.io/iiidev/python:latest`).
-- You want install to look identical to other registry workers from the user's perspective
-  (`iii worker add my-worker`, same as binary and OCI).
+- You want installation to look identical to other supported registry workers from the user's
+  perspective (`iii trigger -n dev compose::add worker=my-worker`).
 
 ### Registry response shape
 
@@ -64,7 +68,7 @@ Use a bundle when:
 }
 ```
 
-The engine GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
+Compose GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
 `sha256`. Mismatches abort the install and delete the downloaded blob immediately.
 
 ### Archive layout
@@ -93,7 +97,8 @@ Bundle manifests use a strict subset of the local-worker manifest. Three fields 
 
 Required fields:
 
-- `name`: must equal the install target (the value passed to `iii worker add`).
+- `name`: must equal the registry package name without an `@version` suffix. For example, use
+  `my-worker` for both `worker=my-worker` and `worker=my-worker@1.2.0`.
 - `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM. Example:
   `node bundle.js`, `python -m worker`, `bun run bundle.js`.
 
@@ -138,4 +143,4 @@ are rejected with `W181 BundleArchiveUnsafe`.
 | `W182` | Resource request exceeded engine cap; install proceeded with clamped values (warn, not fail). |
 | `W183` | Dependency graph too wide or too deep (max depth 5, max transitive count 32).                 |
 
-{/* TODO: document the publish flow (`iii worker publish bundle.tar.gz`?), the registry's storage layout, and the recommended bundler configurations for Node/Bun/Python. */}
+{/* TODO: document the registry publish flow, storage layout, and recommended bundler configurations for Node/Bun/Python. */}

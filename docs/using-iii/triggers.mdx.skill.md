@@ -31,7 +31,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerTrigger({
       type: "http",
@@ -48,7 +48,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="my-worker"),
+        InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
     worker.register_trigger({
@@ -61,11 +61,18 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{InitOptions, RegisterTriggerInput, register_worker};
+    use iii_sdk::protocol::RegisterTriggerInput;
+    use iii_sdk::{InitOptions, register_worker};
     use serde_json::json;
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     worker.register_trigger(RegisterTriggerInput {
         trigger_type: "http".into(),
@@ -132,7 +139,7 @@ registration and stores it:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     // http worker not started
@@ -147,11 +154,12 @@ registration and stores it:
 </Tabs>
 
 Start the http worker afterward. The engine activates the stored binding automatically, and the
-endpoint serves requests without re-registering:
+endpoint serves requests without re-registering. The `-n` flag is the documented short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger):
 
 ```bash
 # http worker started after registration
-iii worker add http
+iii trigger -n dev compose::add worker=http
 
 # the stored binding is now live on the http worker's default port (3111)
 curl -X POST http://localhost:3111/math/add \
@@ -161,8 +169,9 @@ curl -X POST http://localhost:3111/math/add \
 ```
 
 For known trigger types (ex. `http`, `state`, `durable:subscriber`, `stream`), the pending notice
-includes the install command for the worker that provides the type. For other types, find the worker
-that exposes the needed type at [workers.iii.dev](https://workers.iii.dev).
+includes the Compose command for the worker that provides the type. Replace `dev` with the
+namespace of the running Compose daemon. For other types, find the worker that exposes the needed
+type at [workers.iii.dev](https://workers.iii.dev).
 
 A registration fails when an active provider rejects the config it was given (for example, an
 invalid trigger config). The engine then sends a `TriggerRegistrationResult` with an `error` body
@@ -211,7 +220,7 @@ a queue message.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     worker.register_trigger(RegisterTriggerInput {
@@ -280,7 +289,8 @@ is a regular registered function.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{RegisterFunction, RegisterTriggerInput};
+    use iii_sdk::protocol::RegisterTriggerInput;
+    use iii_sdk::RegisterFunction;
     use schemars::JsonSchema;
     use serde::Deserialize;
     use serde_json::json;
@@ -342,7 +352,7 @@ runtime; when the worker disconnects, all of its triggers are removed automatica
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     let trigger = worker.register_trigger(RegisterTriggerInput {

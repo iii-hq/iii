@@ -161,4 +161,4 @@ iii console --help
 The corresponding environment variables share the same set; each flag's help text names the env var
 that overrides it. The **Config** page in the sidebar shows the resolved values at runtime (the
 engine endpoints, ports, OpenTelemetry settings, and version the console is currently using), so you
-can confirm what's actually in effect without re-reading the flags.
+can confirm what is in effect without re-reading the flags.

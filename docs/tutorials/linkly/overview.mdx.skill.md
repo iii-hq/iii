@@ -24,8 +24,8 @@ expose them over HTTP with `http` as `POST /links` and `GET /s/:code`.
 
 ## Ch. 2: Observe everything
 
-Add `iii-observability` for logs and traces, and open the `console` to inspect functions, triggers,
-and live invocations.
+Use the engine-injected `iii-observability` functions for logs and traces, and open the `console` to
+inspect functions, triggers, and live invocations.
 
 ## Ch. 3: Persist everything
 
