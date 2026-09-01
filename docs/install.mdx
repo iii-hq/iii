@@ -237,6 +237,7 @@ any other provider in `worker-compose.yaml` later.
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-comment"># Open your browser to http://localhost:3113</div>
+  </div>
 </div>
 
 {/* llm-only: The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init my-harness --template harness && cd my-harness`. The harness template ships console, the harness worker, and provider-openai and provider-anthropic enabled by default. Put your provider key in `.env` (edit with `nano .env`); for any other provider, uncomment its block in `worker-compose.yaml` and set its key in `.env` first. Then start the whole stack with `iii compose --up` and open http://localhost:3113. Without an llm, skip the key and the console still starts. */}
