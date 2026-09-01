@@ -15,7 +15,7 @@ uncomment the Ch. 4 block in `worker-compose.yaml`:
 ```yaml worker-compose.yaml
   queue:
     worker: package://queue
-    version: "0.21.8"
+    version: "0.21.9"
     config_name: queue
     working_dir: .
     config_override:
