@@ -28,6 +28,8 @@ jobs:
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install shellcheck
@@ -38,6 +40,8 @@ jobs:
   unit-tests:
     name: Unit tests (bats)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install bats-core and jq
@@ -60,6 +64,8 @@ jobs:
           - name: macos-14
             os: macos-14
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install jq (macOS)
@@ -79,6 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: alpine:3.20
+    permissions:
+      contents: read
     steps:
       - name: Install dependencies
         run: apk add --no-cache bash curl jq tar git

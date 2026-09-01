@@ -24,6 +24,8 @@ jobs:
   check-license-headers:
     name: Check License Headers
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
