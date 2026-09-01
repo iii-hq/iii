@@ -26,7 +26,11 @@ permissions:
 
 jobs:
   recheck:
-    uses: iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml@v0.4
+    uses: iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml@{
+  "message": "Not Found",
+  "documentation_url": "https://docs.github.com/rest",
+  "status": "404"
+} # v0.4
     with:
       config-path: .skill-check.yaml
       action-ref: v0.4

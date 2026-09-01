@@ -79,7 +79,7 @@ jobs:
         if: inputs.slack_thread_ts != ''
         id: slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -100,7 +100,7 @@ jobs:
 
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -109,7 +109,7 @@ jobs:
           permission-contents: write
 
       - name: Checkout tap repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ env.TAP_REPO }}
           token: ${{ steps.generate_token.outputs.token }}
@@ -279,7 +279,7 @@ jobs:
       - name: Notify Slack — result
         if: always() && steps.slack.outputs.ts != ''
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           method: chat.update
           token: ${{ secrets.SLACK_BOT_TOKEN }}
