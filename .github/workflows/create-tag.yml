@@ -50,6 +50,7 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -300,6 +301,7 @@ jobs:
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
           owner: iii-hq
           repositories: templates
+          permission-contents: write
 
       - name: Dispatch templates version bump
         if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
