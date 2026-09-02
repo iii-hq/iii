@@ -1073,10 +1073,7 @@ state:
         let iii_dir = dir.path().join(".iii");
         std::fs::create_dir_all(&iii_dir).unwrap();
 
-        assert!(
-            !is_dev_optout(),
-            "no opt-out before the marker file exists"
-        );
+        assert!(!is_dev_optout(), "no opt-out before the marker file exists");
 
         std::fs::write(iii_dir.join("telemetry_dev_optout"), "").unwrap();
         assert!(
