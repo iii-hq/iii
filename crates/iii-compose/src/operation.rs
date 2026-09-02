@@ -117,10 +117,14 @@ impl ProgressEmitter {
                     action: Some(TriggerAction::Void),
                     timeout_ms: Some(5_000),
                 };
+                let request = match binding.metadata {
+                    Some(metadata) => request.metadata(metadata),
+                    None => request.into(),
+                };
                 let request = if let Some(namespace) = binding.namespace {
                     request.namespace(namespace)
                 } else {
-                    request.into()
+                    request
                 };
                 let _ = client.trigger(request).await;
             }
