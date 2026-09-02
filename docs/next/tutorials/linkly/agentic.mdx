@@ -167,7 +167,9 @@ access to the project directory works too; point it at this folder and use the s
 <Note>
   The agent runs inside the harness, under this same Compose daemon. It adds workers with
   `iii trigger compose::add worker=<name>`, which starts them without restarting the stack it is
-  running in. It never restarts Compose. The `link` worker reloads on its own when its file changes.
+  running in. It calls `compose::add` over its own engine connection, not the `iii` CLI, which would
+  collide with a running worker's identity. It never restarts Compose. The `link` worker reloads on
+  its own when its file changes.
 </Note>
 
 ## Ch. 1: Foundations
@@ -188,8 +190,9 @@ Then expose them over HTTP through the http worker:
 - an http::redirect function and a GET /s/:code trigger that resolves the code and returns a 302 to
   the url, or 404 when it is unknown.
 
-Run `cd link && npm install && cd ..`, then add the worker with
-`iii trigger compose::add worker=./link`. Do not restart Compose; compose::add starts it in place.
+Run `cd link && npm install && cd ..`, then add the worker by calling the `compose::add` function
+over your existing engine connection with `{ "worker": "./link" }`, not the `iii` CLI. Do not restart
+Compose; compose::add starts it in place.
 
 The reference for this chapter is https://iii.dev/docs/next/tutorials/linkly/foundations.
 ```
@@ -232,7 +235,7 @@ Open the console's traces tab to see the same data.
 ```text Prompt
 Add durable storage so links and clicks survive a restart, with state kept in front as a read cache.
 
-Add the database worker with `iii trigger compose::add worker=database`, then configure it for a
+Add the database worker with `compose::add worker=database`, then configure it for a
 SQLite database named "primary" at sqlite:./data/iii.db.
 
 In link/src/index.ts:
@@ -241,7 +244,7 @@ In link/src/index.ts:
 - link::resolve reads state first, falls back to the database, and warms the cache on a hit.
 - add link::record_click that inserts a row into clicks, and have http::redirect call it.
 
-Add workers with compose::add so you do not restart the stack. The reference is
+Add workers by calling the `compose::add` function over the engine, not the `iii` CLI, so you do not restart the stack. The reference is
 https://iii.dev/docs/next/tutorials/linkly/persistence.
 ```
 
@@ -273,11 +276,11 @@ Make redirects fast and add analytics.
 - Add the pubsub worker (compose::add worker=pubsub). link::create publishes a link.created event.
 - Add a second SQLite database named "analytics" for the analytics worker.
 - Create a Python analytics worker that subscribes to link.created and counts links per day, and add
-  it with `iii trigger compose::add worker=./analytics`.
+  it with `compose::add worker=./analytics`.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
   from a durable subscriber.
 
-Add workers with compose::add. The reference is
+Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/durable-execution.
 ```
 
@@ -311,10 +314,10 @@ Push every click to subscribers in real time.
 
 - Enable the iii-stream engine worker.
 - Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with
-  `iii trigger compose::add worker=./click-streamer`.
+  `compose::add worker=./click-streamer`.
 - Have link::record_click publish each click so the streamer broadcasts it.
 
-Add workers with compose::add. The reference is
+Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/streaming.
 ```
 
@@ -341,11 +344,11 @@ Every redirect appears in the `clicks` stream.
 Bulk-load links from a CSV in a single streamed upload over a channel.
 
 - Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
-  each. Add it with `iii trigger compose::add worker=./bulk-importer`.
+  each. Add it with `compose::add worker=./bulk-importer`.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer.
 
-Add workers with compose::add. The reference is
+Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/channels.
 ```
 
@@ -373,7 +376,7 @@ Turn a browser tab into a worker.
 - Add the two iii-worker-manager listeners: the trusted local one, and a browser-facing one on port
   3110 with an RBAC allowlist gated by auth::browser.
 - Create an auth worker with an auth::browser function that admits browser connections, and add it
-  with `iii trigger compose::add worker=./auth`.
+  with `compose::add worker=./auth`.
 - Add link::delete and link::request_delete: request_delete asks a browser-registered
   user::confirm_destructive_op before deleting.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
@@ -381,7 +384,7 @@ Turn a browser tab into a worker.
   connect to the browser listener, call link::create, subscribe to the click stream, and register
   user::confirm_destructive_op.
 
-Add workers with compose::add. Run `npm run dev` in frontend/. The reference is
+Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. Run `npm run dev` in frontend/. The reference is
 https://iii.dev/docs/next/tutorials/linkly/frontend.
 ```
 
