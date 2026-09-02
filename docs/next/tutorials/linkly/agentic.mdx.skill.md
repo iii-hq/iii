@@ -26,7 +26,8 @@ use, then start the engine and the agent stack:
 iii compose --up
 ```
 
-Now add your provider and open the console. Select your provider for the exact commands:
+Anthropic and OpenAI ship enabled: put a key for one in `.env` and it is ready after `iii compose
+--up`. For any other provider, add it after start. Select your provider for the exact steps:
 
 <div className="iii-qs" role="group" aria-label="provider setup">
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" defaultChecked />
@@ -78,18 +79,12 @@ Now add your provider and open the console. Select your provider for the exact c
 
   <div className="iii-qs-body">
     <div className="iii-qs-slot" data-qs="anthropic">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>ANTHROPIC_API_KEY=yourkey</span></div>
-      <div className="iii-qs-gap" aria-hidden="true" />
-      <div className="iii-qs-comment"># After iii compose --up:</div>
-      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-anthropic</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="openai">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>OPENAI_API_KEY=yourkey</span></div>
-      <div className="iii-qs-gap" aria-hidden="true" />
-      <div className="iii-qs-comment"># After iii compose --up:</div>
-      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
       <div className="iii-qs-comment"># No api key. This provider uses your chatgpt subscription.</div>
@@ -100,35 +95,35 @@ Now add your provider and open the console. Select your provider for the exact c
       <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai-codex</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="deepseek">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>DEEPSEEK_API_KEY=yourkey</span></div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># After iii compose --up:</div>
       <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-deepseek</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>MOONSHOT_API_KEY=yourkey</span></div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># After iii compose --up:</div>
       <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-kimi</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>OPENROUTER_API_KEY=yourkey</span></div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># After iii compose --up:</div>
       <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openrouter</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="xai">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>XAI_API_KEY=yourkey</span></div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># After iii compose --up:</div>
       <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-xai</span></div>
     </div>
     <div className="iii-qs-slot" data-qs="zai">
-      <div className="iii-qs-comment"># In .env, before you start Compose:</div>
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
       <div className="iii-qs-cmd"><span>ZAI_API_KEY=yourkey</span></div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># After iii compose --up:</div>
