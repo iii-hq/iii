@@ -36,7 +36,7 @@ Never edit ~/.iii/compose/<namespace>/engine-config.yaml. Compose generates it.
 
 Start the project. iii compose stays in the foreground, so run it in a second terminal or send it to the background with its output in a log file, then wait until it has started every container:
   iii compose --namespace dev --up --file worker-compose.yaml
-  (for a separately supervised engine: start the engine with iii --config config.yaml under its own supervisor, then iii compose --namespace dev --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml)
+  (for a separately supervised engine: start the engine with iii --config config.yaml under its own supervisor, then iii compose --namespace dev --engine <that engine's ws:// URL> --up --file worker-compose.yaml)
 
 With the daemon running, show me the output of:
   iii trigger -n dev compose::status file=worker-compose.yaml
