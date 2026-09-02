@@ -155,18 +155,23 @@ With your key in `.env`, start the engine and the agent stack:
 iii compose --up
 ```
 
-Open the console, start a session, and paste the Chapter 1 prompt.
+Open the console and harness which are at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-The [install recipes](/install) list every provider the harness supports. Any coding agent with
-access to the project directory works too; point it at this folder and use the same prompts.
+For the rest of this guide you can copy the example prompts below (and modify them if you'd like)
+and paste them into a chat in the harness.
 
-<Note>
-  The agent runs inside the harness, under this same Compose daemon. It adds workers with
-  `iii trigger compose::add worker=<name>`, which starts them without restarting the stack it is
-  running in. It calls `compose::add` over its own engine connection, not the `iii` CLI, which would
-  collide with a running worker's identity. It never restarts Compose. The `link` worker reloads on
-  its own when its file changes.
-</Note>
+<Info>
+As you work on this project the agent will dynamically add workers with
+`compose::add worker=<name>` without disrupting the rest of your running workers.
+
+The `link` worker reloads on its own when its file changes. This is functionality built
+intentionally into the `link` worker.
+
+The compose daemon does not automatically restart workers when they change. This is an intentional
+design choice to prevent partial changes from making a worker unavailable and impacting system
+stability.
+
+</Info>
 
 ## Ch. 1: Foundations
 
@@ -332,7 +337,8 @@ iii trigger stream::list stream_name=clicks group_id=all
 
 Every redirect appears in the `clicks` stream.
 
-[Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and `TriggerAction.Void()`.
+[Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and
+`TriggerAction.Void()`.
 
 ## Ch. 6: Move bulk data with channels
 
