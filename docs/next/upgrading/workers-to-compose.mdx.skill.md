@@ -19,7 +19,7 @@ starting it.
 Migrate this iii project from config.yaml worker declarations to worker-compose.yaml (iii 0.23). Read https://iii.dev/docs/upgrading/workers-to-compose.md first and follow it exactly.
 
 Before changing anything:
-1. Locate every config.yaml (including any path passed with --config), any existing worker-compose.yaml, iii.lock, the configuration worker's storage directory (./config by default), and the state, queue, and stream data paths. Copy all of them into ./backup-pre-compose/ and do not delete the originals.
+1. Locate every config.yaml (including any path passed with --config), any existing worker-compose.yaml, iii.lock, the configuration worker's storage directory (./config by default), and the state, queue, and stream data paths. Copy all of them into ./backup-pre-compose/, preserving each source's relative path so two files with the same name never collide, and stop if a destination already exists. Do not delete the originals.
 2. Work out whether the engine will be managed by Compose or supervised separately (systemd, Kubernetes). If the repository does not make this clear, ask me before writing the file.
 
 Write worker-compose.yaml:
@@ -30,20 +30,23 @@ Write worker-compose.yaml:
 - Pin versions from iii.lock or the registry. Never invent a version number.
 - For a separately supervised engine, keep only the five engine-owned workers in the list-shaped config.yaml and omit engine: from the Compose file.
 
-Stored configuration: for every worker whose configuration id changed (for example iii-state to state), read the old value with configuration::get, put it under config_override or write it to the new id with configuration::set, and verify the new worker before removing the old entry. Do not rename YAML files as a shortcut.
+Stored configuration: for every worker whose configuration id changed (for example iii-state to state), read the old value with configuration::get and raw: true so ${VAR} templates are copied as templates rather than expanded values, put it under config_override or write it to the new id with configuration::set, and verify the new worker before removing the old entry. Do not rename YAML files as a shortcut.
 
 Never edit ~/.iii/compose/<namespace>/engine-config.yaml. Compose generates it.
 
-Finish by running these and showing me the output:
+Start the project. iii compose stays in the foreground, so run it in a second terminal or send it to the background with its output in a log file, then wait until it has started every container:
   iii compose --namespace dev --up --file worker-compose.yaml
-  (or the --engine ws://... form for a separately supervised engine)
+  (for a separately supervised engine: start the engine with iii --config config.yaml under its own supervisor, then iii compose --namespace dev --engine ws://127.0.0.1:49134 --up --file worker-compose.yaml)
+
+With the daemon running, show me the output of:
   iii trigger -n dev compose::status file=worker-compose.yaml
   iii trigger engine::workers::list
   iii trigger engine::triggers::list
+If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii trigger command.
 
 If startup reports UNSUPPORTED_CONFIG_WORKERS, UNSUPPORTED_ENGINE_WORKER, ENGINE_WORKER_IS_INJECTED, or any other error from the Common errors list on the page, fix the cause and rerun. Do not work around an error by deleting a worker.
 
-Report back: the diff of config.yaml, the full new worker-compose.yaml, which stored configuration ids you migrated, and anything you could not migrate.
+Report back: the resolved path and diff of every configuration file you changed, including any passed with --config, the full new worker-compose.yaml, which stored configuration ids you migrated, and anything you could not migrate.
 ```
 
 ## Back up the project
