@@ -5,10 +5,114 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.23.0" description="Upcoming">
-  ## Breaking: Compose startup uses `--up`
+<Update label="0.23.0" description="September 2026">
+  ## Breaking: project workers move to Worker Compose
 
-  `iii compose up` is replaced by `iii compose --up`. The positional `up` form is rejected, and `--file` is valid only with `--up`; bare `iii compose` starts the daemon without starting a project. Migrate explicit files to `iii compose --up --file worker-compose.yaml`.
+  iii no longer manages project workers from `config.yaml`. The `iii worker` commands, the `worker::*`
+  functions, the `iii.toml` fallback, and the engine-managed project worker lifecycle are removed. A
+  direct project worker entry in `config.yaml` now stops startup with `UNSUPPORTED_CONFIG_WORKERS`.
+
+  Declare project workers under `containers:` in `worker-compose.yaml`. The `engine.workers` map is
+  only for `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`, and
+  `iii-sandbox`. The engine adds its internal functions, telemetry, and observability workers
+  automatically. HTTP, cron, queue, state, pubsub, and bridge providers now run as standalone Compose
+  packages.
+
+  Stored provider configuration is not renamed or copied automatically. Preserve each storage path and
+  move prefixed configuration ids, such as `iii-queue`, to the standalone package id, such as `queue`.
+
+  <Callout type="warning">
+    Existing projects must follow [Move workers from config.yaml to
+    Compose](/upgrading/workers-to-compose) before their first 0.23 start.
+  </Callout>
+
+  ## Worker Compose is the project control plane
+
+  The new Compose daemon reads one `worker-compose.yaml`, resolves local and registry workers, starts
+  them in dependency order, and stops them in reverse order. It supplies project namespaces,
+  configuration overrides, environment files, and `pre_run`, `run`, and `post_run` scripts. A failed
+  start rolls back the workers that it started. If a running worker exits, Compose stops its dependent
+  workers and reports the failure.
+
+  Project operations are regular iii functions. The `compose::*` surface can validate, start, stop,
+  inspect, add, remove, restart, and update workers. It also provides bounded, rotating stdout and
+  stderr logs. Mutation calls return concise operation results that show the affected workers.
+
+  `iii compose --up` starts the Compose daemon, its managed engine, and the declared project. Bare
+  `iii compose` starts only the daemon. The old positional `iii compose up` form is rejected, and
+  `--file` is valid only with `--up`. Use `iii compose --up --file worker-compose.yaml` when you
+  specify a file.
+
+  Local workers that declare `runtime.base_image` now run in a VM. Source changes are forwarded into
+  the guest before restart, so the VM runs the current local files. A Compose file can also omit
+  `containers:` or use an empty map when it only owns an engine.
+
+  ## Namespaces isolate workers on a shared engine
+
+  Namespace is now a runtime routing value for functions, workers, trigger providers, and project
+  daemons. The same worker name and function id can exist in several namespaces without a naming
+  convention or an id prefix. This lets several tenants, projects, or agents share one engine.
+
+  Node, browser, Python, Rust, and Go SDKs can set a worker namespace and route a call to a namespace.
+  The CLI adds `--namespace`. Calls without an explicit namespace inherit the caller's namespace;
+  workers that declare no namespace use `default`, which keeps the prior behavior. Calls are strict
+  and do not search another namespace after a miss. SDK calls to `engine::*` continue to target the
+  default namespace.
+
+  Triggers now distinguish the target function namespace from `trigger_namespace`, which selects the
+  trigger type provider. A project-local provider takes priority over the default provider,
+  independent of startup order. Function and worker discovery, ownership conflicts, queue providers,
+  RBAC rules, the Console, and live trace updates are also namespace-aware.
+
+  A registration grace period holds early function and trigger messages until the worker namespace is
+  known. It defaults to 5000 ms and can be changed with `registration_namespace_grace_ms` or
+  `III_NAMESPACE_GRACE_MS`.
+
+  ## Breaking: RabbitMQ durable subscriber queues use the namespace
+
+  RabbitMQ subscriber and dead-letter queue names now include the subscriber namespace. This keeps two
+  namespaced subscribers from consuming from the same durable queue.
+
+  | Version | Subscriber queue                              | Dead-letter queue                           |
+  | ------- | --------------------------------------------- | ------------------------------------------- |
+  | 0.22.x  | `iii.{topic}.{function_id}.queue`             | `iii.{topic}.{function_id}.dlq`             |
+  | 0.23.x  | `iii.{topic}.{function_id}@{namespace}.queue` | `iii.{topic}.{function_id}@{namespace}.dlq` |
+
+  The RabbitMQ adapter does not move messages from the old queue. Stop publishers, drain the old
+  subscriber and dead-letter queues, upgrade, and then remove the old queues. Also review RBAC rules
+  before a worker moves out of `default`: unscoped `expose_functions` and `allowed_functions` grants
+  now apply to `default` only. Custom workers outside `default` cannot register the reserved
+  `engine::*` prefix. See [Upgrade from 0.22.x](/upgrading/from-0-22-x) for the full checklist.
+
+  ## Traces persist and update live
+
+  New observability configurations persist completed spans in a bounded SQLite archive under
+  `./data/observability/traces`. Traces survive an engine restart and remain available after they
+  leave the hot memory cache. The default archive has a 1 GiB disk limit and 30-day retention, and
+  eviction now reclaims database disk space. Existing stored configurations without `trace_storage`
+  keep their previous memory-only behavior.
+
+  Observability settings now have a dedicated Console view for trace storage, sampling, metrics, and
+  logs. The Console trace view reacts to coalesced trace events instead of polling once per second.
+  The event feed refreshes when a pending engine span starts and when its final span replaces it.
+  Namespaced trace providers update the correct Console view.
+
+  **Breaking API change:** `engine::traces::list` now returns one compact summary per trace, including
+  aggregate status, span count, error count, tags, and optional projected attributes. Consumers that
+  need complete span records must use the new `engine::traces::spans` function. Summary filtering and
+  pagination are stable across traces, including data read from the archive.
+
+  ## Additional reliability and telemetry fixes
+
+  - Queue provider registration and routing are scoped by namespace, including providers that register
+    after startup.
+  - Compose supports empty container declarations and gives local base-image workers the correct VM
+    execution path.
+  - The engine aggregates CLI command counts into heartbeat telemetry instead of sending a network
+    event for every command. A project stamp also prevents restarts from sending duplicate heartbeats
+    within the configured interval.
+  - Telemetry sends explicitly configured worker names as readable heartbeat labels. It replaces
+    generated `hostname:pid` names with generic values.
 </Update>
 
 <Update label="0.22.1" description="August 2026">
