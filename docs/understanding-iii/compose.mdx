@@ -1,0 +1,188 @@
+---
+title: "Compose"
+description:
+  "What compose gains by being a worker on the engine, and what each of its rules buys the operator
+  who runs a project."
+owner: "devrel"
+type: "explanation"
+---
+
+## What compose is for
+
+A worker is a single process with an identity on the engine. A real deployment is several of them
+with an order between them: a database before the API, the API before the web front end, a migration
+before either. The engine holds workers and routes calls to them. Something has to own the order,
+the environment each process starts with, and the response when one of them dies.
+
+That is compose. A `worker-compose.yaml` declares the group, and a daemon turns the declaration into
+running processes it keeps watching.
+
+## The compose environment
+
+Compose files provide reproducibility. A project starts the same way from a login shell, a systemd
+unit, or a CI runner, because the daemon's own environment plays no part in it. Everything a
+container needs is in the compose file, which makes the file a complete description of how the
+project runs and makes a reviewer able to see the whole contract in one place.
+
+Strictness in the compose file serves the same end and ensures that an incomplete "system" cannot be
+started accidentally.
+
+## Three names, three jobs
+
+A compose call names three things, and confusing any two of them is the mistake worth naming up
+front.
+
+The **daemon namespace** is which machine. It comes from `--namespace`, and it is where that daemon
+answers `compose::*`, so `iii trigger compose::up --namespace dev` reaches one daemon and not its
+neighbour. Several daemons attach to one engine, which is what lets compose supervise workers where
+their resources are rather than only beside the engine.
+
+The **file** is which project. A daemon holds as many as it is given, and the compose file is the
+only thing that identifies one.
+
+The **project namespace** is where that project's workers register. It comes from `namespace:` in the
+compose file: the engine's routing dimension, the same one every other worker uses.
+
+### Why the project has no name of its own
+
+An earlier design gave each project an id the operator chose on the first `up`. It read well and was
+wrong, because it was a second identity for something the file already identified. Two identities
+have to be kept in agreement, and the failure was silent in both directions: an id could be pointed
+at a different file, and a mistyped id became a new empty project reporting that it had nothing to
+stop, reporting success for a command that did nothing.
+
+Deriving the project from its file removes the question. The same file reached twice is the same
+project however it was spelled, a mistyped file is a file that will not open, and an error existed
+only to police the divergence that can no longer happen.
+
+The namespace stays exactly what the compose file says, so an operator can read it off the file and
+type it into `iii trigger --namespace` or a `worker.trigger` call. Predictability is what makes a
+namespace usable by hand, and it comes from being declared rather than derived.
+
+Two copies of one project therefore share a project namespace and collide, which is how the engine
+reports a duplicate for every other worker as well.
+
+<Note>
+  For the routing dimension itself and how the engine handles a contested name, see
+  [Namespaces](./namespaces).
+</Note>
+
+## Why the daemon owns eight variables
+
+A container's environment is its own, with eight exceptions the daemon sets and refuses to let a
+container replace. The rule is not that static configuration outranks an environment variable, which
+would be the wrong way round for most settings. It is that each of these eight is already declared
+somewhere in the compose file, and a second declaration of the same thing is a disagreement nobody
+resolves.
+
+`III_URL` is the daemon's connection. Readiness is observed over it, so a container pointed at
+another engine is invisible to the daemon that started it, however healthy it is. The failure would
+arrive as a startup timeout over a worker that is running and serving, which is the least
+diagnosable shape a failure can take. Two engines mean two daemons.
+
+`III_NAMESPACE` and `III_WORKER_NAME` are the pair readiness watches. Letting a container change
+either would mean compose waiting in one place while the child registers in another, so the override
+would have to be threaded through readiness, the child record and `compose::status` before it could
+work at all. Both are already declared: the namespace by the file, the name by the container key.
+
+`III_COMPOSE_NAMESPACE`, `III_COMPOSE_FILE`, and `III_COMPOSE_DIR` identify the supervisor and
+project that started the container. The project namespace cannot route to the daemon namespace, and
+one daemon can supervise several files, so a managed worker needs the namespace and file to make an
+explicit, unambiguous `compose::*` call. The directory is the canonical parent of the file and gives
+workers one stable base for project-owned data. Letting the container replace these values could
+send a lifecycle edit to another project or write data outside that project.
+
+`III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery. Compose merges the configuration,
+writes it to the file the first names, and publishes the same value to the entry the second names. A
+container pointed at a different file would read one value while the configuration worker held
+another, and the two would drift apart with nobody able to say which was in force.
+
+### A container that belongs in another namespace
+
+The case the reserved contract genuinely refuses is a container joining a namespace other than its
+project's, a shared one addressed by two projects for instance. That is not an oversight. A
+namespace is declared per file, and a project is its file, so a container that registers somewhere
+else is describing a different project. Declaring it in a second compose file says exactly that, and
+keeps the property that reading one file tells you where everything in it lands.
+
+## Why state is kept in one place per machine
+
+A project's records, its resolved configuration and each container's output all sit under
+`~/.iii/compose`, keyed by the daemon's namespace and by a slug derived from the compose file's
+canonical path. Putting them in a `.iii/` directory beside the compose file would make them easier
+to find, and that is a real cost of the current layout: locating a container's log means asking
+`compose::status` for `state_dir` rather than listing a directory you are already standing in.
+
+Three things outweigh it.
+
+A checkout is not always writable. A CI runner that mounts the repository read-only, or a container
+image built without a writable working tree, would be unable to start a project at all. State that
+sits outside the checkout keeps starting a project independent of how the checkout was obtained.
+
+State written into a project directory becomes the project's problem to ignore. Every user would
+have to keep a `.iii/` entry in version control ignore rules, and every generated file that lands
+there is one an ordinary `git add` sweeps up. That is a recurring cost paid by everyone who runs
+compose, in exchange for a shorter path.
+
+Installed packages are shared on purpose. `packages/` is keyed by name, version and target so two
+projects asking for the same worker download it once. Moving project state in-tree would split the
+layout across two locations without removing the machine-global one.
+
+The identity concern that motivates in-tree state is already handled. A project is its compose file,
+and the slug is derived from that file's canonical path, so a state directory cannot be pointed at a
+different project and two checkouts of one repository are two projects without anything to
+configure. `$III_COMPOSE_STATE_DIR` relocates the whole tree for anyone whose home directory is the
+wrong place for it.
+
+## Engine observed readiness
+
+Compose determines ready state through the engine rather than locally as this is the one way to
+ensure dependencies are ready for a given worker. For example when `api` starts after `database`,
+`start_after` guarantees the engine can already route a trigger to `database`, so `api` can reliably
+use the `database` dependency from boot. A check on the process alone would guarantee only that
+something was launched.
+
+The engine's view is also detailed enough to report clear statuses to the user.
+
+## Scoped shutdown
+
+When one container in an `up` fails, compose stops what that operation started, in reverse order,
+and leaves everything else running. The rule is that an operation undoes itself, which makes `up`
+safe to retry.
+
+Teardown follows the graph backwards, so dependents stop before the containers they depend on and
+nothing is left using a worker that no longer exists. A container that stops on its own takes the
+same path, so its dependents come down in the same order as a deliberate stop.
+
+### The blast radius depends on the clock
+
+Those two sentences describe two different rules, and it is worth being plain about the gap between
+them. During an `up`, the first container that fails ends the operation: everything that operation
+started is rolled back, and everything after it in the start order is never attempted. On a first
+`up` of a five-container project, a failure in the last one leaves the whole project down, including
+containers that have nothing to do with it. Once a container is ready, the supervisor is narrower:
+it takes that container's transitive dependents down and leaves the rest alone.
+
+So a `mailer` that nothing depends on ends the whole start if it fails during `up`, and is contained
+if it fails a minute later. The same declaration, the same container, two blast radii separated only
+by timing.
+
+Each rule is defensible where it stands. An `up` that reported success over a half-started project
+would be worse than one that refuses, and a supervisor that tore down a whole project because one
+leaf died would be worse than one that contains it. What is missing is a way for the compose file to
+say which it wants, so the choice is compose's rather than the operator's. That is a v1 limitation
+rather than a decision: a project cannot mark a container as non-essential, and it cannot ask for a
+dead one to be restarted, because there is no restart policy at all.
+
+Both belong in the file rather than in compose's judgement, and they are two separate questions:
+whether a container's failure fails the operation, and what happens when a ready container exits.
+Whatever those grow into, the property worth keeping is that the answer reads the same at start time
+and at run time.
+
+## Related
+
+<Note>
+  For the function surface, the compose file schema, and the error codes, see [Using iii /
+  Compose](../using-iii/compose). For how workers reach each other once compose has started them,
+  see [Using iii / Functions](../using-iii/functions).
+</Note>

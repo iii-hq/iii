@@ -464,7 +464,7 @@ impl Project {
         file: ComposeFile,
         restart: &[String],
         operation_id: String,
-    ) -> (Vec<OpResult>, OpResult) {
+    ) -> (Vec<OpResult>, OpResult, bool) {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
@@ -489,33 +489,77 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
+        let operation = crate::operation::active(&operation_id);
+        let shutdown = operation.as_ref().map(|operation| {
+            crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation())
+        });
         let mut restarted = Vec::with_capacity(restart.len());
+        let mut interrupted = false;
         for key in restart {
-            restarted.push(
-                lifecycle::restart_one(
+            let result = if let Some(shutdown) = shutdown.clone() {
+                lifecycle::restart_one_until_shutdown(
                     &ctx,
                     children,
                     &mut state.containers,
                     key,
                     format!("{operation_id}-restart-{key}"),
+                    shutdown,
                 )
-                .await,
-            );
+                .await
+            } else {
+                Some(
+                    lifecycle::restart_one(
+                        &ctx,
+                        children,
+                        &mut state.containers,
+                        key,
+                        format!("{operation_id}-restart-{key}"),
+                    )
+                    .await,
+                )
+            };
+            let Some(result) = result else {
+                interrupted = true;
+                break;
+            };
+            restarted.push(result);
         }
-        let up = lifecycle::up(
-            &ctx,
-            children,
-            &mut state.containers,
-            None,
-            format!("{operation_id}-up"),
-        )
-        .await;
+        let up_operation_id = format!("{operation_id}-up");
+        let up = if interrupted {
+            OpResult {
+                operation_id: up_operation_id,
+                status: crate::lifecycle::OpStatus::Failed,
+                changed: false,
+                containers: Vec::new(),
+            }
+        } else if let Some(shutdown) = shutdown {
+            let result = lifecycle::up_until_shutdown(
+                &ctx,
+                children,
+                &mut state.containers,
+                None,
+                up_operation_id.clone(),
+                shutdown,
+            )
+            .await;
+            if result.is_none() {
+                interrupted = true;
+            }
+            result.unwrap_or_else(|| OpResult {
+                operation_id: up_operation_id,
+                status: crate::lifecycle::OpStatus::Failed,
+                changed: false,
+                containers: Vec::new(),
+            })
+        } else {
+            lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
+        };
 
         let snapshot = state.clone();
         drop(file);
         drop(inner);
         let _ = self.store.save(&snapshot);
-        (restarted, up)
+        (restarted, up, interrupted)
     }
 
     /// Applies a removal without dropping supervision of surviving containers.
@@ -657,27 +701,38 @@ impl Project {
 
     /// Current state of every declared container, for `compose::status`.
     pub async fn status(&self) -> Vec<ContainerStatus> {
-        let inner = self.inner.lock().await;
         let file = self.file.read().await;
+        let inner = self.inner.try_lock().ok();
+        let stored = if inner.is_none() {
+            self.store.load().ok().flatten()
+        } else {
+            None
+        };
         file.containers
             .keys()
             .map(|key| {
-                let record = inner.state.containers.get(key);
-                let running = inner
-                    .children
-                    .get(key)
-                    .is_some_and(|c| matches!(c.poll(), crate::process::Outcome::Running));
+                let record = inner
+                    .as_ref()
+                    .and_then(|inner| inner.state.containers.get(key))
+                    .or_else(|| stored.as_ref().and_then(|state| state.containers.get(key)));
+                let running = inner.as_ref().is_some_and(|inner| {
+                    inner.children.get(key).is_some_and(|child| {
+                        matches!(child.poll(), crate::process::Outcome::Running)
+                    })
+                });
                 ContainerStatus {
                     container: key.clone(),
-                    state: match (running, record.map(|r| r.status)) {
+                    state: match (running, record.map(|record| record.status)) {
                         (true, _) => ChildStatus::Ready,
                         (false, Some(status)) => status,
                         (false, None) => ChildStatus::Stopped,
                     },
-                    pid: record.map(|r| r.pid),
-                    owned: inner.children.contains_key(key),
+                    pid: record.map(|record| record.pid),
+                    owned: inner
+                        .as_ref()
+                        .is_some_and(|inner| inner.children.contains_key(key)),
                     log_path: self.logs.path(key),
-                    last_error: record.and_then(|r| r.last_error.clone()),
+                    last_error: record.and_then(|record| record.last_error.clone()),
                 }
             })
             .collect()

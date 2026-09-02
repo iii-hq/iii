@@ -25,14 +25,14 @@ flushes registrations once connected. Use
 **Signature**
 
 ```python
-register_worker(address: str, options: InitOptions | None = None) -> III
+register_worker(address: str | None = None, options: InitOptions | None = None) -> III
 ```
 
 <Tabs>
   <Tab title="Parameters">
 
-<ParamField body="address" type="str" required>
-  WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+<ParamField body="address" type="str | None">
+  WebSocket URL of the III engine (e.g. ``ws://localhost:49134``). When omitted, resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
 </ParamField>
 
 <ParamField body="options" type="InitOptions | None">
@@ -46,6 +46,9 @@ register_worker(address: str, options: InitOptions | None = None) -> III
     </ParamField>
     <ParamField body="invocation_timeout_ms" type="int">
       Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
+    </ParamField>
+    <ParamField body="namespace" type="str | None">
+      Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. The worker and its functions register here; ordinary ``trigger`` targets and ``register_trigger`` bindings also inherit it unless the call names another namespace. Implicit calls to engine-owned ``engine::*`` functions resolve in ``default``; pass an explicit namespace to override that behavior.
     </ParamField>
     <ParamField body="otel" type="OtelConfig | dict[str, Any] | None">
       OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable.
@@ -71,7 +74,8 @@ register_worker(address: str, options: InitOptions | None = None) -> III
 
 ```python
 from iii import register_worker, InitOptions
-worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+worker = register_worker()  # address from III_URL
+other = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
 ```
 
 
@@ -105,6 +109,12 @@ register_trigger(trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger
     </ParamField>
     <ParamField body="metadata" type="Any | None">
       Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
+    </ParamField>
+    <ParamField body="namespace" type="str | None">
+      Namespace the target function resolves in.
+    </ParamField>
+    <ParamField body="trigger_namespace" type="str | None">
+      Namespace the trigger type's provider is found in.
     </ParamField>
     <ParamField body="type" type="str" required>
       Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``).
@@ -273,6 +283,9 @@ trigger(request: dict[str, Any] | TriggerRequest) -> Any
     </ParamField>
     <ParamField body="metadata" type="Any | None">
       Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
+    </ParamField>
+    <ParamField body="namespace" type="str | None">
+      Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
@@ -475,6 +488,22 @@ async () -> None
 
 ---
 
+### get_address
+
+Return the engine address this worker resolved to.
+
+The explicit ``register_worker`` argument, else ``III_URL``, else
+:data:`DEFAULT_ENGINE_URL`. Mirrors the Rust SDK's ``address()`` and the
+Node SDK's ``getAddress()``.
+
+**Signature**
+
+```python
+get_address() -> str
+```
+
+---
+
 ### get_connection_state
 
 Return the current WebSocket connection state.
@@ -581,6 +610,9 @@ async (request: dict[str, Any] | TriggerRequest) -> Any
     <ParamField body="metadata" type="Any | None">
       Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
+    <ParamField body="namespace" type="str | None">
+      Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
+    </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
     </ParamField>
@@ -628,6 +660,7 @@ Configuration options passed to ``register_worker``.
 | `enable_metrics_reporting` | `bool` | No | Enable worker metrics via OpenTelemetry. Default ``True``. |
 | `headers` | `dict[str, str] \| None` | No | - |
 | `invocation_timeout_ms` | `int` | No | Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``. |
+| `namespace` | `str \| None` | No | Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. The worker and its functions register here; ordinary ``trigger`` targets and ``register_trigger`` bindings also inherit it unless the call names another namespace. Implicit calls to engine-owned ``engine::*`` functions resolve in ``default``; pass an explicit namespace to override that behavior. |
 | `otel` | `OtelConfig \| dict[str, Any] \| None` | No | OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable. |
 | `reconnection_config` | `ReconnectionConfig \| None` | No | WebSocket reconnection behavior. |
 | `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | Internal worker metadata reported to the engine. |
@@ -646,6 +679,7 @@ through the RBAC port.
 | `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, if any. |
 | `context` | `dict[str, Any]` | Yes | Auth context returned by the auth function for this session. |
 | `function_id` | `str` | Yes | ID of the function being invoked. |
+| `namespace` | `str \| None` | No | Target namespace the invoke addressed; forward the call here to stay in the caller's namespace. Absent -> the engine's default namespace. |
 | `payload` | `dict[str, Any]` | Yes | Payload sent by the caller. |
 
 ---
@@ -707,7 +741,8 @@ Factory for creating trigger actions used with ``trigger()``.
 
 Routes the invocation through a named queue for async processing.
 
-Requires a queue worker in the project. Run ``iii worker add queue``.
+Requires the ``queue`` worker in ``worker-compose.yaml`` and a matching
+entry under that worker's ``queue_configs``.
 Without it the trigger rejects with ``enqueue_error`` (no queue provider).
 
 | Name | Type | Required | Description |
@@ -803,7 +838,7 @@ Engine trigger ids (parity with the Node SDK).
 
 ### iii.errors
 
-[`InvocationError`](#invocationerror)
+[`InvocationError`](#invocationerror) · [`RegistrationRejectedError`](#registrationrejectederror)
 
 #### InvocationError
 
@@ -827,6 +862,24 @@ intentionally never includes the stacktrace.
 | `message` | `Any` | No | - |
 | `stacktrace` | `Any` | No | - |
 
+---
+
+#### RegistrationRejectedError
+
+Raised when the engine rejects this worker's registration.
+
+The engine pushes a ``registrationrejected`` message and closes the
+connection on a registration collision (e.g. another live worker already
+owns ``(namespace, worker_name)``). This is fatal: the SDK does not
+reconnect. Inspect the attributes to identify the conflict.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `Any` | No | - |
+| `namespace` | `Any` | No | - |
+| `owner_worker_id` | `Any` | No | - |
+| `worker_name` | `Any` | No | - |
+
 ### iii.protocol
 
 [`MessageType`](#messagetype) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerRequest`](#triggerrequest)
@@ -839,10 +892,12 @@ Message types for iii communication.
 | --- | --- | --- | --- |
 | `INVOCATION_RESULT` | `Any` | No | - |
 | `INVOKE_FUNCTION` | `Any` | No | - |
+| `REATTACH` | `Any` | No | - |
 | `REGISTER_FUNCTION` | `Any` | No | - |
 | `REGISTER_SERVICE` | `Any` | No | - |
 | `REGISTER_TRIGGER` | `Any` | No | - |
 | `REGISTER_TRIGGER_TYPE` | `Any` | No | - |
+| `REGISTRATION_REJECTED` | `Any` | No | - |
 | `TRIGGER_REGISTRATION_RESULT` | `Any` | No | - |
 | `UNREGISTER_FUNCTION` | `Any` | No | - |
 | `UNREGISTER_TRIGGER` | `Any` | No | - |
@@ -904,6 +959,8 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | `config` | `Any` | No | Trigger-type-specific configuration, matching the shape the trigger type expects. |
 | `function_id` | `str` | Yes | ID of the function this trigger invokes when it fires. |
 | `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `namespace` | `str \| None` | No | Namespace the target function resolves in. |
+| `trigger_namespace` | `str \| None` | No | Namespace the trigger type's provider is found in. |
 | `type` | `str` | Yes | Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``). |
 
 ---
@@ -917,6 +974,8 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | `id` | `str` | Yes | - |
 | `message_type` | [`MessageType`](#messagetype) | No | - |
 | `metadata` | `Any \| None` | No | - |
+| `namespace` | `str \| None` | No | - |
+| `trigger_namespace` | `str \| None` | No | - |
 | `trigger_type` | `str` | Yes | - |
 
 ---
@@ -942,6 +1001,7 @@ Input for registering a trigger type.
 | `description` | `str` | Yes | - |
 | `id` | `str` | Yes | - |
 | `message_type` | [`MessageType`](#messagetype) | No | - |
+| `namespace` | `str \| None` | No | - |
 | `trigger_request_format` | `Any \| None` | No | - |
 
 ---
@@ -955,6 +1015,7 @@ Request object for ``trigger()``.
 | `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``). |
 | `function_id` | `str` | Yes | ID of the function to invoke. |
 | `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `namespace` | `str \| None` | No | Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker. |
 | `payload` | `Any` | No | Input data passed to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout, in milliseconds. |
 
@@ -1274,6 +1335,7 @@ registered or unregistered.
 | `function_id` | `str` | Yes | Function to invoke when the trigger fires. |
 | `id` | `str` | Yes | Trigger instance ID. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `namespace` | `str \| None` | No | Resolved namespace the target function uses. Current SDKs fill an omitted registration value from the registering worker's namespace; ``None`` is the legacy/default case. |
 
 ---
 

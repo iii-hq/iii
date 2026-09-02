@@ -352,6 +352,29 @@ impl EngineClient {
         baseline: &ReadinessBaseline,
         log_dir: &std::path::Path,
     ) -> Result<()> {
+        match tokio::time::timeout(
+            timeout,
+            self.wait_until_ready_inner(namespace, container, child, timeout, baseline, log_dir),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ComposeError::ReadinessTimeout {
+                container: container.to_string(),
+                seconds: timeout.as_secs(),
+            }),
+        }
+    }
+
+    async fn wait_until_ready_inner(
+        &self,
+        namespace: &str,
+        container: &str,
+        child: &Supervised,
+        timeout: Duration,
+        baseline: &ReadinessBaseline,
+        log_dir: &std::path::Path,
+    ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
         let ReadinessBaseline {
             present: present_before,

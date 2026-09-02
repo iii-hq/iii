@@ -108,8 +108,6 @@ pub struct LifecycleCtx<'a> {
 
 /// What one container's start produced: which one, how long it took, and
 /// whether it came up.
-type StartOutcome = (String, Duration, StartAttempt);
-
 enum StartAttempt {
     Ready(ChildRecord, Supervised),
     Failed(ComposeError),
@@ -184,6 +182,15 @@ async fn up_inner(
     // Everything this operation will touch, drawn before any of it moves, so an
     // operator sees the shape rather than a line at a time.
     report::plan(&dag::outline(ctx.file, &order));
+    if let Some(operation) = crate::operation::active(&operation_id) {
+        let outline = dag::outline(ctx.file, &order);
+        operation.plan(outline.len()).await;
+        for (key, depth) in &outline {
+            operation
+                .emit_tree(key, *depth, "waiting for dependencies")
+                .await;
+        }
+    }
 
     // Grouped rather than listed: only a declared dependency has to wait, and
     // in a project of fourteen where one worker calls the other thirteen, the
@@ -199,6 +206,10 @@ async fn up_inner(
         for key in &wave {
             if is_running(children, key) {
                 report::unchanged(key, "already running");
+                if let Some(operation) = crate::operation::active(&operation_id) {
+                    operation.emit(Some(key), "ready", "already running").await;
+                    operation.completed_one().await;
+                }
                 results.push(ContainerResult {
                     container: key.clone(),
                     state: ChildStatus::Ready,
@@ -208,34 +219,33 @@ async fn up_inner(
                 continue;
             }
             report::starting(key, "starting");
+            if let Some(operation) = crate::operation::active(&operation_id) {
+                operation
+                    .emit(Some(key), "starting", "starting worker")
+                    .await;
+            }
             starting.push(key.clone());
         }
-        if starting.is_empty() {
-            continue;
-        }
-
         // Bounded: a wave may hold every container in the file, and each one
         // can be a download, a process, or a VM. An operator's machine should
         // not have to survive all of them at once.
-        let outcomes: Vec<StartOutcome> = futures::stream::iter(starting.into_iter().map(|key| {
+        let mut outcomes = futures::stream::iter(starting.into_iter().map(|key| {
             let shutdown = shutdown.clone();
+            let start_operation_id = operation_id.clone();
             async move {
                 let began = Instant::now();
-                let outcome = start_one_attempt(ctx, &key, shutdown).await;
+                let outcome =
+                    start_one_attempt(ctx, &key, shutdown, Some(&start_operation_id)).await;
                 (key, began.elapsed(), outcome)
             }
         }))
-        .buffer_unordered(max_parallel_workers)
-        .collect()
-        .await;
+        .buffer_unordered(max_parallel_workers);
 
-        // The whole wave is awaited before a failure is acted on. Stopping
-        // early would leave containers half-started, which is a worse state to
-        // describe than one more container that came up and is then rolled
-        // back.
+        // Adopt and publish each worker as soon as it settles. We still drain
+        // the already-launched wave before rollback so no child is orphaned.
         let mut failure: Option<(String, ComposeError)> = None;
         let mut interrupted = false;
-        for (key, took, outcome) in outcomes {
+        while let Some((key, took, outcome)) = outcomes.next().await {
             let key = &key;
             match outcome {
                 StartAttempt::Ready(record, child) => {
@@ -243,6 +253,12 @@ async fn up_inner(
                     records.insert(key.clone(), record);
                     children.insert(key.clone(), child);
                     started.push(key.clone());
+                    if let Some(operation) = crate::operation::active(&operation_id) {
+                        operation
+                            .emit(Some(key), "ready", "registered with engine")
+                            .await;
+                        operation.completed_one().await;
+                    }
                     results.push(ContainerResult {
                         container: key.clone(),
                         state: ChildStatus::Ready,
@@ -262,6 +278,9 @@ async fn up_inner(
                         changed: false,
                         error: Some(OpError::from(&error)),
                     });
+                    if let Some(operation) = crate::operation::active(&operation_id) {
+                        operation.emit(Some(key), "failed", error.to_string()).await;
+                    }
                     if failure.is_none() {
                         failure = Some((key.clone(), error));
                     }
@@ -269,6 +288,7 @@ async fn up_inner(
                 StartAttempt::Interrupted => interrupted = true,
             }
         }
+        drop(outcomes);
 
         if interrupted {
             report::plan_done();
@@ -335,13 +355,40 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
+    restart_one_inner(ctx, children, records, key, operation_id, None)
+        .await
+        .expect("restart without a shutdown signal cannot be interrupted")
+}
+
+pub(crate) async fn restart_one_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<OpResult> {
+    restart_one_inner(ctx, children, records, key, operation_id, Some(shutdown)).await
+}
+
+async fn restart_one_inner(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: Option<crate::shutdown::ShutdownSignal>,
+) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
         let error = ComposeError::UnknownContainer {
             container: key.to_string(),
         };
         report::summary_failed("restart", error.code(), began.elapsed());
-        return failed_op(operation_id, Some(key), &error);
+        return Some(failed_op(operation_id, Some(key), &error));
+    }
+    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+        return None;
     }
 
     report::plan(&[(key.to_string(), 0)]);
@@ -356,16 +403,18 @@ pub async fn restart_one(
         report::failed(key, error.code(), &error.to_string());
         report::plan_done();
         report::summary_failed("restart", error.code(), began.elapsed());
-        return failed_op(operation_id, Some(key), &error);
+        return Some(failed_op(operation_id, Some(key), &error));
     }
 
     report::starting(key, "starting");
     let started = Instant::now();
-    let outcome = start_one(ctx, key).await;
+    // Once the old worker has stopped, finish its replacement before observing
+    // cancellation again. Returning early here would persist a stopped worker.
+    let outcome = start_one_attempt(ctx, key, None, Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
-        Ok((record, child)) => {
+        StartAttempt::Ready(record, child) => {
             report::ready(key, took);
             records.insert(key.to_string(), record);
             children.insert(key.to_string(), child);
@@ -376,7 +425,7 @@ pub async fn restart_one(
                 error: None,
             }
         }
-        Err(error) => {
+        StartAttempt::Failed(error) => {
             report::failed(
                 key,
                 error.code(),
@@ -384,7 +433,7 @@ pub async fn restart_one(
             );
             report::plan_done();
             report::summary_failed("restart", error.code(), began.elapsed());
-            return OpResult {
+            return Some(OpResult {
                 operation_id,
                 status: OpStatus::Failed,
                 changed: false,
@@ -394,18 +443,21 @@ pub async fn restart_one(
                     changed: false,
                     error: Some(OpError::from(&error)),
                 }],
-            };
+            });
+        }
+        StartAttempt::Interrupted => {
+            unreachable!("replacement startup has no interrupt signal")
         }
     };
 
     report::plan_done();
     report::summary_ok("restart", 1, 1, began.elapsed());
-    OpResult {
+    Some(OpResult {
         operation_id,
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
-    }
+    })
 }
 
 /// Stops one container because its declaration is being removed.
@@ -548,30 +600,13 @@ pub async fn down(
     }
 }
 
-/// Resolves config, runs `pre_run`, spawns, and waits for the engine to see
-/// the child. Every step before the spawn can fail without leaving a process
-/// behind.
-/// Starts one container and hands back the child rather than filing it.
-///
-/// The caller owns the map, because containers with no dependency between them
-/// start together and a shared `&mut` would serialise exactly what this exists
-/// to overlap.
-async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Supervised)> {
-    match start_one_attempt(ctx, key, None).await {
-        StartAttempt::Ready(record, child) => Ok((record, child)),
-        StartAttempt::Failed(error) => Err(error),
-        StartAttempt::Interrupted => {
-            unreachable!("a start without a shutdown signal cannot be interrupted")
-        }
-    }
-}
-
 async fn start_one_attempt(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
+    operation_id: Option<&str>,
 ) -> StartAttempt {
-    match start_one_until_shutdown(ctx, key, shutdown).await {
+    match start_one_until_shutdown(ctx, key, shutdown, operation_id).await {
         Ok((record, child)) => StartAttempt::Ready(record, child),
         Err(StartFailure::Failed(error)) => StartAttempt::Failed(error),
         Err(StartFailure::Interrupted) => StartAttempt::Interrupted,
@@ -582,6 +617,7 @@ async fn start_one_until_shutdown(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     mut shutdown: Option<crate::shutdown::ShutdownSignal>,
+    operation_id: Option<&str>,
 ) -> std::result::Result<(ChildRecord, Supervised), StartFailure> {
     macro_rules! wait_or_interrupt {
         ($future:expr) => {{
@@ -630,6 +666,15 @@ async fn start_one_until_shutdown(
         crate::config::WorkerSource::Package { reference } => {
             let range = container.version.as_deref().unwrap_or("*");
             report::starting(key, &format!("installing {reference}@{range}"));
+            if let Some(operation) = operation_id.and_then(crate::operation::active) {
+                operation
+                    .emit(
+                        Some(key),
+                        "installing",
+                        format!("installing {reference}@{range}"),
+                    )
+                    .await;
+            }
             let installed = wait_or_interrupt!(crate::registry::install(
                 key,
                 reference,
@@ -658,6 +703,12 @@ async fn start_one_until_shutdown(
         }
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
     };
+
+    if let Some(operation) = operation_id.and_then(crate::operation::active) {
+        operation
+            .emit(Some(key), "configuring", "resolving configuration")
+            .await;
+    }
 
     let user_env = container.resolve_user_env(key)?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
@@ -707,12 +758,19 @@ async fn start_one_until_shutdown(
         // A VM worker is booted instead of run here. The handle that comes
         // back is an ordinary child, so readiness, stop, crash cascade and log
         // capture below are unchanged.
-        None => wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
-            |message| ComposeError::SpawnFailed {
-                container: key.to_string(),
-                message,
-            },
-        )?,
+        None => {
+            if let Some(operation) = operation_id.and_then(crate::operation::active) {
+                operation
+                    .emit(Some(key), "preparing", "preparing VM runtime")
+                    .await;
+            }
+            wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
+                |message| ComposeError::SpawnFailed {
+                    container: key.to_string(),
+                    message,
+                },
+            )?
+        }
     };
 
     if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
@@ -724,6 +782,11 @@ async fn start_one_until_shutdown(
             container: key.to_string(),
             message: err.to_string(),
         })?;
+    if let Some(operation) = operation_id.and_then(crate::operation::active) {
+        operation
+            .emit(Some(key), "registering", "waiting for engine registration")
+            .await;
+    }
     // Capture before waiting on readiness: whatever the child prints while
     // starting is exactly what an operator needs when it does not.
     ctx.logs.capture(key, output.stdout, output.stderr);
@@ -894,22 +957,26 @@ async fn prepare_vm(
         .spawn()
         .map_err(|err| format!("cannot run {}: {err}", program.display()))?;
 
-    let body = request.to_string();
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(body.as_bytes())
-            .await
-            .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
-        // Dropped here: the prepare command reads to end of file, so it would wait
-        // forever on a pipe compose still holds open.
-        drop(stdin);
-    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20 * 60), async {
+        let body = request.to_string();
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(body.as_bytes())
+                .await
+                .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
+            // Dropped here: the prepare command reads to end of file, so it would wait
+            // forever on a pipe compose still holds open.
+            drop(stdin);
+        }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|err| format!("iii-worker did not answer: {err}"))?;
+        child
+            .wait_with_output()
+            .await
+            .map_err(|err| format!("iii-worker did not answer: {err}"))
+    })
+    .await
+    .map_err(|_| "iii-worker VM preparation timed out after 20 minutes".to_string())??;
 
     if !output.status.success() {
         let reason = String::from_utf8_lossy(&output.stderr);

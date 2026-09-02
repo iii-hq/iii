@@ -16,7 +16,7 @@ and returns the result.
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
       return { c: payload.a + payload.b };
@@ -31,7 +31,10 @@ and returns the result.
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker"),
+        InitOptions(
+            worker_name="math-worker",
+            namespace="orders",
+        ),
     )
 
     def add_handler(payload: dict) -> dict:
@@ -46,7 +49,13 @@ and returns the result.
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
@@ -60,8 +69,8 @@ and returns the result.
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
 once: direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
-event-source workers like http, cron, queue, state, and iii-stream. All paths leave
-the handler unchanged.
+event-source workers like http, cron, queue, state, and iii-stream. All paths leave the handler
+unchanged.
 
 The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
 from the terminal with the command `iii trigger`. The engine routes the call to whatever worker
@@ -82,8 +91,9 @@ fire. Pass a different `TriggerAction` to change that.
     const result = await worker.trigger({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
-      // action: TriggerAction.Void(),                       // fire-and-forget
-      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through queue
+      namespace: "default", // target a specific namespace
+      // action: TriggerAction.Void(), // fire-and-forget
+      // action: TriggerAction.Enqueue({ queue: "math" }), // route through queue
     });
     ```
 
@@ -95,10 +105,11 @@ fire. Pass a different `TriggerAction` to change that.
     result = worker.trigger({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
-        # "action": TriggerAction.Void(),                    # fire-and-forget
-        # "action": TriggerAction.Enqueue(queue="math"),     # route through queue
+        "namespace": "default", # target a specific namespace
+        # "action": TriggerAction.Void(), # fire-and-forget
+        # "action": TriggerAction.Enqueue(queue="math"), # route through queue
     })
-    # result = await worker.trigger_async({...})             # awaitable form for asyncio callers
+    # result = await worker.trigger_async({...}) # awaitable form for asyncio callers
     ```
 
   </Tab>
@@ -116,7 +127,9 @@ fire. Pass a different `TriggerAction` to change that.
             // action: Some(TriggerAction::Void),                                  // fire-and-forget
             // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through queue
             timeout_ms: None,
-        })
+        }
+        .namespace("default"), // target a specific namespace
+        )
         .await?;
     ```
 
@@ -130,8 +143,28 @@ Some common actions are:
 - **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
   but the caller doesn't see the result.
 - **`TriggerAction.Enqueue({ queue })`**. Provided by
-  [queue](https://workers.iii.dev/workers/queue). Routes the invocation through a named
-  queue with retries; the call returns once the message is enqueued.
+  [queue](https://workers.iii.dev/workers/queue). Routes the invocation through a named queue with
+  retries; the call returns once the message is enqueued.
+
+<Info>
+  Refer to [Using iii/Namespaces](../using-iii/namespaces#trigger-a-function-in-a-namespace) for
+  more information on namespaces and triggering functions from a specific namespace.
+</Info>
+
+### Routing to a namespace
+
+Workers and their associated functions can be namespaced. A function id is unique per namespace, not
+globally: `state::get` can be registered once in `default`, once in `orders`, and once in
+`analytics`. Set `namespace` on the trigger invocation to pick one.
+
+Resolution is strict. A call that names `orders` resolves there and nowhere else, and a call that
+names none resolves in the namespace of the calling worker. A miss returns `function_not_found`
+naming the namespaces where the id does exist.
+
+<Note>
+  `iii trigger` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
+  from worker code, see [Use namespaces](./namespaces#trigger-a-function-in-a-namespace).
+</Note>
 
 <Note>
   Functions can also be registered (or bound) to Triggers such as an `http` request, a `cron`
@@ -186,14 +219,14 @@ The engine itself registers a small set of introspection and lifecycle functions
 response schemas are in the
 [engine protocol reference](../reference/engine-protocol#engine-discovery-functions).
 
-| Function                            | What it does                                                                                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::functions::list`           | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                                    |
-| `engine::workers::list`             | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                      |
-| `engine::triggers::list`            | List every advertised trigger type with its config and call schemas.                                                                              |
-| `engine::registered-triggers::list` | List every registered trigger instance (binding).                                                                                                 |
-| `engine::channels::create`          | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly. |
-| `engine::workers::register`         | Publish the calling worker's metadata (runtime, version, OS, PID, optional `description`). The SDK calls this automatically on connect.           |
+| Function                            | What it does                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::functions::list`           | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                                                |
+| `engine::workers::list`             | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                                  |
+| `engine::triggers::list`            | List every advertised trigger type with its config and call schemas.                                                                                          |
+| `engine::registered-triggers::list` | List every registered trigger instance (binding).                                                                                                             |
+| `engine::channels::create`          | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.             |
+| `engine::workers::register`         | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect. |
 
 The engine also publishes two subscription triggers in the same family. Bind a function to one of
 these to react to the registry changing:
@@ -208,8 +241,9 @@ these to react to the registry changing:
 Each of these is published by a separate worker. Function ids, payload shapes, and per-function
 behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.dev):
 
-- **State**: KV-style state with scoped namespaces and reactive triggers on create/update/delete.
-  See [state](https://workers.iii.dev/workers/state).
+- **State**: KV-style state with scoped key namespaces (distinct from
+  [routing namespaces](../understanding-iii/namespaces)) and reactive triggers on
+  create/update/delete. See [state](https://workers.iii.dev/workers/state).
 - **Stream**: Real-time push to connected clients over WebSocket. See
   [iii-stream](https://workers.iii.dev/workers/iii-stream).
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter

@@ -9,19 +9,11 @@ type: "tutorial"
 
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
-<Frame>
-  <video
-    controls
-    playsInline
-    preload="metadata"
-    src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4"
-  />
-</Frame>
-
-<Info title="Install iii before proceeding">
+<Tip title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
-  [Install](./install) guide first.
-</Info>
+  [Install](./install) guide first. There you can also learn how to [set up iii for agentic
+  development](./install#start-a-project).
+</Tip>
 
 <Note>
   The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
@@ -51,11 +43,12 @@ workers/
 ## 2. Start the engine
 
 ```bash
-iii --config config.yaml
+iii compose --up
 ```
 
-The engine is now listening on `ws://localhost:49134`. Keep this terminal open and open a second
-terminal in the `quickstart` directory for the remaining commands.
+Compose starts the engine and its daemon. The engine is now listening on `ws://localhost:49134`.
+Keep this terminal open. Run the remaining commands from a second terminal in the same directory.
+All commands in this tutorial use the `default` namespace.
 
 ## 3. Start the Python worker
 
@@ -65,22 +58,15 @@ terminal in the `quickstart` directory for the remaining commands.
 </Info>
 
 ```bash
-iii worker add ./workers/math-worker
+iii trigger compose::add worker=./workers/math-worker
 ```
 
-You should see:
+The Compose daemon terminal reports the worker becoming ready:
 
-```
-  ✓ math-worker ready (pid 12345)
-
-     engine:  running
-     config:  present type=local (.../quickstart/workers/math-worker)
-    sandbox:  prepared (rootfs + deps cached)
-    process:  alive pid=12345
-     worker:  registered (connected to engine)
-       logs:  available (tail with `iii worker logs math-worker -f`)
-
-  ✓ ready in 2.1s
+```text
+→ math-worker starting
+✓ math-worker ready (2.1s)
+up: 1 of 1 changed in 2.1s
 ```
 
 <Warning title="Linux: `KVM not accessible`">
@@ -108,22 +94,15 @@ in.
 ## 4. Start the TypeScript worker
 
 ```bash
-iii worker add ./workers/caller-worker
+iii trigger compose::add worker=./workers/caller-worker
 ```
 
-You should see:
+The Compose daemon reports:
 
-```
-  ✓ caller-worker ready (pid 23456)
-
-     engine:  running
-     config:  present type=local (.../quickstart/workers/caller-worker)
-    sandbox:  prepared (rootfs + deps cached)
-    process:  alive pid=23456
-     worker:  registered (connected to engine)
-       logs:  available (tail with `iii worker logs caller-worker -f`)
-
-  ✓ ready in 2.1s
+```text
+→ caller-worker starting
+✓ caller-worker ready (2.1s)
+up: 2 of 2 changed in 2.1s
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
@@ -142,17 +121,17 @@ iii trigger math::add_two_numbers a=10 b=20
 
 ## 6. Add state
 
-The `iii worker add` command incrementally adds workers from the registry to your running system.
-Start by adding the state worker, which gives every function access to a persistent key-value store.
+`compose::add` incrementally adds workers from the registry to your running project. Add the state
+worker, which gives every function access to a persistent key-value store.
 
-From the folder containing iii's `config.yaml` run:
+From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii worker add state
+iii trigger compose::add worker=state
 ```
 
-Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block so
-the handler looks like this:
+Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
+so the handler looks like this:
 
 ```python
 def add_handler(payload: dict) -> dict:
@@ -204,10 +183,10 @@ The running total persists across every call, including calls that arrive throug
 
 Now let's add an HTTP worker to expose your functions as REST endpoints.
 
-From the folder containing iii's `config.yaml` run:
+From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii worker add http
+iii trigger compose::add worker=http
 ```
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:
@@ -216,7 +195,10 @@ Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the b
 worker.registerFunction(
   "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
-    const result = await worker.trigger<{ a: number; b: number }, { c: number; running_total: number }>({
+    const result = await worker.trigger<
+      { a: number; b: number },
+      { c: number; running_total: number }
+    >({
       function_id: "math::add_two_numbers",
       payload: payload.body,
     });
@@ -277,6 +259,6 @@ running system.
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
-    Understand functions, triggers, and workers from a conceptual point of view.
+    Understand workers, triggers, and functions from a conceptual point of view.
   </Card>
 </CardGroup>

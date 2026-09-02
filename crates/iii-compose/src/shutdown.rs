@@ -62,6 +62,27 @@ impl ShutdownSignal {
         Ok(Self { receiver })
     }
 
+    /// Adapts an existing latched cancellation source to lifecycle shutdown.
+    pub(crate) fn from_receiver(receiver: watch::Receiver<bool>) -> Self {
+        Self { receiver }
+    }
+
+    /// Returns a signal that latches when either input is requested.
+    pub(crate) fn or(mut self, mut other: Self) -> Self {
+        let requested = self.requested() || other.requested();
+        let (sender, receiver) = watch::channel(requested);
+        if !requested {
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = self.wait() => {}
+                    _ = other.wait() => {}
+                }
+                let _ = sender.send(true);
+            });
+        }
+        Self { receiver }
+    }
+
     pub(crate) fn requested(&self) -> bool {
         *self.receiver.borrow()
     }
@@ -86,5 +107,40 @@ fn signal_error(error: std::io::Error) -> ComposeError {
     ComposeError::SpawnFailed {
         container: "<daemon>".to_string(),
         message: format!("could not listen for shutdown signals: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn combined_signal_latches_when_second_source_is_requested() {
+        let (_first_sender, first) = watch::channel(false);
+        let (second_sender, second) = watch::channel(false);
+        let mut combined =
+            ShutdownSignal::from_receiver(first).or(ShutdownSignal::from_receiver(second));
+
+        second_sender.send(true).expect("second receiver is alive");
+        tokio::time::timeout(std::time::Duration::from_secs(1), combined.wait())
+            .await
+            .expect("combined signal should be requested");
+
+        assert!(combined.requested());
+    }
+
+    #[tokio::test]
+    async fn combined_signal_preserves_a_request_made_before_combining() {
+        let (first_sender, first) = watch::channel(false);
+        let (_second_sender, second) = watch::channel(false);
+        first_sender.send(true).expect("first receiver is alive");
+        let mut combined =
+            ShutdownSignal::from_receiver(first).or(ShutdownSignal::from_receiver(second));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), combined.wait())
+            .await
+            .expect("combined signal should already be requested");
+
+        assert!(combined.requested());
     }
 }

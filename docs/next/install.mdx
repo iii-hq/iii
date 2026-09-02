@@ -9,11 +9,10 @@ type: "how-to"
 
 ## Start a project
 
-The recipe below installs the engine, creates a project, and starts it. Select your llm provider, or
-select **no llm** to set up a project without one. Every recipe adds [console](./using-iii/console),
-the browser ui for your running system; a provider also adds
-[harness](https://workers.iii.dev/workers/harness) which enables both agentic development and use of
-agents within your iii system. You can add a provider worker later at any time.
+The recipe below installs the engine, creates a project from our templates, and starts it. Once
+started you can explore the project via https://127.0.0.1:3113.
+
+Select your llm provider, or select **no llm**.
 
 <div className="iii-qs" role="group" aria-label="quickstart recipe">
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-none" defaultChecked />
@@ -29,7 +28,6 @@ agents within your iii system. You can add a provider worker later at any time.
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
 
 <div className="iii-qs-head">
-  <span className="iii-qs-title">select your llm provider</span>
   <div className="iii-qs-picker">
     <label className="iii-qs-pill" htmlFor="qs-none">
       no llm
@@ -68,168 +66,179 @@ agents within your iii system. You can add a provider worker later at any time.
 </div>
 
   <div className="iii-qs-body">
-    <div className="iii-qs-slot" data-qs="none">
-      <div className="iii-qs-comment"># No llm needed. Add a provider worker whenever you want agents.</div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openai">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
+    <div className="iii-qs-comment"># Install iii</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export OPENAI_API_KEY=yourkey</span>
+        <span>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</span>
+      </div>
+    <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-slot" data-qs="none">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>iii project init my-app && cd my-app</span>
+      </div>
+      <div className="iii-qs-comment"># No llm. The base template starts only the console.</div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># provider-openai is enabled by default. Set OPENAI_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
+      </div>
+    </div>
+    <div className="iii-qs-slot" data-qs="anthropic">
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># provider-anthropic is enabled by default. Set ANTHROPIC_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># No api key. This provider uses your chatgpt subscription.</div>
-      <div className="iii-qs-comment"># Sign in with the codex cli first, so ~/.codex/auth.json exists:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># No api key. Uses your chatgpt subscription. Sign in with the codex cli so ~/.codex/auth.json exists:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>codex login</span>
       </div>
     </div>
-    <div className="iii-qs-slot" data-qs="anthropic">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span> export ANTHROPIC_API_KEY=yourkey</span>
-      </div>
-    </div>
     <div className="iii-qs-slot" data-qs="deepseek">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export DEEPSEEK_API_KEY=yourkey</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># Set DEEPSEEK_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export MOONSHOT_API_KEY=yourkey</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># Set MOONSHOT_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export OPENROUTER_API_KEY=yourkey</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># Set OPENROUTER_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="xai">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export XAI_API_KEY=yourkey</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># Set XAI_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="zai">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export ZAI_API_KEY=yourkey</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
+      <div className="iii-qs-comment"># Set ZAI_API_KEY in .env:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>nano .env</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="github-copilot">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
     </div>
     <div className="iii-qs-slot" data-qs="llamacpp">
-      <div className="iii-qs-comment"># Set up your llm provider</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
+      </div>
       <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default.</div>
-      <div className="iii-qs-comment"># A key is only needed when llama-server runs with --api-key:</div>
+      <div className="iii-qs-comment">{'# A key is only needed when llama-server runs with --api-key (set LLAMACPP_API_KEY in .env):'}</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span> export LLAMACPP_API_KEY=yourkey</span>
+        <span>nano .env</span>
       </div>
     </div>
-
     <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Install iii & setup your project</div>
-    <div className="iii-qs-cmd">
-      <span className="iii-qs-prompt">$</span>
-      <span>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</span>
-    </div>
-    <div className="iii-qs-cmd">
-      <span className="iii-qs-prompt">$</span>
-      <span>iii project init iii-app && cd iii-app</span>
-    </div>
-    <div className="iii-qs-cmd">
-      <span className="iii-qs-prompt">$</span>
-      <span>iii --config config.yaml</span>
-    </div>
-    <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># New terminal, same folder</div>
-    <div className="iii-qs-cmd">
-      <span className="iii-qs-prompt">$</span>
-      <span>iii compose --namespace dev --engine ws://127.0.0.1:49134</span>
-    </div>
-    <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Third terminal, same folder</div>
-    <div className="iii-qs-slot" data-qs="none">
+    <div className="iii-qs-comment"># Start the engine and your project</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=console</span>
+        <span>{'iii compose --up'}</span>
       </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openai">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openai</span>
-      </div>
-    </div>
     <div className="iii-qs-slot" data-qs="openai-codex">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openai-codex</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="anthropic">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-anthropic</span>
+        <span>iii trigger compose::add worker=provider-openai-codex</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="deepseek">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-deepseek</span>
+        <span>iii trigger compose::add worker=provider-deepseek</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-kimi</span>
+        <span>iii trigger compose::add worker=provider-kimi</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-openrouter</span>
+        <span>iii trigger compose::add worker=provider-openrouter</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="xai">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-xai</span>
+        <span>iii trigger compose::add worker=provider-xai</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="zai">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-zai</span>
+        <span>iii trigger compose::add worker=provider-zai</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="github-copilot">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-github-copilot</span>
+        <span>iii trigger compose::add worker=provider-github-copilot</span>
       </div>
       <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
       <div className="iii-qs-cmd">
@@ -238,18 +247,18 @@ agents within your iii system. You can add a provider worker later at any time.
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="llamacpp">
+      <div className="iii-qs-comment"># Add the provider to your running project:</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>iii trigger -n dev compose::add worker=harness && iii trigger -n dev compose::add worker=console && iii trigger -n dev compose::add worker=provider-llamacpp</span>
+        <span>iii trigger compose::add worker=provider-llamacpp</span>
       </div>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Open your browser to http://localhost:3113</div>
-
+    <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
   </div>
 </div>
 
-{/* llm-only: The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init iii-app && cd iii-app`, start `iii --config config.yaml`, and in a second terminal start `iii compose --namespace dev --engine ws://127.0.0.1:49134`. In a third terminal, add `harness`, `console`, and `provider-<name>` one at a time with `iii trigger -n dev compose::add worker=<name>`, then open http://localhost:3113. Export the provider credential in the terminal that runs the engine before starting it. Without an llm, add only `console`. */}
+{/* llm-only: The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init my-harness --template harness && cd my-harness`. The harness template ships console, the harness worker, and provider-openai and provider-anthropic enabled by default. Put your provider key in `.env` (edit with `nano .env`); for any other provider, set its key in `.env` first, then start the whole stack with `iii compose --up` and add the provider with `iii trigger compose::add worker=provider-<name>`. Open http://127.0.0.1:3113. Without an llm, skip the key and the console still starts. */}
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 

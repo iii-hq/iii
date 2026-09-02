@@ -1208,11 +1208,12 @@ middleware.
 | --- | --- | --- | --- |
 | `allow_function_registration` | `boolean` | No | Whether the worker may register new functions. Defaults to `true` if omitted. |
 | `allow_trigger_type_registration` | `boolean` | No | Whether the worker may register new trigger types. Defaults to `false` if omitted. |
-| `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. |
+| `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. |
 | `allowed_trigger_types` | `string[]` | No | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
 | `context` | `Record<string, unknown>` | No | Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. |
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
+| `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit this map to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
 
 ---
 
@@ -1229,6 +1230,7 @@ fields, or throw to deny the registration.
 | `description` | `string` | No | Human-readable description of the function. |
 | `function_id` | `string` | Yes | ID of the function being registered. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `namespace` | `string` | No | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
 
 ---
 
@@ -1259,6 +1261,7 @@ fields, or throw to deny the registration.
 | `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
 | `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
+| `namespace` | `string` | No | Namespace the trigger's target resolves in (explicit, or `default` when<br />absent). The same function id can exist in several namespaces, so the hook<br />needs this to authorize per target namespace. |
 | `trigger_id` | `string` | Yes | ID of the trigger being registered. |
 | `trigger_type` | `string` | Yes | Trigger type identifier. |
 

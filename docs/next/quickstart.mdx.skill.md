@@ -5,15 +5,6 @@
 
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
-<Frame>
-  <video
-    controls
-    playsInline
-    preload="metadata"
-    src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4"
-  />
-</Frame>
-
 <Tip title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
   [Install](./install) guide first. There you can also learn how to [set up iii for agentic
@@ -48,19 +39,12 @@ workers/
 ## 2. Start the engine
 
 ```bash
-iii --config config.yaml
+iii compose --up
 ```
 
-The engine is now listening on `ws://localhost:49134`. Keep this terminal open. In a second terminal
-in the `quickstart` directory, create the Compose file and start its daemon:
-
-```bash
-printf 'containers: {}\n' > worker-compose.yaml
-iii compose --namespace quickstart --engine ws://127.0.0.1:49134
-```
-
-Keep that terminal open too. Run the remaining commands from a third terminal in the same
-directory.
+Compose starts the engine and its daemon. The engine is now listening on `ws://localhost:49134`.
+Keep this terminal open. Run the remaining commands from a second terminal in the same directory.
+All commands in this tutorial use the `default` namespace.
 
 ## 3. Start the Python worker
 
@@ -70,7 +54,7 @@ directory.
 </Info>
 
 ```bash
-iii trigger -n quickstart compose::add worker=./workers/math-worker
+iii trigger compose::add worker=./workers/math-worker
 ```
 
 The Compose daemon terminal reports the worker becoming ready:
@@ -106,7 +90,7 @@ in.
 ## 4. Start the TypeScript worker
 
 ```bash
-iii trigger -n quickstart compose::add worker=./workers/caller-worker
+iii trigger compose::add worker=./workers/caller-worker
 ```
 
 The Compose daemon reports:
@@ -139,7 +123,7 @@ worker, which gives every function access to a persistent key-value store.
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger -n quickstart compose::add worker=state
+iii trigger compose::add worker=state
 ```
 
 Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
@@ -198,7 +182,7 @@ Now let's add an HTTP worker to expose your functions as REST endpoints.
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger -n quickstart compose::add worker=http
+iii trigger compose::add worker=http
 ```
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:
@@ -271,6 +255,6 @@ running system.
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
-    Understand functions, triggers, and workers from a conceptual point of view.
+    Understand workers, triggers, and functions from a conceptual point of view.
   </Card>
 </CardGroup>

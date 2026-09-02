@@ -15,9 +15,10 @@ runs on iii without ever needing a full cutover.
 
 ## Prerequisites
 
-- A running iii engine ([install](../../install), then run `iii` in a scratch directory and let it
-  create a `config.yaml`, then add the workers each step needs with `iii worker add`; see
-  [Default configuration](../../using-iii/engine#default-configuration)).
+- A running iii engine and Compose daemon ([install](../../install), then create `config.yaml` and
+  `worker-compose.yaml`; add the workers each step needs with `compose::add`; see
+  [Default configuration](../../using-iii/engine#default-configuration) and
+  [Compose](../../using-iii/compose)).
 - An existing service you want to migrate, reachable over HTTP.
 - The SDK for the language your service is written in (TypeScript, Python, or Rust).
 
@@ -25,7 +26,7 @@ runs on iii without ever needing a full cutover.
 
 1. **[Wrap an existing API](./wrap-existing-api)**. Front the existing HTTP service with an iii
    function so it becomes addressable by `function_id` from anywhere in the system. No traffic
-   moves yet; you're just adding an iii-shaped entry point.
+   moves yet; you are adding an iii-shaped entry point.
 2. **[Offload work to a queue](./offload-to-queue)**. Move long-running calls behind a queue
    worker so the wrapper returns immediately and retries are handled for you.
 3. **[Migrate persistence](./migrate-persistence)**. Migrate one slice of state at a time into a

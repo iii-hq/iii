@@ -20,7 +20,7 @@ State is a fast cache, but you also want a durable record you can run SQL over: 
 timestamped row each time someone follows one. Add the `database` worker:
 
 ```bash
-iii worker add database
+iii trigger -n linkly compose::add worker=database
 mkdir -p data
 ```
 

@@ -14,16 +14,18 @@
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the iii-observability worker.
+  end-to-end by the iii-observability worker. The engine injects this worker automatically; do not
+  declare it in `config.yaml`, `engine.workers`, or `containers`.
 </Note>
 
 ## Connection ports
 
-The engine binds three ports of its own and runs alongside one more from the observability worker:
+The engine binds its worker and stream WebSockets. Project HTTP routes and observability use their
+own workers:
 
 | Port    | Bound by           | Surface                                                       |
 | ------- | ------------------ | ------------------------------------------------------------- |
-| `3111`  | engine             | REST API.                                                     |
+| `3111`  | `http` worker      | Project HTTP routes (configurable in `worker-compose.yaml`).   |
 | `3112`  | engine             | Stream API (WebSocket; consumer-side stream subscriptions).   |
 | `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
 | `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
@@ -36,11 +38,20 @@ A worker opens the SDK WebSocket (default `ws://127.0.0.1:49134`). On connect th
 worker a UUID and sends a `WorkerRegistered { worker_id }` frame carrying it. The worker sends the
 registrations it holds in memory (each `RegisterFunction`, `RegisterTrigger`, and
 `RegisterTriggerType` it intends to expose) and calls `engine::workers::register` to publish its own
-metadata (runtime, version, OS, PID, isolation, and an optional one-line `description`), which the
-engine acknowledges with a `RegisterWorkerResult`.
+metadata (runtime, version, OS, PID, isolation, optional `namespace`, and an optional one-line
+`description`), which the engine acknowledges with a `RegisterWorkerResult`.
 
 The connection is bidirectional from that point on: the engine pushes `InvokeFunction` frames at the
 worker, and the worker pushes `InvocationResult`, additional registrations, or unregistrations back.
+
+A connection gets its namespace from the `engine::workers::register` call.
+
+A client can send registration messages before this call. The engine holds these messages until it
+knows the namespace. It does not register them in `default` and move them later.
+
+When `engine::workers::register` arrives, the engine registers the worker, sets the connection
+namespace, and processes the held messages in arrival order. If the registration timeout expires
+first, the engine sets the connection namespace to `default`. See [Namespaces](#namespaces).
 
 ## Message types
 
@@ -60,6 +71,7 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
 | `InvokeFunction`            | engine -> worker | Call a registered function with a payload.             |
 | `InvocationResult`          | worker -> engine | Carry the function's result or error back.             |
 | `WorkerRegistered`          | engine -> worker | Acknowledge the worker, with the assigned `worker_id`. |
+| `RegistrationRejected`      | engine -> worker | Refuse a registration that collides with a live worker in the same namespace. |
 | `Ping` / `Pong`             | bidirectional    | Liveness; keeps idle connections from timing out.      |
 
 ## `RegisterFunction`
@@ -92,13 +104,49 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
   "trigger_type": "http",
   "function_id": "math::add",
   "config": { "api_path": "/math/add", "http_method": "POST" },
-  "metadata": null
+  "metadata": null,
+  "namespace": "orders",
+  "trigger_namespace": null
 }
 ```
 
 `config` is the per-trigger-type configuration; the shape is defined by whatever worker advertised
 that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
 `TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
+
+`namespace` specifies the namespace of the target function. It uses the same namespace system as
+worker registration. Usually, it has the same value as the worker namespace.
+
+A trigger can call a function in a different namespace. For this reason, `RegisterTrigger` includes
+the target `namespace`. If this field is not present, `function_id` resolves in `default`. A present
+field must be a non-empty string; the engine rejects `null` and any other non-string value.
+
+`trigger_namespace` specifies where to find the trigger type's provider. It is a different question
+from `namespace`: one locates the target function, the other locates the provider that fires it.
+
+If `trigger_namespace` is not present, the engine resolves it in two steps: the registering
+connection's namespace first, then `default`. This is not the same as sending `"default"`. The two
+steps let a project register its own provider for a trigger type id that the engine also provides,
+while a worker that names nothing still reaches the engine's provider.
+
+If `trigger_namespace` is present, resolution is strict: that namespace or nothing. A binding that
+names a namespace is never moved to another provider.
+
+When a provider registers in a namespace after a binding already resolved to `default`, the engine
+moves that binding to the new provider. Start order does not decide which provider serves a
+project.
+
+These fields target `math::add` in `default`:
+
+```json
+{ "function_id": "math::add" }
+```
+
+These fields target `math::add` in `orders`:
+
+```json
+{ "function_id": "math::add", "namespace": "orders" }
+```
 
 ## `RegisterTriggerType`
 
@@ -108,13 +156,21 @@ that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with 
   "id": "webhook",
   "description": "HTTP webhook trigger",
   "trigger_request_format": { "type": "object", ... },
-  "call_request_format": { "type": "object", ... }
+  "call_request_format": { "type": "object", ... },
+  "namespace": null
 }
 ```
 
 `trigger_request_format` is the JSON Schema for the trigger's per-binding `config`.
 `call_request_format` is the JSON Schema for the payload delivered to bound functions when the
 trigger fires.
+
+`namespace` is the namespace this provider serves. If it is not present, the engine files the
+provider under the registering connection's namespace. Providers are keyed by
+`(namespace, trigger_type_id)`, so two workers in different namespaces can advertise the same
+`trigger_type` id without replacing each other.
+
+The engine's own providers (`http`, `cron`, `state`, `stream`) register in `default`.
 
 ## `InvokeFunction`
 
@@ -126,7 +182,8 @@ trigger fires.
   "metadata": { "tenant": "acme" },
   "traceparent": "00-…",
   "baggage": "k=v,…",
-  "action": { "type": "void" }
+  "action": { "type": "void" },
+  "namespace": "orders"
 }
 ```
 
@@ -142,6 +199,11 @@ triggers can use it to recover which registration fired and with what context.
 `traceparent` and `baggage` contain W3C trace
 context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
 absent / `null` means synchronous.
+
+`namespace` is optional and selects the namespace `function_id` resolves in. Omit the field to
+resolve in `default`; omission also keeps a peer that never sends it wire compatible. Send a
+non-empty string when the field is present. The engine rejects `null` and any other non-string
+value. See [Namespaces](#namespaces) for the resolution rules.
 
 ## `InvocationResult`
 
@@ -180,6 +242,69 @@ Failure:
 call and surfaces this code to the caller), `function_not_found`, `function_not_invokable`,
 `TIMEOUT` (client-side timeout), `FORBIDDEN` (RBAC denial).
 
+A `function_not_found` message names the namespace the lookup ran in, and lists the namespaces where
+the id does exist: `Function state::get not found in namespace default. It is registered in
+namespace(s): orders, analytics.`
+
+## `RegistrationRejected`
+
+```json
+{
+  "type": "registrationrejected",
+  "code": "WORKER_NAMESPACE_CONFLICT",
+  "namespace": "orders",
+  "worker_name": "state",
+  "owner_worker_id": "3f9c1a2e-…"
+}
+```
+
+The engine sends this message when a registration conflicts with a live worker in `namespace`.
+`owner_worker_id` identifies the worker that owns the identity. `code` specifies the identity field
+and the severity. Each message contains only one identity field:
+
+| `code`                        | Identity field | Connection           | Severity                                                                                        |
+| ----------------------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | `worker_name`  | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.                                         |
+| `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions. |
+
+A function conflict has this format:
+
+```json
+{
+  "type": "registrationrejected",
+  "code": "FUNCTION_NAMESPACE_CONFLICT",
+  "namespace": "orders",
+  "function_id": "state::get",
+  "owner_worker_id": "3f9c1a2e-…"
+}
+```
+
+### Function conflict behavior
+
+Worker registration and function registration are separate operations. The engine can accept a
+worker and reject one of its functions.
+
+For a function ownership conflict, the engine:
+
+1. Keeps the current function owner.
+2. Does not register the new handler.
+3. Sends `FUNCTION_NAMESPACE_CONFLICT` to the new worker.
+4. Keeps the new worker connection open.
+5. Continues to register and serve the new worker's other functions.
+
+`FUNCTION_NAMESPACE_CONFLICT` is a registration result. It is not an invocation result. A later
+invocation of the same function id in the same namespace goes to the current owner. It does not go
+to the worker whose registration was rejected.
+
+<Warning>
+A connected worker does not confirm that all its functions are registered. The SDK reports a
+function conflict as a warning and keeps the worker active. If the worker requires all its functions,
+treat this warning as a startup or deployment error.
+</Warning>
+
+A worker restarting against its own not-yet-cleaned connection is not a conflict: the engine treats
+a connection that has begun tearing down as not live, so the restart reclaims its name immediately.
+
 ## Trigger actions
 
 `InvokeFunction.action` is tagged by `type` and lowercase-encoded on the wire:
@@ -198,9 +323,57 @@ without an `invocation_id` and never expects a reply. For `Enqueue` the engine h
 to the queue worker, which persists it and re-invokes the target function on a subscriber according
 to the queue's retry policy.
 
+## Namespaces
+
+A namespace is a routing value carried with a function id. It is not part of the function name. For
+example, `state::get` has the same id in every namespace. Registries are keyed by
+`(namespace, function_id)` and `(namespace, worker_name)`, so the same id or worker name may appear
+once per namespace.
+
+A worker declares its namespace on the `engine::workers::register` call
+([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A
+connection that declares none lands in `default`.
+
+### Resolution
+
+Invocation routing is strict. It never falls back to another namespace:
+
+| `InvokeFunction.namespace`     | Resolves in                  |
+| ------------------------------ | ---------------------------- |
+| absent                         | `default` only               |
+| `"orders"`                     | `orders` only                |
+| `null` or any other non-string | the engine rejects the frame |
+
+The SDKs fill the field from the worker namespace when the caller sets none on the invocation, so the
+frame carries the worker's own namespace, or `default` when the worker declared none.
+
+A miss returns `function_not_found` naming the namespaces where the id does exist.
+
+Introspection resolution is deliberately looser, so that an engine whose every worker is namespaced
+can still answer questions about itself. For `engine::functions::info` and `engine::workers::info`
+with no explicit `namespace`: a `default` entry wins; otherwise an id or name unique to one
+non-default namespace resolves; an id or name present in several non-default namespaces at once is
+reported as an ambiguity naming the candidates, never resolved by guessing. Passing an explicit
+`namespace` restores strict resolution.
+
+### Reserved ids
+
+`engine::*` is reserved for engine infrastructure, which is registered in `default`. A custom worker
+that tries to register an `engine::*` function id in another namespace has that registration
+refused.
+
+The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
+The reserved-id check does not reject these functions.
+
+### Wire compatibility
+
+Every namespace field is optional and omitted when unset. A worker built against an older SDK sends
+no namespace, lands in `default`, and behaves exactly as before. An explicit `null` is not the same
+as an absent field: the engine rejects it, as it rejects any non-string value.
+
 ## Engine discovery functions
 
-The engine registers a set of functions under the `engine::*` namespace for introspection
+The engine registers a set of functions under the `engine::*` prefix for introspection
 and worker lifecycle. Defined in
 [`engine/src/workers/engine_fn/mod.rs`](https://github.com/iii-hq/iii/blob/main/engine/src/workers/engine_fn/mod.rs):
 
@@ -208,16 +381,21 @@ and worker lifecycle. Defined in
 | ----------------------------- | ----------------------------------------------------------------------------- |
 | `engine::channels::create`    | Create a streaming-channel reader / writer pair.                              |
 | `engine::functions::list`     | List every registered function (filterable by `include_internal`).            |
-| `engine::functions::info`     | Inspect one or more functions (a single `function_id`, or up to 32 `function_ids`): schemas, owner, and registered triggers. |
+| `engine::functions::info`     | Inspect one or more functions (a single `function_id`, or up to 32 `function_ids`): schemas, owner, and registered triggers. Accepts an optional `namespace`. |
 | `engine::workers::list`       | List every connected worker with metrics.                                     |
-| `engine::workers::info`       | Inspect one connected worker's full surface (functions, trigger types, registered triggers). |
+| `engine::workers::info`       | Inspect one connected worker's full surface (functions, trigger types, registered triggers). Takes `name` plus an optional `namespace`. |
 | `engine::triggers::list`      | List every registered trigger type (filterable by `include_internal`).        |
 | `engine::triggers::info`      | Inspect one trigger type: schemas, owner, and live instance count.            |
 | `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). |
 | `engine::registered-triggers::info` | Inspect one registered trigger instance, with denormalized trigger and function detail. |
-| `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `description`). |
+| `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`). |
 | `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. Returns the trigger id. |
 | `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
+
+Every row returned by `engine::functions::list`, `engine::functions::info`, `engine::workers::list`,
+and `engine::workers::info` carries a `namespace` field naming the registry key under which the entry
+is registered. It distinguishes two rows that share a `function_id` or a worker `name`. Neither
+`list` function takes a `namespace` filter; both return every namespace.
 
 ## Engine discovery triggers
 

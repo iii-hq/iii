@@ -554,7 +554,8 @@ context is forwarded to the middleware.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `allowed_functions` | `Vec<String>` | Yes | Additional function IDs to allow beyond the `expose_functions` config. |
+| `namespaces` | `HashMap<String, Vec<String>>` | Yes | Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value<br />is an exact function ID or a wildcard, in either the bare (`svc::*`) or<br />the `match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Leave it empty to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
+| `allowed_functions` | `Vec<String>` | Yes | Additional function IDs to allow beyond the `expose_functions` config,<br />in the `default` namespace only. Put per-namespace grants in<br />`AuthResult::namespaces`. |
 | `forbidden_functions` | `Vec<String>` | Yes | Function IDs to deny even if they match `expose_functions`.<br />Takes precedence over allowed. |
 | `allowed_trigger_types` | `Option<Vec<String>>` | No | Trigger type IDs the worker may register triggers for.<br />When `None`, all types are allowed. |
 | `allow_trigger_type_registration` | `bool` | Yes | Whether the worker may register new trigger types. Defaults to `false`. |
@@ -576,6 +577,7 @@ fields, or return an error to deny the registration.
 | `function_id` | `String` | Yes | ID of the function being registered. |
 | `description` | `Option<String>` | No | Human-readable description of the function. |
 | `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
+| `namespace` | `String` | Yes | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
 
 ---
@@ -607,6 +609,7 @@ fields, or return an error to deny the registration.
 | `function_id` | `String` | Yes | ID of the function this trigger is bound to. |
 | `config` | `Value` | Yes | Trigger-specific configuration. |
 | `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
+| `namespace` | `String` | Yes | Namespace the trigger's target resolves in (explicit, or `default` when<br />absent). The same function id can exist in several namespaces, so the hook<br />needs this to authorize per target namespace. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
 
 ---

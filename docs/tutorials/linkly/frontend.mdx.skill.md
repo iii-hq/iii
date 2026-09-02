@@ -18,29 +18,56 @@ to gate those connections, so scaffold it the same way you scaffolded `link` in 
 </Note>
 
 ```bash
-iii worker init auth --language typescript
+mkdir -p auth/src
 ```
 
-{/* TODO(validation): `iii worker add iii-worker-manager` is being added to the registry; re-verify once the command works end-to-end. */}
+Create the worker manifest and package metadata:
+
+```yaml auth/iii.worker.yaml
+name: auth
+scripts:
+  start: pnpm start
+```
+
+```json auth/package.json
+{
+  "name": "auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.21.4",
+    "@iii-dev/helpers": "0.21.4",
+    "tsx": "^4.22.3"
+  }
+}
+```
+
+```bash
+cd auth && pnpm install && cd ..
+```
 
 ## Run two listeners
 
-The engine's built-in port at `49134` is the **trusted** listener; local workers (link worker,
-analytics worker) connect there. The browser must not. Add two `iii-worker-manager` entries: the
-trusted one (local workers keep using it) and an RBAC-gated one on `3110` for browsers:
+The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
+worker) connect there. The browser must not. Stop the running Compose process, then add two
+`iii-worker-manager` entries under `engine.workers`: the trusted one and an RBAC-gated instance on
+`3110` for browsers:
 
-```yaml config.yaml
-workers:
-  # ...
-  # Trusted listener for local workers. Replaces the engine's built-in 49134.
-  - name: iii-worker-manager
-    config:
+```yaml worker-compose.yaml
+engine:
+  workers:
+    # Trusted listener for local workers.
+    iii-worker-manager:
+      host: 127.0.0.1
       port: 49134
 
-  # Browser-facing listener. The auth function gates every connection; only the
-  # functions in `expose_functions` are reachable from sessions it admits.
-  - name: iii-worker-manager
-    config:
+    # Browser-facing listener. The auth function gates every connection; only
+    # the functions in `expose_functions` are reachable from sessions it admits.
+    iii-worker-manager#browser:
       host: 127.0.0.1
       port: 3110
       rbac:
@@ -49,6 +76,12 @@ workers:
           - match("link::create")
           - match("link::request_delete")
           - match("stream::*")
+```
+
+Restart the project so Compose can materialize the changed engine configuration:
+
+```bash
+iii compose --up --namespace linkly --file worker-compose.yaml
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`
@@ -60,7 +93,7 @@ that next.
 The `auth` worker owns connection gating, so the `link` worker stays focused on links.
 `auth::browser` runs once per browser connection: it receives the request's `headers`,
 `query_params`, and `ip_address`, and returns the session's permissions (allow/deny additions,
-arbitrary context). Throw to reject. Replace the generated `auth/src/index.ts`:
+arbitrary context). Throw to reject. Create `auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -98,10 +131,10 @@ logger.info("auth worker ready");
 A real deployment would look the token up in a session store; the shape stays the same. The token
 travels in a query parameter because browsers cannot send custom WebSocket headers.
 
-Register it with your project:
+The Compose daemon exposes `compose::add`. Target the daemon serving the `linkly` namespace:
 
 ```bash
-iii worker add ./auth
+iii trigger compose::add --namespace linkly worker=./auth
 ```
 
 ## Add a server-initiated delete

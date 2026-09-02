@@ -31,7 +31,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
       return { c: payload.a + payload.b };
@@ -46,7 +46,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker"),
+        InitOptions(worker_name="math-worker", namespace="orders"),
     )
 
     def add_handler(payload: dict) -> dict:
@@ -61,7 +61,13 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
@@ -93,7 +99,7 @@ the function. The schemas are stored with the function and surface in the iii co
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction(
       "math::add",
@@ -121,7 +127,7 @@ the function. The schemas are stored with the function and surface in the iii co
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker"),
+        InitOptions(worker_name="math-worker", namespace="orders"),
     )
 
     worker.register_function(
@@ -154,7 +160,13 @@ the function. The schemas are stored with the function and surface in the iii co
     struct AddOutput { c: f64 }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     // Rust derives `request_format` and `response_format` from the closure's
     // input and output types via `schemars::JsonSchema`. No builder methods
@@ -186,10 +198,10 @@ functionality. For example,
 by a `metadata:` selector, so tagging a function `{ public: true }` or `{ tier: "premium" }` lets
 you gate access on the fields you define.
 
-<Warn>
+<Warning>
   All access should be gated system-side. You should never rely on an untrusted worker to define
   what they can or can't have access to.
-</Warn>
+</Warning>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -269,8 +281,12 @@ use this `metadata` object to provide trigger or execution context to the receiv
 
 ## HTTP-invokable functions
 
-You can also register an external HTTP endpoint as a function. The engine makes the HTTP call
-whenever the function is invoked, your worker only declares the endpoint.
+The `iii-http-functions` worker provides this feature. See its
+[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) for its configuration and
+security controls.
+
+You can register an external HTTP endpoint as a function. The engine makes the HTTP call whenever
+the function is invoked; your worker only declares the endpoint.
 
 This is useful for delegating work to your existing API Gateways, webhooks, serverless platforms
 (Lambda, Azure Functions, Google Cloud Functions), or any third-party API you want to surface as a
@@ -287,7 +303,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
 
       const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
       worker.registerFunction(
         "notifications::send",
@@ -310,7 +326,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
 
       worker = register_worker(
           os.environ.get("III_URL"),
-          InitOptions(worker_name="notifications-worker"),
+          InitOptions(worker_name="notifications-worker", namespace="orders"),
       )
 
       worker.register_function(
@@ -335,7 +351,13 @@ trigger type (queue, cron, state, http) all work without any other changes.
       };
 
       let url = std::env::var("III_URL").expect("III_URL must be set");
-      let worker = register_worker(&url, InitOptions::default());
+      let worker = register_worker(
+          &url,
+          InitOptions {
+              namespace: Some("orders".into()),
+              ..Default::default()
+          },
+      );
 
       let mut headers = HashMap::new();
       headers.insert("X-Service".into(), "iii-worker".into());

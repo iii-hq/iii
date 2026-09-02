@@ -104,6 +104,9 @@ fn spawn_supervised_inner(
     // Its own console group: CTRL_BREAK can then be aimed at the child alone,
     // rather than at every process sharing the daemon's console.
     command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    // A worker is not an interactive child of Compose. Inheriting stdin can
+    // block startup indefinitely and differs from daemon/service semantics.
+    command.stdin(std::process::Stdio::null());
     if piped {
         command
             .stdout(std::process::Stdio::piped())

@@ -78,6 +78,11 @@ fn spawn_supervised_inner(
 ) -> std::io::Result<(Supervised, ChildOutput)> {
     // Group leader: killpg then reaches the worker and everything it spawns.
     command.process_group(0);
+    // Workers are background process-group leaders. Inheriting the daemon's
+    // terminal stdin lets a read trigger SIGTTIN, leaving the child stopped in
+    // `T` state while readiness waits forever. Workers communicate through iii,
+    // never through Compose's controlling terminal.
+    command.stdin(std::process::Stdio::null());
     if piped {
         command
             .stdout(std::process::Stdio::piped())

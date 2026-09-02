@@ -11,16 +11,45 @@ worker stays focused on single links.
 
 ## Add the worker
 
-Scaffold the importer the same way you scaffolded `link` in Chapter 1:
+Create the importer directory the same way you created `link` in Chapter 1:
 
 ```bash
-iii worker init bulk-importer --language typescript
+mkdir -p bulk-importer/src
+```
+
+Create the worker manifest and package metadata before writing its source:
+
+```yaml bulk-importer/iii.worker.yaml
+name: bulk-importer
+scripts:
+  start: pnpm start
+```
+
+```json bulk-importer/package.json
+{
+  "name": "bulk-importer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.21.4",
+    "@iii-dev/helpers": "0.21.4",
+    "tsx": "^4.22.3"
+  }
+}
+```
+
+```bash
+cd bulk-importer && pnpm install && cd ..
 ```
 
 ## Import a CSV over a channel
 
 The `bulk-importer` worker exposes one function that receives the read end of a channel, streams the
-CSV in, and triggers `link::create` from the `link` worker for each row. Replace the generated
+CSV in, and triggers `link::create` from the `link` worker for each row. Create
 `bulk-importer/src/index.ts`:
 
 ```typescript bulk-importer/src/index.ts
@@ -60,7 +89,7 @@ logger.info("bulk-importer ready");
 Register it with your project:
 
 ```bash
-iii worker add ./bulk-importer
+iii trigger -n linkly compose::add worker=./bulk-importer
 ```
 
 ## See it work

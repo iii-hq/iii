@@ -1,55 +1,56 @@
 ---
 title: "CLI"
-description: "The iii CLI: discover commands, trigger functions, and manage iii itself."
+description: "The iii CLI: run projects, trigger functions, and manage iii itself."
 owner: "devrel"
 type: "how-to"
 ---
 
-For the most current list of commands, flags, and defaults, ask the binary directly:
+Ask the installed binary for its exact command and flag surface:
 
 ```bash
-iii --help            #lists iii's flags and available subcommands
-iii subcommand --help #lists the specific actions each sucommand accepts
+iii --help
+iii <subcommand> --help
 ```
 
-Each subcommand's help also provides the defaults and environment variables that affect each
-command.
-
-<Note>
-  The full CLI surface, including `iii worker` and `iii console`, is also published as an
-  automatically generated [CLI reference](../cli-reference/index).
-</Note>
+The generated [CLI reference](../cli-reference/index) publishes the same surface.
 
 ## Subcommands
 
-| Subcommand    | What it does                                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `iii trigger` | Invoke a registered function on a running engine. See [Triggering functions](./functions#triggering-invoking-functions). |
-| `iii worker`  | Manage workers: add, remove, list, start/stop, update, verify. See [Workers](./workers).                                 |
-| `iii project` | Manage iii projects: scaffold a new one, generate Docker assets. See [Deployment](./deployment).                         |
-| `iii console` | Launch the iii web console. See [Console](./console).                                                                    |
-| `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments).                    |
-| `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii).                                    |
+| Subcommand | What it does |
+| --- | --- |
+| `iii compose` | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
+| `iii trigger` | Invoke a registered function on a running engine. |
+| `iii project` | Scaffold projects and generate Docker assets. |
+| `iii console` | Launch the iii web console. |
+| `iii cloud` | Manage hosted iii deployments. |
+| `iii update` | Update iii and its managed support binaries. |
 
-Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
-`--config`). When the file doesn't exist yet, `iii` offers to create it with an empty workers list
-(and creates it without asking in non-interactive sessions); add workers with `iii worker add`.
+`iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
+[Workers](./workers). The `worker::*` function surface was removed with it.
+
+Running `iii` with no subcommand starts only the engine from `./config.yaml` or `--config`. Use
+`iii compose --up` for the normal project lifecycle:
+
+```bash
+iii compose build --file worker-compose.yaml
+iii compose --namespace dev --up --file worker-compose.yaml
+```
 
 ## Managing iii Cloud deployments
 
-The `iii cloud` subcommand group will manage hosted iii deployments. See
-[Deployment](./deployment#iii-cloud-deployments) for details about the iii cloud.
+The `iii cloud` command group manages hosted deployments. See
+[Deployment](./deployment#iii-cloud-deployments).
 
-<Note>iii's cloud will be available soon.</Note>
-
-{/* llm-only: Always verify the claim about iii cloud above, it could have changed since when this document was written. */}
+<Note>iii Cloud availability may vary by account and release.</Note>
 
 ## Updating iii
 
-`iii update` refreshes iii and its managed binaries to their latest versions. This is distinct from
-`iii worker update`, which refreshes pinned worker versions inside a project.
+`iii update` updates iii and support binaries installed with it. Worker package versions are pinned
+inside `worker-compose.yaml`; update one with `compose::update`:
 
-<Note>
-  Specific targets can be updated individually via `iii update [target]`. Run `iii update
-  --list-targets` to see the list of targets.
-</Note>
+```bash
+iii trigger -n dev compose::update worker=state
+iii trigger -n dev compose::update worker=state@0.22.2
+```
+
+Run `iii update --list-targets` to list the binaries the installer can update.

@@ -34,6 +34,7 @@ pub mod logs;
 mod managed_engine;
 pub mod manifest;
 pub mod namespace;
+pub mod operation;
 mod parallelism;
 pub mod process;
 pub mod project;
@@ -481,7 +482,6 @@ async fn serve_daemon(
         project_namespace_override,
         engine_policy,
     );
-    remote::register(&daemon);
 
     // Announce only once the engine has accepted this daemon. A rejection
     // arrives within a round trip, and printing "serving" before hearing it
@@ -550,36 +550,74 @@ async fn serve_daemon(
         );
     }
 
-    // The project named on the command line, brought up before the first call
-    // can arrive. A failure ends the command: rollback has already stopped
-    // whatever started, so there is nothing left for this daemon to supervise
-    // and staying would serve an empty project nobody asked for.
-    if let Some(file) = &start {
+    let startup_operation = if start.is_some() {
+        Some(daemon.operations.create(1).await)
+    } else {
+        None
+    };
+    // Read-only operations, cancellation, and stop remain available while the
+    // foreground renderer owns the initial startup tree.
+    remote::register_controls(&daemon);
+
+    // A failed initial project still ends the command. Cancellation rolls its
+    // partial startup back but leaves the daemon available for later calls.
+    if let (Some(file), Some(operation)) = (&start, startup_operation) {
         println!();
-        let operation_id = uuid::Uuid::new_v4().to_string();
+        let operation_id = operation.id().to_string();
+        let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
+            operation.cancellation(),
+        ));
         let result = daemon
-            .up_until_shutdown(Some(file), None, operation_id, shutdown.clone())
+            .up_until_shutdown(Some(file), None, operation_id, startup_shutdown)
             .await;
         match result {
             Ok(None) => {
-                println!(
-                    "{}",
-                    "startup interrupted; stopping every project...".dimmed()
-                );
-                daemon.shutdown().await;
-                return Ok(());
+                operation
+                    .finish(
+                        operation::OperationStatus::Cancelled,
+                        "initial project startup cancelled",
+                    )
+                    .await;
+                if shutdown.requested() || daemon.stop_requested() {
+                    println!(
+                        "{}",
+                        "startup interrupted; stopping every project...".dimmed()
+                    );
+                    daemon.shutdown().await;
+                    return Ok(());
+                }
+                println!("{}", "startup cancelled; daemon remains available".dimmed());
             }
             Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
+                let error = ComposeError::ProjectDidNotStart { path: file.clone() };
+                operation
+                    .finish(operation::OperationStatus::Failed, error.to_string())
+                    .await;
                 daemon.shutdown().await;
-                return Err(ComposeError::ProjectDidNotStart { path: file.clone() });
+                return Err(error);
             }
-            Ok(Some(_)) => {}
+            Ok(Some(_)) => {
+                operation
+                    .finish(
+                        operation::OperationStatus::Succeeded,
+                        "initial project is ready",
+                    )
+                    .await;
+            }
             Err(err) => {
+                operation
+                    .finish(operation::OperationStatus::Failed, err.to_string())
+                    .await;
                 daemon.shutdown().await;
                 return Err(err);
             }
         }
     }
+    // Publish project mutations only after the foreground startup tree is complete.
+    // The renderer intentionally owns one global in-place block; admitting a
+    // remote mutation during initial --up would replace that block and interleave
+    // two operations' cursor movement.
+    remote::register_mutations(&daemon);
 
     // Serve until asked to stop, or until the engine refuses this identity.
     //

@@ -18,22 +18,23 @@ Workers can also be found on Docker and OCI-compatible registries.
 
 ## Adding a worker
 
-`iii worker add` accepts three sources. In every case the worker is added to your project's
-`config.yaml` and started automatically. Its settings are seeded from `config.yaml` once, on the
-worker's first boot, and managed through the [configuration worker](./configuration) afterwards.
+`compose::add` accepts a registry name (optionally pinned with `@version`) or a local project path.
+It writes the resolved worker and dependency graph to `worker-compose.yaml`, then restarts the
+project. Its settings are managed through the [configuration worker](./configuration).
 
 ```bash
-iii worker add state # Downloads and adds a worker from iii registry
-iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
-iii worker add ghcr.io/org/worker:tag # Adds a local worker from a Docker or OCI image registry
+iii trigger -n dev compose::add worker=state
+iii trigger -n dev compose::add worker=state@0.22.2
+iii trigger -n dev compose::add worker=./workers/my_worker
 ```
 
 <Note>
-  For removing workers and the broader `iii worker` subcommand set (start, stop, restart, sync,
-  verify, etc.), see [Workers](./workers).
+  Replace `dev` with the running Compose daemon's namespace. For project lifecycle, status, updates,
+  and removal by editing the file, see [Workers](./workers) and [Compose](./compose).
 </Note>
 
 ## Artifact types
 
-Each registry worker is published as either a native binary (with per-platform artifacts for macOS,
-Linux, and Windows) or as a Docker / OCI compatible image that runs on every supported platform.
+Compose currently runs registry workers published as native binaries or bundles. Engine-kind roots
+are rejected because the engine already supplies them; image workers require an OCI runtime and are
+not yet supported by Compose.
