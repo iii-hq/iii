@@ -48,6 +48,7 @@ run_chapter() {
   # the next one's. The package cache stays shared.
   export III_COMPOSE_STATE_DIR="$work/compose-state"
   mkdir -p "$III_COMPOSE_STATE_DIR"
+  mkdir -p "$HOME/.iii/compose/packages"
   ln -s "$HOME/.iii/compose/packages" "$III_COMPOSE_STATE_DIR/packages"
 
   (cd "$work" && "$III_BIN" project init linkly -t linkly --skip-iii --template-dir "$TEMPLATES_DIR") \

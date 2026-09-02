@@ -10,14 +10,19 @@ needs a human's go-ahead.
 
 ## Add the workers
 
-A browser worker connects through `iii-worker-manager`'s RBAC-gated listener, separate from the
+A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the
 trusted port your local workers use. The `auth` worker holds the authentication logic that gates
 those connections. Stop Compose and uncomment the Ch. 7 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
   auth:
     worker: path://./auth
+    env_file: ['./.env']
 ```
+
+The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`
+for local work. `auth::browser` admits a browser only when the token it receives matches, so change
+this value for anything beyond your machine.
 
 <Note>
   If you're continuing from the previous chapter you might still be in the `channel-client` folder.
@@ -30,40 +35,39 @@ Install the worker's dependencies once:
 cd auth && npm install && cd ..
 ```
 
-## Run two listeners
+## Put a proxy in front for browsers
 
 The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
-worker) connect there. The browser must not. Uncomment the Ch. 7 lines under `engine.workers`: the
-trusted listener and an RBAC-gated instance on `3110` for browsers:
+worker) connect there. The browser must not. The `rbac-proxy` worker opens a separate public port
+and reverse-proxies to the engine, authenticating every connection and gating every call it makes.
+Uncomment the Ch. 7 `rbac-proxy` container:
 
 ```yaml worker-compose.yaml
-engine:
-  url: ws://127.0.0.1:49134
-  workers:
-    iii-stream: {}
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
-    iii-worker-manager#browser:
+  rbac-proxy:
+    worker: package://rbac-proxy
+    version: "1.0.5"
+    config_name: rbac-proxy
+    config_override:
       host: 127.0.0.1
       port: 3110
+      engine_url: ws://127.0.0.1:49134
       rbac:
         auth_function_id: auth::browser
         expose_functions:
           - match("link::create")
           - match("link::request_delete")
-          - match("stream::*")
 ```
 
-Restart the project so Compose can materialize the changed engine configuration:
+Restart the project so Compose can start the proxy:
 
 ```bash
 iii compose --up --file worker-compose.yaml
 ```
 
-`expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`
-names a function `iii-worker-manager` invokes on every connection to admit or reject it; you write
-that next.
+`expose_functions` is an allowlist of which functions a browser session can call. The browser reads
+the live click stream through a `stream` trigger, not a function call, so no `stream::*` function is
+exposed. `auth_function_id` names a function `rbac-proxy` invokes on every connection to admit or
+reject it; you write that next.
 
 ## Gate connections with an auth function
 
@@ -88,8 +92,10 @@ worker.registerFunction(
     query_params: Record<string, string[]>;
     ip_address: string;
   }) => {
+    // Fail closed: no LINKLY_BROWSER_TOKEN set means no browser is admitted.
+    const expected = process.env.LINKLY_BROWSER_TOKEN;
     const token = input.query_params.token?.[0];
-    if (!token || token !== (process.env.LINKLY_BROWSER_TOKEN ?? "dev-token")) {
+    if (!expected || token !== expected) {
       throw new Error("unauthorized");
     }
     return {
@@ -105,8 +111,9 @@ worker.registerFunction(
 logger.info("auth worker ready");
 ```
 
-A real deployment would look the token up in a session store; the shape stays the same. The token
-travels in a query parameter because browsers cannot send custom WebSocket headers.
+The client sends the same token as `VITE_LINKLY_TOKEN`, which you set below. A real deployment would
+look the token up in a session store; the shape stays the same. The token travels in a query
+parameter because browsers cannot send custom WebSocket headers.
 
 
 ## Add a server-initiated delete
@@ -179,7 +186,7 @@ npm install iii-browser-sdk
 ### Setup a client-side worker
 
 Connect the SDK to our iii instance in `frontend/src/iii.ts`. Note how we're using a different URL
-format and port, this goes back to the setup we did with `iii-worker-manager` and RBAC.
+format and port, this goes back to the setup we did with `rbac-proxy` and RBAC.
 
 ```typescript src/iii.ts
 import { registerWorker } from "iii-browser-sdk";
@@ -355,7 +362,7 @@ The browser will show a confirm prompt, and the server deletes only after you cl
 ## Conclusion
 
 The client is a worker that is exactly the same as every other worker. We connected it through an
-RBAC-gated listener (via `iii-worker-manager`) that uses an auth function to admit it because the
+RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the
 browser isn't trusted like our other workers. However any other worker can be gated this same way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live

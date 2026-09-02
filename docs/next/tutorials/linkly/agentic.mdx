@@ -21,15 +21,10 @@ cd linkly
 ```
 
 The `harness` worker runs a coding agent inside the [console](/using-iii/console). It reaches models
-through `llm-router`, which reads your provider key from `.env`. Add the key for the provider you
-use, then start the engine and the agent stack:
+through `llm-router`, which reads your provider key from `.env`.
 
-```bash
-iii compose --up
-```
-
-Anthropic and OpenAI ship enabled: put a key for one in `.env` and it is ready after `iii compose
---up`. For any other provider, add it after start. Select your provider for the exact steps:
+Anthropic and OpenAI ship enabled: put a key for one in `.env` before you start Compose. For any
+other provider, add it after start. Select your provider for the exact steps:
 
 <div className="iii-qs" role="group" aria-label="provider setup">
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" defaultChecked />
@@ -153,6 +148,12 @@ Anthropic and OpenAI ship enabled: put a key for one in `.env` and it is ready a
 
   </div>
 </div>
+
+With your key in `.env`, start the engine and the agent stack:
+
+```bash
+iii compose --up
+```
 
 Open the console, start a session, and paste the Chapter 1 prompt.
 
@@ -368,10 +369,11 @@ The uploader reports two imported links, and both resolve.
 ```text Prompt
 Turn a browser tab into a worker.
 
-- Add the two iii-worker-manager listeners: the trusted local one, and a browser-facing one on port
-  3110 with an RBAC allowlist gated by auth::browser.
-- Create an auth worker with an auth::browser function that admits browser connections, and add it
-  with `compose::add worker=./auth`.
+- Add an rbac-proxy worker that fronts a public port 3110 and reverse-proxies to the engine at
+  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
+  link::request_delete only). Add it with `compose::add worker=rbac-proxy`.
+- Create an auth worker with an auth::browser function that admits browser connections (fail closed
+  when its LINKLY_BROWSER_TOKEN env var is unset), and add it with `compose::add worker=./auth`.
 - Add link::delete and link::request_delete: request_delete asks a browser-registered
   user::confirm_destructive_op before deleting.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template

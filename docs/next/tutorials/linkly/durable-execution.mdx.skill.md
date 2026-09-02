@@ -36,8 +36,8 @@ Also uncomment the `analytics` database under the Ch. 3 block's `config_override
 
 ```yaml worker-compose.yaml
           url: sqlite:./data/iii.db
-          analytics:
-            url: sqlite:./data/analytics.db
+        analytics:
+          url: sqlite:./data/analytics.db
 ```
 
 ## Make redirects fast with a queue

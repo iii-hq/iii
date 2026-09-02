@@ -54,11 +54,15 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
 
   let imported = 0;
   for (const row of rows) {
-    const [code, url] = row.split(",");
+    // Split on the first comma only, so commas inside the URL survive.
+    const comma = row.indexOf(",");
+    if (comma === -1) continue;
+    const code = row.slice(0, comma).trim();
+    const url = row.slice(comma + 1).trim();
     if (!url) continue;
     await worker.trigger({
       function_id: "link::create",
-      payload: { code: code.trim(), url: url.trim() },
+      payload: { code, url },
     });
     imported += 1;
   }
