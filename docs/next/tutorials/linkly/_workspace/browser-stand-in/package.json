@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "iii-browser-sdk": "0.23.0-rc.10"
+    "iii-browser-sdk": "0.23.0"
   }
 }

@@ -20,7 +20,7 @@ uncomment the Ch. 4 block in `worker-compose.yaml`:
 ```yaml worker-compose.yaml
   queue:
     worker: package://queue
-    version: "0.21.9"
+    version: "0.21.10"
     config_name: queue
     working_dir: .
     config_override:
@@ -31,7 +31,7 @@ uncomment the Ch. 4 block in `worker-compose.yaml`:
           concurrency: 5
   pubsub:
     worker: package://pubsub
-    version: "0.21.2"
+    version: "0.21.4"
   analytics:
     worker: path://./analytics
     start_after: [database, pubsub]

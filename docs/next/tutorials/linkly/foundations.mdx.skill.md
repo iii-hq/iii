@@ -30,12 +30,12 @@ engine:
 containers:
   http:
     worker: package://http
-    version: "0.21.6"
+    version: "0.21.8"
     config_name: http
 
   state:
     worker: package://state
-    version: "0.22.4"
+    version: "0.22.7"
     config_name: state
     config_override:
       adapter:
@@ -97,8 +97,8 @@ TypeScript source directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0-rc.10",
-    "@iii-dev/helpers": "0.23.0-rc.10",
+    "iii-sdk": "0.23.0",
+    "@iii-dev/helpers": "0.23.0",
     "tsx": "^4.22.3"
   },
   "devDependencies": {

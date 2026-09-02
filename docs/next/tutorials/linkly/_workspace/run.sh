@@ -10,7 +10,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../../../.." && pwd)"
 TEMPLATES_DIR="${TEMPLATES_DIR:-$REPO/../templates-linkly/iii}"
-# The queue provider is namespace-scoped only from 0.23.0-rc.9 on. Point III_BIN
+# The queue provider is namespace-scoped from 0.23.0 on. Point III_BIN
 # at a build that has it when the installed iii is older.
 III_BIN="${III_BIN:-$REPO/target/release/iii}"
 [[ -x "$III_BIN" ]] || III_BIN="$(command -v iii)"

@@ -186,7 +186,8 @@ Then expose them over HTTP through the http worker:
 - an http::redirect function and a GET /s/:code trigger that resolves the code and returns a 302 to
   the url, or 404 when it is unknown.
 
-Run `cd link && npm install && cd ..`. The link worker reloads on save. Do not restart Compose.
+Run `cd link && npm install && cd ..`, then add the worker with
+`iii trigger compose::add worker=./link`. Do not restart Compose; compose::add starts it in place.
 
 The reference for this chapter is https://iii.dev/docs/next/tutorials/linkly/foundations.
 ```
@@ -265,8 +266,8 @@ path.
 ```text Prompt
 Make redirects fast and add analytics.
 
-- Add the queue worker (compose::add worker=queue) with a standard "clicks" queue, and enqueue click
-  records instead of writing them inline on the redirect path.
+- Define a standard "clicks" queue with queue::define (the queue worker is already running for the
+  agent), and enqueue click records instead of writing them inline on the redirect path.
 - Add the pubsub worker (compose::add worker=pubsub). link::create publishes a link.created event.
 - Add a second SQLite database named "analytics" for the analytics worker.
 - Create a Python analytics worker that subscribes to link.created and counts links per day, and add
