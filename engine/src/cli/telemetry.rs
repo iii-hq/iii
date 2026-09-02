@@ -18,13 +18,7 @@ use iii::workers::telemetry::amplitude::{
 use iii::workers::telemetry::environment;
 
 pub(crate) fn is_telemetry_disabled() -> bool {
-    if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
-        && (val == "false" || val == "0")
-    {
-        return true;
-    }
-
-    environment::is_ci_environment() || environment::is_dev_optout()
+    environment::env_opt_out() || environment::is_ci_environment() || environment::is_dev_optout()
 }
 
 fn build_user_properties(install_method_override: Option<&str>) -> serde_json::Value {
