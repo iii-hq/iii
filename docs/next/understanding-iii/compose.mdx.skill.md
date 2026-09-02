@@ -159,21 +159,45 @@ started is rolled back, and everything after it in the start order is never atte
 containers that have nothing to do with it. Once a container is ready, the supervisor is narrower:
 it takes that container's transitive dependents down and leaves the rest alone.
 
-So a `mailer` that nothing depends on ends the whole start if it fails during `up`, and is contained
-if it fails a minute later. The same declaration, the same container, two blast radii separated only
-by timing.
+So a `mailer` that nothing depends on would end the whole start if it failed during `up`, and be
+contained if it failed a minute later. The same declaration, the same container, two blast radii
+separated only by timing.
 
 Each rule is defensible where it stands. An `up` that reported success over a half-started project
 would be worse than one that refuses, and a supervisor that tore down a whole project because one
-leaf died would be worse than one that contains it. What is missing is a way for the compose file to
-say which it wants, so the choice is compose's rather than the operator's. That is a v1 limitation
-rather than a decision: a project cannot mark a container as non-essential, and it cannot ask for a
-dead one to be restarted, because there is no restart policy at all.
+leaf died would be worse than one that contains it. What was missing was a way for the compose file
+to say which it wants, so the choice was compose's rather than the operator's.
 
-Both belong in the file rather than in compose's judgement, and they are two separate questions:
-whether a container's failure fails the operation, and what happens when a ready container exits.
-Whatever those grow into, the property worth keeping is that the answer reads the same at start time
-and at run time.
+### Saying it in the file
+
+A container declares whether its failure fails the operation:
+
+```yaml
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+```
+
+`required: true` is the default and the strict rule above, so a file written before this field
+existed keeps the behavior it was written against. `required: false` narrows the start-time blast
+radius to the one container that declared it: the failure is reported against `mailer`, nothing is
+rolled back, and the operation carries on.
+
+Its dependents carry on too. A container that names `mailer` in `start_after` starts as if it had
+come up, because `start_after` is a start order rather than a claim that the dependent cannot run
+without it. A dependent that genuinely cannot run without `mailer` says so by failing on its own.
+
+That moves what `status: ok` means. It used to say every planned container is up; it now says every
+required one is, so the return names the rest in `not_required_failures` rather than leaving a
+caller to compare the plan against a later status call.
+
+The field answers the start-time question and only that one. Once a container is ready, the
+supervisor still takes its transitive dependents down when it exits, whatever the container
+declared, and a project still cannot ask for a dead container to be restarted, because there is no
+restart policy at all. So the two blast radii have narrowed rather than met. The property worth
+keeping is that the answer reads the same at start time and at run time, and the run-time half is
+the restart policy that does not exist yet.
 
 ## Related
 

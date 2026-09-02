@@ -1026,6 +1026,14 @@ pub struct MutationOutcome {
     /// Concise failure for the first worker that could not reach its target state.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<MutationError>,
+    /// Workers that failed while the operation still succeeded, which is only
+    /// possible for a container declaring `required: false`.
+    ///
+    /// `status: ok` used to mean every planned container is up. It now means
+    /// every *required* one is, so the return has to name the rest rather than
+    /// leave a caller to compare the plan against a later status call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_required_failures: Option<Vec<String>>,
 }
 
 impl MutationOutcome {
@@ -1046,15 +1054,25 @@ impl MutationOutcome {
             .collect();
         let mut affected_workers = std::collections::BTreeSet::new();
         let mut error = None;
+        let mut failed = Vec::new();
 
         for result in operations.flat_map(|operation| &operation.containers) {
             if result.changed && !requested.contains(result.container.as_str()) {
                 affected_workers.insert(result.container.clone());
             }
+            if result.error.is_some() {
+                failed.push(result.container.clone());
+            }
             if error.is_none() {
                 error = result.error.as_ref().map(MutationError::from);
             }
         }
+
+        // A succeeding operation with a failed container is the `required:
+        // false` case and nothing else: a required failure is what makes the
+        // status `failed` in the first place.
+        let not_required_failures =
+            (status == OpStatus::Ok && !failed.is_empty()).then_some(failed);
 
         Self {
             status,
@@ -1067,6 +1085,7 @@ impl MutationOutcome {
             affected_workers: (!affected_workers.is_empty())
                 .then(|| affected_workers.into_iter().collect()),
             error,
+            not_required_failures,
         }
     }
 

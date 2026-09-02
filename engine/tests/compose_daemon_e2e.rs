@@ -927,6 +927,97 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
     daemon.shutdown().await;
 }
 
+/// `required: false` moves the blast radius of a failed start from the whole
+/// operation to the one container that declared it, and a dependent starts on
+/// the same declaration: `start_after` is a start order, not a claim that the
+/// dependent cannot run without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_is_not_required_fails_alone_and_its_dependent_still_starts() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let api_started = tmp.path().join("workers/api/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+    scripts:
+      run: "sleep 30"
+  api:
+    worker: path://./workers/api
+    start_after: [mailer]
+    scripts:
+      run: "touch started && sleep 30"
+"#,
+        &["mailer", "api"],
+    );
+
+    // `mailer` never registers, so it times out. `api` waits behind it and is
+    // started anyway once that failure is recorded.
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[api_started.as_path()]).await;
+        let api = register_test_worker(port, "optional", "api");
+        wait_for_worker_state(&daemon, "optional", "api", true).await;
+        api
+    };
+    let (up, api) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+
+    assert_eq!(
+        up["status"], "ok",
+        "a container that is not required must not fail the operation: {up}"
+    );
+    assert_eq!(
+        up["not_required_failures"],
+        json!(["mailer"]),
+        "the return has to name what is down under an ok: {up}"
+    );
+    assert_eq!(
+        up["error"]["code"], "STARTUP_TIMEOUT",
+        "the reason for the contained failure is still reported: {up}"
+    );
+
+    // Rollback is what `required: true` buys, so nothing may have been undone.
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after a contained failure");
+    let state = |key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))["state"]
+            .clone()
+    };
+    assert_eq!(state("api"), "ready", "dependent was rolled back: {status}");
+    assert_ne!(
+        state("mailer"),
+        "ready",
+        "the failed container must not report ready: {status}"
+    );
+
+    api.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_continue_from_a_cursor_after_the_worker_is_ready() {
     isolate_state();
