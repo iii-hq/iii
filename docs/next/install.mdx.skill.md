@@ -7,7 +7,8 @@
 
 ## Start a project
 
-The recipe below installs the engine, creates a project from the harness template, and starts it.
+The recipe below installs the engine, creates a project from our templates, and starts it. Once
+started you can explore the project via https://127.0.0.1:3113.
 Select your llm provider, or select **no llm**.
 
 <div className="iii-qs" role="group" aria-label="quickstart recipe">
@@ -251,11 +252,11 @@ Select your llm provider, or select **no llm**.
       </div>
     </div>
     <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Open your browser to http://localhost:3113</div>
+    <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
   </div>
 </div>
 
-The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init my-harness --template harness && cd my-harness`. The harness template ships console, the harness worker, and provider-openai and provider-anthropic enabled by default. Put your provider key in `.env` (edit with `nano .env`); for any other provider, set its key in `.env` first, then start the whole stack with `iii compose --up` and add the provider with `iii trigger compose::add worker=provider-<name>`. Open http://localhost:3113. Without an llm, skip the key and the console still starts.
+The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init my-harness --template harness && cd my-harness`. The harness template ships console, the harness worker, and provider-openai and provider-anthropic enabled by default. Put your provider key in `.env` (edit with `nano .env`); for any other provider, set its key in `.env` first, then start the whole stack with `iii compose --up` and add the provider with `iii trigger compose::add worker=provider-<name>`. Open http://127.0.0.1:3113. Without an llm, skip the key and the console still starts.
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 
