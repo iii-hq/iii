@@ -38,10 +38,11 @@ type: "reference"
   inspect, add, remove, restart, and update workers. It also provides bounded, rotating stdout and
   stderr logs. Mutation calls return concise operation results that show the affected workers.
 
-  `iii compose --up` starts the Compose daemon, its managed engine, and the declared project. Bare
-  `iii compose` starts only the daemon. The old positional `iii compose up` form is rejected, and
-  `--file` is valid only with `--up`. Use `iii compose --up --file worker-compose.yaml` when you
-  specify a file.
+  `iii compose --up` starts the Compose daemon and the declared project. It also starts the managed
+  engine when the Compose file has an `engine:` section and `--engine` does not select an existing
+  engine. Bare `iii compose` starts only the daemon. The old positional `iii compose up` form is
+  rejected, and `--file` is valid only with `--up`. Use
+  `iii compose --up --file worker-compose.yaml` when you specify a file.
 
   Local workers that declare `runtime.base_image` now run in a VM. Source changes are forwarded into
   the guest before restart, so the VM runs the current local files. A Compose file can also omit
