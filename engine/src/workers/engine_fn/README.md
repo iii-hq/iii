@@ -1,6 +1,6 @@
 # iii
 
-iii is a WebSocket-routed worker mesh. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (events that invoke those functions). There is no direct worker-to-worker traffic — every call routes through the engine.
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, triggers, and functions. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (events that invoke those functions). There is no direct worker-to-worker traffic — every call routes through the engine.
 
 This registry worker documents the in-process **`engine::*`** introspection surface. It is always present in the engine and is not configured in `config.yaml`.
 

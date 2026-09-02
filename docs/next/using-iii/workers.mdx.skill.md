@@ -119,7 +119,7 @@ To configure the RBAC listener for untrusted workers, declare `iii-worker-manage
 
 Compose is optional for a process managed by Kubernetes, systemd, another host, or an SDK-driven
 development command. Give it the engine URL and a worker name; once connected it participates in
-the same function and trigger mesh. Compose only owns processes declared in its file.
+the same function and trigger registry. Compose only owns processes declared in its file.
 
 ## Migrating an existing project
 
