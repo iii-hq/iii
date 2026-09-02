@@ -153,10 +153,23 @@ doesn't import anything from `state`; it knows the function name. Append it:
 
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
-  const code = payload.code ?? makeCode();
   // Store an absolute URL so the redirect's Location header is absolute, not
   // resolved relative to /s/:code.
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
+  const taken = async (c: string) =>
+    Boolean(
+      await worker.trigger({ function_id: "state::get", payload: { scope: "links", key: c } }),
+    );
+  let code = payload.code;
+  if (code) {
+    // A requested code must be free; creating never overwrites an existing link.
+    if (await taken(code)) throw new Error(`code "${code}" is taken`);
+  } else {
+    // A generated code retries until it finds a free one.
+    do {
+      code = makeCode();
+    } while (await taken(code));
+  }
   await worker.trigger({
     function_id: "state::set",
     payload: { scope: "links", key: code, value: { url } },
@@ -269,7 +282,8 @@ served by the `http` worker you added at the start of the chapter.
 ### Create a function to handle new links
 
 Add `http::create` to the bottom of `link/src/index.ts`. It validates the request body, calls
-`link::create` through the engine with `worker.trigger`, and returns the new link:
+`link::create` through the engine with `worker.trigger`, and returns the new link, or `409` when the
+requested code is already taken:
 
 ```typescript src/index.ts
 worker.registerFunction("http::create", async (req) => {
@@ -281,15 +295,24 @@ worker.registerFunction("http::create", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   }
-  const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
-    function_id: "link::create",
-    payload: { url, code },
-  });
-  return {
-    status_code: 201,
-    body: link,
-    headers: { "Content-Type": "application/json" },
-  };
+  try {
+    const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
+      function_id: "link::create",
+      payload: { url, code },
+    });
+    return {
+      status_code: 201,
+      body: link,
+      headers: { "Content-Type": "application/json" },
+    };
+  } catch (err) {
+    // link::create throws when a requested code is already taken.
+    return {
+      status_code: 409,
+      body: { error: err instanceof Error ? err.message : "conflict" },
+      headers: { "Content-Type": "application/json" },
+    };
+  }
 });
 ```
 

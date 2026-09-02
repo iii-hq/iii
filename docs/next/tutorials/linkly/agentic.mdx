@@ -178,11 +178,13 @@ Build the link worker in link/src/index.ts of this iii project.
 Add two functions:
 - link::create({ url, code? }): generate a 6-character short code when none is given, make the url
   absolute (add https:// when it has no scheme), store { url } in the state worker under scope
-  "links" key <code> with state::set, and return { code, url }.
+  "links" key <code> with state::set, and return { code, url }. Never overwrite an existing link:
+  reject a requested code that is already taken, and retry a generated code until it is free.
 - link::resolve({ code }): read it back with state::get and return { url } or { url: null }.
 
 Then expose them over HTTP through the http worker:
-- an http::create function and a POST /links trigger that calls link::create.
+- an http::create function and a POST /links trigger that calls link::create, returning 409 when the
+  requested code is taken.
 - an http::redirect function and a GET /s/:code trigger that resolves the code and returns a 302 to
   the url, or 404 when it is unknown.
 
@@ -373,13 +375,15 @@ Turn a browser tab into a worker.
   ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
   link::request_delete only). Add it with `compose::add worker=rbac-proxy`.
 - Create an auth worker with an auth::browser function that admits browser connections (fail closed
-  when its LINKLY_BROWSER_TOKEN env var is unset), and add it with `compose::add worker=./auth`.
-- Add link::delete and link::request_delete: request_delete asks a browser-registered
-  user::confirm_destructive_op before deleting.
+  when its LINKLY_BROWSER_TOKEN env var is unset). Each tab sends a unique session id; grant it its
+  own `browser-<session>` namespace so two tabs never collide on the functions they register. Add it
+  with `compose::add worker=./auth`.
+- Add link::delete and link::request_delete({ code, session }): request_delete asks the tab's
+  user::confirm_destructive_op in namespace `browser-<session>` before deleting.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
   react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
-  connect to the browser listener, call link::create, subscribe to the click stream, and register
-  user::confirm_destructive_op.
+  connect in a per-tab `browser-<session>` namespace, call link::create and subscribe to the click
+  stream in the default namespace, and register user::confirm_destructive_op.
 
 Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. Run `npm run dev` in frontend/. The reference is
 https://iii.dev/docs/next/tutorials/linkly/frontend.
