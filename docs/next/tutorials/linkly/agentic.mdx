@@ -404,8 +404,8 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 Check it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Triggers** page, shorten a link with `POST /links` using
-`{"url":"https://example.net/live","code":"watch"}`, then follow `GET /s/:code` a few times with the
-`code` path parameter set to `watch`.
+`{"url":"https://example.net/sale","code":"deal"}`, then follow `GET /s/:code` a few times with the
+`code` path parameter set to `deal`.
 
 Select the **Functions** page, invoke `stream::list` with `{"stream_name":"clicks","group_id":"all"}`,
 and read the click messages the stream collected. Each redirect is a new message row.
