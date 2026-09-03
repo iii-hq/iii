@@ -4,9 +4,9 @@
 //! Observable operations for long Compose mutations.
 //!
 //! Compose is a trigger provider. Clients bind `compose-operation` before
-//! submitting an add and receive structured dependency-tree transitions. A
-//! compact snapshot remains available for reconnect/recovery only; normal
-//! progress delivery never polls.
+//! submitting an add, update, or remove and receive structured mutation
+//! transitions. A compact snapshot remains available for reconnect/recovery
+//! only; normal progress delivery never polls.
 
 use std::{
     collections::BTreeMap,

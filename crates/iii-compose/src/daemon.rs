@@ -718,24 +718,37 @@ impl Daemon {
         ))
     }
 
-    /// Removes one declared worker and reconciles the running project.
+    /// Removes declared workers and reconciles the running project once.
     ///
-    /// Dependency edges pointing at the removed worker are deleted with it.
+    /// Dependency edges pointing at removed workers are deleted with them.
     /// The edited declaration is fully validated before the file or any
-    /// process changes. Only the removed container stops; normal idempotent
+    /// process changes. Only the removed containers stop; normal idempotent
     /// `up` then starts anything else that was already missing.
     pub async fn remove(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let Some(worker) = worker.map(str::trim).filter(|worker| !worker.is_empty()) else {
+        if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
-                reason: "no worker was named. Pass worker=<name>".to_string(),
+                reason: "no worker was named. Pass one or more worker=<name> arguments".to_string(),
             });
-        };
+        }
+        let workers = workers
+            .iter()
+            .map(|worker| {
+                let worker = worker.trim();
+                if worker.is_empty() {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: worker.to_string(),
+                        reason: "worker names cannot be blank".to_string(),
+                    });
+                }
+                Ok(worker.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let path = self.resolve_file(file)?;
         let _mutation = self.lock_mutation(path).await;
@@ -744,11 +757,22 @@ impl Daemon {
             source,
         })?;
         self.validate_engine_policy_text(path, &text)?;
-        let Some(edited) = crate::edit::remove_container(&text, worker)? else {
-            return Err(ComposeError::UnknownContainer {
-                container: worker.to_string(),
-            });
-        };
+        let requested = workers.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let removal_order = crate::ComposeFile::parse(&text, path)?
+            .start_order()?
+            .into_iter()
+            .rev()
+            .filter(|worker| requested.contains(worker.as_str()))
+            .collect::<Vec<_>>();
+        let mut edited = text;
+        for worker in &workers {
+            let Some(next) = crate::edit::remove_container(&edited, worker)? else {
+                return Err(ComposeError::UnknownContainer {
+                    container: worker.to_string(),
+                });
+            };
+            edited = next;
+        }
 
         let current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
@@ -760,16 +784,26 @@ impl Daemon {
         let project = self.project(path).await?;
         write_atomically(path, &edited)?;
 
-        let (down, up) = project
-            .reconcile_removal(current, worker, operation_id)
+        let (stopped, up) = project
+            .reconcile_removals(current, &removal_order, operation_id)
             .await;
+        let status = if up.status == OpStatus::Failed
+            || stopped
+                .iter()
+                .any(|result| result.status == OpStatus::Failed)
+        {
+            OpStatus::Failed
+        } else {
+            OpStatus::Ok
+        };
+        let operations = stopped.iter().chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
-            up.status,
+            status,
             true,
-            Some(worker),
+            workers.first().map(String::as_str),
+            Some(&workers),
             None,
-            None,
-            [&down, &up].into_iter(),
+            operations,
         ))
     }
 

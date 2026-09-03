@@ -370,7 +370,7 @@ async fn remove_rejects_an_engine_change_before_editing_the_file() {
     let err = daemon
         .remove(
             Some(&file),
-            Some("api"),
+            &["api".to_string()],
             "remove-after-engine-change".to_string(),
         )
         .await
@@ -391,12 +391,34 @@ async fn remove_validates_the_edited_file_before_writing_it() {
     let err = daemon
         .remove(
             Some(&file),
-            Some("api"),
+            &["api".to_string()],
             "remove-only-container".to_string(),
         )
         .await
         .expect_err("remove must reject an empty edited project");
 
     assert_eq!(err.code(), "EMPTY_CONTAINERS");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), before);
+}
+
+#[tokio::test]
+async fn remove_validates_every_worker_before_writing_the_batch() {
+    let containers = concat!(
+        "  api:\n    worker: path://./workers/api\n",
+        "  extra:\n    worker: path://./workers/extra\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            &["api".to_string(), "missing".to_string()],
+            "remove-invalid-batch".to_string(),
+        )
+        .await
+        .expect_err("an unknown worker must reject the complete removal batch");
+
+    assert_eq!(err.code(), "UNKNOWN_CONTAINER");
     assert_eq!(std::fs::read_to_string(file).unwrap(), before);
 }

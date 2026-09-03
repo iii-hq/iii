@@ -777,7 +777,7 @@ containers:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remove_drops_dependency_edges_and_keeps_survivors_running() {
+async fn remove_accepts_multiple_workers_and_keeps_survivors_running() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -856,8 +856,6 @@ containers:
             .unwrap_or_else(|| panic!("missing pid for {key}: {status}"))
     };
     let keep_pid = pid(&before, "keep");
-    let discard_pid = pid(&before, "discard");
-
     let operation_id = format!("compose:remove-test:00000000-0000-0000-0000-{}", port);
     let (observer, trigger, mut events) =
         subscribe_to_terminal_operation(port, &operation_id).await;
@@ -866,7 +864,7 @@ containers:
         "compose::remove",
         json!({
             "file": file.to_str().unwrap(),
-            "worker": "foundation",
+            "workers": ["foundation", "discard"],
             "operation_id": operation_id,
         }),
     )
@@ -874,7 +872,7 @@ containers:
     .expect("compose::remove should answer");
 
     assert_eq!(result["status"], "accepted", "{result}");
-    assert_eq!(result["requested"], 1, "{result}");
+    assert_eq!(result["requested"], 2, "{result}");
     assert_eq!(result["operation_id"], operation_id, "{result}");
     for internal in ["containers", "down", "restarted", "up", "changed", "worker"] {
         assert!(
@@ -905,6 +903,10 @@ containers:
         !edited.contains("  foundation:"),
         "named worker survived: {edited}"
     );
+    assert!(
+        !edited.contains("  discard:"),
+        "second named worker survived: {edited}"
+    );
 
     let after = call(
         port,
@@ -918,18 +920,16 @@ containers:
         keep_pid,
         "dependent restarted: {after}"
     );
-    assert_eq!(
-        pid(&after, "discard"),
-        discard_pid,
-        "unrelated worker restarted: {after}"
-    );
     assert!(
         after["containers"]
             .as_array()
             .expect("containers")
             .iter()
-            .all(|container| container["container"] != "foundation"),
-        "removed worker remains declared: {after}"
+            .all(|container| !matches!(
+                container["container"].as_str(),
+                Some("foundation" | "discard")
+            )),
+        "removed workers remain declared: {after}"
     );
 
     let later_up = call(
@@ -953,7 +953,6 @@ containers:
     .await
     .expect("final status");
     assert_eq!(pid(&final_status, "keep"), keep_pid);
-    assert_eq!(pid(&final_status, "discard"), discard_pid);
 
     foundation.shutdown_async().await;
     keep.shutdown_async().await;
