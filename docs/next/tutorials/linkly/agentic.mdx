@@ -175,6 +175,11 @@ stability.
 
 ## Ch. 1: Foundations
 
+Linkly's core job is to turn a long URL into a short code and send visitors on. This chapter builds
+that: a `link::create` and a `link::resolve` function, exposed over HTTP. The engine already runs the
+HTTP server and the key-value store, so the agent writes only these two functions, and you skip
+standing up a web framework and a datastore before the first redirect works.
+
 <CodeGroup>
 
 ```text Prompt
@@ -210,11 +215,11 @@ Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Open a new tab: click the **+** in the menu bar, then select the **Triggers** page.
 
-On the Triggers page, open `POST /links`, put `{"url":"https://iii.dev","code":"iii"}` in the body
+On the Triggers page, open `POST /links`, put `{"url":"https://example.com","code":"home"}` in the body
 editor, and **Send Request**. You get `201` with the code.
 
-Then open `GET /s/:code`, set the `code` path parameter to `iii`, and **Send Request** to see the
-`302` to `https://iii.dev`.
+Then open `GET /s/:code`, set the `code` path parameter to `home`, and **Send Request** to see the
+`302` to `https://example.com`.
 
 Open another tab with the **+**, then select the **States** page, and find the stored link under the `links` group.
 
@@ -222,8 +227,8 @@ The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://anthropic.com","code":"claude"}'
-curl -i http://127.0.0.1:3111/s/claude
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/docs","code":"docs"}'
+curl -i http://127.0.0.1:3111/s/docs
 ```
 
 [Ch. 1: Foundations](/tutorials/linkly/foundations) explains `registerWorker`, `registerFunction`,
@@ -231,10 +236,13 @@ and `registerTrigger`.
 
 ## Ch. 2: Observe everything
 
+When a redirect misbehaves you need to see why. This chapter adds no worker: the engine already traced
+every redirect, so here you only read what it recorded, the span tree and the logs for each request.
+
 <CodeGroup>
 
 ```text Prompt
-Send five redirects through http://127.0.0.1:3111/s/iii, then read the traces the engine collected
+Send five redirects through http://127.0.0.1:3111/s/home, then read the traces the engine collected
 with `iii trigger engine::traces::list`. Show me the span tree for one redirect with
 `iii trigger engine::traces::tree`.
 
@@ -262,6 +270,10 @@ iii trigger engine::traces::tree
 
 ## Ch. 3: Persist everything
 
+In-memory state is lost on restart, so every link vanishes when the engine stops. This chapter puts
+links and clicks in a SQLite database and keeps the state worker in front as a read cache, so links
+outlive a restart and reads stay fast.
+
 <CodeGroup>
 
 ```text Prompt
@@ -286,28 +298,33 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-Open a new tab: click the **+** in the menu bar, then select the **Triggers** page. Shorten a link
-with `POST /links` using `{"url":"https://modelcontextprotocol.io","code":"mcp"}`.
+Select the **Triggers** page. Shorten a link
+with `POST /links` using `{"url":"https://example.net","code":"news"}`.
 
-Then follow `GET /s/:code` a few times with the `code` path parameter set to `mcp`.
+Then follow `GET /s/:code` a few times with the `code` path parameter set to `news`.
 
 Open another tab with the **+**, then select the **Functions** page, and open `database::query`. Invoke it with
-`{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'mcp'"}`, then read the
+`{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'news'"}`, then read the
 count off the result view. It survives a restart because the row is on disk.
 
 The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://github.com/iii-hq","code":"gh"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/gh; done
-iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'gh'"
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/blog","code":"blog"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/blog; done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'blog'"
 ```
 
 [Ch. 3: Persist everything](/tutorials/linkly/persistence) explains the cache-then-database read
 path.
 
 ## Ch. 4: Make it durable
+
+Writing each click inline on the redirect path slows every visitor and drops records when a write
+fails. This chapter moves clicks onto a queue, adds a Python analytics worker that counts links per
+day, and makes link updates durable. A durable queue and subscriber ship with the engine, so you skip
+running a broker like Kafka and writing the retry code that usually causes the late-night pages.
 
 <CodeGroup>
 
@@ -333,30 +350,27 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-Open a new tab: click the **+** in the menu bar, then select the **Triggers** page. Shorten a link
-with `POST /links` using `{"url":"https://vercel.com","code":"launch"}`.
+Select the **Triggers** page. Shorten a link
+with `POST /links` using `{"url":"https://example.com/launch","code":"promo"}`.
 
-Open another tab with the **+**, then select the **Queues** page, and watch the `clicks` topic: it shows its throughput
-on the Overview tab.
-
-Open another tab with the **+**, then select the **Functions** page, and invoke `database::query` with
+Select the **Functions** page, and invoke `database::query` with
 `{"db":"analytics","sql":"SELECT day, count FROM daily_link_counts"}` to read the per-day counts the
 Python worker wrote.
 
-Back on the Triggers tab, edit the link with `PUT /links/:code` (path parameter `launch`), then
-invoke `link::resolve` for `launch`: it returns the new URL because the durable subscriber refreshed
-the cache.
+Back on the Triggers tab, edit the link with `PUT /links/:code`: set the `code` path parameter to
+`promo` and put `{"url":"https://example.com/promo-2"}` in the body. Then invoke `link::resolve` for
+`promo`: it returns the new URL because the durable subscriber refreshed the cache.
 
 The same flow from the CLI:
 
 ```bash
 for n in $(seq 1 5); do
   curl -s -X POST http://127.0.0.1:3111/links \
-    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev/$n\",\"code\":\"link$n\"}"
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.org/$n\",\"code\":\"link$n\"}"
 done
 iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
 curl -s -X PUT http://127.0.0.1:3111/links/link1 \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev/updated"}'
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/updated"}'
 iii trigger link::resolve code=link1
 ```
 
@@ -365,12 +379,14 @@ regular pub/sub.
 
 ## Ch. 5: Stream live clicks
 
+A live dashboard needs each click the moment it happens, not on the next page refresh. This chapter
+broadcasts every click to subscribers in real time through a `clicks` stream.
+
 <CodeGroup>
 
 ```text Prompt
 Push every click to subscribers in real time.
 
-- Enable the iii-stream engine worker.
 - Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with
   `compose::add worker=./click-streamer`.
 - Have link::record_click publish each click so the streamer broadcasts it.
@@ -388,9 +404,9 @@ Watch it live in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 Open a new tab: click the **+** in the menu bar, then select the **Streams** page. Subscribe to the
 `clicks` stream.
 
-Open another tab with the **+**, then select the **Triggers** page, shorten a link with `POST /links` using
-`{"url":"https://supabase.com","code":"live"}`, then follow `GET /s/:code` a few times with the
-`code` path parameter set to `live`.
+Select the **Triggers** page, shorten a link with `POST /links` using
+`{"url":"https://example.net/live","code":"watch"}`, then follow `GET /s/:code` a few times with the
+`code` path parameter set to `watch`.
 
 Back on the Streams tab, each redirect lands as a new message row you can open for the full payload.
 
@@ -398,8 +414,8 @@ The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://neon.tech","code":"stream-me"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/feed","code":"feed"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/feed; done
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 
@@ -407,6 +423,10 @@ iii trigger stream::list stream_name=clicks group_id=all
 `TriggerAction.Void()`.
 
 ## Ch. 6: Move bulk data with channels
+
+Users arrive with a CSV of thousands of links to load at once. This chapter adds a bulk-importer that
+reads the rows off a channel and creates each link, so a large import streams over one connection
+instead of thousands of separate HTTP requests.
 
 <CodeGroup>
 
@@ -435,7 +455,7 @@ npm install --prefix channel-client && node channel-client/import-links.js
 It reports two imported links. Confirm them in the console at
 [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-Open a new tab: click the **+** in the menu bar, then select the **Functions** page. Invoke
+Select the **Functions** page. Invoke
 `link::resolve` with `{"code":"mylink"}` and read the URL off the result.
 
 From the CLI, run `iii trigger link::resolve code=mylink`.
@@ -444,6 +464,11 @@ From the CLI, run `iii trigger link::resolve code=mylink`.
 `createChannel`.
 
 ## Ch. 7: Bring in the browser
+
+Linkly needs a front end where people create links and confirm deletes. This chapter turns a browser
+tab into a worker: it registers functions and the server calls back into it, gated by RBAC. The tab
+joins as a worker behind the rbac-proxy, so you skip building a REST API and a socket layer just to
+let the server call back into the page.
 
 <CodeGroup>
 
@@ -477,7 +502,7 @@ then follow it a few times to watch the live counter.
 
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-Open a new tab: click the **+** in the menu bar, then select the **Functions** page. Invoke
+Select the **Functions** page. Invoke
 `link::request_delete` with `{"code":"<code>","session":"<session>"}` (the tab prints its session
 id).
 
