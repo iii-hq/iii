@@ -266,7 +266,7 @@ async fn subscribe_to_terminal_operation(
             .with_metadata(json!({ "__binding": "e2e-binding" })),
         )
         .expect("register compose-operation trigger");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     (observer, trigger, events_rx)
 }
 
