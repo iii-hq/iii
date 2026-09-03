@@ -401,16 +401,14 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-Watch it live in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
-
-Open a new tab: click the **+** in the menu bar, then select the **Streams** page. Subscribe to the
-`clicks` stream.
+Check it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Triggers** page, shorten a link with `POST /links` using
 `{"url":"https://example.net/live","code":"watch"}`, then follow `GET /s/:code` a few times with the
 `code` path parameter set to `watch`.
 
-Back on the Streams tab, each redirect lands as a new message row you can open for the full payload.
+Select the **Functions** page, invoke `stream::list` with `{"stream_name":"clicks","group_id":"all"}`,
+and read the click messages the stream collected. Each redirect is a new message row.
 
 The same flow from the CLI:
 
