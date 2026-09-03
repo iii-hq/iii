@@ -348,7 +348,7 @@ async fn update_rejects_an_engine_change_before_editing_the_file() {
     let err = daemon
         .update(
             Some(&file),
-            Some("state@2.0.0"),
+            &["state@2.0.0".to_string()],
             "update-after-engine-change".to_string(),
         )
         .await
@@ -356,6 +356,54 @@ async fn update_rejects_an_engine_change_before_editing_the_file() {
 
     assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
     assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn update_accepts_multiple_unchanged_package_workers() {
+    let containers = concat!(
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n",
+        "  cache:\n    worker: package://api.workers.iii.dev/cache\n    version: '2.0.0'\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let original = std::fs::read_to_string(&file).unwrap();
+
+    let outcome = daemon
+        .update(
+            Some(&file),
+            &["state@1.0.0".to_string(), "cache@2.0.0".to_string()],
+            "batch-update-unchanged".to_string(),
+        )
+        .await
+        .expect("the batch should succeed");
+    let outcome = serde_json::to_value(outcome).unwrap();
+
+    assert_eq!(outcome["status"], "ok");
+    assert_eq!(outcome["changed"], false);
+    assert_eq!(outcome["worker"], "state");
+    assert_eq!(outcome["workers"], serde_json::json!(["state", "cache"]));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), original);
+}
+
+#[tokio::test]
+async fn update_rejects_the_batch_before_editing_when_one_worker_is_not_a_package() {
+    let containers = concat!(
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n",
+        "  api:\n    worker: path://./workers/api\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let original = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .update(
+            Some(&file),
+            &["state@2.0.0".to_string(), "api@2.0.0".to_string()],
+            "batch-update-invalid".to_string(),
+        )
+        .await
+        .expect_err("the path worker should reject the whole batch");
+
+    assert_eq!(err.code(), "NOT_A_PACKAGE_CONTAINER");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), original);
 }
 
 #[tokio::test]

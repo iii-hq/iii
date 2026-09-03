@@ -725,7 +725,7 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn update_publishes_a_terminal_observable_operation() {
+async fn update_accepts_multiple_workers_and_publishes_one_terminal_operation() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -739,6 +739,9 @@ containers:
   state:
     worker: package://api.workers.iii.dev/state
     version: "1.2.3"
+  cache:
+    worker: package://api.workers.iii.dev/cache
+    version: "2.3.4"
 "#,
         &[],
     );
@@ -751,7 +754,7 @@ containers:
         "compose::update",
         json!({
             "file": file.to_str().unwrap(),
-            "worker": "state@1.2.3",
+            "workers": ["state@1.2.3", "cache@2.3.4"],
             "operation_id": operation_id,
         }),
     )
@@ -759,7 +762,7 @@ containers:
     .expect("compose::update should answer");
 
     assert_eq!(result["status"], "accepted", "{result}");
-    assert_eq!(result["requested"], 1, "{result}");
+    assert_eq!(result["requested"], 2, "{result}");
     assert_eq!(result["operation_id"], operation_id, "{result}");
     let (event, metadata) = tokio::time::timeout(Duration::from_secs(15), events.recv())
         .await
@@ -770,6 +773,7 @@ containers:
     assert_eq!(metadata, Some(json!({ "__binding": "e2e-binding" })));
     let operation = wait_for_operation(port, None, &operation_id).await;
     assert_eq!(operation["status"], "succeeded", "{operation}");
+    assert_eq!(operation["requested"], 2, "{operation}");
 
     trigger.unregister();
     observer.shutdown_async().await;

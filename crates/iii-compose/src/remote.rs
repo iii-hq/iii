@@ -58,13 +58,13 @@ pub struct ComposeRequest {
     /// `compose::update` reads a spec: `name`, `name@version`, or a path.
     /// `compose::remove` and `compose::restart` read a container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
-    /// have to know which of the two words this call wanted. `compose::add` and
-    /// `compose::remove` keep this field as a compatibility alias for a single
-    /// list item.
+    /// have to know which of the two words this call wanted. `compose::add`,
+    /// `compose::update`, and `compose::remove` keep this field as a
+    /// compatibility alias for a single list item.
     pub worker: Option<String>,
-    /// Workers to add or remove in one file edit and one reconciliation.
+    /// Workers to add, update, or remove in one file edit and one reconciliation.
     ///
-    /// This is the canonical JSON field for both operations. The singular
+    /// This is the canonical JSON field for all three operations. The singular
     /// `worker` field remains accepted for clients that used the old contract.
     pub workers: Option<Vec<String>>,
     /// Caller-selected operation id used to bind mutation progress before submission.
@@ -126,27 +126,12 @@ struct BatchWorkerOptions {
     /// the daemon working directory.
     file: Option<String>,
     /// Canonical list of workers to mutate together. Add accepts worker names,
-    /// `name@version` references, registry references, or local paths. Remove
-    /// accepts declared worker keys.
+    /// `name@version` references, registry references, or local paths. Update
+    /// accepts package names or `name@version` references. Remove accepts
+    /// declared worker keys.
     workers: Option<Vec<String>>,
     /// Backward-compatible form for mutating one worker.
     worker: Option<String>,
-    /// Caller-selected operation id for race-free progress subscription.
-    operation_id: Option<String>,
-}
-
-/// Request fields used by single-worker compose-file edits.
-#[allow(dead_code)]
-#[derive(JsonSchema)]
-struct WorkerOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
-    namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
-    file: Option<String>,
-    /// Worker name, `name@version`, registry reference, or local path. The
-    /// accepted form depends on the operation.
-    worker: String,
     /// Caller-selected operation id for race-free progress subscription.
     operation_id: Option<String>,
 }
@@ -486,18 +471,20 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Update => {
-            let Some(worker) = request.worker else {
+            let workers = requested_workers(request.workers, request.worker);
+            if workers.is_empty() {
                 return daemon
-                    .update(file.as_deref(), None, operation_id())
+                    .update(file.as_deref(), &[], operation_id())
                     .await
                     .map(|outcome| to_value(&outcome))
                     .map_err(|err| compose_error(&err));
-            };
+            }
+            let requested = workers.len();
             let (operation, accepted) = admit_mutation(
                 &daemon,
                 request.operation_id,
-                1,
-                format!("updating worker {worker}"),
+                requested,
+                format!("updating {requested} requested workers"),
             )
             .await?;
 
@@ -506,17 +493,21 @@ async fn dispatch(
             let task_operation = Arc::clone(&operation);
             let mutation = async move {
                 task_operation
-                    .emit(None, "resolving", format!("resolving update for {worker}"))
+                    .emit(
+                        None,
+                        "resolving",
+                        format!("resolving updates for {requested} workers"),
+                    )
                     .await;
                 daemon_task
-                    .update(file.as_deref(), Some(&worker), task_operation_id)
+                    .update(file.as_deref(), &workers, task_operation_id)
                     .await
             };
             spawn_mutation(
                 operation,
                 mutation,
-                "worker updated",
-                "worker update failed",
+                "all requested workers were updated",
+                "one or more workers could not be updated",
             );
             Ok(to_value(&accepted))
         }
@@ -783,8 +774,8 @@ fn op_description(function_id: &str) -> &'static str {
              changing its dependency graph."
         }
         "compose::update" => {
-            "Accept an observable operation that moves one declared package worker to a \
-             requested or latest version, then restarts the project."
+            "Accept an observable operation that moves one or more declared package workers to \
+             requested or latest versions, then restarts the project once."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -882,7 +873,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::update",
-                schema_for_value::<WorkerOptions>(),
+                batch_worker_options_schema(),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
@@ -1025,7 +1016,7 @@ mod tests {
 
     #[test]
     fn batch_worker_schemas_require_one_non_null_non_empty_worker_form() {
-        for function_id in ["compose::add", "compose::remove"] {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
             let schema = schema_entry(function_id).1.as_ref().unwrap();
             let validator = jsonschema::Validator::new(schema)
                 .unwrap_or_else(|error| panic!("{function_id} schema should compile: {error}"));
@@ -1072,7 +1063,7 @@ mod tests {
         assert!(up.contains_key("container"));
         assert!(!up.contains_key("worker"));
 
-        for function_id in ["compose::add", "compose::remove"] {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
             let (_, request, _) = schema_entry(function_id);
             let properties = request.as_ref().unwrap()["properties"].as_object().unwrap();
             for field in ["namespace", "file", "workers", "worker", "operation_id"] {
@@ -1094,17 +1085,6 @@ mod tests {
                 }));
             }
         }
-
-        let (_, update, _) = schema_entry("compose::update");
-        let update = update.as_ref().unwrap()["properties"].as_object().unwrap();
-        for field in ["namespace", "file", "worker", "operation_id"] {
-            assert!(
-                update.contains_key(field),
-                "compose::update is missing {field}"
-            );
-        }
-        assert!(!update.contains_key("container"));
-        assert!(!update.contains_key("workers"));
 
         let (_, list, _) = schema_entry("compose::list");
         let list = list.as_ref().unwrap()["properties"].as_object().unwrap();

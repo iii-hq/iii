@@ -122,20 +122,19 @@ impl EnginePolicy {
     }
 }
 
-/// Keeps one declaration for a dependency shared by several requested workers.
+/// Keeps one declaration for each container in a mutation batch.
 ///
-/// Registry graphs are resolved per requested root. Two roots may therefore
-/// return the same container. Identical declarations are one shared
-/// dependency; different declarations mean the roots resolved incompatible
-/// versions, sources, or dependency edges. Reject that batch before the file
-/// is read or edited, so argument order cannot select the winning declaration.
-fn coalesce_expanded(
-    expanded: Vec<crate::edit::NewContainer>,
+/// Registry graphs and direct request lists can contain the same container
+/// more than once. Identical declarations collapse into one edit. Conflicting
+/// declarations reject the batch before the file is read or edited, so
+/// argument order cannot select the winning declaration.
+fn coalesce_containers(
+    containers: Vec<crate::edit::NewContainer>,
 ) -> Result<Vec<crate::edit::NewContainer>> {
     let mut positions = BTreeMap::new();
-    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(expanded.len());
+    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(containers.len());
 
-    for container in expanded {
+    for container in containers {
         if let Some(&position) = positions.get(&container.key) {
             if unique[position] != container {
                 return Err(ComposeError::InvalidWorkerSpec {
@@ -430,7 +429,7 @@ impl Daemon {
         for (_, graph) in expanded {
             wanted.extend(graph?);
         }
-        let wanted = coalesce_expanded(wanted)?;
+        let wanted = coalesce_containers(wanted)?;
 
         // Acquire registry artifacts before taking either the file mutation lock
         // or the project's runtime lock. `lifecycle::start_one` calls install
@@ -607,39 +606,41 @@ impl Daemon {
         expand_graph(asked, reference, graph, path_workers)
     }
 
-    /// Moves one declared container to another version of the same package.
+    /// Moves declared containers to other versions of the same packages.
     ///
-    /// `worker=state` takes whatever the registry calls latest; `worker=state@1.2.3`
-    /// takes that one, which is how a downgrade is spelled. The container has to
-    /// be declared already — this edits a line, it does not add one, and
-    /// `compose::add` is the call that adds.
+    /// `worker=state` takes whatever the registry calls latest;
+    /// `worker=state@1.2.3` takes that one, which is how a downgrade is spelled.
+    /// Every container has to be declared already. This edits existing lines;
+    /// `compose::add` is the call that adds them.
     ///
-    /// The answer names both versions, because the operator asked for "latest"
-    /// without knowing what that is and the interesting part of the reply is
-    /// what it turned out to be.
+    /// The complete batch is validated and edited in memory before one atomic
+    /// write. A changed batch restarts the project once.
     pub async fn update(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let Some(worker) = worker else {
+        if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
-                reason: "no worker was named. Pass worker=<name> or worker=<name@version>"
+                reason: "no worker was named. Pass worker=<name>, worker=<name@version>, or a workers list"
                     .to_string(),
             });
-        };
+        }
+
+        let asked = workers
+            .iter()
+            .map(|worker| crate::edit::parse_worker(worker))
+            .collect::<Result<Vec<_>>>()?;
+        let requested = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        let primary = requested[0].clone();
+        let asked = coalesce_containers(asked)?;
 
         let path = self.resolve_file(file)?;
-        let asked = crate::edit::parse_worker(worker)?;
-        let crate::edit::Source::Package { reference, version } = &asked.source else {
-            return Err(ComposeError::NotAPackageContainer {
-                container: asked.key.clone(),
-                kind: "path".to_string(),
-            });
-        };
-
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
@@ -647,55 +648,76 @@ impl Daemon {
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
-        let Some(container) = compose.containers.get(&asked.key) else {
-            return Err(ComposeError::UnknownContainer {
-                container: asked.key.clone(),
-            });
-        };
-        if !matches!(
-            container.worker,
-            crate::config::WorkerSource::Package { .. }
-        ) {
-            return Err(ComposeError::NotAPackageContainer {
-                container: asked.key.clone(),
-                kind: "path".to_string(),
+        let mut wanted = Vec::with_capacity(asked.len());
+        for worker in &asked {
+            let crate::edit::Source::Package { reference, version } = &worker.source else {
+                return Err(ComposeError::NotAPackageContainer {
+                    container: worker.key.clone(),
+                    kind: "path".to_string(),
+                });
+            };
+            let Some(container) = compose.containers.get(&worker.key) else {
+                return Err(ComposeError::UnknownContainer {
+                    container: worker.key.clone(),
+                });
+            };
+            if !matches!(
+                container.worker,
+                crate::config::WorkerSource::Package { .. }
+            ) {
+                return Err(ComposeError::NotAPackageContainer {
+                    container: worker.key.clone(),
+                    kind: "path".to_string(),
+                });
+            }
+
+            // Asked for by version, or whatever the registry calls latest today.
+            let version = match version {
+                Some(version) => version.clone(),
+                None => crate::registry::latest_version(&worker.key, reference).await?,
+            };
+
+            // The declared dependencies come along unchanged. An update moves
+            // versions; rewriting graphs is `compose::add`'s job.
+            wanted.push(crate::edit::NewContainer {
+                key: worker.key.clone(),
+                source: crate::edit::Source::Package {
+                    reference: reference.clone(),
+                    version: Some(version),
+                },
+                start_after: container.start_after.clone(),
             });
         }
 
-        // Asked for by version, or whatever the registry calls latest today.
-        let wanted = match version {
-            Some(version) => version.clone(),
-            None => crate::registry::latest_version(&asked.key, reference).await?,
-        };
-
-        // The declared dependencies come along unchanged. An update moves a
-        // version; rewriting the graph on the way is `compose::add`'s job, and
-        // doing it here would edit lines the operator did not ask about.
-        let new = crate::edit::NewContainer {
-            key: asked.key.clone(),
-            source: crate::edit::Source::Package {
-                reference: reference.clone(),
-                version: Some(wanted.clone()),
-            },
-            start_after: container.start_after.clone(),
-        };
-
-        let edited = match crate::edit::upsert_container(&text, &new)? {
-            crate::edit::Outcome::Unchanged => {
-                return Ok(MutationOutcome::from_operations(
-                    OpStatus::Ok,
-                    false,
-                    Some(&asked.key),
-                    None,
-                    Some(wanted),
-                    std::iter::empty::<&OpResult>(),
-                ));
+        let version = wanted
+            .iter()
+            .find(|worker| worker.key == primary)
+            .and_then(|worker| match &worker.source {
+                crate::edit::Source::Package { version, .. } => version.clone(),
+                crate::edit::Source::Path { .. } => None,
+            });
+        let mut edited = text.clone();
+        let mut changed = false;
+        for worker in &wanted {
+            match crate::edit::upsert_container(&edited, worker)? {
+                crate::edit::Outcome::Unchanged => {}
+                crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
+                    edited = text;
+                    changed = true;
+                }
             }
-            crate::edit::Outcome::Replaced { text, .. } => text,
-            // `upsert_container` only adds when the key is absent, and the key
-            // was read out of this same file a moment ago.
-            crate::edit::Outcome::Added(text) => text,
-        };
+        }
+
+        if !changed {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                Some(&primary),
+                Some(&requested),
+                version,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
 
         // Parsed before it is written, so a splice that would not load leaves
         // the operator's file exactly as it was.
@@ -711,9 +733,9 @@ impl Daemon {
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
-            Some(&asked.key),
-            None,
-            Some(wanted),
+            Some(&primary),
+            Some(&requested),
+            version,
             [&down, &up].into_iter(),
         ))
     }
@@ -1716,7 +1738,8 @@ mod tests {
         let state = crate::edit::parse_worker("state@1.0.0").unwrap();
         let queue = crate::edit::parse_worker("queue@1.0.0").unwrap();
 
-        let merged = coalesce_expanded(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
+        let merged =
+            coalesce_containers(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
 
         assert_eq!(merged, vec![state, queue]);
     }
@@ -1727,7 +1750,7 @@ mod tests {
         let second = crate::edit::parse_worker("state@2.0.0").unwrap();
 
         for expanded in [vec![first.clone(), second.clone()], vec![second, first]] {
-            let error = coalesce_expanded(expanded)
+            let error = coalesce_containers(expanded)
                 .expect_err("two versions of one shared dependency must not be order-dependent");
 
             assert_eq!(error.code(), "INVALID_WORKER_SPEC");
