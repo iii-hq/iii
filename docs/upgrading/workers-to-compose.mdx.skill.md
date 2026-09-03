@@ -20,7 +20,7 @@ Migrate this iii project from config.yaml worker declarations to worker-compose.
 
 Before changing anything:
 1. Locate every config.yaml (including any path passed with --config), any existing worker-compose.yaml, iii.lock, the configuration worker's storage directory (./config by default), and the state, queue, and stream data paths. Copy all of them into ./backup-pre-compose/, preserving each source's relative path so two files with the same name never collide, and stop if a destination already exists. Do not delete the originals.
-2. Work out whether the engine will be managed by Compose or supervised separately (systemd, Kubernetes). If the repository does not make this clear, ask me before writing the file.
+2. Make sure this project is not already supervised separately (ex. systemd, Kubernetes). If the repository does not make this clear, ask me before writing the file.
 
 Write worker-compose.yaml:
 - Move configuration, iii-worker-manager, iii-http-functions, iii-stream, and iii-sandbox into the engine.workers map. The map value is the worker config itself; drop the old nested config: key. Multiple instances use a #instance suffix.
