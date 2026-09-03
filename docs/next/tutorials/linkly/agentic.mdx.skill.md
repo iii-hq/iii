@@ -281,7 +281,9 @@ Add the database worker with `compose::add worker=database`, then configure it f
 SQLite database named "primary" at sqlite:./data/iii.db.
 
 In link/src/index.ts:
-- at startup, create a links table and a clicks table if they do not exist.
+- at startup, create a links table and a clicks table if they do not exist. The database worker may
+  register a moment after link, so retry the schema creation until it answers, and never crash the
+  worker if the database is not ready yet.
 - link::create also inserts the link row into the database.
 - link::resolve reads state first, falls back to the database, and warms the cache on a hit.
 - add link::record_click that inserts a row into clicks, and have http::redirect call it.

@@ -75,29 +75,38 @@ write and read from our new database while using our state worker as a hot cache
 #### Create a schema
 
 Add an `ensureSchema()` function at the end of `link/src/index.ts` that creates both tables on
-startup. The database worker accepts SQL through its `database::execute` function:
+startup. The database worker accepts SQL through its `database::execute` function. The database
+worker can register a moment after `link`, so retry until it answers instead of crashing on the
+first call:
 
 ```typescript src/index.ts
 async function ensureSchema(): Promise<void> {
-  await worker.trigger({
-    function_id: "database::execute",
-    payload: {
-      db: DB,
-      sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
-    },
-  });
-  await worker.trigger({
-    function_id: "database::execute",
-    payload: {
-      db: DB,
-      sql: "CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL)",
-    },
-  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await worker.trigger({
+        function_id: "database::execute",
+        payload: {
+          db: DB,
+          sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
+        },
+      });
+      await worker.trigger({
+        function_id: "database::execute",
+        payload: {
+          db: DB,
+          sql: "CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL)",
+        },
+      });
+      logger.info("database: ready");
+      return;
+    } catch (err) {
+      if (attempt >= 30) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
 }
 
-ensureSchema()
-  .then(() => logger.info("database: ready"))
-  .catch((err) => logger.error("database: schema init failed", { error: String(err) }));
+ensureSchema().catch((err) => logger.error("database: schema init failed", { error: String(err) }));
 ```
 
 #### Setup database writing
