@@ -123,6 +123,19 @@ pub struct Container {
     pub env_file: Vec<PathBuf>,
     /// Readiness budget for this container: its own override, else the file's.
     pub startup_timeout: Duration,
+    /// Whether a failed start fails the operation that started it.
+    ///
+    /// `true` is the default and the rule everything else is written against:
+    /// an `up` that cannot start a declared container refuses and undoes
+    /// itself. `false` says the project would rather run without this one, so
+    /// the failure is reported against the container and the operation carries
+    /// on.
+    ///
+    /// Dependents carry on too. `start_after` is a start order, not a claim
+    /// that the dependent cannot run without the dependency, so a container
+    /// that waited on a non-required one starts as if it had come up. A
+    /// dependent that genuinely needs it says so by failing on its own.
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,6 +441,7 @@ fn validate_container(
             .map(|path| resolve_relative(base_dir, path))
             .collect(),
         startup_timeout,
+        required: raw.required,
     })
 }
 
@@ -730,6 +744,15 @@ struct RawContainer {
     env_file: Vec<PathBuf>,
     #[serde(default)]
     startup_timeout: Option<String>,
+    /// Absent means `true`: the default is the strict rule, so a file written
+    /// before this field existed keeps the behaviour it was written against.
+    #[serde(default = "required_by_default")]
+    #[schemars(default = "required_by_default")]
+    required: bool,
+}
+
+fn required_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

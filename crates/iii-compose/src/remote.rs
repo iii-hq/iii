@@ -652,7 +652,9 @@ fn op_description(function_id: &str) -> &'static str {
     match function_id {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
-             Repeated calls leave ready containers running."
+             Repeated calls leave ready containers running. A container \
+             declaring 'required: false' is named in not_required_failures \
+             when it fails, and the operation still returns ok."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
