@@ -16,3 +16,4 @@ The following users make all of their contributions to iii under the Apache 2 li
 - @SimonFoobar648
 - @kriptoburak
 - @jeffersongoncalves
+- @tacoda
