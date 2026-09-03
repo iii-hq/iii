@@ -180,16 +180,18 @@ Build the link worker in link/src/index.ts of this iii project.
 
 Add two functions:
 - link::create({ url, code? }): generate a 6-character short code when none is given, make the url
-  absolute (add https:// when it has no scheme), store { url } in the state worker under scope
-  "links" key <code> with state::set, and return { code, url }. Never overwrite an existing link:
-  reject a requested code that is already taken, and retry a generated code until it is free.
-- link::resolve({ code }): read it back with state::get and return { url } or { url: null }.
+  absolute (add https:// when it has no scheme), and persist it in the state worker (not a local
+  variable) with state::set under scope "links" key <code>, value { url }; return { code, url }.
+  Never overwrite an existing link: reject a requested code that is already taken, and retry a
+  generated code until it is free.
+- link::resolve({ code }): read it back from the state worker with state::get (scope "links", key
+  <code>) and return { url } or { url: null }.
 
 Then expose them over HTTP through the http worker:
-- an http::create function and a POST /links trigger that calls link::create, returning 409 when the
-  requested code is taken.
-- an http::redirect function and a GET /s/:code trigger that resolves the code and returns a 302 to
-  the url, or 404 when it is unknown.
+- an http::create function and a POST /links trigger that calls link::create, returns 201 with
+  { code, url }, and 409 when the requested code is taken.
+- an http::redirect function and a GET /s/:code trigger that reads the code from req.path_params.code,
+  resolves it, and returns a 302 to the url, or 404 when it is unknown.
 
 Run `npm install --prefix link`, then add the worker by calling the `compose::add` function
 over your existing engine connection with `{ "worker": "./link" }`, not the `iii` CLI. Do not restart
@@ -202,18 +204,24 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113). On the **Triggers** page,
-open `POST /links`, put `{"url":"https://iii.dev","code":"iii"}` in the body editor, and **Send
-Request**: you get `201` with the code. Then open `GET /s/:code`, set the `code` path parameter to
-`iii`, and **Send Request** to see the `302` to `https://iii.dev`. The **States** page shows the
-stored link under the `links` group.
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-The same checks from the CLI:
+Open a new tab: click the **+** in the menu bar, then select the **Triggers** page.
+
+On the Triggers page, open `POST /links`, put `{"url":"https://iii.dev","code":"iii"}` in the body
+editor, and **Send Request**. You get `201` with the code.
+
+Then open `GET /s/:code`, set the `code` path parameter to `iii`, and **Send Request** to see the
+`302` to `https://iii.dev`.
+
+Open another tab with the **+**, then select the **States** page, and find the stored link under the `links` group.
+
+The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-curl -i http://127.0.0.1:3111/s/iii
+  -H 'Content-Type: application/json' -d '{"url":"https://anthropic.com","code":"claude"}'
+curl -i http://127.0.0.1:3111/s/claude
 ```
 
 [Ch. 1: Foundations](/tutorials/linkly/foundations) explains `registerWorker`, `registerFunction`,
@@ -233,9 +241,13 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-See it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113). The **Traces** page draws
-each redirect as a waterfall of spans; open one to read its tags, logs, and duration. The **Logs**
-page lists the structured log lines, and each row's trace ID pivots straight to its trace.
+See it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Open a new tab: click the **+** in the menu bar, then select the **Traces** page. It draws each
+redirect as a waterfall of spans; open one to read its tags, logs, and duration.
+
+Open another tab with the **+**, then select the **Logs** page, and read the structured log lines. Each row's trace ID
+pivots straight to its trace.
 
 The same data from the CLI:
 
@@ -270,19 +282,24 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113). On the **Triggers** page,
-shorten a link with `POST /links`, then follow `GET /s/:code` a few times. On the **Functions** page,
-open `database::query`, invoke it with
-`{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'iii'"}`, and read the
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Open a new tab: click the **+** in the menu bar, then select the **Triggers** page. Shorten a link
+with `POST /links` using `{"url":"https://modelcontextprotocol.io","code":"mcp"}`.
+
+Then follow `GET /s/:code` a few times with the `code` path parameter set to `mcp`.
+
+Open another tab with the **+**, then select the **Functions** page, and open `database::query`. Invoke it with
+`{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'mcp'"}`, then read the
 count off the result view. It survives a restart because the row is on disk.
 
-The same checks from the CLI:
+The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
-iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'iii'"
+  -H 'Content-Type: application/json' -d '{"url":"https://github.com/iii-hq","code":"gh"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/gh; done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'gh'"
 ```
 
 [Ch. 3: Persist everything](/tutorials/linkly/persistence) explains the cache-then-database read
@@ -312,14 +329,23 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113). Shorten a few links on the
-**Triggers** page, then watch the **Queues** page: the `clicks` topic shows its throughput on the
-Overview tab. On the **Functions** page, invoke `database::query` with
-`{"db":"analytics","sql":"SELECT day, count FROM daily_link_counts"}` to read the per-day counts the
-Python worker wrote. Edit a link with `PUT /links/:code`, then invoke `link::resolve` for that code:
-it returns the new URL because the durable subscriber refreshed the cache.
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-The same checks from the CLI:
+Open a new tab: click the **+** in the menu bar, then select the **Triggers** page. Shorten a link
+with `POST /links` using `{"url":"https://vercel.com","code":"launch"}`.
+
+Open another tab with the **+**, then select the **Queues** page, and watch the `clicks` topic: it shows its throughput
+on the Overview tab.
+
+Open another tab with the **+**, then select the **Functions** page, and invoke `database::query` with
+`{"db":"analytics","sql":"SELECT day, count FROM daily_link_counts"}` to read the per-day counts the
+Python worker wrote.
+
+Back on the Triggers tab, edit the link with `PUT /links/:code` (path parameter `launch`), then
+invoke `link::resolve` for `launch`: it returns the new URL because the durable subscriber refreshed
+the cache.
+
+The same flow from the CLI:
 
 ```bash
 for n in $(seq 1 5); do
@@ -355,15 +381,22 @@ When it works, tell me to continue to the next chapter of the Linkly tutorial.
 
 </CodeGroup>
 
-Watch it live in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113). On the **Streams**
-page, subscribe to the `clicks` stream, then follow a link a few times on the **Triggers** page: each
-redirect lands as a new message row you can open for the full payload.
+Watch it live in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-The same check from the CLI:
+Open a new tab: click the **+** in the menu bar, then select the **Streams** page. Subscribe to the
+`clicks` stream.
+
+Open another tab with the **+**, then select the **Triggers** page, shorten a link with `POST /links` using
+`{"url":"https://supabase.com","code":"live"}`, then follow `GET /s/:code` a few times with the
+`code` path parameter set to `live`.
+
+Back on the Streams tab, each redirect lands as a new message row you can open for the full payload.
+
+The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
+  -H 'Content-Type: application/json' -d '{"url":"https://neon.tech","code":"stream-me"}'
 for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
 iii trigger stream::list stream_name=clicks group_id=all
 ```
@@ -398,9 +431,12 @@ npm install --prefix channel-client && node channel-client/import-links.js
 ```
 
 It reports two imported links. Confirm them in the console at
-[http://127.0.0.1:3113](http://127.0.0.1:3113): on the **Functions** page, invoke `link::resolve`
-with `{"code":"mylink"}` and read the URL off the result, or run `iii trigger link::resolve
-code=mylink`.
+[http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Open a new tab: click the **+** in the menu bar, then select the **Functions** page. Invoke
+`link::resolve` with `{"code":"mylink"}` and read the URL off the result.
+
+From the CLI, run `iii trigger link::resolve code=mylink`.
 
 [Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) explains channels and
 `createChannel`.
@@ -434,12 +470,18 @@ When it works, tell me the Linkly tutorial is complete.
 
 </CodeGroup>
 
-Try it in the browser: shorten a link in the Vite app at the dev-server URL `npm run dev` prints, then
-follow it a few times to watch the live counter. Ask the server to delete it from the console at
-[http://127.0.0.1:3113](http://127.0.0.1:3113): on the **Functions** page, invoke
-`link::request_delete` with `{"code":"<code>","session":"<session>"}` (the tab prints its session id),
-or run `iii trigger link::request_delete code=<code> session=<session>`. The browser shows a confirm
-prompt, and the delete happens after you accept.
+Try it in the browser: shorten a link in the Vite app at the dev-server URL `npm run dev` prints,
+then follow it a few times to watch the live counter.
+
+Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Open a new tab: click the **+** in the menu bar, then select the **Functions** page. Invoke
+`link::request_delete` with `{"code":"<code>","session":"<session>"}` (the tab prints its session
+id).
+
+From the CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
+
+The browser shows a confirm prompt, and the delete happens after you accept.
 
 [Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the RBAC listener, the auth
 function, and browser-registered functions.
