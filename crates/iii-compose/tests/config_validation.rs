@@ -562,6 +562,46 @@ containers:
     );
 }
 
+/// A file written before the field existed keeps the strict rule, and a
+/// container opts out one at a time rather than for the project.
+#[test]
+fn required_defaults_to_true_and_is_declared_per_container() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+"#,
+    )
+    .expect("required is part of the container schema");
+
+    assert!(
+        file.containers["api"].required,
+        "a container that says nothing is required"
+    );
+    assert!(!file.containers["mailer"].required);
+}
+
+#[test]
+fn rejects_a_non_boolean_required() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: "no"
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
 #[test]
 fn rejects_a_user_environment_that_shadows_the_reserved_contract() {
     // Silently dropping it would look like it took effect.

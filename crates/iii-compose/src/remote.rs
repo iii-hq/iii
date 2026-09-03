@@ -833,6 +833,8 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
              Repeated calls leave ready containers running. Frozen mode requires \
+             declaring 'required: false' is named in not_required_failures \
+             when it fails, and the operation still returns ok. Frozen mode requires \
              worker-compose.lock to match and skips package resolution."
         }
         "compose::down" => {

@@ -177,6 +177,10 @@ async fn up_inner(
     let mut results: Vec<ContainerResult> = Vec::new();
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
+    // Containers that failed and said their failure does not fail the
+    // operation. Counted so the closing line reports a partial project as
+    // partial rather than reading like a clean start.
+    let mut not_required_failures = 0usize;
     let max_parallel_workers = crate::parallelism::max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
@@ -281,8 +285,17 @@ async fn up_inner(
                     if let Some(operation) = crate::operation::active(&operation_id) {
                         operation.emit(Some(key), "failed", error.to_string()).await;
                     }
-                    if failure.is_none() {
-                        failure = Some((key.clone(), error));
+                    if is_required(ctx.file, key) {
+                        if failure.is_none() {
+                            failure = Some((key.clone(), error));
+                        }
+                    } else {
+                        // The plan counted it, so the progress has to account
+                        // for it however it settled.
+                        if let Some(operation) = crate::operation::active(&operation_id) {
+                            operation.completed_one().await;
+                        }
+                        not_required_failures += 1;
                     }
                 }
                 StartAttempt::Interrupted => interrupted = true,
@@ -321,6 +334,9 @@ async fn up_inner(
 
     report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
+    if not_required_failures > 0 {
+        report::not_required_failed(not_required_failures);
+    }
     report::summary_ok("up", changed, results.len(), began.elapsed());
     Some(OpResult {
         operation_id,
@@ -328,6 +344,15 @@ async fn up_inner(
         changed: changed > 0,
         containers: results,
     })
+}
+
+/// Whether this container's failure fails the operation. A container the file
+/// no longer declares is treated as required: the strict rule is the one that
+/// refuses rather than the one that carries on.
+fn is_required(file: &ComposeFile, key: &str) -> bool {
+    file.containers
+        .get(key)
+        .is_none_or(|container| container.required)
 }
 
 /// Drops a leading `container '<name>': ` from a message that is already being
