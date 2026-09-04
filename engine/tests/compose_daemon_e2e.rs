@@ -1019,6 +1019,54 @@ containers:
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_required_failure_is_reported_after_a_not_required_failure() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+    scripts:
+      run: "sleep 30"
+  api:
+    worker: path://./workers/api
+    start_after: [mailer]
+    required: true
+    scripts:
+      run: "exit 9"
+"#,
+        &["mailer", "api"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::up should answer");
+
+    assert_eq!(
+        up["status"], "failed",
+        "a container that is required must fail the operation: {up}"
+    );
+    assert_eq!(
+        up["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+        "the required container error must be reported: {up}"
+    );
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn logs_continue_from_a_cursor_after_the_worker_is_ready() {
     isolate_state();
     let port = spawn_engine().await;

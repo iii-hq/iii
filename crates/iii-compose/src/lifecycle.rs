@@ -52,6 +52,9 @@ pub struct OpResult {
     /// already in the desired state.
     pub changed: bool,
     pub containers: Vec<ContainerResult>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) primary_error: Option<OpError>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -318,6 +321,7 @@ async fn up_inner(
                 status: OpStatus::Failed,
                 changed: !started.is_empty(),
                 containers: results,
+                primary_error: Some(OpError::from(&error)),
             });
         }
     }
@@ -343,6 +347,7 @@ async fn up_inner(
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
     })
 }
 
@@ -468,6 +473,7 @@ async fn restart_one_inner(
                     changed: false,
                     error: Some(OpError::from(&error)),
                 }],
+                primary_error: Some(OpError::from(&error)),
             });
         }
         StartAttempt::Interrupted => {
@@ -482,6 +488,7 @@ async fn restart_one_inner(
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
+        primary_error: None,
     })
 }
 
@@ -531,6 +538,7 @@ pub async fn remove_one(
             changed,
             error: None,
         }],
+        primary_error: None,
     }
 }
 
@@ -622,6 +630,7 @@ pub async fn down(
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
     }
 }
 
@@ -1244,6 +1253,7 @@ fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -
             changed: false,
             error: Some(OpError::from(error)),
         }],
+        primary_error: Some(OpError::from(error)),
     }
 }
 
@@ -1329,6 +1339,7 @@ containers:
                 changed: true,
                 error: None,
             }],
+            primary_error: None,
         };
 
         let json = serde_json::to_value(&result).unwrap();
@@ -1341,6 +1352,10 @@ containers:
             json["containers"][0].get("error").is_none(),
             "a successful container carries no error key"
         );
+        assert!(
+            json.get("primary_error").is_none(),
+            "the internal primary error must not be serialized"
+        )
     }
 }
 

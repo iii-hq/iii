@@ -1069,21 +1069,32 @@ impl MutationOutcome {
             .chain(worker)
             .collect();
         let mut affected_workers = std::collections::BTreeSet::new();
-        let mut error = None;
+        let mut primary_error = None;
+        let mut first_container_error = None;
         let mut failed = Vec::new();
 
-        for result in operations.flat_map(|operation| &operation.containers) {
-            if result.changed && !requested.contains(result.container.as_str()) {
-                affected_workers.insert(result.container.clone());
+        for operation in operations {
+            if primary_error.is_none() {
+                primary_error = operation.primary_error.as_ref().map(MutationError::from);
             }
-            if result.error.is_some() {
-                failed.push(result.container.clone());
-            }
-            if error.is_none() {
-                error = result.error.as_ref().map(MutationError::from);
+            for result in &operation.containers {
+                if result.changed && !requested.contains(result.container.as_str()) {
+                    affected_workers.insert(result.container.clone());
+                }
+                if result.error.is_some() {
+                    failed.push(result.container.clone());
+                }
+                if first_container_error.is_none() {
+                    first_container_error = result.error.as_ref().map(MutationError::from);
+                }
             }
         }
 
+        let error = if status == OpStatus::Failed {
+            primary_error.or(first_container_error)
+        } else {
+            first_container_error
+        };
         // A succeeding operation with a failed container is the `required:
         // false` case and nothing else: a required failure is what makes the
         // status `failed` in the first place.
@@ -1762,6 +1773,10 @@ mod mutation_outcome_tests {
 
     #[test]
     fn concise_outcome_omits_healthy_containers_and_log_tails() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+        };
         let result = OpResult {
             operation_id: "diagnostic-only".into(),
             status: OpStatus::Failed,
@@ -1783,12 +1798,10 @@ mod mutation_outcome_tests {
                     container: "tailscale".into(),
                     state: ChildStatus::Failed,
                     changed: false,
-                    error: Some(OpError {
-                        code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
-                        message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
-                    }),
+                    error: Some(primary_error.clone()),
                 },
             ],
+            primary_error: Some(primary_error),
         };
 
         let outcome = MutationOutcome::from_operations(
@@ -1814,5 +1827,51 @@ mod mutation_outcome_tests {
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
+    }
+
+    #[test]
+    fn failed_outcome_prefers_primary_error_over_earlier_container_error() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'api' exited with 9 before it registered".into(),
+        };
+
+        let result = OpResult {
+            operation_id: "mixed-failure".into(),
+            status: OpStatus::Failed,
+            changed: false,
+            containers: vec![
+                ContainerResult {
+                    container: "mailer".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(OpError {
+                        code: "STARTUP_TIMEOUT".into(),
+                        message: "container 'mailer' was not ready after 2s".into(),
+                    }),
+                },
+                ContainerResult {
+                    container: "api".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(primary_error.clone()),
+                },
+            ],
+            primary_error: Some(primary_error),
+        };
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Failed,
+            false,
+            None,
+            None,
+            None,
+            std::iter::once(&result),
+        );
+        let encoded = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(
+            encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+            "{encoded}"
+        );
     }
 }
