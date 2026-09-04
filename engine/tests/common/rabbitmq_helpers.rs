@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::rabbitmq::RabbitMq;
@@ -13,6 +14,27 @@ pub struct RabbitMqTestContext {
 }
 
 static RABBITMQ: OnceCell<RabbitMqTestContext> = OnceCell::const_new();
+
+// Rust does not run destructors on `static` items at process exit, so
+// `ContainerAsync::drop` never fires for the container held in `RABBITMQ`.
+// Record the container id and force-remove it via the Docker CLI from an
+// `atexit` hook so the rabbit container does not leak after the test binary
+// exits. Ryuk is an unreliable safety net on Docker Desktop.
+static CONTAINER_ID: Mutex<Option<String>> = Mutex::new(None);
+
+extern "C" fn stop_rabbitmq_container() {
+    let id = match CONTAINER_ID.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => return,
+    };
+    if let Some(id) = id {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f", &id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
 
 /// Returns a shared RabbitMQ test context. The container is started on first call
 /// and reused for all subsequent calls within the same test binary.
@@ -34,6 +56,16 @@ pub async fn get_rabbitmq() -> &'static RabbitMqTestContext {
                 .expect("Failed to get RabbitMQ management port");
             let amqp_url = format!("amqp://guest:guest@127.0.0.1:{}", port);
             let mgmt_url = format!("http://127.0.0.1:{}", mgmt_port);
+
+            *CONTAINER_ID
+                .lock()
+                .expect("rabbit container id mutex poisoned") = Some(container.id().to_string());
+            // Safety: `stop_rabbitmq_container` is a plain `extern "C"` fn with no
+            // captured state; libc::atexit is sound to call here.
+            unsafe {
+                libc::atexit(stop_rabbitmq_container);
+            }
+
             RabbitMqTestContext {
                 amqp_url,
                 mgmt_url,
