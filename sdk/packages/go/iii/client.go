@@ -902,13 +902,31 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 			c.mu.Unlock()
 		}
 	case MsgTriggerRegistrationResult:
-		// Informational; nothing to do. (A trigger-registration error is the engine's
-		// to surface; the reference SDKs only log it.)
+		c.handleTriggerRegistrationResult(dec.TriggerRegistrationResult)
 	case MsgRegistrationRejected:
 		c.handleRegistrationRejected(dec.RegistrationRejected)
 	default:
 		// Unknown/unhandled inbound type; ignore.
 	}
+}
+
+// handleTriggerRegistrationResult logs a failed RegisterTrigger ack. Only
+// failures carry an Error, so a nil one is the success path and says nothing.
+//
+// A failure here means the binding never went live, and nothing else tells the
+// registering worker: the ack is the engine's one channel back. A boot-order
+// race, where a worker binds a trigger type before its provider has registered
+// it, arrives as trigger_type_not_found. Dropping that leaves the worker
+// believing a handler is bound when none is, and the handler simply never runs.
+// The failure is non-fatal and per-trigger, so the connection stays up; use
+// engine::registered-triggers::list with trigger_type, function_id, and
+// namespace to confirm whether a given binding is live.
+func (c *Client) handleTriggerRegistrationResult(msg *TriggerRegistrationResultMessage) {
+	if msg == nil || msg.Error == nil {
+		return
+	}
+	log.Printf("iii: trigger registration failed for %q (%s): %s: %s",
+		msg.ID, msg.TriggerType, msg.Error.Code, msg.Error.Message)
 }
 
 // handleRegistrationRejected processes an engine registration rejection. A

@@ -940,6 +940,10 @@ class Sdk implements ISdk {
       this.onUnregisterTrigger(
         message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
       )
+    } else if (msgType === MessageType.TriggerRegistrationResult) {
+      this.onTriggerRegistrationResult(
+        message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+      )
     } else if (msgType === MessageType.RegistrationRejected) {
       this.onRegistrationRejected(
         message as { code: string; namespace: string; worker_name?: string; function_id?: string; owner_worker_id: string },
@@ -959,6 +963,26 @@ class Sdk implements ISdk {
    * would only reject the same name again, which with `maxRetries: -1` loops
    * forever).
    */
+  /**
+   * The engine's ack for a `registerTrigger`. Only failures carry an `error`.
+   * Log them: the binding never went live, and nothing else tells the worker.
+   * A boot-order race (binding a trigger type before its provider registers)
+   * arrives here as `trigger_type_not_found`.
+   */
+  private onTriggerRegistrationResult(message: {
+    id: string
+    trigger_type?: string
+    type?: string
+    function_id: string
+    error?: { code: string; message: string; stacktrace?: string }
+  }): void {
+    if (!message.error) return
+    const triggerType = message.trigger_type ?? message.type ?? ''
+    console.error(
+      `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
+    )
+  }
+
   private onRegistrationRejected(init: {
     code: string
     namespace: string
