@@ -456,15 +456,17 @@ connection instead of thousands of separate HTTP requests.
 Bulk-load links from a CSV in a single streamed upload over a channel.
 
 - Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
-  each. Skip any row that fails (a code already taken, say) instead of aborting the batch, and return
+  each. Skip a row the application rejects (a code already taken) instead of aborting the batch, but
+  re-throw anything else (a timeout, a worker that is down) so a broken import fails loudly. Return
   the imported and skipped counts. Add it with `compose::add worker=./bulk-importer`.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer.
 
 Agree on the import_csv payload shape first, then run two subagents on separate files at the same
 time:
-- Subagent A: the bulk-importer worker (read the CSV off the channel, skip failed rows, return the
-  imported and skipped counts) and add it with compose::add worker=./bulk-importer.
+- Subagent A: the bulk-importer worker (read the CSV off the channel, skip a rejected row but
+  re-throw other failures, return the imported and skipped counts) and add it with compose::add
+  worker=./bulk-importer.
 - Subagent B: channel-client/import-links.js (open a channel, stream the CSV, call
   bulk-importer::import_csv).
 
