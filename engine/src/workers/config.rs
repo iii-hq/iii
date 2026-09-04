@@ -38,6 +38,54 @@ fn config_event_touches_path(changed_paths: &[PathBuf], configured_path: &Path) 
         .any(|changed| absolutize_path(changed) == configured)
 }
 
+/// Build a filesystem watcher that nudges `tx` whenever `path` is written.
+///
+/// Watches the parent directory so rename-based writes are caught (editors
+/// like vim write a temp file then rename it). For bare filenames like
+/// "config.yaml", `parent()` returns "" which is not a valid path — fall back
+/// to ".".
+fn start_config_file_watcher(
+    path: &str,
+    tx: tokio::sync::mpsc::Sender<()>,
+) -> anyhow::Result<notify::RecommendedWatcher> {
+    let watched_path = std::path::PathBuf::from(path);
+    let configured_path = absolutize_path(&watched_path);
+
+    let mut watcher = notify::RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                use notify::EventKind;
+                match event.kind {
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                        if config_event_touches_path(&event.paths, &configured_path) =>
+                    {
+                        let _ = tx.try_send(());
+                    }
+                    _ => {}
+                }
+            }
+        },
+        notify::Config::default(),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to create config file watcher: {}", e))?;
+
+    let watch_target = watched_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    watcher
+        .watch(watch_target, notify::RecursiveMode::NonRecursive)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to watch config directory '{}': {}",
+                watch_target.display(),
+                e
+            )
+        })?;
+
+    Ok(watcher)
+}
+
 fn absolutize_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| {
         if path.is_absolute() {
@@ -936,41 +984,27 @@ impl EngineBuilder {
         // coalesce rapid writes into a single reload.
         let (config_change_tx, mut config_change_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        // Keep the watcher alive for the duration of serve().
+        // Keep the watcher alive for the duration of serve(). Hot-reload is a
+        // convenience, not a requirement: if the OS refuses to hand out a
+        // watcher (typically EMFILE from a shared host's per-user
+        // `fs.inotify.max_user_instances` cap, which no process rlimit can
+        // raise), log it and keep serving — the configuration worker's own
+        // adapter watcher already degrades the same way.
         let _watcher = if let Some(ref path) = config_path {
-            let tx = config_change_tx.clone();
-            let watched_path = std::path::PathBuf::from(path);
-            let configured_path = absolutize_path(&watched_path);
-
-            let mut watcher = notify::RecommendedWatcher::new(
-                move |res: Result<notify::Event, notify::Error>| {
-                    if let Ok(event) = res {
-                        use notify::EventKind;
-                        match event.kind {
-                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                                if config_event_touches_path(&event.paths, &configured_path) =>
-                            {
-                                let _ = tx.try_send(());
-                            }
-                            _ => {}
-                        }
-                    }
-                },
-                notify::Config::default(),
-            )?;
-
-            // Watch the parent directory so we catch rename-based writes
-            // (editors like vim write a temp file then rename it).
-            // For bare filenames like "config.yaml", parent() returns ""
-            // which is not a valid path — fall back to ".".
-            let watch_target = watched_path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(std::path::Path::new("."));
-            watcher.watch(watch_target, notify::RecursiveMode::NonRecursive)?;
-
-            tracing::info!("reload: watching {} for changes", path);
-            Some(watcher)
+            match start_config_file_watcher(path, config_change_tx.clone()) {
+                Ok(watcher) => {
+                    tracing::info!("reload: watching {} for changes", path);
+                    Some(watcher)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "reload: config file watcher unavailable; edits to {} will not hot-reload (restart to apply)",
+                        path
+                    );
+                    None
+                }
+            }
         } else {
             tracing::info!("reload: no config file to watch (running with in-memory config)");
             None
