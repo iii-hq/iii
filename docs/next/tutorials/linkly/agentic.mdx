@@ -6,10 +6,18 @@ type: "tutorial"
 ---
 
 This path builds Linkly with an AI agent. You give the agent one prompt per chapter; it writes the
-workers, and you check the result with the same commands the by-hand path uses.
+workers, and you check the result.
 
-The scaffold is a starting point, not the answer: a `link` worker stub and the agent stack. The
-agent writes every function, and creates each new worker as you reach its chapter.
+The goal here is to build a working link shortener service while demonstrating not just iii's
+efficiency when building systems agentically but its 4 core properties which we call CODE:
+
+- Composability
+- Observability
+- Discoverability
+- Extensibility
+
+We'll present them a bit out of order but hopefully this mnemonic helps you remember what iii is all
+about.
 
 ## Set up the agent
 
@@ -149,7 +157,8 @@ other provider, add it after start. Select your provider for the exact steps:
   </div>
 </div>
 
-With your key in `.env`, start the engine and the agent stack:
+With your key in `.env`, you can use one command to start the iii engine, the project, and the
+agentic stack you'll use to develop it:
 
 ```bash
 iii compose --up
@@ -157,11 +166,14 @@ iii compose --up
 
 Open the console and harness which are at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
-For the rest of this guide you can copy the example prompts below (and modify them if you'd like)
-and paste them into a chat in the harness.
+For the rest of this guide you can copy the example prompts below and paste them into a chat in the
+harness.
+
+At the end of every chapter there's some additional instructions you can follow to **observe** and
+verify the agent's work.
 
 <Info>
-As you work on this project the agent will dynamically add workers with
+As you work on this project the agent will dynamically **compose** workers with
 `compose::add worker=<name>` without disrupting the rest of your running workers.
 
 The `link` worker reloads on its own when its file changes. This is functionality built
@@ -175,10 +187,16 @@ stability.
 
 ## Ch. 1: Foundations
 
-Linkly's core job is to turn a long URL into a short code and send visitors on. This chapter builds
-that: a `link::create` and a `link::resolve` function, exposed over HTTP. The engine already runs
-the HTTP server and the key-value store, so the agent writes only these two functions, and you skip
-standing up a web framework and a datastore before the first redirect works.
+Linkly's core job is to turn a long URL into a short code and send visitors there. This chapter
+builds that functionality: a `link::create` and a `link::resolve` function. These functions are then
+**extended** by the HTTP worker which can expose any function as an http endpoint.
+
+Since we started the project with `iii compose` and the http worker is already specified in
+`worker-compose.yaml` there is nothing else to do to get http functionality out of the box.
+
+Importantly this agent doesn't need to build it, or make a decision on which library to use, how to
+set it up, and how to run it. The HTTP worker, like all iii workers, has shipped as a self-contained
+service.
 
 <CodeGroup>
 
@@ -243,9 +261,11 @@ and `registerTrigger`.
 
 ## Ch. 2: Observe everything
 
-When a redirect misbehaves you need to see why. This chapter adds no worker: the engine already
-traced every redirect, so here you only read what it recorded, the span tree and the logs for each
-request.
+Since every part of iii is **composable** with every other part of iii **observability** becomes
+trivial and possible in a variety of situations.
+
+Here we have an agent that can observe the running system, a UI that runs the same functions as the
+agent and consumes that same data, and a CLI that also does this.
 
 <CodeGroup>
 
@@ -254,41 +274,33 @@ Send five redirects through http://127.0.0.1:3111/s/home, then read the traces t
 with `iii trigger engine::traces::list`. Show me the span tree for one redirect with
 `iii trigger engine::traces::tree`.
 
-When it works, tell me to continue to the next chapter of the Linkly tutorial.
+When it works, tell me to continue to the next chapter of the Linkly tutorial and give me the command to observe this trace (ie. `iii trigger engine::traces::tree trace_id=<your trace_id here>`)
 ```
 
 </CodeGroup>
 
-See it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
-
-Open a new tab: click the **+** in the menu bar, then select the **Traces** page. It draws each
-redirect as a waterfall of spans; open one to read its tags, logs, and duration.
-
-Open another tab with the **+**, then select the **Logs** page, and read the structured log lines.
-Each row's trace ID pivots straight to its trace.
-
-The same data from the CLI:
+You can explore the CLI too, the agent likely gave you a command how to (we told it to in the prompt
+after all) but you can also run them manually here:
 
 ```bash
-iii trigger engine::traces::list
-iii trigger engine::traces::tree
+iii trigger engine::traces::list # get a list of traces
+iii trigger engine::traces::tree trace_id=<your trace_id here> # read a specific trace
 ```
 
 [Ch. 2: Observe everything](/tutorials/linkly/observability) explains what the engine records.
 
 ## Ch. 3: Persist everything
 
-In-memory state is lost on restart, so every link vanishes when the engine stops. This chapter puts
-links and clicks in a SQLite database and keeps the state worker in front as a read cache, so links
-outlive a restart and reads stay fast.
+At the moment our project is storing shortened URLs in-memory so a restart would erase them. This
+chapter makes them persistent by putting links and clicks in a SQLite database and keeps the state
+worker in front as a read cache, so links outlive a restart and reads stay fast.
 
 <CodeGroup>
 
 ```text Prompt
 Add durable storage so links and clicks survive a restart, with state kept in front as a read cache.
 
-Add the database worker with `compose::add worker=database`, then configure it for a
-SQLite database named "primary" at sqlite:./data/iii.db.
+Add a database, then configure it for SQLite, call it "primary".
 
 In link/src/index.ts:
 - at startup, create a links table and a clicks table if they do not exist. The database worker may
@@ -487,8 +499,8 @@ npm install --prefix channel-client && node channel-client/import-links.js
 ```
 
 It reports the imported and skipped counts. If the agent already ran the import while building, the
-codes are taken, so it reports `{ imported: 0, skipped: 2 }` rather than failing. Confirm the links in
-the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+codes are taken, so it reports `{ imported: 0, skipped: 2 }` rather than failing. Confirm the links
+in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::resolve` with `{"code":"mylink"}` and read the URL off
 the result.
