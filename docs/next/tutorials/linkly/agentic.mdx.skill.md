@@ -222,11 +222,7 @@ Use two subagents to write these in parallel, then integrate their work yourself
   GET /s/:code trigger.
 Merge both results into link/src/index.ts.
 
-Run `npm install --prefix link`, then add the worker by calling the `compose::add` function
-over your existing engine connection with `{ "worker": "./link" }`, not the `iii` CLI. Do not restart
-Compose; compose::add starts it in place.
-
-The reference for this chapter is https://iii.dev/docs/next/tutorials/linkly/foundations.
+Run `npm install --prefix link`, then add the worker.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -291,14 +287,16 @@ iii trigger engine::traces::tree trace_id=<your trace_id here> # read a specific
 
 At the moment our project is storing shortened URLs in-memory so a restart would erase them. This
 chapter makes them persistent by putting links and clicks in a SQLite database and keeps the state
-worker in front as a read cache, so links outlive a restart and reads stay fast.
+worker in front as a cache.
+
+We'll also start recording how many times a link is clicked so that our users can have metrics on
+their link performance over time.
 
 <CodeGroup>
 
 ```text Prompt
-Add durable storage so links and clicks survive a restart, with state kept in front as a read cache.
-
-Add a database, then configure it for SQLite, call it "primary".
+Add a database, then configure it for SQLite, call it "primary". Keep state in front as a read cache for
+recent requests and new links.
 
 In link/src/index.ts:
 - at startup, create a links table and a clicks table if they do not exist. The database worker may
@@ -306,10 +304,7 @@ In link/src/index.ts:
   worker if the database is not ready yet.
 - link::create also inserts the link row into the database.
 - link::resolve reads state first, falls back to the database, and warms the cache on a hit.
-- add link::record_click that inserts a row into clicks, and have http::redirect call it.
-
-Add workers by calling the `compose::add` function over the engine, not the `iii` CLI, so you do not restart the stack. The reference is
-https://iii.dev/docs/next/tutorials/linkly/persistence.
+- add link::record_click that tracks clicks by link and day, and have http::redirect call it every time a link is requested.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -325,7 +320,12 @@ Then follow `GET /s/:code` a few times with the `code` path parameter set to `ne
 
 Open another tab with the **+**, then select the **Functions** page, and open `database::query`.
 Invoke it with `{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'news'"}`,
-then read the count off the result view. It survives a restart because the row is on disk.
+then read the count off the result view.
+
+You can even restart the entire system to confirm that data is persisting. Run:
+`iii trigger compose::restart --namespace default` from the CLI or run it from within the Console by
+navigating to the **Function** tab, selecting `compose::restart` and giving it the payload:
+`{ "namespace": "default" }`
 
 The same flow from the CLI:
 
@@ -341,36 +341,34 @@ path.
 
 ## Ch. 4: Make it durable
 
-Writing each click inline on the redirect path slows every visitor and drops records when a write
-fails. This chapter moves clicks onto a queue, adds a Python analytics worker that counts links per
-day, and makes link updates durable. A durable queue and subscriber ship with the engine, so you
-skip running a broker like Kafka and writing the retry code that usually causes the late-night
-pages.
+Immediately recording each time a user clicks a link works for a demo but it also makes the worker
+thread wait for the database to write before returning the URL that the user wants.
+
+Linkly needs to be scalable and able to handle thousands of links a second. So we're going to move
+click counts to a durable queue.
+
+iii's **composability** once again makes it easy to take applications from demo to production-ready.
 
 <CodeGroup>
 
 ```text Prompt
 Make redirects fast and add analytics.
 
-- Define a standard "clicks" queue with queue::define (the queue worker is already running for the
-  agent), and enqueue click records instead of writing them inline on the redirect path.
-- Add the pubsub worker (compose::add worker=pubsub). link::create publishes a link.created event.
+- Define a standard "clicks" queue with queue::define and enqueue click records instead of writing them inline on the redirect path.
+- Add the pubsub worker. link::create publishes a link.created event.
 - Add a second SQLite database named "analytics" for the analytics worker.
 - Create a Python analytics worker that subscribes to link.created and counts links per day, and add
-  it with `compose::add worker=./analytics`.
+  it with compose.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
   from a durable subscriber.
 
 Add the pubsub worker and the second database yourself first, then split the rest across two
 subagents that work on separate files at the same time:
 - Subagent A: the Python analytics worker (subscribe to link.created, count links per day, write to
-  the analytics database) and add it with compose::add worker=./analytics.
+  the analytics database) and add it with compose.
 - Subagent B: the link worker changes in link/src/index.ts (define and enqueue the clicks queue,
   publish link.created, add link::update with the PUT /links/:code route, publish link.updated
   durably, and refresh the cache from a durable subscriber).
-
-Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
-https://iii.dev/docs/next/tutorials/linkly/durable-execution.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -408,26 +406,22 @@ regular pub/sub.
 
 ## Ch. 5: Stream live clicks
 
-A live dashboard needs each click the moment it happens, not on the next page refresh. This chapter
-broadcasts every click to subscribers in real time through a `clicks` stream.
+Collecting data is one thing but delivering it is another. This chapter broadcasts every click to
+subscribers in real time through a `clicks` stream via the stream worker.
 
 <CodeGroup>
 
 ```text Prompt
 Push every click to subscribers in real time.
 
-- Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with
-  `compose::add worker=./click-streamer`.
-- Have link::record_click publish each click so the streamer broadcasts it.
+- Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with compose. Use the stream worker and its functionality.
+- Have link::record_click publish each click so the streamer broadcasts it. We will make the subscribers in a later step.
 
 Pick the topic name first, then run two subagents on separate files at the same time:
 - Subagent A: the click-streamer worker that subscribes to that topic and broadcasts to the "clicks"
-  stream, added with compose::add worker=./click-streamer.
+  stream, added it with compose.
 - Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
   topic.
-
-Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
-https://iii.dev/docs/next/tutorials/linkly/streaming.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -458,9 +452,15 @@ iii trigger stream::list stream_name=clicks group_id=all
 
 ## Ch. 6: Move bulk data with channels
 
-Users arrive with a CSV of thousands of links to load at once. This chapter adds a bulk-importer
-that reads the rows off a channel and creates each link, so a large import streams over one
-connection instead of thousands of separate HTTP requests.
+Sometimes users will arrive with a CSV of thousands of links to load at once. This chapter adds a
+bulk-importer that reads the rows off a channel and creates each link. As always we're utilizing
+existing functionality to **extend** our application. A well built iii application never needs to
+special case tasks like bulk imports because everything shares the same interface: Workers,
+Triggers, and Functions.
+
+This is also the first time we'll see outside clients interacting with iii, but not the last as in
+the next chapter we're going to create untrusted and permissioned workers that run in the user's
+browser. When we say iii is **extensible** we mean it.
 
 <CodeGroup>
 
@@ -469,21 +469,18 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
 
 - Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
   each. Skip a row the application rejects (a code already taken) instead of aborting the batch, but
-  re-throw anything else (a timeout, a worker that is down) so a broken import fails loudly. Return
-  the imported and skipped counts. Add it with `compose::add worker=./bulk-importer`.
+  re-throw anything else (a timeout, a worker that is down). Return
+  the imported and skipped counts.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer.
+- Create an example CSV for the user (example.csv). Do not import the CSV. Use test data (test.csv).
 
 Agree on the import_csv payload shape first, then run two subagents on separate files at the same
 time:
 - Subagent A: the bulk-importer worker (read the CSV off the channel, skip a rejected row but
-  re-throw other failures, return the imported and skipped counts) and add it with compose::add
-  worker=./bulk-importer.
+  re-throw other failures, return the imported and skipped counts) and add it with compose.
 - Subagent B: channel-client/import-links.js (open a channel, stream the CSV, call
   bulk-importer::import_csv).
-
-Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
-https://iii.dev/docs/next/tutorials/linkly/channels.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -496,9 +493,9 @@ The upload runs from the Node client, so start it from the CLI:
 npm install --prefix channel-client && node channel-client/import-links.js
 ```
 
-It reports the imported and skipped counts. If the agent already ran the import while building, the
-codes are taken, so it reports `{ imported: 0, skipped: 2 }` rather than failing. Confirm the links
-in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+It reports the imported and skipped counts. If the agent already decided to do the import while
+building, the codes are taken, so it reports `{ imported: 0, skipped: 2 }`. Confirm the links in the
+console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::resolve` with `{"code":"mylink"}` and read the URL off
 the result.
@@ -510,10 +507,10 @@ From the CLI, run `iii trigger link::resolve code=mylink`.
 
 ## Ch. 7: Bring in the browser
 
-Linkly needs a front end where people create links and confirm deletes. This chapter turns a browser
-tab into a worker: it registers functions and the server calls back into it, gated by RBAC. The tab
-joins as a worker behind the rbac-proxy, so you skip building a REST API and a socket layer just to
-let the server call back into the page.
+Linkly needs a front end where people can create and delete links. This chapter turns a browser tab
+into a worker: it registers functions and the server calls back into it, gated by RBAC. The tab
+joins as a worker behind the rbac-proxy. This **composability** means that you don't need to build
+an API gateway nor any other infrastructure to handle clients.
 
 <CodeGroup>
 
@@ -522,13 +519,12 @@ Turn a browser tab into a worker.
 
 - Add an rbac-proxy worker that fronts a public port 3110 and reverse-proxies to the engine at
   ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
-  link::request_delete only). Add it with `compose::add worker=rbac-proxy`.
+  link::request_delete only). Add it with compose.
 - Create an auth worker with an auth::browser function that admits browser connections (fail closed
   when its LINKLY_BROWSER_TOKEN env var is unset). Each tab sends a unique session id; grant it its
   own `browser-<session>` namespace so two tabs never collide on the functions they register. Give it
   the standard node worker manifest (base_image `docker.io/iiidev/node:latest`, npm install and start
-  scripts) and set `LINKLY_BROWSER_TOKEN: dev-token` in its `iii.worker.yaml` `env:`, because
-  `compose::add` does not read `.env` into the worker. Add it with `compose::add worker=./auth`.
+  scripts) and set `LINKLY_BROWSER_TOKEN: dev-token` in a .env.browser file at the root where worker-compose.yaml is. Add it with compose and set env_file on this worker to open .env.browser.
 - Add link::delete and link::request_delete({ code, session }): request_delete asks the tab's
   user::confirm_destructive_op in namespace `browser-<session>` before deleting.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
@@ -542,9 +538,6 @@ the others depend on it, then run three subagents on separate directories at the
   per-session `browser-<session>` namespace grant).
 - Subagent B: the link worker changes in link/src/index.ts (link::delete and link::request_delete).
 - Subagent C: the Vite app in frontend/ (iii.ts and App.tsx).
-
-Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. Run `npm run dev` in frontend/. The reference is
-https://iii.dev/docs/next/tutorials/linkly/frontend.
 
 When it works, tell me the Linkly tutorial is complete.
 ```
