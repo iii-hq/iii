@@ -545,6 +545,7 @@ impl Project {
                 status: crate::lifecycle::OpStatus::Failed,
                 changed: false,
                 containers: Vec::new(),
+                primary_error: None,
             }
         } else if let Some(shutdown) = shutdown {
             let result = lifecycle::up_until_shutdown(
@@ -564,6 +565,7 @@ impl Project {
                 status: crate::lifecycle::OpStatus::Failed,
                 changed: false,
                 containers: Vec::new(),
+                primary_error: None,
             })
         } else {
             lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
