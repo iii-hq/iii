@@ -1,27 +1,45 @@
 <!-- HERO -->
 <section class="hero" aria-label="Hero">
   <div class="hero-inner">
-    <div class="hero-left">
+    <!-- Its own grid row: the viz sits beside it and matches its height. -->
+    <div class="hero-head">
       <h1 class="hero-headline" id="hero-headline" aria-live="polite">
         <span class="line">build unreasonably <span class="desc" id="hero-desc">simple</span></span>
         <span class="line mute">software</span>
       </h1>
 
+      <!-- Subheader: only the verb on line one rotates, the rest is static. -->
+      <p class="hero-subhead">
+        <span class="line">effortlessly <span class="desc" id="hero-verb">discover</span></span>
+        <span class="line"
+          ><span class="mute">every service</span> <span class="accent">in real time</span></span
+        >
+        <span class="line">for the first time ever</span>
+      </p>
+    </div>
+
+    <!-- The copy takes the column the viz used to hold, beside the headline. -->
+    <div class="hero-copy">
       <p class="hero-sub">Modern software stacks are an exercise in integrating services.</p>
       <p class="hero-sub">
         Every new capability means a new system to learn, configure, deploy, and monitor.
       </p>
-
       <p class="hero-sub">
-        The complexity of actual integrations is
-        <span class="accent">quadratic</span> which is overwhelming for devs and for AI. Leading to
-        both making bad decisions about large codebases.
+        The complexity of actual integrations is <span class="accent">quadratic</span> which is
+        overwhelming for devs and for AI. Leading to both making bad decisions about large
+        codebases.
       </p>
       <p class="hero-sub">
         iii <span class="accent">eliminates this complexity</span> by shipping working services the
         same way node ships packages, so using a new service is as easy as importing a new library.
       </p>
+      <p class="hero-sub">
+        No integration, no gateways, no rearchitecting, no agents guessing at infrastructure, no
+        tracking down logs.
+      </p>
+    </div>
 
+    <div class="hero-left">
       <div class="hero-cta">
         <div class="hero-actions">
           <div class="hero-actions-row">
@@ -124,80 +142,85 @@
       </div>
     </div>
 
-    <aside
-      class="hero-viz"
-      id="hero-viz"
-      aria-label="From quadratic to linear to ephemeral"
-      data-stage="mesh"
-      data-design="classic"
-    >
-      <div class="hero-viz-head">
-        <span class="label">
-          <span class="pulse"></span>
-          <span class="stage-name" id="hv-stage-name">problem space</span>
-        </span>
-        <div class="hero-viz-tabs" role="tablist" aria-label="Stage">
-          <button type="button" data-stage="mesh" class="on">problem space</button>
-          <button type="button" data-stage="actual">current</button>
-          <button type="button" data-stage="iii">iii</button>
+    <!-- The panel is scaled as a whole to the headline block's height, so this
+         wrapper holds the grid slot and the panel itself contributes no
+         height of its own. -->
+    <div class="hero-viz-fit">
+      <aside
+        class="hero-viz"
+        id="hero-viz"
+        aria-label="From quadratic to linear to ephemeral"
+        data-stage="mesh"
+        data-design="classic"
+      >
+        <div class="hero-viz-head">
+          <span class="label">
+            <span class="pulse"></span>
+            <span class="stage-name" id="hv-stage-name">problem space</span>
+          </span>
+          <div class="hero-viz-tabs" role="tablist" aria-label="Stage">
+            <button type="button" data-stage="mesh" class="on">problem space</button>
+            <button type="button" data-stage="actual">current</button>
+            <button type="button" data-stage="iii">iii</button>
+          </div>
         </div>
-      </div>
 
-      <div class="hero-viz-canvas" id="hv-canvas">
-        <svg
-          class="main"
-          viewBox="0 0 400 400"
-          preserveAspectRatio="xMidYMid meet"
-          aria-hidden="true"
-        >
-          <g id="hv-edges-mesh"></g>
-          <g id="hv-edges-actual"></g>
-          <g id="hv-edges-ephemeral"></g>
-          <g id="hv-packets"></g>
-          <g id="hv-nodes"></g>
-          <g id="hv-labels"></g>
-        </svg>
-      </div>
-
-      <div class="hero-viz-complexity" aria-live="polite">
-        <svg
-          class="hv-complex-chart"
-          viewBox="22 0 186 118"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94" />
-          <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14" />
-          <!-- n(n-1)/2: full pairwise growth. True parabola y = 94 - 74((x-22)/186)^2. -->
-          <path
-            class="hv-cc-q"
-            d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20"
-          />
-          <!-- (n(n-1)/2) / tolerance: same parabola, proportionally damped (k=34). -->
-          <path
-            class="hv-cc-l"
-            d="M 22 94 L 45.3 93.5 L 68.5 91.9 L 91.8 89.2 L 115 85.5 L 138.3 80.7 L 161.5 74.9 L 184.8 67.9 L 208 60"
-          />
-          <!-- 0: constant on the axis -->
-          <path class="hv-cc-f" d="M 22 94 L 208 94" />
-        </svg>
-        <div class="hv-complex-copy">
-          <span class="hv-formula" id="hv-formula"
-            ><math
-              ><mi>O</mi><mo>(</mo
-              ><mfrac
-                ><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>&#x2212;</mo><mn>1</mn><mo>)</mo></mrow
-                ><mn>2</mn></mfrac
-              ><mo>)</mo></math
-            ></span
+        <div class="hero-viz-canvas" id="hv-canvas">
+          <svg
+            class="main"
+            viewBox="0 0 400 118"
+            preserveAspectRatio="xMidYMid meet"
+            aria-hidden="true"
           >
-          <span class="hv-formula-sub" id="hv-formula-sub"></span>
+            <g id="hv-edges-mesh"></g>
+            <g id="hv-edges-actual"></g>
+            <g id="hv-edges-ephemeral"></g>
+            <g id="hv-packets"></g>
+            <g id="hv-nodes"></g>
+            <g id="hv-labels"></g>
+          </svg>
         </div>
-      </div>
 
-      <div class="hero-viz-foot">
-        <span><span id="hv-count" class="hv-count">45</span> <span>integrations</span></span>
-      </div>
-    </aside>
+        <div class="hero-viz-complexity" aria-live="polite">
+          <svg
+            class="hv-complex-chart"
+            viewBox="22 0 186 118"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <line class="hv-cc-axis" x1="22" y1="94" x2="208" y2="94" />
+            <line class="hv-cc-axis" x1="22" y1="94" x2="22" y2="14" />
+            <!-- n(n-1)/2: full pairwise growth. True parabola y = 94 - 74((x-22)/186)^2. -->
+            <path
+              class="hv-cc-q"
+              d="M 22 94 L 45.3 92.8 L 68.5 89.4 L 91.8 83.6 L 115 75.5 L 138.3 65.1 L 161.5 52.4 L 184.8 37.3 L 208 20"
+            />
+            <!-- (n(n-1)/2) / tolerance: same parabola, proportionally damped (k=34). -->
+            <path
+              class="hv-cc-l"
+              d="M 22 94 L 45.3 93.5 L 68.5 91.9 L 91.8 89.2 L 115 85.5 L 138.3 80.7 L 161.5 74.9 L 184.8 67.9 L 208 60"
+            />
+            <!-- 0: constant on the axis -->
+            <path class="hv-cc-f" d="M 22 94 L 208 94" />
+          </svg>
+          <div class="hv-complex-copy">
+            <span class="hv-formula" id="hv-formula"
+              ><math
+                ><mi>O</mi><mo>(</mo
+                ><mfrac
+                  ><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>&#x2212;</mo><mn>1</mn><mo>)</mo></mrow
+                  ><mn>2</mn></mfrac
+                ><mo>)</mo></math
+              ></span
+            >
+            <span class="hv-formula-sub" id="hv-formula-sub"></span>
+          </div>
+        </div>
+
+        <div class="hero-viz-foot">
+          <span><span id="hv-count" class="hv-count">45</span> <span>integrations</span></span>
+        </div>
+      </aside>
+    </div>
   </div>
 </section>

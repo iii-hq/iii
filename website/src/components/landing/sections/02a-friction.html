@@ -1,0 +1,265 @@
+<!-- FRICTION — the argument in three scenes.
+     scene 01: the tensions iii removes.
+     scene 02: what iii provides (the same claims as "iii is many things").
+     scene 03: what the result is.
+     Self-contained: markup and styles live in this file, no script. -->
+<section class="fric" id="friction" aria-label="What iii removes, provides, and produces">
+  <style>
+    .fric {
+      position: relative;
+      padding: 0 0 40px;
+    }
+    .fric-scene {
+      margin: 0 36px;
+      max-width: 1128px;
+      padding: 64px 0 0;
+    }
+    .fric-idx {
+      display: block;
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--mute);
+      margin-bottom: 14px;
+    }
+    .fric-title {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-weight: 500;
+      font-size: clamp(20px, 4.2vw, 28px);
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin: 0 0 32px;
+      max-width: 80%;
+    }
+    .fric-title .accent {
+      color: var(--accent);
+    }
+    .fric-title .mute {
+      color: var(--ink-faint);
+    }
+
+    /* ---- scene 01: tension pairs ---- */
+    .fric-pairs {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .fric-pair {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 20px;
+      padding: 22px 0;
+      border-bottom: 1px solid var(--rule);
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: clamp(15px, 2.6vw, 19px);
+      color: var(--ink);
+    }
+    .fric-pair span:first-child {
+      text-align: right;
+    }
+    /* The seam between the two sides: dashed today, the thing iii erases. */
+    .fric-seam {
+      position: relative;
+      width: clamp(56px, 12vw, 120px);
+      height: 1px;
+      background: repeating-linear-gradient(
+        90deg,
+        var(--ink-ghost) 0 3px,
+        transparent 3px 7px
+      );
+    }
+    .fric-seam::after {
+      content: "";
+      position: absolute;
+      inset: -6px auto -6px 50%;
+      width: 1px;
+      background: var(--ink-ghost);
+    }
+
+    /* ---- scene 02: the nine claims ---- */
+    .fric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--rule);
+      border: 1px solid var(--rule);
+    }
+    .fric-cell {
+      background: var(--bg);
+      padding: 20px 18px 22px;
+    }
+    .fric-num {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+    }
+    .fric-cell h3 {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-weight: 500;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin: 10px 0 6px;
+    }
+    .fric-cell p {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink-faint);
+      margin: 0;
+    }
+
+    /* ---- scene 03: the result ---- */
+    .fric-results {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+    }
+    .fric-result {
+      border-top: 1px solid var(--accent);
+      padding: 14px 0 0;
+    }
+    .fric-result b {
+      display: block;
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-weight: 500;
+      font-size: clamp(15px, 2.4vw, 18px);
+      color: var(--ink);
+      margin-bottom: 8px;
+    }
+    .fric-result span {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink-faint);
+    }
+
+    @media (max-width: 900px) {
+      .fric-scene {
+        margin: 0 18px;
+        padding-top: 48px;
+      }
+      .fric-title {
+        max-width: 100%;
+      }
+      .fric-grid {
+        grid-template-columns: 1fr;
+      }
+      .fric-results {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    @media (max-width: 560px) {
+      .fric-results {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
+  <div class="fric-scene">
+    <span class="fric-idx">§ 01 · THE FRICTION</span>
+    <h2 class="fric-title">
+      <span class="accent">iii is a system for developing software.</span>
+      <span class="mute"
+        ><br />it removes the friction between the pairs that pull against each other in every
+        stack.</span
+      >
+    </h2>
+
+    <ul class="fric-pairs">
+      <li class="fric-pair">
+        <span>development</span><span class="fric-seam" aria-hidden="true"></span
+        ><span>production</span>
+      </li>
+      <li class="fric-pair">
+        <span>integration</span><span class="fric-seam" aria-hidden="true"></span><span>use</span>
+      </li>
+      <li class="fric-pair">
+        <span>architecture</span><span class="fric-seam" aria-hidden="true"></span
+        ><span>extensibility</span>
+      </li>
+    </ul>
+  </div>
+
+  <div class="fric-scene">
+    <span class="fric-idx">§ 02 · WHAT IT PROVIDES</span>
+    <h2 class="fric-title">
+      <span class="accent">iii does this by being all of these at once.</span>
+      <span class="mute"><br />each one is the same three primitives seen from a new angle.</span>
+    </h2>
+
+    <div class="fric-grid">
+      <div class="fric-cell">
+        <div class="fric-num">01</div>
+        <h3>a protocol</h3>
+        <p>one wire format that every language and every service already speaks.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">02</div>
+        <h3>a small set of primitives</h3>
+        <p>worker, trigger, function. everything else is a composition of the three.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">03</div>
+        <h3>a worker orchestrator</h3>
+        <p>starts, supervises, and restarts every process that connects.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">04</div>
+        <h3>a registry</h3>
+        <p>iii worker add stripe. a capability installs like a package.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">05</div>
+        <h3>a compose file, and a swarm</h3>
+        <p>declare the system once, run it on one machine or on a hundred.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">06</div>
+        <h3>an agentic development environment</h3>
+        <p>agents read a live system's functions and triggers instead of guessing at them.</p>
+      </div>
+      <div class="fric-cell">
+        <div class="fric-num">07</div>
+        <h3>a self-extensible application</h3>
+        <p>a running system gains capability without being redesigned.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="fric-scene">
+    <span class="fric-idx">§ 03 · THE RESULT</span>
+    <h2 class="fric-title">
+      <span class="accent">everything stays live.</span>
+      <span class="mute"
+        ><br />the system you build is the system you run, and it never stops answering for
+        itself.</span
+      >
+    </h2>
+
+    <ul class="fric-results">
+      <li class="fric-result">
+        <b>live composability</b>
+        <span>any function calls any other function, in any language, on any machine.</span>
+      </li>
+      <li class="fric-result">
+        <b>live extensibility</b>
+        <span>add a worker to a running system without redesigning the architecture.</span>
+      </li>
+      <li class="fric-result">
+        <b>live discoverability</b>
+        <span>what one worker exposes becomes visible across the system in real time.</span>
+      </li>
+      <li class="fric-result">
+        <b>live observability</b>
+        <span>operations, traces, and behavior across the whole connected stack.</span>
+      </li>
+    </ul>
+  </div>
+</section>

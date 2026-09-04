@@ -14,6 +14,9 @@ import '../styles/landing.css'
 import headExtras from '../components/landing/head-extras.html?raw'
 
 import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+import friction from '../components/landing/sections/02a-friction.html?raw'
+import frictionAnim from '../components/landing/sections/02b-friction-anim.html?raw'
+import explained from '../components/landing/sections/02-explained.html?raw'
 import hero from '../components/landing/sections/03-hero.html?raw'
 import experience from '../components/landing/sections/04-experience.html?raw'
 import workers from '../components/landing/sections/05-workers.html?raw'
@@ -31,6 +34,7 @@ import tweaksPanelStyle from '../components/landing/scripts/04-tweaks-panel-styl
 import heroViz from '../components/landing/scripts/05-hero-viz-engine.html?raw'
 import agentSections from '../components/landing/scripts/06-agent-sections-a-harness-collapse-c-.html?raw'
 import tweaksPanel from '../components/landing/scripts/07-tweaks-panel.html?raw'
+import frictionAnimEngine from '../components/landing/scripts/08-friction-anim.html?raw'
 
 // Fragments are consecutive line ranges of the original page; each ends with
 // a newline, so plain concatenation reproduces the source region exactly.
@@ -52,12 +56,13 @@ const body = [
   heroViz,
   agentSections,
   tweaksPanel,
+  frictionAnimEngine,
 ].join('')
 ---
 
 <HtmlShell
   title="iii — Three primitives. Zero integration cost."
-  description="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever."
+  description="Effortlessly discover, compose, extend, and observe every service in real-time for the first time ever."
   canonicalPath="/"
   keywords="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox"
 >
@@ -66,6 +71,8 @@ const body = [
   <SiteNav />
   <ScrollNav
     links={[
+      { id: 'friction', label: 'what is iii' },
+      { id: 'explained', label: 'many things' },
       { id: 'console-live', label: 'agents' },
       { id: 'harness', label: 'harness' },
       { id: 'experience', label: 'why iii' },
@@ -74,6 +81,9 @@ const body = [
     ]}
   />
   <Fragment set:html={hero} />
+  <Fragment set:html={frictionAnim} />
+  <Fragment set:html={friction} />
+  <Fragment set:html={explained} />
   <ConsoleLive />
   <HarnessRace />
   <Fragment set:html={body} />
