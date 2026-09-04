@@ -200,6 +200,12 @@ Then expose them over HTTP through the http worker:
 - an http::redirect function and a GET /s/:code trigger that reads the code from req.path_params.code,
   resolves it, and returns a 302 to the url, or 404 when it is unknown.
 
+Use two subagents to write these in parallel, then integrate their work yourself:
+- Subagent A: the link core, link::create and link::resolve, backed by the state worker.
+- Subagent B: the HTTP layer, http::create with the POST /links trigger and http::redirect with the
+  GET /s/:code trigger.
+Merge both results into link/src/index.ts.
+
 Run `npm install --prefix link`, then add the worker by calling the `compose::add` function
 over your existing engine connection with `{ "worker": "./link" }`, not the `iii` CLI. Do not restart
 Compose; compose::add starts it in place.
@@ -345,6 +351,14 @@ Make redirects fast and add analytics.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
   from a durable subscriber.
 
+Add the pubsub worker and the second database yourself first, then split the rest across two
+subagents that work on separate files at the same time:
+- Subagent A: the Python analytics worker (subscribe to link.created, count links per day, write to
+  the analytics database) and add it with compose::add worker=./analytics.
+- Subagent B: the link worker changes in link/src/index.ts (define and enqueue the clicks queue,
+  publish link.created, add link::update with the PUT /links/:code route, publish link.updated
+  durably, and refresh the cache from a durable subscriber).
+
 Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/durable-execution.
 
@@ -396,6 +410,12 @@ Push every click to subscribers in real time.
   `compose::add worker=./click-streamer`.
 - Have link::record_click publish each click so the streamer broadcasts it.
 
+Pick the topic name first, then run two subagents on separate files at the same time:
+- Subagent A: the click-streamer worker that subscribes to that topic and broadcasts to the "clicks"
+  stream, added with compose::add worker=./click-streamer.
+- Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
+  topic.
+
 Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/streaming.
 
@@ -442,6 +462,13 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
   the imported and skipped counts. Add it with `compose::add worker=./bulk-importer`.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer.
+
+Agree on the import_csv payload shape first, then run two subagents on separate files at the same
+time:
+- Subagent A: the bulk-importer worker (read the CSV off the channel, skip failed rows, return the
+  imported and skipped counts) and add it with compose::add worker=./bulk-importer.
+- Subagent B: channel-client/import-links.js (open a channel, stream the CSV, call
+  bulk-importer::import_csv).
 
 Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. The reference is
 https://iii.dev/docs/next/tutorials/linkly/channels.
@@ -496,6 +523,13 @@ Turn a browser tab into a worker.
   react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
   connect in a per-tab `browser-<session>` namespace, call link::create and subscribe to the click
   stream in the default namespace, and register user::confirm_destructive_op.
+
+This chapter has the most independent pieces. Add and configure the rbac-proxy yourself first, since
+the others depend on it, then run three subagents on separate directories at the same time:
+- Subagent A: the auth worker in auth/ (the manifest and env described above, auth::browser, and the
+  per-session `browser-<session>` namespace grant).
+- Subagent B: the link worker changes in link/src/index.ts (link::delete and link::request_delete).
+- Subagent C: the Vite app in frontend/ (iii.ts and App.tsx).
 
 Add workers by calling the `compose::add` function over the engine, not the `iii` CLI. Run `npm run dev` in frontend/. The reference is
 https://iii.dev/docs/next/tutorials/linkly/frontend.
