@@ -1278,6 +1278,10 @@ containers:
         "a failed restart of a container that is not required must not fail: {restart}"
     );
     assert_eq!(
+        restart["changed"], true,
+        "stopping the old worker must report a state change: {restart}"
+    );
+    assert_eq!(
         restart["not_required_failures"],
         json!(["mailer"]),
         "the failed restart must name the optional container: {restart}"
