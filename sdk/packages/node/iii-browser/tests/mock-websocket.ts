@@ -241,6 +241,23 @@ export class MockEngine {
     )
   }
 
+  sendTriggerRegistrationResult(
+    id: string,
+    triggerType: string,
+    functionId: string,
+    error?: { code: string; message: string },
+  ): void {
+    this.socket.simulateMessage(
+      JSON.stringify({
+        type: 'triggerregistrationresult',
+        id,
+        trigger_type: triggerType,
+        function_id: functionId,
+        ...(error ? { error } : {}),
+      }),
+    )
+  }
+
   findSent(type: string): Record<string, unknown> | undefined {
     return this.socket.findSent(type)
   }
