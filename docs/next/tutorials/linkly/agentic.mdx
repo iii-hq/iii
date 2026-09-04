@@ -558,11 +558,10 @@ watch the live counter.
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::request_delete` with
-`{"code":"<code>","session":"<session>"}` (the tab prints its session id).
+`{"code":"<code>","session":"<session>"}` (the tab prints its session id). Alternatively, from the
+CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
 
-From the CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
-
-The browser shows a confirm prompt, and the delete happens after you accept.
+The browser shows a confirm prompt, and the delete happens after the user accepts.
 
 [Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the RBAC listener, the auth
 function, and browser-registered functions.
