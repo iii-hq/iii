@@ -422,7 +422,7 @@ async fn restart_one_inner(
     }
 
     report::plan(&[(key.to_string(), 0)]);
-    stop_one(ctx, children, records, key).await;
+    let stopped = stop_one(ctx, children, records, key).await;
 
     // The child is gone, but the engine learns that from a socket closing and
     // not from us. Starting into that window makes the replacement collide
@@ -478,11 +478,11 @@ async fn restart_one_inner(
                 } else {
                     OpStatus::Ok
                 },
-                changed: false,
+                changed: stopped,
                 containers: vec![ContainerResult {
                     container: key.to_string(),
                     state: ChildStatus::Failed,
-                    changed: false,
+                    changed: stopped,
                     error: Some(error),
                 }],
                 primary_error,
@@ -1084,9 +1084,9 @@ async fn stop_one(
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
-) {
+) -> bool {
     let Some(child) = children.remove(key) else {
-        return;
+        return false;
     };
     child.stop(ctx.file.stop_timeout).await;
 
@@ -1128,6 +1128,8 @@ async fn stop_one(
     if let Some(record) = records.get_mut(key) {
         record.status = ChildStatus::Stopped;
     }
+
+    true
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.
