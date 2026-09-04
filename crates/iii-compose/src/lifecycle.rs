@@ -462,18 +462,30 @@ async fn restart_one_inner(
                 &strip_container_prefix(&error.to_string(), key),
             );
             report::plan_done();
-            report::summary_failed("restart", error.code(), began.elapsed());
+            let required = is_required(ctx.file, key);
+            if required {
+                report::summary_failed("restart", error.code(), began.elapsed());
+            } else {
+                report::not_required_failed(1);
+                report::summary_ok("restart", 0, 1, began.elapsed());
+            }
+            let error = OpError::from(&error);
+            let primary_error = required.then(|| error.clone());
             return Some(OpResult {
                 operation_id,
-                status: OpStatus::Failed,
+                status: if required {
+                    OpStatus::Failed
+                } else {
+                    OpStatus::Ok
+                },
                 changed: false,
                 containers: vec![ContainerResult {
                     container: key.to_string(),
                     state: ChildStatus::Failed,
                     changed: false,
-                    error: Some(OpError::from(&error)),
+                    error: Some(error),
                 }],
-                primary_error: Some(OpError::from(&error)),
+                primary_error,
             });
         }
         StartAttempt::Interrupted => {

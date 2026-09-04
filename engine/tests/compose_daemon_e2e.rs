@@ -1019,6 +1019,81 @@ containers:
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn restarting_a_not_required_container_reports_its_failed_start_without_failing() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("workers/mailer/started");
+    let manifest = tmp.path().join("workers/mailer/iii.worker.yaml");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional-restart
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+"#,
+        &["mailer"],
+    );
+    std::fs::write(
+        &manifest,
+        "scripts:\n  start: \"touch started && sleep 30\"\n",
+    )
+    .expect("write initial worker manifest");
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        let mailer = register_test_worker(port, "optional-restart", "mailer");
+        wait_for_worker_state(&daemon, "optional-restart", "mailer", true).await;
+        mailer
+    };
+    let (up, mailer) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "initial start failed: {up}");
+
+    mailer.shutdown_async().await;
+    std::fs::write(&manifest, "scripts:\n  start: \"exit 9\"\n")
+        .expect("replace worker start command");
+
+    let restart = call(
+        port,
+        "compose::restart",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "mailer",
+        }),
+    )
+    .await
+    .expect("compose::restart should answer");
+
+    assert_eq!(
+        restart["status"], "ok",
+        "a failed restart of a container that is not required must not fail: {restart}"
+    );
+    assert_eq!(
+        restart["not_required_failures"],
+        json!(["mailer"]),
+        "the failed restart must name the optional container: {restart}"
+    );
+    assert_eq!(
+        restart["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+        "the failed restart must retain its error: {restart}"
+    );
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_required_failure_is_reported_after_a_not_required_failure() {
     isolate_state();
     let port = spawn_engine().await;
