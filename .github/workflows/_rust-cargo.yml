@@ -52,7 +52,7 @@ jobs:
         if: inputs.slack_thread_ts != ''
         id: slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -61,7 +61,7 @@ jobs:
             thread_ts: "${{ inputs.slack_thread_ts }}"
             text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           # cargo publish doesn't push to git; don't leave the token in config.
@@ -80,7 +80,7 @@ jobs:
       - name: Notify Slack — result
         if: always() && steps.slack.outputs.ts != ''
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.update
           token: ${{ secrets.SLACK_BOT_TOKEN }}
