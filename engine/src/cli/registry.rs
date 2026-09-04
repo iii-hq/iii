@@ -12,6 +12,9 @@ pub struct BinarySpec {
     pub repo: &'static str,
     pub has_checksum: bool,
     pub supported_targets: &'static [&'static str],
+    /// Maps the CLI's preferred host target to the target actually published
+    /// for this binary.
+    pub asset_target_overrides: &'static [(&'static str, &'static str)],
     pub commands: &'static [CommandMapping],
     pub tag_prefix: Option<&'static str>,
 }
@@ -39,6 +42,7 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-gnu",
     ],
+    asset_target_overrides: &[],
     commands: &[],
     tag_prefix: Some("iii"),
 };
@@ -56,6 +60,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
         ],
+        asset_target_overrides: &[],
         commands: &[],
         tag_prefix: Some("iii"),
     },
@@ -72,6 +77,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
+        asset_target_overrides: &[],
         commands: &[CommandMapping {
             cli_command: "console",
             binary_subcommand: None,
@@ -91,6 +97,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
+        asset_target_overrides: &[],
         commands: &[CommandMapping {
             cli_command: "cloud",
             binary_subcommand: None,
@@ -103,11 +110,10 @@ pub static REGISTRY: &[BinarySpec] = &[
         has_checksum: true,
         supported_targets: &[
             "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
             "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
+        asset_target_overrides: &[("x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu")],
         commands: &[CommandMapping {
             cli_command: "worker",
             binary_subcommand: None,
@@ -204,6 +210,20 @@ mod tests {
     fn test_console_has_checksum() {
         let (spec, _) = resolve_command("console").unwrap();
         assert!(spec.has_checksum);
+    }
+
+    #[test]
+    fn worker_supported_targets_match_release_matrix() {
+        let (worker, _) = resolve_command("worker").unwrap();
+
+        assert_eq!(
+            worker.supported_targets,
+            &[
+                "aarch64-apple-darwin",
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+            ]
+        );
     }
 
     #[test]
