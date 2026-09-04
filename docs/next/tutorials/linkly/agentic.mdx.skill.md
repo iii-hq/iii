@@ -544,8 +544,14 @@ When it works, tell me the Linkly tutorial is complete.
 
 </CodeGroup>
 
-Try it in the browser: shorten a link in the Vite app at the dev-server URL `npm run dev` prints,
-then follow it a few times to watch the live counter.
+The agent built the Vite app but does not run it, so start the dev server yourself:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Open the URL it prints in your browser. Shorten a link in the app, then follow it a few times to
+watch the live counter.
 
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
