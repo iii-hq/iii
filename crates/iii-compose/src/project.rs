@@ -25,13 +25,16 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::Instant,
+};
 
 use crate::{
-    config::ComposeFile,
+    config::{ComposeFile, RestartPolicy},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Children, LifecycleCtx, OpResult},
+    lifecycle::{self, Children, LifecycleCtx, OpResult, OpStatus},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
@@ -56,12 +59,68 @@ pub struct Project {
     logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
+    /// Attempt bookkeeping for the containers the supervisor is currently
+    /// retrying, keyed by container.
+    ///
+    /// Deliberately not in [`DaemonState`], so not on disk. An attempt count
+    /// describes one supervisor's patience with one crash loop, and a daemon
+    /// that restarts re-reconciles from scratch: carrying the old count over
+    /// would let a project come back with its budget already spent.
+    restarts: Mutex<BTreeMap<String, RestartAttempts>>,
 }
 
 /// How often the supervisor checks whether a ready child is still alive.
 /// Fast enough that a crash is reported while the operator is still watching,
 /// slow enough that an idle project costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Wait before the second restart attempt. Each further attempt doubles it, up
+/// to [`RESTART_BACKOFF_MAX`]. The first attempt does not wait at all: a worker
+/// that died because of a transient is back before the operator looks up, and
+/// one that is genuinely broken has stopped being hammered within seconds.
+const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(500);
+
+/// Ceiling on the wait between attempts. Past this, a longer backoff would only
+/// delay the operator's answer without giving the worker anything it needs.
+const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// Consecutive attempts before the supervisor gives up. On the last one it does
+/// what it would have done with no policy at all: fail the container and take
+/// its dependents down. A cap is what separates a restart policy from a busy
+/// loop.
+const RESTART_MAX_ATTEMPTS: u32 = 5;
+
+/// How long a container has to hold `Ready` before its attempt budget refills.
+/// Without it, a worker that crashes once an hour would spend five attempts
+/// over an afternoon and then never be restarted again, which is the opposite
+/// of what its file asked for.
+const RESTART_BUDGET_RESET_AFTER: Duration = Duration::from_secs(60);
+
+/// Where one container is in its restart budget.
+#[derive(Debug, Clone, Copy)]
+struct RestartAttempts {
+    /// Attempts already spent in this run of failures.
+    spent: u32,
+    /// When the next attempt becomes due, and `None` when none is owed — the
+    /// container came back, or an operator took it over. The supervision tick
+    /// is what makes an attempt due, so the backoff never blocks the loop.
+    ///
+    /// A container that is not owed an attempt still keeps its `spent` count.
+    /// Clearing it on every recovery would refill the budget for a worker that
+    /// comes back for a second each time, which is the busy loop wearing a
+    /// slower coat. Only [`Project::refill_budget_if_it_held`] clears it.
+    due: Option<Instant>,
+}
+
+impl RestartAttempts {
+    /// Backoff before the attempt after `spent` have been made: doubling from
+    /// [`RESTART_BACKOFF_BASE`], held at [`RESTART_BACKOFF_MAX`].
+    fn backoff(spent: u32) -> Duration {
+        RESTART_BACKOFF_BASE
+            .saturating_mul(2u32.saturating_pow(spent.saturating_sub(1)))
+            .min(RESTART_BACKOFF_MAX)
+    }
+}
 
 /// The parts that change together. One lock: a caller must never see the
 /// children and the records disagree.
@@ -116,6 +175,7 @@ impl Project {
                 children: BTreeMap::new(),
                 state,
             }),
+            restarts: Mutex::new(BTreeMap::new()),
         });
 
         project.reconcile_recovered().await;
@@ -234,33 +294,222 @@ impl Project {
                 Tone::Warn,
             );
 
-            // Cascade through the same path a targeted `down` takes: it stops
-            // the dependents first and ends on the dead container itself, which
-            // fires its `post_run` and drops it from the map. Leaving dependents
-            // running would leave them talking to something that is gone.
-            let file = self.file.read().await;
-            let dependents = crate::dag::transitive_dependents(&file, &key);
-            drop(file);
-            if !dependents.is_empty() {
-                daemon_line(
-                    &self.project_namespace,
-                    &format!("stopping what depended on {key}: {}", dependents.join(", ")),
-                    Tone::Warn,
-                );
+            // A container that asked to be restarted gets the first attempt
+            // immediately: its dependents stay up, and the exit only cascades
+            // once the budget below is spent.
+            if self.restart_policy(&key).await.wants_restart(code) {
+                self.refill_budget_if_it_held(&key).await;
+                if self.spend_attempt(&key).await {
+                    self.run_restart_attempt(&key).await;
+                    continue;
+                }
+                self.report_gave_up(&key).await;
+                self.cascade_failure(&key, Self::exhausted_reason()).await;
+                continue;
             }
-            self.down(Some(&key), format!("supervisor:{key}")).await;
 
-            // After the cascade, so `down` marking everything Stopped does not
-            // erase why this one went.
-            let mut inner = self.inner.lock().await;
-            if let Some(entry) = inner.state.containers.get_mut(&key) {
-                entry.status = ChildStatus::Failed;
-                entry.last_error = Some(reason);
-            }
-            let snapshot = inner.state.clone();
-            drop(inner);
-            let _ = self.store.save(&snapshot);
+            self.cascade_failure(&key, reason).await;
         }
+    }
+
+    /// Takes the attempts that came due since the last tick.
+    ///
+    /// The waiting happens here rather than in [`Self::run_restart_attempt`] so
+    /// a backoff never blocks the supervision loop, and so a project whose
+    /// worker is in a crash loop does not stop the daemon noticing anything
+    /// else. The tick interval is the granularity of the backoff.
+    pub(crate) async fn drive_restarts(&self) {
+        let now = Instant::now();
+        let due: Vec<String> = {
+            let attempts = self.restarts.lock().await;
+            attempts
+                .iter()
+                .filter(|(_, attempt)| attempt.due.is_some_and(|due| due <= now))
+                .map(|(key, _)| key.clone())
+                .collect()
+        };
+
+        for key in due {
+            // An operator who ran `up` or `restart` in the meantime has taken
+            // the container back, and the supervisor stops competing for it.
+            // The spent count stays: the operator changed who is driving, not
+            // whether this container has been crashing.
+            let still_waiting = {
+                let inner = self.inner.lock().await;
+                inner
+                    .state
+                    .containers
+                    .get(&key)
+                    .is_some_and(|record| record.status == ChildStatus::Restarting)
+            };
+            if !still_waiting {
+                if let Some(attempt) = self.restarts.lock().await.get_mut(&key) {
+                    attempt.due = None;
+                }
+                continue;
+            }
+
+            if self.spend_attempt(&key).await {
+                self.run_restart_attempt(&key).await;
+                continue;
+            }
+
+            self.report_gave_up(&key).await;
+            self.cascade_failure(&key, Self::exhausted_reason()).await;
+        }
+    }
+
+    /// One attempt: the same stop-then-start that `compose::restart` performs,
+    /// so a supervised restart and an operator's restart are the same act and
+    /// cannot drift apart. It also means the attempt inherits the rule that a
+    /// restart touches one container and not a graph, which is what keeps the
+    /// dependents up while this one is gone.
+    async fn run_restart_attempt(&self, key: &str) {
+        let spent = self
+            .restarts
+            .lock()
+            .await
+            .get(key)
+            .map_or(1, |attempt| attempt.spent);
+        daemon_line(
+            &self.project_namespace,
+            &format!("restarting {key} (attempt {spent} of {RESTART_MAX_ATTEMPTS})"),
+            Tone::Warn,
+        );
+
+        // Written before the start so a `compose::status` racing the attempt
+        // says `restarting` rather than the `failed` this is trying to undo.
+        self.mark(key, ChildStatus::Restarting, None).await;
+
+        let result = self.restart_one(key, format!("supervisor:{key}")).await;
+        if result.status == OpStatus::Ok {
+            // The record is already `Ready` and nothing more is owed. The spent
+            // count survives, so a worker that comes back for a moment each
+            // time still runs out of attempts.
+            if let Some(attempt) = self.restarts.lock().await.get_mut(key) {
+                attempt.due = None;
+            }
+            return;
+        }
+
+        // Only wait if there is something to wait for. Backing off after the
+        // last attempt would hold the container in `restarting` for a wait
+        // nobody is going to use, and delay the operator's answer by it.
+        let exhausted = {
+            let mut attempts = self.restarts.lock().await;
+            match attempts.get_mut(key) {
+                Some(attempt) if attempt.spent < RESTART_MAX_ATTEMPTS => {
+                    attempt.due = Some(Instant::now() + RestartAttempts::backoff(attempt.spent));
+                    false
+                }
+                _ => true,
+            }
+        };
+
+        if exhausted {
+            self.report_gave_up(key).await;
+            self.cascade_failure(key, Self::exhausted_reason()).await;
+        } else {
+            self.mark(key, ChildStatus::Restarting, None).await;
+        }
+    }
+
+    /// Fails the container and takes its transitive dependents with it: what
+    /// compose did for every unexpected exit before there was a policy, and
+    /// what it still does once one has run out of attempts.
+    async fn cascade_failure(&self, key: &str, reason: String) {
+        self.restarts.lock().await.remove(key);
+
+        // Cascade through the same path a targeted `down` takes: it stops
+        // the dependents first and ends on the dead container itself, which
+        // fires its `post_run` and drops it from the map. Leaving dependents
+        // running would leave them talking to something that is gone.
+        let file = self.file.read().await;
+        let dependents = crate::dag::transitive_dependents(&file, key);
+        drop(file);
+        if !dependents.is_empty() {
+            daemon_line(
+                &self.project_namespace,
+                &format!("stopping what depended on {key}: {}", dependents.join(", ")),
+                Tone::Warn,
+            );
+        }
+        self.down(Some(key), format!("supervisor:{key}")).await;
+
+        // After the cascade, so `down` marking everything Stopped does not
+        // erase why this one went.
+        self.mark(key, ChildStatus::Failed, Some(reason)).await;
+    }
+
+    /// This container's declared answer to exiting after it was ready. A
+    /// container the file no longer declares gets `no`, matching `is_required`:
+    /// the rule that stops is the one to fall back on.
+    async fn restart_policy(&self, key: &str) -> RestartPolicy {
+        self.file
+            .read()
+            .await
+            .containers
+            .get(key)
+            .map_or(RestartPolicy::No, |container| container.restart)
+    }
+
+    /// Takes one attempt from the budget. `false` means it is spent, which is
+    /// the supervisor's cue to stop and let the failure cascade.
+    async fn spend_attempt(&self, key: &str) -> bool {
+        let mut attempts = self.restarts.lock().await;
+        let attempt = attempts.entry(key.to_string()).or_insert(RestartAttempts {
+            spent: 0,
+            due: None,
+        });
+        if attempt.spent >= RESTART_MAX_ATTEMPTS {
+            return false;
+        }
+        attempt.spent += 1;
+        true
+    }
+
+    /// Refills the budget of a container that had held ready long enough to
+    /// count as recovered, so this crash starts a new run of failures rather
+    /// than continuing one the container already came back from.
+    async fn refill_budget_if_it_held(&self, key: &str) {
+        let held_for = {
+            let inner = self.inner.lock().await;
+            inner
+                .state
+                .containers
+                .get(key)
+                .map_or(0, |record| seconds_since(record.started_at))
+        };
+        if held_for >= RESTART_BUDGET_RESET_AFTER.as_secs() {
+            self.restarts.lock().await.remove(key);
+        }
+    }
+
+    fn exhausted_reason() -> String {
+        format!("did not stay up after {RESTART_MAX_ATTEMPTS} restart attempts")
+    }
+
+    async fn report_gave_up(&self, key: &str) {
+        daemon_line(
+            &self.project_namespace,
+            &format!("{key} {}: giving up", Self::exhausted_reason()),
+            Tone::Warn,
+        );
+    }
+
+    /// Writes a container's status and persists it on the same path, which is
+    /// the rule the whole module is built on.
+    async fn mark(&self, key: &str, status: ChildStatus, last_error: Option<String>) {
+        let mut inner = self.inner.lock().await;
+        if let Some(entry) = inner.state.containers.get_mut(key) {
+            entry.status = status;
+            if last_error.is_some() {
+                entry.last_error = last_error;
+            }
+        }
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
     }
 
     /// Fatal registration rejection, if the engine refused this daemon —
@@ -833,6 +1082,15 @@ pub struct ContainerStatus {
     pub last_error: Option<String>,
 }
 
+/// How long ago a `started_at` was, in seconds. Saturating, so a clock that
+/// went backwards reads as "just now" rather than as a very old container.
+fn seconds_since(unix_secs: u64) -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|now| now.as_secs().saturating_sub(unix_secs))
+        .unwrap_or_default()
+}
+
 /// Severity of a project log line. Amber means "look at this", not "it broke".
 enum Tone {
     Plain,
@@ -848,5 +1106,42 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
     match tone {
         Tone::Plain => crate::report::line(&format!("{prefix} {message}")),
         Tone::Warn => crate::report::line(&format!("{prefix} {}", message.yellow())),
+    }
+}
+
+#[cfg(test)]
+mod restart_backoff_tests {
+    use super::{RESTART_BACKOFF_BASE, RESTART_BACKOFF_MAX, RESTART_MAX_ATTEMPTS, RestartAttempts};
+
+    /// The wait doubles per attempt and then stops doubling. A ceiling the
+    /// budget can never reach would be a ceiling in name only, so this pins
+    /// both halves.
+    #[test]
+    fn backoff_doubles_and_then_holds_at_the_ceiling() {
+        assert_eq!(RestartAttempts::backoff(1), RESTART_BACKOFF_BASE);
+        assert_eq!(RestartAttempts::backoff(2), RESTART_BACKOFF_BASE * 2);
+        assert_eq!(RestartAttempts::backoff(3), RESTART_BACKOFF_BASE * 4);
+        assert_eq!(
+            RestartAttempts::backoff(30),
+            RESTART_BACKOFF_MAX,
+            "a long-running loop must not overflow into an unbounded wait"
+        );
+    }
+
+    /// Without a cap the policy is a busy loop, which is what the issue this
+    /// field came from was written to avoid.
+    #[test]
+    fn the_budget_is_spent_in_bounded_time() {
+        let total: std::time::Duration = (1..=RESTART_MAX_ATTEMPTS)
+            .map(RestartAttempts::backoff)
+            .sum();
+        assert!(
+            total <= RESTART_BACKOFF_MAX * RESTART_MAX_ATTEMPTS,
+            "every attempt waits at most the ceiling"
+        );
+        assert!(
+            total >= RESTART_BACKOFF_BASE,
+            "attempts after the first always wait"
+        );
     }
 }

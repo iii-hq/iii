@@ -1014,6 +1014,10 @@ impl Daemon {
                         project.reconcile_after_reconnect().await;
                     }
                     project.reap_unexpected_exits().await;
+                    // After the reap, so a container that has just exited
+                    // spends its first attempt on the tick that noticed rather
+                    // than waiting for the next one.
+                    project.drive_restarts().await;
                 }
             }
         });
