@@ -1,0 +1,567 @@
+---
+title: "Agentic"
+description: "Build Linkly chapter by chapter with an AI agent, using one prompt per chapter."
+owner: "devrel"
+type: "tutorial"
+---
+
+This path builds Linkly with an AI agent. You give the agent one prompt per chapter; it writes the
+workers, and you check the result.
+
+The goal here is to build a working link shortener service while demonstrating not just iii's
+efficiency when building systems agentically but its 4 core properties which we call CODE:
+
+- Composability
+- Observability
+- Discoverability
+- Extensibility
+
+We'll present them a bit out of order but hopefully this mnemonic helps you remember what iii is all
+about.
+
+## Set up the agent
+
+Create the project from the agentic scaffold:
+
+```bash
+iii project init linkly --template linkly-agentic
+cd linkly
+```
+
+The `harness` worker runs a coding agent inside the [console](/using-iii/console). It reaches models
+through `llm-router`, which reads your provider key from `.env`.
+
+Anthropic and OpenAI ship enabled: put a key for one in `.env` before you start Compose. For any
+other provider, add it after start. Select your provider for the exact steps:
+
+<div className="iii-qs" role="group" aria-label="provider setup">
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" defaultChecked />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai-codex" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-deepseek" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-kimi" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openrouter" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-xai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-zai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-github-copilot" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
+
+<div className="iii-qs-head">
+  <span className="iii-qs-title">select your llm provider</span>
+  <div className="iii-qs-picker">
+    <label className="iii-qs-pill" htmlFor="qs-anthropic">
+      anthropic
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai">
+      openai api
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai-codex">
+      openai codex
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-deepseek">
+      deepseek
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-kimi">
+      kimi (moonshot)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openrouter">
+      openrouter
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-xai">
+      xai (grok)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-zai">
+      z.ai
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-github-copilot">
+      github copilot
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-llamacpp">
+      llama.cpp (local)
+    </label>
+  </div>
+</div>
+
+  <div className="iii-qs-body">
+    <div className="iii-qs-slot" data-qs="anthropic">
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ANTHROPIC_API_KEY=yourkey</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai">
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENAI_API_KEY=yourkey</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai-codex">
+      <div className="iii-qs-comment"># No api key. This provider uses your chatgpt subscription.</div>
+      <div className="iii-qs-comment"># Sign in with the codex cli first, so ~/.codex/auth.json exists:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>codex login</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai-codex</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="deepseek">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>DEEPSEEK_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-deepseek</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="kimi">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>MOONSHOT_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-kimi</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openrouter">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENROUTER_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openrouter</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="xai">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>XAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-xai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="zai">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ZAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-zai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="github-copilot">
+      <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-github-copilot</span></div>
+      <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger provider::github-copilot::login::start</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="llamacpp">
+      <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default.</div>
+      <div className="iii-qs-comment"># A key is only needed when llama-server runs with --api-key:</div>
+      <div className="iii-qs-cmd"><span>LLAMACPP_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-llamacpp</span></div>
+    </div>
+
+    <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-comment"># Open the console:</div>
+    <div className="iii-qs-cmd"><span>http://127.0.0.1:3113</span></div>
+
+  </div>
+</div>
+
+With your key in `.env`, you can use one command to start the iii engine, the project, and the
+agentic stack you'll use to develop it:
+
+```bash
+iii compose --up
+```
+
+Open the console and harness which are at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+For the rest of this guide you can copy the example prompts below and paste them into a chat in the
+harness.
+
+At the end of every chapter there's some additional instructions you can follow to **observe** and
+verify the agent's work.
+
+<Info>
+As you work on this project the agent will dynamically **compose** workers with
+`compose::add worker=<name>` without disrupting the rest of your running workers.
+
+The `link` worker reloads on its own when its file changes. This is functionality built
+intentionally into the `link` worker.
+
+The compose daemon does not automatically restart workers when they change. This is an intentional
+design choice to prevent partial changes from making a worker unavailable and impacting system
+stability.
+
+</Info>
+
+## Ch. 1: Foundations
+
+Linkly's core job is to turn a long URL into a short code and send visitors there. This chapter
+builds that functionality: a `link::create` and a `link::resolve` function. These functions are then
+**extended** by the HTTP worker which can expose any function as an http endpoint.
+
+Since we started the project with `iii compose` and the http worker is already specified in
+`worker-compose.yaml` there is nothing else to do to get http functionality out of the box.
+
+Importantly this agent doesn't need to build it, or make a decision on which library to use, how to
+set it up, and how to run it. The HTTP worker, like all iii workers, has shipped as a self-contained
+service.
+
+<CodeGroup>
+
+```text Prompt
+Build the link worker in link/src/index.ts of this iii project.
+
+Add two functions:
+- link::create({ url, code? }): generate a 6-character short code when none is given, make the url
+  absolute (add https:// when it has no scheme), and persist it in the state worker (not a local
+  variable) with state::set under scope "links" key <code>, value { url }; return { code, url }.
+  Never overwrite an existing link: reject a requested code that is already taken, and retry a
+  generated code until it is free.
+- link::resolve({ code }): read it back from the state worker with state::get (scope "links", key
+  <code>) and return { url } or { url: null }.
+
+Then expose them over HTTP through the http worker:
+- an http::create function and a POST /links trigger that calls link::create, returns 201 with
+  { code, url }, and 409 when the requested code is taken.
+- an http::redirect function and a GET /s/:code trigger that reads the code from req.path_params.code,
+  resolves it, and returns a 302 to the url, or 404 when it is unknown.
+
+Use two subagents to write these in parallel, then integrate their work yourself:
+- Subagent A: the link core, link::create and link::resolve, backed by the state worker.
+- Subagent B: the HTTP layer, http::create with the POST /links trigger and http::redirect with the
+  GET /s/:code trigger.
+Merge both results into link/src/index.ts.
+
+Run `npm install --prefix link`, then add the worker.
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial.
+```
+
+</CodeGroup>
+
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Open a new tab: click the **+** in the menu bar, then select the **Triggers** page.
+
+On the Triggers page, open `POST /links`, put `{"url":"https://example.com","code":"home"}` in the
+body editor, and **Send Request**. You get `201` with the code.
+
+Then open `GET /s/:code`, set the `code` path parameter to `home`, and **Send Request** to see the
+`302` to `https://example.com`.
+
+Open another tab with the **+**, then select the **States** page, and find the stored link under the
+`links` group.
+
+The same flow from the CLI:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/docs","code":"docs"}'
+curl -i http://127.0.0.1:3111/s/docs
+```
+
+[Ch. 1: Foundations](/tutorials/linkly/foundations) explains `registerWorker`, `registerFunction`,
+and `registerTrigger`.
+
+## Ch. 2: Observe everything
+
+Since every part of iii is **composable** with every other part of iii **observability** becomes
+trivial and possible in a variety of situations.
+
+Here we have an agent that can observe the running system, a UI that runs the same functions as the
+agent and consumes that same data, and a CLI that also does this.
+
+<CodeGroup>
+
+```text Prompt
+Send five redirects through http://127.0.0.1:3111/s/home, then read the traces the engine collected
+with `iii trigger engine::traces::list`. Show me the span tree for one redirect with
+`iii trigger engine::traces::tree`.
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial and give me the command to observe this trace (ie. `iii trigger engine::traces::tree trace_id=<your trace_id here>`)
+```
+
+</CodeGroup>
+
+You can explore the CLI too, the agent likely gave you a command how to (we told it to in the prompt
+after all) but you can also run them manually here:
+
+```bash
+iii trigger engine::traces::list # get a list of traces
+iii trigger engine::traces::tree trace_id=<your trace_id here> # read a specific trace
+```
+
+[Ch. 2: Observe everything](/tutorials/linkly/observability) explains what the engine records.
+
+## Ch. 3: Persist everything
+
+At the moment our project is storing shortened URLs in-memory so a restart would erase them. This
+chapter makes them persistent by putting links and clicks in a SQLite database and keeps the state
+worker in front as a cache.
+
+We'll also start recording how many times a link is clicked so that our users can have metrics on
+their link performance over time.
+
+<CodeGroup>
+
+```text Prompt
+Add a database, then configure it for SQLite, call it "primary". Keep state in front as a read cache for
+recent requests and new links.
+
+In link/src/index.ts:
+- at startup, create a links table and a clicks table if they do not exist. The database worker may
+  register a moment after link, so retry the schema creation until it answers, and never crash the
+  worker if the database is not ready yet.
+- link::create also inserts the link row into the database.
+- link::resolve reads state first, falls back to the database, and warms the cache on a hit.
+- add link::record_click that tracks clicks by link and day, and have http::redirect call it every time a link is requested.
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial.
+```
+
+</CodeGroup>
+
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Select the **Triggers** page. Shorten a link with `POST /links` using
+`{"url":"https://example.net","code":"news"}`.
+
+Then follow `GET /s/:code` a few times with the `code` path parameter set to `news`.
+
+Open another tab with the **+**, then select the **Functions** page, and open `database::query`.
+Invoke it with `{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'news'"}`,
+then read the count off the result view.
+
+You can even restart the entire system to confirm that data is persisting. Run:
+`iii trigger compose::restart --namespace default` from the CLI or run it from within the Console by
+navigating to the **Function** tab, selecting `compose::restart` and giving it the payload:
+`{ "namespace": "default" }`
+
+The same flow from the CLI:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/blog","code":"blog"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/blog; done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'blog'"
+```
+
+[Ch. 3: Persist everything](/tutorials/linkly/persistence) explains the cache-then-database read
+path.
+
+## Ch. 4: Make it durable
+
+Immediately recording each time a user clicks a link works for a demo but it also makes the worker
+thread wait for the database to write before returning the URL that the user wants.
+
+Linkly needs to be scalable and able to handle thousands of links a second. So we're going to move
+click counts to a durable queue.
+
+iii's **composability** once again makes it easy to take applications from demo to production-ready.
+
+<CodeGroup>
+
+```text Prompt
+Make redirects fast and add analytics.
+
+- Define a standard "clicks" queue with queue::define and enqueue click records instead of writing them inline on the redirect path.
+- Add the pubsub worker. link::create publishes a link.created event.
+- Add a second SQLite database named "analytics" for the analytics worker.
+- Create a Python analytics worker that subscribes to link.created and counts links per day, and add
+  it with compose.
+- Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
+  from a durable subscriber.
+
+Add the pubsub worker and the second database yourself first, then split the rest across two
+subagents that work on separate files at the same time:
+- Subagent A: the Python analytics worker (subscribe to link.created, count links per day, write to
+  the analytics database) and add it with compose.
+- Subagent B: the link worker changes in link/src/index.ts (define and enqueue the clicks queue,
+  publish link.created, add link::update with the PUT /links/:code route, publish link.updated
+  durably, and refresh the cache from a durable subscriber).
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial.
+```
+
+</CodeGroup>
+
+Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Select the **Triggers** page. Shorten a link with `POST /links` using
+`{"url":"https://example.com/launch","code":"promo"}`.
+
+Select the **Functions** page, and invoke `database::query` with
+`{"db":"analytics","sql":"SELECT day, count FROM daily_link_counts"}` to read the per-day counts the
+Python worker wrote.
+
+Back on the Triggers tab, edit the link with `PUT /links/:code`: set the `code` path parameter to
+`promo` and put `{"url":"https://example.com/promo-2"}` in the body. Then invoke `link::resolve` for
+`promo`: it returns the new URL because the durable subscriber refreshed the cache.
+
+The same flow from the CLI:
+
+```bash
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.org/$n\",\"code\":\"link$n\"}"
+done
+iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
+curl -s -X PUT http://127.0.0.1:3111/links/link1 \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/updated"}'
+iii trigger link::resolve code=link1
+```
+
+[Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues, durable pub/sub, and
+regular pub/sub.
+
+## Ch. 5: Stream live clicks
+
+Collecting data is one thing but delivering it is another. This chapter broadcasts every click to
+subscribers in real time through a `clicks` stream via the stream worker.
+
+<CodeGroup>
+
+```text Prompt
+Push every click to subscribers in real time.
+
+- Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with compose. Use the stream worker and its functionality.
+- Have link::record_click publish each click so the streamer broadcasts it. We will make the subscribers in a later step.
+
+Pick the topic name first, then run two subagents on separate files at the same time:
+- Subagent A: the click-streamer worker that subscribes to that topic and broadcasts to the "clicks"
+  stream, added it with compose.
+- Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
+  topic.
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial.
+```
+
+</CodeGroup>
+
+Check it in the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Select the **Triggers** page, shorten a link with `POST /links` using
+`{"url":"https://example.net/sale","code":"deal"}`, then follow `GET /s/:code` a few times with the
+`code` path parameter set to `deal`.
+
+Select the **Functions** page, invoke `stream::list` with
+`{"stream_name":"clicks","group_id":"all"}`, and read the click messages the stream collected. Each
+redirect is a new message row.
+
+The same flow from the CLI:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/feed","code":"feed"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/feed; sleep 2s; done
+iii trigger stream::list stream_name=clicks group_id=all
+```
+
+[Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and
+`TriggerAction.Void()`.
+
+## Ch. 6: Move bulk data with channels
+
+Sometimes users will arrive with a CSV of thousands of links to load at once. This chapter adds a
+bulk-importer that reads the rows off a channel and creates each link. As always we're utilizing
+existing functionality to **extend** our application. A well built iii application never needs to
+special case tasks like bulk imports because everything shares the same interface: Workers,
+Triggers, and Functions.
+
+This is also the first time we'll see outside clients interacting with iii, but not the last as in
+the next chapter we're going to create untrusted and permissioned workers that run in the user's
+browser. When we say iii is **extensible** we mean it.
+
+<CodeGroup>
+
+```text Prompt
+Bulk-load links from a CSV in a single streamed upload over a channel.
+
+- Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
+  each. Skip a row the application rejects (a code already taken) instead of aborting the batch, but
+  re-throw anything else (a timeout, a worker that is down). Return
+  the imported and skipped counts.
+- Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
+  of links to the importer.
+- Create an example CSV for the user (example.csv). Do not import the CSV. Use test data (test.csv).
+
+Agree on the import_csv payload shape first, then run two subagents on separate files at the same
+time:
+- Subagent A: the bulk-importer worker (read the CSV off the channel, skip a rejected row but
+  re-throw other failures, return the imported and skipped counts) and add it with compose.
+- Subagent B: channel-client/import-links.js (open a channel, stream the CSV, call
+  bulk-importer::import_csv).
+
+When it works, tell me to continue to the next chapter of the Linkly tutorial.
+```
+
+</CodeGroup>
+
+The upload runs from the Node client, so start it from the CLI:
+
+```bash
+npm install --prefix channel-client && node channel-client/import-links.js
+```
+
+It reports the imported and skipped counts. If the agent already decided to do the import while
+building, the codes are taken, so it reports `{ imported: 0, skipped: 2 }`. Confirm the links in the
+console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Select the **Functions** page. Invoke `link::resolve` with `{"code":"mylink"}` and read the URL off
+the result.
+
+From the CLI, run `iii trigger link::resolve code=mylink`.
+
+[Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) explains channels and
+`createChannel`.
+
+## Ch. 7: Bring in the browser
+
+Linkly needs a front end where people can create and delete links. This chapter turns a browser tab
+into a worker: it registers functions and the server calls back into it, gated by RBAC. The tab
+joins as a worker behind the rbac-proxy. This **composability** means that you don't need to build
+an API gateway nor any other infrastructure to handle clients.
+
+<CodeGroup>
+
+```text Prompt
+Turn a browser tab into a worker.
+
+- Add an rbac-proxy worker that fronts a public port 3110 and reverse-proxies to the engine at
+  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
+  link::request_delete only). Add it with compose.
+- Create an auth worker with an auth::browser function that admits browser connections (fail closed
+  when its LINKLY_BROWSER_TOKEN env var is unset). Each tab sends a unique session id; grant it its
+  own `browser-<session>` namespace so two tabs never collide on the functions they register. Give it
+  the standard node worker manifest (base_image `docker.io/iiidev/node:latest`, npm install and start
+  scripts) and set `LINKLY_BROWSER_TOKEN: dev-token` in a .env.browser file at the root where worker-compose.yaml is. Add it with compose and set env_file on this worker to open .env.browser.
+- Add link::delete and link::request_delete({ code, session }): request_delete asks the tab's
+  user::confirm_destructive_op in namespace `browser-<session>` before deleting.
+- Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
+  react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
+  connect in a per-tab `browser-<session>` namespace, call link::create and subscribe to the click
+  stream in the default namespace, and register user::confirm_destructive_op.
+
+This chapter has the most independent pieces. Add and configure the rbac-proxy yourself first, since
+the others depend on it, then run three subagents on separate directories at the same time:
+- Subagent A: the auth worker in auth/ (the manifest and env described above, auth::browser, and the
+  per-session `browser-<session>` namespace grant).
+- Subagent B: the link worker changes in link/src/index.ts (link::delete and link::request_delete).
+- Subagent C: the Vite app in frontend/ (iii.ts and App.tsx).
+
+When it works, tell me the Linkly tutorial is complete.
+```
+
+</CodeGroup>
+
+The agent built the Vite app but does not run it, so start the dev server yourself:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Open the URL it prints in your browser. Shorten a link in the app, then follow it a few times to
+watch the live counter.
+
+Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
+
+Select the **Functions** page. Invoke `link::request_delete` with
+`{"code":"<code>","session":"<session>"}` (the tab prints its session id). Alternatively, from the
+CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
+
+The browser shows a confirm prompt, and the delete happens after the user accepts.
+
+[Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the RBAC listener, the auth
+function, and browser-registered functions.

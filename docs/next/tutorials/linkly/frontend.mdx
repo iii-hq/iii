@@ -14,85 +14,64 @@ needs a human's go-ahead.
 
 ## Add the workers
 
-A browser worker connects through `iii-worker-manager`'s RBAC-gated listener, separate from the
-trusted port your local workers use. We'll encapsulate the authentication logic in an `auth` worker
-to gate those connections, so scaffold it the same way you scaffolded `link` in Chapter 1:
+A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the
+trusted port your local workers use. The `auth` worker holds the authentication logic that gates
+those connections. Stop Compose and uncomment the Ch. 7 block in `worker-compose.yaml`:
+
+```yaml worker-compose.yaml
+  auth:
+    worker: path://./auth
+    env_file: ['./.env']
+```
+
+The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`
+for local work. `auth::browser` admits a browser only when the token it receives matches, so change
+this value for anything beyond your machine.
 
 <Note>
-  If you're continuing from the previous channel you might still be in the `test-channels` folder.
+  If you're continuing from the previous chapter you might still be in the `channel-client` folder.
   Make sure to `cd ..`!
 </Note>
 
-```bash
-mkdir -p auth/src
-```
-
-Create the worker manifest and package metadata:
-
-```yaml auth/iii.worker.yaml
-name: auth
-scripts:
-  start: pnpm start
-```
-
-```json auth/package.json
-{
-  "name": "auth",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "tsx watch src/index.ts"
-  },
-  "dependencies": {
-    "iii-sdk": "0.21.4",
-    "@iii-dev/helpers": "0.21.4",
-    "tsx": "^4.22.3"
-  }
-}
-```
+Install the worker's dependencies once:
 
 ```bash
-cd auth && pnpm install && cd ..
+cd auth && npm install && cd ..
 ```
 
-## Run two listeners
+## Put a proxy in front for browsers
 
 The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
-worker) connect there. The browser must not. Stop the running Compose process, then add two
-`iii-worker-manager` entries under `engine.workers`: the trusted one and an RBAC-gated instance on
-`3110` for browsers:
+worker) connect there. The browser must not. The `rbac-proxy` worker opens a separate public port
+and reverse-proxies to the engine, authenticating every connection and gating every call it makes.
+Uncomment the Ch. 7 `rbac-proxy` container:
 
 ```yaml worker-compose.yaml
-engine:
-  workers:
-    # Trusted listener for local workers.
-    iii-worker-manager:
-      host: 127.0.0.1
-      port: 49134
-
-    # Browser-facing listener. The auth function gates every connection; only
-    # the functions in `expose_functions` are reachable from sessions it admits.
-    iii-worker-manager#browser:
+  rbac-proxy:
+    worker: package://rbac-proxy
+    version: "1.0.5"
+    config_name: rbac-proxy
+    config_override:
       host: 127.0.0.1
       port: 3110
+      engine_url: ws://127.0.0.1:49134
       rbac:
         auth_function_id: auth::browser
         expose_functions:
           - match("link::create")
           - match("link::request_delete")
-          - match("stream::*")
 ```
 
-Restart the project so Compose can materialize the changed engine configuration:
+Restart the project so Compose can start the proxy:
 
 ```bash
-iii compose --up --namespace linkly --file worker-compose.yaml
+iii compose --up --file worker-compose.yaml
 ```
 
-`expose_functions` is an allowlist of which functions a browser session can call. `auth_function_id`
-names a function `iii-worker-manager` invokes on every connection to admit or reject it; you write
-that next.
+`expose_functions` is an allowlist of which functions a browser session can call. The browser reads
+the live click stream through a `stream` trigger, not a function call, so no `stream::*` function is
+exposed. `auth_function_id` names a function `rbac-proxy` invokes on every connection to admit or
+reject it; you write that next.
 
 ## Gate connections with an auth function
 
@@ -117,15 +96,25 @@ worker.registerFunction(
     query_params: Record<string, string[]>;
     ip_address: string;
   }) => {
+    // Fail closed: no LINKLY_BROWSER_TOKEN set means no browser is admitted.
+    const expected = process.env.LINKLY_BROWSER_TOKEN;
     const token = input.query_params.token?.[0];
-    if (!token || token !== (process.env.LINKLY_BROWSER_TOKEN ?? "dev-token")) {
+    if (!expected || token !== expected) {
       throw new Error("unauthorized");
     }
+    // Each tab sends a unique session id and registers in its own
+    // `browser-<session>` namespace, so the functions two tabs register never
+    // collide. Granting only that namespace key keeps a tab out of `default`.
+    const session = input.query_params.session?.[0];
+    if (!session) {
+      throw new Error("missing session");
+    }
     return {
-      allowed_functions: [],
-      forbidden_functions: [],
       allow_trigger_type_registration: false,
       allow_function_registration: true,
+      namespaces: {
+        [`browser-${session}`]: ["ui::on_click", "user::confirm_destructive_op"],
+      },
       context: { source: "browser" },
     };
   },
@@ -134,14 +123,15 @@ worker.registerFunction(
 logger.info("auth worker ready");
 ```
 
-A real deployment would look the token up in a session store; the shape stays the same. The token
-travels in a query parameter because browsers cannot send custom WebSocket headers.
+The client sends the same token as `VITE_LINKLY_TOKEN`, which you set below. A real deployment would
+look the token up in a session store; the shape stays the same. The token travels in a query
+parameter because browsers cannot send custom WebSocket headers.
 
-The Compose daemon exposes `compose::add`. Target the daemon serving the `linkly` namespace:
+Each tab also sends a unique `session` id. The engine allows one function per id in a namespace, so
+two tabs both registering `ui::on_click` in `default` would collide. `namespaces` gives each session
+its own `browser-<session>` namespace and permits registration only there: the tab's functions live
+in isolation, and it still calls `link::*` in `default` through the `expose_functions` allowlist.
 
-```bash
-iii trigger compose::add --namespace linkly worker=./auth
-```
 
 ## Add a server-initiated delete
 
@@ -171,20 +161,25 @@ Other implementations would achieve this with SSE but here it works like normal 
 code.
 
 ```typescript link/src/index.ts
-worker.registerFunction("link::request_delete", async (payload: { code: string }) => {
-  const { confirmed } = await worker.trigger<
-    { code: string; action: string },
-    { confirmed: boolean }
-  >({
-    function_id: "user::confirm_destructive_op",
-    payload: { code: payload.code, action: `delete link "${payload.code}"` },
-  });
-  if (!confirmed) {
-    return { deleted: false };
-  }
-  await worker.trigger({ function_id: "link::delete", payload: { code: payload.code } });
-  return { deleted: true };
-});
+worker.registerFunction(
+  "link::request_delete",
+  async (payload: { code: string; session: string }) => {
+    const { confirmed } = await worker.trigger<
+      { code: string; action: string },
+      { confirmed: boolean }
+    >({
+      function_id: "user::confirm_destructive_op",
+      // Ask the one tab that owns this session, in its private namespace.
+      namespace: `browser-${payload.session}`,
+      payload: { code: payload.code, action: `delete link "${payload.code}"` },
+    });
+    if (!confirmed) {
+      return { deleted: false };
+    }
+    await worker.trigger({ function_id: "link::delete", payload: { code: payload.code } });
+    return { deleted: true };
+  },
+);
 ```
 
 ## Scaffold the frontend
@@ -213,14 +208,21 @@ npm install iii-browser-sdk
 ### Setup a client-side worker
 
 Connect the SDK to our iii instance in `frontend/src/iii.ts`. Note how we're using a different URL
-format and port, this goes back to the setup we did with `iii-worker-manager` and RBAC.
+format and port, this goes back to the setup we did with `rbac-proxy` and RBAC.
 
 ```typescript src/iii.ts
 import { registerWorker } from "iii-browser-sdk";
 
 const TOKEN = import.meta.env.VITE_LINKLY_TOKEN ?? "dev-token";
 
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(TOKEN)}`);
+// A per-tab id. The tab registers its functions in `browser-<SESSION>`, so two
+// open tabs never collide on `ui::on_click` or `user::confirm_destructive_op`.
+export const SESSION = crypto.randomUUID();
+
+export const worker = registerWorker(
+  `ws://localhost:3110?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
+  { namespace: `browser-${SESSION}` },
+);
 ```
 
 ### Create the application
@@ -235,7 +237,7 @@ wrapper `iii-stream` delivers to subscribers.
 
 ```tsx src/App.tsx
 import { useEffect, useState } from "react";
-import { worker } from "./iii.js";
+import { worker, SESSION } from "./iii.js";
 
 type Click = { code: string; clicked_at: string };
 type StreamEvent = {
@@ -274,6 +276,9 @@ useEffect(() => {
     type: "stream",
     function_id: "ui::on_click",
     config: { stream_name: "clicks", group_id: "all" },
+    // ui::on_click lives in this tab's namespace; the clicks stream lives in
+    // the project namespace, so point the trigger type there.
+    trigger_namespace: "default",
   });
   return () => {
     trig.unregister();
@@ -320,6 +325,8 @@ async function onSubmit(e: React.FormEvent) {
   e.preventDefault();
   const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
     function_id: "link::create",
+    // This tab is in its own namespace; link::create lives in the project's.
+    namespace: "default",
     payload: { url, code: code || undefined },
   });
   setCreated(link);
@@ -355,6 +362,10 @@ Finally, the UI: a link shortener form, the last-created link, and the live stre
           <p>Last: <code>{latest.code}</code> at <code>{latest.clicked_at}</code></p>
         )}
       </section>
+
+      <footer>
+        <small>This tab is session <code>{SESSION}</code>.</small>
+      </footer>
     </main>
   )
 }
@@ -378,18 +389,20 @@ the "Live clicks" counter goes up in real time.
 
 ### Request user confirmation directly from the backend
 
-Then run a function in the browser via iii by runnning:
+Copy the session id the tab prints, then trigger the delete for one of your links, naming that
+session so the server calls back the right tab:
 
 ```bash
-iii trigger link::request_delete code=<code>
+iii trigger link::request_delete code=<code> session=<session from the tab>
 ```
 
-The browser will show a confirm prompt, and the server deletes only after you click OK.
+That tab shows a confirm prompt, and the server deletes only after you click OK. The `session`
+names the tab's namespace, so the server asks exactly the browser that owns it, never another tab.
 
 ## Conclusion
 
 The client is a worker that is exactly the same as every other worker. We connected it through an
-RBAC-gated listener (via `iii-worker-manager`) that uses an auth function to admit it because the
+RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the
 browser isn't trusted like our other workers. However any other worker can be gated this same way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live

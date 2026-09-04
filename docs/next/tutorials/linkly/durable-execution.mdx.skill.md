@@ -9,33 +9,41 @@ independent subscribers: a Python analytics worker and a cache refresher, both d
 
 ## Add the workers
 
-This chapter uses two workers. `queue` is already in your project from `iii project init`. Add
-`pubsub` now; you publish your first event to it later in the chapter:
+This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Stop Compose and
+uncomment the Ch. 4 block in `worker-compose.yaml`:
 
-```bash
-iii trigger -n linkly compose::add worker=pubsub
+```yaml worker-compose.yaml
+  queue:
+    worker: package://queue
+    version: "0.21.10"
+    config_name: queue
+    working_dir: .
+    config_override:
+      queue_configs:
+        clicks:
+          type: standard
+          max_retries: 5
+          concurrency: 5
+  pubsub:
+    worker: package://pubsub
+    version: "0.21.4"
+  analytics:
+    worker: path://./analytics
+    start_after: [database, pubsub]
+```
+
+Also uncomment the `analytics` database under the Ch. 3 block's `config_override`:
+
+```yaml worker-compose.yaml
+          url: sqlite:./data/iii.db
+        analytics:
+          url: sqlite:./data/analytics.db
 ```
 
 ## Make redirects fast with a queue
 
-A queue holds work that is accepted now and run later. Here we'll define a `clicks` queue that we're
-going to use for `link::record_click`. `queue` has been running since Chapter 1, so its settings are
-managed in `./config/queue.yaml` (see [Configuration](/using-iii/configuration)). Define the queue
-by adding `queue_configs` under `value:` in that file and save; the change applies without a
-restart:
-
-```yaml {4-8} config/queue.yaml
-id: queue
-# ...
-value:
-  queue_configs:
-    clicks:
-      type: standard
-      max_retries: 5
-      concurrency: 5
-  adapter:
-    name: builtin
-```
+A queue holds work that is accepted now and run later. The `clicks` queue you uncommented above is
+the one `link::record_click` uses.
 
 <Note>
   Queue names are references to the queue and do not place any restrictions on what can be put into
@@ -210,23 +218,20 @@ runtimes. So this time we'll create an analytics worker in Python to count links
 
 ### Create a new worker
 
-Create a Python worker the same way you created the `link` worker in Chapter 1. It needs an
-`analytics/src/main.py` entrypoint and an `iii.worker.yaml` manifest.
-
-```bash
-mkdir -p analytics/src && touch analytics/src/main.py
-```
-
-Create its manifest. The install step supplies the SDK, observability helper, and source watcher
-inside the worker runtime:
+The `analytics` directory holds a Python worker, with an `analytics/src/main.py` entrypoint and an
+`iii.worker.yaml` manifest of its own:
 
 ```yaml analytics/iii.worker.yaml
 name: analytics
-runtime:
-  base_image: docker.io/iiidev/python:latest
 scripts:
-  install: pip install iii-sdk==0.21.4 iii-helpers==0.21.4 watchfiles
-  start: watchfiles 'python src/main.py'
+  install: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+  start: .venv/bin/python src/main.py
+```
+
+Install its dependencies once:
+
+```bash
+cd analytics && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
 ```
 
 ### Subscribe to link.created events
@@ -238,6 +243,7 @@ count of every time that a new short link is created:
 
 ```python analytics/src/main.py
 import os
+import time
 from datetime import datetime, timezone
 
 from iii import register_worker, InitOptions
@@ -252,16 +258,27 @@ logger = Logger()
 DB = "analytics"
 
 def ensure_schema() -> None:
-    """The analytics worker owns its own table, in its own database."""
-    worker.trigger(
-        {
-            "function_id": "database::execute",
-            "payload": {
-                "db": DB,
-                "sql": "CREATE TABLE IF NOT EXISTS daily_link_counts (day TEXT PRIMARY KEY, count INTEGER NOT NULL)",
-            },
-        }
-    )
+    """The analytics worker owns its own table, in its own database.
+
+    The database worker may register a moment after analytics, so retry until it
+    answers instead of crashing on the first call.
+    """
+    for attempt in range(1, 31):
+        try:
+            worker.trigger(
+                {
+                    "function_id": "database::execute",
+                    "payload": {
+                        "db": DB,
+                        "sql": "CREATE TABLE IF NOT EXISTS daily_link_counts (day TEXT PRIMARY KEY, count INTEGER NOT NULL)",
+                    },
+                }
+            )
+            return
+        except Exception:
+            if attempt >= 30:
+                raise
+            time.sleep(1)
 
 def on_link_created(data: dict) -> dict:
     """Runs whenever link publishes `link.created`. Counts links per day."""
@@ -297,29 +314,13 @@ print("Analytics worker started")
 </Accordion>
 
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
-Add an `analytics` database to the `database` worker's config file, alongside the `primary` one from
-Chapter 3. Edit `config/database.yaml` and add the second entry under `value: databases:`, then
-save; the change applies automatically without a restart:
+That is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary`
+one from Chapter 3.
 
-```yaml {12-13} config/database.yaml
-id: database
-name: Database
-value:
-  databases:
-    primary:
-      pool:
-        acquire_timeout_ms: 5000
-        idle_timeout_ms: 30000
-        max: 10
-      url: sqlite:./data/iii.db
-    analytics:
-      url: sqlite:./data/analytics.db
-```
-
-Finally, add the new analytics worker to Compose:
+Start the project again:
 
 ```bash
-iii trigger -n linkly compose::add worker=./analytics
+iii compose --up --file worker-compose.yaml
 ```
 
 ### See it work

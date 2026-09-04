@@ -20,18 +20,28 @@ picture as a fast read cache in front of the database.
 ## Add the database worker
 
 State is a fast cache, but you also want a durable record you can run SQL over: every link, and a
-timestamped row each time someone follows one. Add the `database` worker:
+timestamped row each time someone follows one. Stop Compose, uncomment the Ch. 3 block in
+`worker-compose.yaml`, and uncomment the `start_after` line under `link`:
 
-```bash
-iii trigger -n linkly compose::add worker=database
-mkdir -p data
+```yaml worker-compose.yaml
+  link:
+    worker: path://./link
+    start_after: [database]
+
+  database:
+    worker: package://database
+    version: "0.5.8"
+    config_name: database
+    working_dir: .
+    config_override:
+      databases:
+        primary:
+          pool:
+            acquire_timeout_ms: 5000
+            idle_timeout_ms: 30000
+            max: 10
+          url: sqlite:./data/iii.db
 ```
-
-The engine has been running since Chapter 1, so it starts the `database` worker as soon as it is
-added, and generates its settings file at `./config/database.yaml` (see
-[Configuration](/using-iii/configuration)). Open that file: the generated defaults already point at
-a SQLite database at `./data/iii.db`, so there's nothing to change here. This is what durable
-storage looks like:
 
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
 
@@ -40,17 +50,10 @@ storage looks like:
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-```yaml config/database.yaml
-id: database
-name: Database
-value:
-  databases:
-    primary:
-      pool:
-        acquire_timeout_ms: 5000
-        idle_timeout_ms: 30000
-        max: 10
-      url: sqlite:./data/iii.db
+Start the project again:
+
+```bash
+iii compose --up --file worker-compose.yaml
 ```
 
 The worker will be in charge of defining its own schema. We'll build up the necessary changes to
@@ -64,7 +67,7 @@ First add the `DB` constant **near the top of `link/src/index.ts`**:
 import { registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
-const DB = "primary"; // Matches db name in config/database.yaml
+const DB = "primary"; // Matches the database name in worker-compose.yaml
 ```
 
 ### Make link storage persistent
@@ -75,29 +78,38 @@ write and read from our new database while using our state worker as a hot cache
 #### Create a schema
 
 Add an `ensureSchema()` function at the end of `link/src/index.ts` that creates both tables on
-startup. The database worker accepts SQL through its `database::execute` function:
+startup. The database worker accepts SQL through its `database::execute` function. The database
+worker can register a moment after `link`, so retry until it answers instead of crashing on the
+first call:
 
 ```typescript src/index.ts
 async function ensureSchema(): Promise<void> {
-  await worker.trigger({
-    function_id: "database::execute",
-    payload: {
-      db: DB,
-      sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
-    },
-  });
-  await worker.trigger({
-    function_id: "database::execute",
-    payload: {
-      db: DB,
-      sql: "CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL)",
-    },
-  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await worker.trigger({
+        function_id: "database::execute",
+        payload: {
+          db: DB,
+          sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
+        },
+      });
+      await worker.trigger({
+        function_id: "database::execute",
+        payload: {
+          db: DB,
+          sql: "CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL)",
+        },
+      });
+      logger.info("database: ready");
+      return;
+    } catch (err) {
+      if (attempt >= 30) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
 }
 
-ensureSchema()
-  .then(() => logger.info("database: ready"))
-  .catch((err) => logger.error("database: schema init failed", { error: String(err) }));
+ensureSchema().catch((err) => logger.error("database: schema init failed", { error: String(err) }));
 ```
 
 #### Setup database writing

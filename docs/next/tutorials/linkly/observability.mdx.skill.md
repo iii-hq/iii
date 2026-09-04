@@ -3,10 +3,9 @@
 # Ch. 2: Observe everything
 
 
-Observability in iii isn't something you bolt onto each service. Every cross-worker call already
-flows through the engine, so the engine can trace and log the whole system end to end. In this
-chapter you open the console to see that, then, if you want, read the same data directly from the
-engine.
+Every cross-worker call flows through the engine, so the engine traces and logs the whole system
+end to end. In this chapter you open the console to see that, then, if you want, read the same data
+directly from the engine.
 
 ## Open the console
 
