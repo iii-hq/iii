@@ -3,6 +3,7 @@ import type { ChannelReader, ChannelWriter } from './channels'
 import type { RegistrationRejectedError } from './errors'
 import type { IIIConnectionState } from './iii-constants'
 import type {
+  ErrorBody,
   JsonValue,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
@@ -261,6 +262,19 @@ export interface IIIClient {
 export type Trigger = {
   /** Removes this trigger from the engine. */
   unregister(): void
+  /**
+   * The engine's rejection of this binding, if one arrived; `undefined`
+   * otherwise. Registration is asynchronous and only failures are acked, so
+   * `undefined` means "no failure reported yet", not "confirmed live".
+   *
+   * The common cause is `trigger_type_not_found` from a boot-order race: the
+   * binding was requested before the provider registered the trigger type. A
+   * reconnect re-sends the registration and clears this.
+   *
+   * To confirm a binding IS live, call `engine::registered-triggers::list`
+   * with `trigger_type`, `function_id`, and `namespace`.
+   */
+  readonly registrationError?: ErrorBody
 }
 
 /**

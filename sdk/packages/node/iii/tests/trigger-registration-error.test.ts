@@ -8,6 +8,7 @@ describe('trigger registration error surfacing', () => {
   let url: string
   let sdk: IIIClient | undefined
   let serverSocket: WebSocket | undefined
+  let received: Record<string, unknown>[]
 
   beforeEach(async () => {
     wss = new WebSocketServer({ port: 0 })
@@ -15,8 +16,16 @@ describe('trigger registration error surfacing', () => {
     const address = wss.address() as { port: number }
     url = `ws://127.0.0.1:${address.port}`
     serverSocket = undefined
+    received = []
     wss.on('connection', (ws) => {
       serverSocket = ws
+      ws.on('message', (raw) => {
+        try {
+          received.push(JSON.parse(raw.toString()))
+        } catch {
+          // Non-JSON frames are not this suite's concern.
+        }
+      })
       ws.send(JSON.stringify({ type: 'workerregistered', worker_id: 'test-worker' }))
     })
   })
@@ -68,6 +77,63 @@ describe('trigger registration error surfacing', () => {
     expect(formatted).toContain('<compose-daemon-namespace>')
     expect(formatted).toContain('compose::add worker=http')
     spy.mockRestore()
+  })
+
+  it('records the cause on the trigger handle so a retry loop can read it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    sdk = registerWorker(url)
+    const sock = await waitFor(() => serverSocket)
+
+    const trigger = sdk.registerTrigger({
+      type: 'harness::hook::pre-generate',
+      function_id: 'memory::on-pre-generate',
+      config: {},
+    })
+    expect(trigger.registrationError).toBeUndefined()
+
+    // The engine keys its ack by the trigger id the SDK generated, so read
+    // that off the wire rather than reaching into the client's internals.
+    const sent = await waitFor(
+      () => received.find((m) => m.type === 'registertrigger')?.id as string | undefined,
+    )
+
+    sock.send(
+      JSON.stringify({
+        type: 'triggerregistrationresult',
+        id: sent,
+        trigger_type: 'harness::hook::pre-generate',
+        function_id: 'memory::on-pre-generate',
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      }),
+    )
+
+    await waitFor(() => trigger.registrationError)
+    expect(trigger.registrationError?.code).toBe('trigger_type_not_found')
+
+    // unregister drops the record: the binding no longer exists to be wrong.
+    trigger.unregister()
+    expect(trigger.registrationError).toBeUndefined()
+  })
+
+  it('leaves registrationError undefined for a different trigger id', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    sdk = registerWorker(url)
+    const sock = await waitFor(() => serverSocket)
+
+    const trigger = sdk.registerTrigger({ type: 'http', function_id: 'fn', config: {} })
+
+    sock.send(
+      JSON.stringify({
+        type: 'triggerregistrationresult',
+        id: 'some-other-trigger',
+        trigger_type: 'http',
+        function_id: 'fn',
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      }),
+    )
+
+    await new Promise((r) => setTimeout(r, 100))
+    expect(trigger.registrationError).toBeUndefined()
   })
 
   it('does not log on TriggerRegistrationResult success (no error field)', async () => {

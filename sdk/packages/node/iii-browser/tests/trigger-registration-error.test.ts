@@ -34,6 +34,48 @@ describe('trigger registration error surfacing', () => {
     expect(formatted).toContain('Trigger type not found')
   })
 
+  it('records the cause on the trigger handle so a retry loop can read it', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const trigger = sdk.registerTrigger({
+      type: 'harness::hook::pre-generate',
+      function_id: 'memory::on-pre-generate',
+      config: {},
+    })
+    expect(trigger.registrationError).toBeUndefined()
+
+    // The engine keys its ack by the trigger id the SDK generated, so read
+    // that off the wire rather than reaching into the client's internals.
+    const sent = engine.findSent('registertrigger')
+    expect(sent).toBeDefined()
+
+    engine.sendTriggerRegistrationResult(
+      sent?.id as string,
+      'harness::hook::pre-generate',
+      'memory::on-pre-generate',
+      { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+    )
+
+    expect(trigger.registrationError?.code).toBe('trigger_type_not_found')
+
+    // unregister drops the record: the binding no longer exists to be wrong.
+    trigger.unregister()
+    expect(trigger.registrationError).toBeUndefined()
+  })
+
+  it('leaves registrationError undefined for a different trigger id', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const trigger = sdk.registerTrigger({ type: 'http', function_id: 'fn', config: {} })
+
+    engine.sendTriggerRegistrationResult('some-other-trigger', 'http', 'fn', {
+      code: 'trigger_type_not_found',
+      message: 'Trigger type not found',
+    })
+
+    expect(trigger.registrationError).toBeUndefined()
+  })
+
   it('does not log on triggerregistrationresult success (no error field)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
