@@ -58,7 +58,11 @@ class TriggerHandler(ABC, Generic[TConfig]):
 class Trigger:
     """Represents a registered trigger."""
 
-    def __init__(self, unregister_fn: Any, registration_error_fn: Any = None) -> None:
+    def __init__(
+        self,
+        unregister_fn: Any,
+        registration_error_fn: Callable[[], dict[str, Any] | None] | None = None,
+    ) -> None:
         self._unregister_fn = unregister_fn
         self._registration_error_fn = registration_error_fn
 
