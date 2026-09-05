@@ -663,7 +663,9 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::list" => "List every project loaded by this compose daemon.",
         "compose::status" => {
             "Report the project namespace, state directory, daemon pid, and \
-             current state of every declared container."
+             current state of every declared container. A container declaring \
+             a 'restart' policy reports as 'restarting' while it waits for the \
+             supervisor's next attempt."
         }
         "compose::logs" => {
             "Read bounded worker stdout and stderr. A cursor continues from the last response; \
