@@ -25,10 +25,15 @@ fn normalize_api_path(path: &str) -> String {
     let mut normalized = String::with_capacity(path.len());
     let mut in_brace = false;
     let mut param_buf = String::new();
+    let mut malformed = false;
 
     for ch in path.chars() {
         match ch {
             '{' => {
+                if in_brace {
+                    malformed = true;
+                    break;
+                }
                 in_brace = true;
                 param_buf.clear();
             }
@@ -44,6 +49,9 @@ fn normalize_api_path(path: &str) -> String {
                 normalized.push(c);
             }
         }
+    }
+    if malformed {
+        return path.to_string();
     }
     if in_brace {
         normalized.push('{');
@@ -411,6 +419,12 @@ mod tests {
         );
         assert_eq!(normalize_api_path("/tasks/:tid"), "/tasks/:tid");
         assert_eq!(normalize_api_path("/tasks/toggle"), "/tasks/toggle");
+    }
+
+    #[test]
+    fn test_normalize_api_path_malformed_braces_preserved() {
+        assert_eq!(normalize_api_path("/tasks/{tid{foo"), "/tasks/{tid{foo");
+        assert_eq!(normalize_api_path("/tasks/{tid"), "/tasks/{tid");
     }
 
     #[test]
