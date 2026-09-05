@@ -11,7 +11,6 @@ pub mod otel;
 pub(crate) mod otlp_exporter;
 mod sampler;
 pub(crate) mod trace_store;
-pub(crate) mod ui;
 
 pub mod config;
 
@@ -3802,7 +3801,6 @@ impl Worker for ObservabilityWorker {
 
     fn register_functions(&self, engine: Arc<Engine>) {
         self.register_functions(engine.clone());
-        ui::register_function(&engine);
         // Registered here so the worker scope tracks the handler and removes
         // it automatically on destroy/reload. The hook order differs by
         // pipeline: initial boot runs `register_functions` BEFORE
@@ -3813,15 +3811,6 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // Console UI assets are independent of whether telemetry collection is
-        // enabled. Register them before the enabled gate so the configuration
-        // screen remains available for operators who need to turn the worker
-        // back on, and let the trigger registry park them until Console
-        // connects its console:script/style providers.
-        if let Err(error) = ui::register_triggers(&self.engine).await {
-            tracing::warn!(error = %error, "iii-observability: failed to register Console UI assets");
-        }
-
         // Read the authoritative config, not the yaml seed: on the serve path
         // the boot merge has already published the persisted entry as the
         // global, so initialize() and start_background_tasks must agree on the
