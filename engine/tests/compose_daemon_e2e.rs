@@ -188,6 +188,60 @@ async fn wait_for_start_markers(paths: &[&std::path::Path]) {
     .expect("children did not reach their start barriers");
 }
 
+/// Waits until a child has recorded at least `wanted` incarnations.
+///
+/// One line per start, so the count is how many times the supervisor has
+/// spawned the container rather than how many times it crashed.
+async fn wait_for_attempts(path: &std::path::Path, wanted: usize) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let seen = std::fs::read_to_string(path)
+                .map(|text| text.lines().count())
+                .unwrap_or(0);
+            if seen >= wanted {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{} did not reach {wanted} starts", path.display()));
+}
+
+/// Waits until `compose::status` reports a container in `wanted`.
+///
+/// The engine seeing a registration and compose having recorded the container
+/// as ready are two different facts, and a supervised restart is where they
+/// come apart: the replacement registers a moment before the start that is
+/// waiting on it returns.
+async fn wait_for_container_state(port: u16, file: &std::path::Path, key: &str, wanted: &str) {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let status = call(
+                port,
+                "compose::status",
+                json!({ "file": file.to_str().unwrap() }),
+            )
+            .await
+            .expect("compose::status should answer");
+            let seen = status["containers"]
+                .as_array()
+                .and_then(|containers| {
+                    containers
+                        .iter()
+                        .find(|container| container["container"] == key)
+                })
+                .map(|container| container["state"].clone());
+            if seen.as_ref().and_then(|state| state.as_str()) == Some(wanted) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{key} did not reach state {wanted}"));
+}
+
 /// Waits for the engine to observe a worker registration or its removal.
 async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, registered: bool) {
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -1042,6 +1096,432 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
         );
     }
 
+    daemon.shutdown().await;
+}
+
+/// `required: false` moves the blast radius of a failed start from the whole
+/// operation to the one container that declared it, and a dependent starts on
+/// the same declaration: `start_after` is a start order, not a claim that the
+/// dependent cannot run without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_is_not_required_fails_alone_and_its_dependent_still_starts() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let api_started = tmp.path().join("workers/api/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+    scripts:
+      run: "sleep 30"
+  api:
+    worker: path://./workers/api
+    start_after: [mailer]
+    scripts:
+      run: "touch started && sleep 30"
+"#,
+        &["mailer", "api"],
+    );
+
+    // `mailer` never registers, so it times out. `api` waits behind it and is
+    // started anyway once that failure is recorded.
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[api_started.as_path()]).await;
+        let api = register_test_worker(port, "optional", "api");
+        wait_for_worker_state(&daemon, "optional", "api", true).await;
+        api
+    };
+    let (up, api) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+
+    assert_eq!(
+        up["status"], "ok",
+        "a container that is not required must not fail the operation: {up}"
+    );
+    assert_eq!(
+        up["not_required_failures"],
+        json!(["mailer"]),
+        "the return has to name what is down under an ok: {up}"
+    );
+    assert_eq!(
+        up["error"]["code"], "STARTUP_TIMEOUT",
+        "the reason for the contained failure is still reported: {up}"
+    );
+
+    // Rollback is what `required: true` buys, so nothing may have been undone.
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after a contained failure");
+    let state = |key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))["state"]
+            .clone()
+    };
+    assert_eq!(state("api"), "ready", "dependent was rolled back: {status}");
+    assert_ne!(
+        state("mailer"),
+        "ready",
+        "the failed container must not report ready: {status}"
+    );
+
+    api.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+/// `restart: on-failure` answers the run-time half of the same question
+/// `required` answers at start time: a ready container that exits comes back
+/// instead of taking its dependents down with it.
+///
+/// The dependent staying up is the point. A restart is one container bouncing,
+/// so `web` sees its dependency drop and reconnect, which is the cost the file
+/// asked for by declaring the policy at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ready_container_that_exits_is_restarted_and_its_dependent_stays_up() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let attempts = tmp.path().join("workers/api/attempts");
+    let die = tmp.path().join("workers/api/die");
+    let web_started = tmp.path().join("workers/web/started");
+
+    // `api` records every incarnation, then exits non-zero the moment `die`
+    // appears. It removes the file on its way out so the replacement survives
+    // and the test controls exactly how many times it crashes.
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: restarts
+startup_timeout: 5s
+stop_timeout: 100ms
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+    scripts:
+      run: "echo up >> attempts; while [ ! -f die ]; do sleep 0.05; done; rm -f die; exit 1"
+  web:
+    worker: path://./workers/web
+    start_after: [api]
+    scripts:
+      run: "touch started && sleep 30"
+"#,
+        &["api", "web"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[attempts.as_path()]).await;
+        let api = register_test_worker(port, "restarts", "api");
+        wait_for_worker_state(&daemon, "restarts", "api", true).await;
+        wait_for_start_markers(&[web_started.as_path()]).await;
+        let web = register_test_worker(port, "restarts", "web");
+        wait_for_worker_state(&daemon, "restarts", "web", true).await;
+        (api, web)
+    };
+    let (up, (api, web)) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "the project should start: {up}");
+
+    // Kill the ready container. A real worker's registration dies with its
+    // process; here the test holds that identity, so it has to let go for the
+    // replacement to be able to take the name.
+    std::fs::write(&die, "").expect("ask api to exit");
+    api.shutdown_async().await;
+    wait_for_worker_state(&daemon, "restarts", "api", false).await;
+
+    // The supervisor spawns a replacement, which reaches the same barrier.
+    wait_for_attempts(&attempts, 2).await;
+    let api = register_test_worker(port, "restarts", "api");
+    wait_for_container_state(port, &file, "api", "ready").await;
+
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after a supervised restart");
+    let state = |key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))["state"]
+            .clone()
+    };
+    assert_eq!(
+        state("api"),
+        "ready",
+        "the restarted container should be ready again: {status}"
+    );
+    assert_eq!(
+        state("web"),
+        "ready",
+        "a restart must not cascade to dependents: {status}"
+    );
+
+    api.shutdown_async().await;
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+/// The cap is what separates a restart policy from a busy loop. Once it is
+/// spent the supervisor does what it would have done with no policy at all:
+/// fails the container and takes its dependents down.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_never_stays_up_exhausts_its_attempts_and_cascades() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let attempts = tmp.path().join("workers/api/attempts");
+    let die = tmp.path().join("workers/api/die");
+    let web_started = tmp.path().join("workers/web/started");
+
+    // Unlike the test above, `api` leaves `die` in place, so every replacement
+    // exits the moment it starts and none of them ever becomes ready.
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: exhausted
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+    scripts:
+      run: "echo up >> attempts; while [ ! -f die ]; do sleep 0.05; done; exit 1"
+  web:
+    worker: path://./workers/web
+    start_after: [api]
+    scripts:
+      run: "touch started && sleep 30"
+"#,
+        &["api", "web"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[attempts.as_path()]).await;
+        let api = register_test_worker(port, "exhausted", "api");
+        wait_for_worker_state(&daemon, "exhausted", "api", true).await;
+        wait_for_start_markers(&[web_started.as_path()]).await;
+        let web = register_test_worker(port, "exhausted", "web");
+        wait_for_worker_state(&daemon, "exhausted", "web", true).await;
+        (api, web)
+    };
+    let (up, (api, web)) = tokio::join!(up, ready);
+    assert_eq!(
+        up.expect("compose::up should answer")["status"],
+        "ok",
+        "the project should start before anything crashes"
+    );
+
+    std::fs::write(&die, "").expect("ask api to exit");
+    api.shutdown_async().await;
+
+    // Every attempt is spent, and only then does the failure cascade.
+    wait_for_container_state(port, &file, "api", "failed").await;
+
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after the budget is spent");
+    let container = |key: &str| {
+        status["containers"]
+            .as_array()
+            .expect("containers")
+            .iter()
+            .find(|container| container["container"] == key)
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))
+            .clone()
+    };
+    assert_ne!(
+        container("web")["state"],
+        "ready",
+        "a container that ran out of attempts must take its dependents down: {status}"
+    );
+    assert!(
+        container("api")["last_error"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("restart attempts")),
+        "the record should say the supervisor gave up: {status}"
+    );
+
+    let starts = std::fs::read_to_string(&attempts)
+        .map(|text| text.lines().count())
+        .unwrap_or(0);
+    assert_eq!(
+        starts, 6,
+        "one original start plus a capped five attempts, not a busy loop"
+    );
+
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_a_not_required_container_reports_its_failed_start_without_failing() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("workers/mailer/started");
+    let manifest = tmp.path().join("workers/mailer/iii.worker.yaml");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional-restart
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+"#,
+        &["mailer"],
+    );
+    std::fs::write(
+        &manifest,
+        "scripts:\n  start: \"touch started && sleep 30\"\n",
+    )
+    .expect("write initial worker manifest");
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        let mailer = register_test_worker(port, "optional-restart", "mailer");
+        wait_for_worker_state(&daemon, "optional-restart", "mailer", true).await;
+        mailer
+    };
+    let (up, mailer) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "initial start failed: {up}");
+
+    mailer.shutdown_async().await;
+    std::fs::write(&manifest, "scripts:\n  start: \"exit 9\"\n")
+        .expect("replace worker start command");
+
+    let restart = call(
+        port,
+        "compose::restart",
+        json!({
+            "file": file.to_str().unwrap(),
+            "container": "mailer",
+        }),
+    )
+    .await
+    .expect("compose::restart should answer");
+
+    assert_eq!(
+        restart["status"], "ok",
+        "a failed restart of a container that is not required must not fail: {restart}"
+    );
+    assert_eq!(
+        restart["changed"], true,
+        "stopping the old worker must report a state change: {restart}"
+    );
+    assert_eq!(
+        restart["not_required_failures"],
+        json!(["mailer"]),
+        "the failed restart must name the optional container: {restart}"
+    );
+    assert_eq!(
+        restart["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+        "the failed restart must retain its error: {restart}"
+    );
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_required_failure_is_reported_after_a_not_required_failure() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: optional
+startup_timeout: 2s
+stop_timeout: 100ms
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+    scripts:
+      run: "sleep 30"
+  api:
+    worker: path://./workers/api
+    start_after: [mailer]
+    required: true
+    scripts:
+      run: "exit 9"
+"#,
+        &["mailer", "api"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::up should answer");
+
+    assert_eq!(
+        up["status"], "failed",
+        "a container that is required must fail the operation: {up}"
+    );
+    assert_eq!(
+        up["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+        "the required container error must be reported: {up}"
+    );
     daemon.shutdown().await;
 }
 

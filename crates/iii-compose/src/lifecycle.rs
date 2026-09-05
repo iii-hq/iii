@@ -52,6 +52,9 @@ pub struct OpResult {
     /// already in the desired state.
     pub changed: bool,
     pub containers: Vec<ContainerResult>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) primary_error: Option<OpError>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -177,6 +180,10 @@ async fn up_inner(
     let mut results: Vec<ContainerResult> = Vec::new();
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
+    // Containers that failed and said their failure does not fail the
+    // operation. Counted so the closing line reports a partial project as
+    // partial rather than reading like a clean start.
+    let mut not_required_failures = 0usize;
     let max_parallel_workers = crate::parallelism::max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
@@ -281,8 +288,17 @@ async fn up_inner(
                     if let Some(operation) = crate::operation::active(&operation_id) {
                         operation.emit(Some(key), "failed", error.to_string()).await;
                     }
-                    if failure.is_none() {
-                        failure = Some((key.clone(), error));
+                    if is_required(ctx.file, key) {
+                        if failure.is_none() {
+                            failure = Some((key.clone(), error));
+                        }
+                    } else {
+                        // The plan counted it, so the progress has to account
+                        // for it however it settled.
+                        if let Some(operation) = crate::operation::active(&operation_id) {
+                            operation.completed_one().await;
+                        }
+                        not_required_failures += 1;
                     }
                 }
                 StartAttempt::Interrupted => interrupted = true,
@@ -305,6 +321,7 @@ async fn up_inner(
                 status: OpStatus::Failed,
                 changed: !started.is_empty(),
                 containers: results,
+                primary_error: Some(OpError::from(&error)),
             });
         }
     }
@@ -321,13 +338,26 @@ async fn up_inner(
 
     report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
+    if not_required_failures > 0 {
+        report::not_required_failed(not_required_failures);
+    }
     report::summary_ok("up", changed, results.len(), began.elapsed());
     Some(OpResult {
         operation_id,
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
     })
+}
+
+/// Whether this container's failure fails the operation. A container the file
+/// no longer declares is treated as required: the strict rule is the one that
+/// refuses rather than the one that carries on.
+fn is_required(file: &ComposeFile, key: &str) -> bool {
+    file.containers
+        .get(key)
+        .is_none_or(|container| container.required)
 }
 
 /// Drops a leading `container '<name>': ` from a message that is already being
@@ -392,7 +422,7 @@ async fn restart_one_inner(
     }
 
     report::plan(&[(key.to_string(), 0)]);
-    stop_one(ctx, children, records, key).await;
+    let stopped = stop_one(ctx, children, records, key).await;
 
     // The child is gone, but the engine learns that from a socket closing and
     // not from us. Starting into that window makes the replacement collide
@@ -432,17 +462,30 @@ async fn restart_one_inner(
                 &strip_container_prefix(&error.to_string(), key),
             );
             report::plan_done();
-            report::summary_failed("restart", error.code(), began.elapsed());
+            let required = is_required(ctx.file, key);
+            if required {
+                report::summary_failed("restart", error.code(), began.elapsed());
+            } else {
+                report::not_required_failed(1);
+                report::summary_ok("restart", 0, 1, began.elapsed());
+            }
+            let error = OpError::from(&error);
+            let primary_error = required.then(|| error.clone());
             return Some(OpResult {
                 operation_id,
-                status: OpStatus::Failed,
-                changed: false,
+                status: if required {
+                    OpStatus::Failed
+                } else {
+                    OpStatus::Ok
+                },
+                changed: stopped,
                 containers: vec![ContainerResult {
                     container: key.to_string(),
                     state: ChildStatus::Failed,
-                    changed: false,
-                    error: Some(OpError::from(&error)),
+                    changed: stopped,
+                    error: Some(error),
                 }],
+                primary_error,
             });
         }
         StartAttempt::Interrupted => {
@@ -457,6 +500,7 @@ async fn restart_one_inner(
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
+        primary_error: None,
     })
 }
 
@@ -506,6 +550,7 @@ pub async fn remove_one(
             changed,
             error: None,
         }],
+        primary_error: None,
     }
 }
 
@@ -597,6 +642,7 @@ pub async fn down(
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
     }
 }
 
@@ -1038,9 +1084,9 @@ async fn stop_one(
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
-) {
+) -> bool {
     let Some(child) = children.remove(key) else {
-        return;
+        return false;
     };
     child.stop(ctx.file.stop_timeout).await;
 
@@ -1082,6 +1128,8 @@ async fn stop_one(
     if let Some(record) = records.get_mut(key) {
         record.status = ChildStatus::Stopped;
     }
+
+    true
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.
@@ -1219,6 +1267,7 @@ fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -
             changed: false,
             error: Some(OpError::from(error)),
         }],
+        primary_error: Some(OpError::from(error)),
     }
 }
 
@@ -1304,6 +1353,7 @@ containers:
                 changed: true,
                 error: None,
             }],
+            primary_error: None,
         };
 
         let json = serde_json::to_value(&result).unwrap();
@@ -1316,6 +1366,10 @@ containers:
             json["containers"][0].get("error").is_none(),
             "a successful container carries no error key"
         );
+        assert!(
+            json.get("primary_error").is_none(),
+            "the internal primary error must not be serialized"
+        )
     }
 }
 

@@ -162,6 +162,46 @@ ready stay as they are.
 A project that fails to start due to a project-related issue ends the command with
 `PROJECT_DID_NOT_START`. Partial starts are rolled back in reverse dependency order.
 
+A worker that declares `required: false` is the exception:
+
+```yaml
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+```
+
+Its failure is reported against that worker, nothing is rolled back, and the operation still returns
+`ok`. Workers that name it in `start_after` start anyway, because `start_after` is a start order and
+not a claim that the dependent cannot run without it. The response lists every worker that failed
+this way in `not_required_failures`, so an `ok` still says which workers are down, and `error`
+carries the first reason.
+
+#### Restarting a worker that exits
+
+A worker that exits after it was ready takes its dependents down with it and stays down. To ask for
+it back instead, declare a restart policy:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+```
+
+`no` is the default. `on-failure` restarts the worker when it exited with a non-zero status, and
+`always` restarts it whatever the status.
+
+The supervisor tries five times, waiting longer before each attempt, from 500ms up to 30 seconds.
+Only the named worker bounces: workers that name it in `start_after` keep running and see their
+connection drop and reconnect. `compose::status` reports the worker as `restarting` while it waits
+for the next attempt. Once the five are spent, the worker is marked `failed`, its dependents are
+stopped, and `last_error` says the supervisor gave up. A worker that stays ready for a minute counts
+as recovered, so its next crash starts the five over.
+
+The policy covers exits only. A worker that never becomes ready in the first place is `required`'s
+question, not this one.
+
 ### Stopping a project
 
 `compose::down` stops the project in reverse dependency order.
@@ -452,6 +492,8 @@ Each key under `containers` is the name the worker registers under.
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
+| `required`        | boolean        | `true`               | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
+| `restart`         | string         | `no`                 | What happens when the worker exits after it was ready. `no`, `on-failure`, or `always`.                    |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use iii_compose::ComposeFile;
+use iii_compose::{ComposeFile, RestartPolicy};
 
 fn parse(text: &str) -> Result<ComposeFile, iii_compose::ComposeError> {
     ComposeFile::parse(text, PathBuf::from("/srv/app/worker-compose.yaml"))
@@ -560,6 +560,118 @@ containers:
         std::time::Duration::from_secs(60),
         "a container inherits the file's readiness budget"
     );
+}
+
+/// A file written before the field existed keeps the strict rule, and a
+/// container opts out one at a time rather than for the project.
+#[test]
+fn required_defaults_to_true_and_is_declared_per_container() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+  mailer:
+    worker: path://./workers/mailer
+    required: false
+"#,
+    )
+    .expect("required is part of the container schema");
+
+    assert!(
+        file.containers["api"].required,
+        "a container that says nothing is required"
+    );
+    assert!(!file.containers["mailer"].required);
+}
+
+#[test]
+fn rejects_a_non_boolean_required() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: "no"
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+/// A file written before the field existed keeps the behaviour it was written
+/// against, which is that a ready container that exits stays down.
+///
+/// `no` is spelled unquoted on purpose. YAML 1.1 reads it as `false`, and a
+/// parser that agreed would turn the default spelling into a type error the
+/// first time anyone wrote it out.
+#[test]
+fn restart_defaults_to_no_and_is_declared_per_container() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+  mailer:
+    worker: path://./workers/mailer
+    restart: on-failure
+  clock:
+    worker: path://./workers/clock
+    restart: always
+  batch:
+    worker: path://./workers/batch
+    restart: no
+"#,
+    )
+    .expect("restart is part of the container schema");
+
+    assert_eq!(
+        file.containers["api"].restart,
+        RestartPolicy::No,
+        "a container that says nothing keeps the old behaviour"
+    );
+    assert_eq!(file.containers["mailer"].restart, RestartPolicy::OnFailure);
+    assert_eq!(file.containers["clock"].restart, RestartPolicy::Always);
+    assert_eq!(
+        file.containers["batch"].restart,
+        RestartPolicy::No,
+        "an unquoted `no` is the policy, not the boolean false"
+    );
+}
+
+#[test]
+fn rejects_an_unknown_restart_policy() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    restart: unless-stopped
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+/// The policies differ only on a clean exit. `on-failure` treats exit 0 as the
+/// worker having finished; `always` treats it as an outage either way.
+#[test]
+fn restart_policies_differ_only_on_a_clean_exit() {
+    assert!(!RestartPolicy::No.wants_restart(1));
+    assert!(!RestartPolicy::No.wants_restart(0));
+
+    assert!(RestartPolicy::OnFailure.wants_restart(1));
+    assert!(RestartPolicy::OnFailure.wants_restart(-1));
+    assert!(!RestartPolicy::OnFailure.wants_restart(0));
+
+    assert!(RestartPolicy::Always.wants_restart(1));
+    assert!(RestartPolicy::Always.wants_restart(0));
 }
 
 #[test]

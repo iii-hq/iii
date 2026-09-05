@@ -352,6 +352,17 @@ pub fn rolled_back(key: &str) {
     ));
 }
 
+/// Containers that failed and declared `required: false`. Printed before the
+/// closing line so a partial project does not read as a clean start.
+pub fn not_required_failed(count: usize) {
+    let body = if count == 1 {
+        "1 container failed and is not required: the project is up without it".to_string()
+    } else {
+        format!("{count} containers failed and are not required: the project is up without them")
+    };
+    line(&body.yellow().to_string());
+}
+
 /// Closing line of an operation.
 pub fn summary_ok(action: &str, changed: usize, total: usize, elapsed: Duration) {
     let body = if changed == 0 {

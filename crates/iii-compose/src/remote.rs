@@ -736,7 +736,9 @@ fn op_description(function_id: &str) -> &'static str {
     match function_id {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
-             Repeated calls leave ready containers running."
+             Repeated calls leave ready containers running. A container \
+             declaring 'required: false' is named in not_required_failures \
+             when it fails, and the operation still returns ok."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
@@ -745,7 +747,9 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::list" => "List every project loaded by this compose daemon.",
         "compose::status" => {
             "Report the project namespace, state directory, daemon pid, and \
-             current state of every declared container."
+             current state of every declared container. A container declaring \
+             a 'restart' policy reports as 'restarting' while it waits for the \
+             supervisor's next attempt."
         }
         "compose::logs" => {
             "Read bounded worker stdout and stderr. A cursor continues from the last response; \

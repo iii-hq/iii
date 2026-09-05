@@ -22,7 +22,7 @@ use std::{
 
 use indexmap::IndexMap;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     dag,
@@ -96,6 +96,39 @@ impl Default for Scripts {
     }
 }
 
+/// What the supervisor does when a container that had become ready exits.
+///
+/// A run-time answer only. Whether a container that never became ready fails
+/// the operation that started it is [`Container::required`], and the two are
+/// deliberately separate: a policy that also covered the start would give one
+/// field two blast radii again, which is the thing `required` exists to fix.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, PartialOrd, Ord,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    /// Leave it down and take its transitive dependents with it. The default,
+    /// and what compose did before this field existed.
+    #[default]
+    No,
+    /// Restart it when it exited with a non-zero status.
+    OnFailure,
+    /// Restart it whenever it exits, a clean exit included. For a worker that
+    /// is only correct while it is running, exit code 0 is still an outage.
+    Always,
+}
+
+impl RestartPolicy {
+    /// Whether an exit with this status should be answered with a restart.
+    pub fn wants_restart(self, exit_code: i32) -> bool {
+        match self {
+            Self::No => false,
+            Self::OnFailure => exit_code != 0,
+            Self::Always => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Container {
     pub worker: WorkerSource,
@@ -123,6 +156,26 @@ pub struct Container {
     pub env_file: Vec<PathBuf>,
     /// Readiness budget for this container: its own override, else the file's.
     pub startup_timeout: Duration,
+    /// Whether a failed start fails the operation that started it.
+    ///
+    /// `true` is the default and the rule everything else is written against:
+    /// an `up` that cannot start a declared container refuses and undoes
+    /// itself. `false` says the project would rather run without this one, so
+    /// the failure is reported against the container and the operation carries
+    /// on.
+    ///
+    /// Dependents carry on too. `start_after` is a start order, not a claim
+    /// that the dependent cannot run without the dependency, so a container
+    /// that waited on a non-required one starts as if it had come up. A
+    /// dependent that genuinely needs it says so by failing on its own.
+    pub required: bool,
+    /// What happens when this container exits after it was ready.
+    ///
+    /// `no` is the default and matches the behaviour this field was added to:
+    /// the exit takes the container's transitive dependents down with it and
+    /// nothing comes back until someone runs `up` again. Anything else asks the
+    /// supervisor to try again, with a backoff and a capped number of attempts.
+    pub restart: RestartPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,6 +481,8 @@ fn validate_container(
             .map(|path| resolve_relative(base_dir, path))
             .collect(),
         startup_timeout,
+        required: raw.required,
+        restart: raw.restart,
     })
 }
 
@@ -730,6 +785,21 @@ struct RawContainer {
     env_file: Vec<PathBuf>,
     #[serde(default)]
     startup_timeout: Option<String>,
+    /// Absent means `true`: the default is the strict rule, so a file written
+    /// before this field existed keeps the behaviour it was written against.
+    #[serde(default = "required_by_default")]
+    #[schemars(default = "required_by_default")]
+    required: bool,
+    /// Absent means `no`: a file written before this field existed keeps the
+    /// behaviour it was written against, which is that a ready container that
+    /// exits stays down.
+    #[serde(default)]
+    #[schemars(default)]
+    restart: RestartPolicy,
+}
+
+fn required_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
