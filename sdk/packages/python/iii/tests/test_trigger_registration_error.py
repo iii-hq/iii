@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from iii.iii import III, InitOptions
+from iii.triggers import Trigger
 
 
 def _send_message(client: III, payload: dict) -> None:
@@ -58,3 +59,51 @@ def test_trigger_registration_result_success_does_not_log(caplog):
     assert not any("Trigger registration" in m for m in messages), messages
 
     client.shutdown()
+
+
+def test_trigger_registration_error_is_readable_by_the_caller():
+    """A retry loop has to branch on the cause, and a log line cannot be
+    branched on. ``Trigger.registration_error`` is that programmatic half."""
+    client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
+
+    _send_message(
+        client,
+        {
+            "type": "triggerregistrationresult",
+            "id": "trig-1",
+            "trigger_type": "harness::hook::pre-generate",
+            "function_id": "memory::on-pre-generate",
+            "error": {
+                "code": "trigger_type_not_found",
+                "message": "Trigger type not found",
+            },
+        },
+    )
+
+    recorded = client._trigger_registration_errors["trig-1"]
+    assert recorded["code"] == "trigger_type_not_found"
+    # Another binding's id is unaffected: the record is per-trigger, which is
+    # the whole point of the change.
+    assert "trig-2" not in client._trigger_registration_errors
+
+    client.shutdown()
+
+
+def test_handle_reads_through_to_the_live_record():
+    """A snapshot taken at construction would stay ``None`` forever: the ack
+    always arrives after ``register_trigger`` has returned."""
+    errors: dict[str, dict] = {}
+    trigger = Trigger(lambda: None, lambda: errors.get("trig-1"))
+
+    assert trigger.registration_error is None
+
+    errors["trig-1"] = {"code": "trigger_type_not_found", "message": "nope"}
+
+    assert trigger.registration_error is not None
+    assert trigger.registration_error["code"] == "trigger_type_not_found"
+
+
+def test_handle_without_a_source_reports_nothing():
+    """``Trigger(unregister_fn)`` stays usable on its own, which is what keeps
+    the existing one-argument constructor working."""
+    assert Trigger(lambda: None).registration_error is None

@@ -58,12 +58,31 @@ class TriggerHandler(ABC, Generic[TConfig]):
 class Trigger:
     """Represents a registered trigger."""
 
-    def __init__(self, unregister_fn: Any) -> None:
+    def __init__(self, unregister_fn: Any, registration_error_fn: Any = None) -> None:
         self._unregister_fn = unregister_fn
+        self._registration_error_fn = registration_error_fn
 
     def unregister(self) -> None:
         """Unregister this trigger."""
         self._unregister_fn()
+
+    @property
+    def registration_error(self) -> dict[str, Any] | None:
+        """The engine's rejection of this binding, or ``None``.
+
+        Registration is asynchronous and only failures are acked, so ``None``
+        means "no failure reported yet", not "confirmed live".
+
+        The common cause is ``trigger_type_not_found`` from a boot-order race:
+        the binding was requested before the provider registered the trigger
+        type. A reconnect re-sends the registration and clears this.
+
+        To confirm a binding IS live, call ``engine::registered-triggers::list``
+        with ``trigger_type``, ``function_id``, and ``namespace``.
+        """
+        if self._registration_error_fn is None:
+            return None
+        return self._registration_error_fn()
 
 
 class TriggerTypeRef(Generic[C, R]):
