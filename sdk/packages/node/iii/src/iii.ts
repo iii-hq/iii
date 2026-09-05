@@ -17,6 +17,7 @@ import {
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
   type IIIMessage,
+  type ErrorBody,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
   type JsonValue,
@@ -253,6 +254,9 @@ class Sdk implements IIIClient {
   private functions = new Map<string, RemoteFunctionData>()
   private invocations = new Map<string, Invocation & { timeout?: NodeJS.Timeout }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
+  // Keyed by trigger id, written only on a failure ack. Read through the
+  // `registrationError` getter on the handle `registerTrigger` returned.
+  private triggerRegistrationErrors = new Map<string, ErrorBody>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private workerName: string
@@ -410,6 +414,7 @@ class Sdk implements IIIClient {
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
+    const registrationErrors = this.triggerRegistrationErrors
 
     return {
       unregister: () => {
@@ -419,6 +424,14 @@ class Sdk implements IIIClient {
           type: fullTrigger.type,
         })
         this.triggers.delete(id)
+        this.triggerRegistrationErrors.delete(id)
+      },
+      // A getter, not a captured value: the ack arrives long after this
+      // handle is built, so a copied field would read `undefined` forever.
+      // The map is captured because `this` inside a getter is the object
+      // literal, not the client.
+      get registrationError(): ErrorBody | undefined {
+        return registrationErrors.get(id)
       },
     }
   }
@@ -979,6 +992,10 @@ class Sdk implements IIIClient {
     this.functions.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterFunction, message, true)
     })
+    // Clear first: a reconnect re-requests every binding, so a rejection from
+    // the previous connection is stale. Keeping it would strand a retry loop
+    // on an error the engine may no longer have any reason to repeat.
+    this.triggerRegistrationErrors.clear()
     this.triggers.forEach((trigger) => {
       this.sendMessage(MessageType.RegisterTrigger, trigger, true)
     })
@@ -1337,6 +1354,9 @@ class Sdk implements IIIClient {
   ): void {
     if (!message.error) return
     const triggerType = message.trigger_type ?? message.type ?? ''
+    // Record before logging so a caller polling `trigger.registrationError`
+    // sees the cause, not just an operator reading stderr.
+    this.triggerRegistrationErrors.set(message.id, message.error)
     console.error(
       `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
     )

@@ -926,6 +926,9 @@ struct IIIInner {
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
+    /// Failure acks keyed by trigger id, written only when a registration is
+    /// rejected. Read through `Trigger::registration_error`.
+    trigger_registration_errors: Mutex<HashMap<String, ErrorBody>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     /// Set when the engine rejects registration (fatal, no reconnect).
@@ -988,6 +991,7 @@ impl IIIClient {
             functions: Mutex::new(HashMap::new()),
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
+            trigger_registration_errors: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             fatal_error: Mutex::new(None),
@@ -1468,6 +1472,11 @@ impl IIIClient {
         let unregister_id = message.id.clone();
         let unregister_fn = Arc::new(move || {
             let _ = iii.inner.triggers.lock_or_recover().remove(&unregister_id);
+            let _ = iii
+                .inner
+                .trigger_registration_errors
+                .lock_or_recover()
+                .remove(&unregister_id);
             let msg = UnregisterTriggerMessage {
                 id: unregister_id.clone(),
                 trigger_type: trigger_type.clone(),
@@ -1475,7 +1484,21 @@ impl IIIClient {
             let _ = iii.send_message(msg.to_message());
         });
 
-        Ok(Trigger::new(unregister_fn))
+        // Read through a closure rather than copying the value in: the ack
+        // arrives long after this handle is built, so a snapshot would stay
+        // `None` forever.
+        let error_reader = self.clone();
+        let error_id = id.clone();
+        let registration_error_fn = Arc::new(move || {
+            error_reader
+                .inner
+                .trigger_registration_errors
+                .lock_or_recover()
+                .get(&error_id)
+                .cloned()
+        });
+
+        Ok(Trigger::new(unregister_fn).with_registration_error(registration_error_fn))
     }
 
     /// Invoke a remote function.
@@ -1877,6 +1900,14 @@ impl IIIClient {
             messages.push(function.message.to_message());
         }
 
+        // Clear first: this replay re-requests every binding, so a rejection
+        // from the previous connection is stale. Keeping it would strand a
+        // retry loop on an error the engine may no longer have reason to
+        // repeat.
+        self.inner
+            .trigger_registration_errors
+            .lock_or_recover()
+            .clear();
         for trigger in self.inner.triggers.lock_or_recover().values() {
             messages.push(trigger.to_message());
         }
@@ -2095,6 +2126,12 @@ impl IIIClient {
                     id,
                     err.message
                 );
+                // Record it so a caller polling `Trigger::registration_error`
+                // sees the cause, not just an operator reading the logs.
+                self.inner
+                    .trigger_registration_errors
+                    .lock_or_recover()
+                    .insert(id, err);
             }
             _ => {}
         }
