@@ -21,9 +21,49 @@ use serde_json::Value;
 
 // ── HTTP ────────────────────────────────────────────────────────────────
 
+fn normalize_api_path(path: &str) -> String {
+    let mut normalized = String::with_capacity(path.len());
+    let mut in_brace = false;
+    let mut param_buf = String::new();
+
+    for ch in path.chars() {
+        match ch {
+            '{' => {
+                in_brace = true;
+                param_buf.clear();
+            }
+            '}' if in_brace => {
+                in_brace = false;
+                normalized.push(':');
+                normalized.push_str(&param_buf);
+            }
+            c if in_brace => {
+                param_buf.push(c);
+            }
+            c => {
+                normalized.push(c);
+            }
+        }
+    }
+    if in_brace {
+        normalized.push('{');
+        normalized.push_str(&param_buf);
+    }
+    normalized
+}
+
+fn deserialize_api_path<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(normalize_api_path(&s))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpTriggerConfig {
-    /// HTTP endpoint path (e.g. `/users/:id`)
+    /// HTTP endpoint path (e.g. `/users/:id` or `/users/{id}`)
+    #[serde(deserialize_with = "deserialize_api_path")]
     pub api_path: String,
     /// HTTP method (defaults to GET)
     #[serde(default = "default_http_method")]
@@ -356,4 +396,27 @@ pub struct TraceTriggerConfig {
 pub struct TraceCallRequest {
     /// Distinct trace ids that had span activity in this coalesced window.
     pub trace_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_api_path_braces() {
+        assert_eq!(normalize_api_path("/tasks/{tid}"), "/tasks/:tid");
+        assert_eq!(
+            normalize_api_path("/users/{userId}/items/{itemId}"),
+            "/users/:userId/items/:itemId"
+        );
+        assert_eq!(normalize_api_path("/tasks/:tid"), "/tasks/:tid");
+        assert_eq!(normalize_api_path("/tasks/toggle"), "/tasks/toggle");
+    }
+
+    #[test]
+    fn test_http_trigger_config_deserialization_normalizes_braces() {
+        let json_str = r#"{"api_path": "/tasks/{tid}", "http_method": "GET"}"#;
+        let config: HttpTriggerConfig = serde_json::from_str(json_str).unwrap();
+        assert_eq!(config.api_path, "/tasks/:tid");
+    }
 }
