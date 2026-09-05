@@ -21,8 +21,9 @@ use iii_compose::{
     daemon::{Daemon, EnginePolicy},
     remote,
 };
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::triggers::Trigger;
+use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -274,6 +275,53 @@ async fn wait_for_operation(port: u16, namespace: Option<&str>, operation_id: &s
     })
     .await
     .unwrap_or_else(|_| panic!("operation {operation_id} did not finish"))
+}
+
+async fn subscribe_to_terminal_operation(
+    port: u16,
+    operation_id: &str,
+) -> (
+    IIIClient,
+    Trigger,
+    tokio::sync::mpsc::UnboundedReceiver<(Value, Option<Value>)>,
+) {
+    let observer = register_worker(
+        &format!("ws://127.0.0.1:{port}"),
+        InitOptions {
+            metadata: Some(iii_sdk::iii::WorkerMetadata {
+                name: format!("operation-observer-{}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let callback_id = format!("test::compose-operation::{}", uuid::Uuid::new_v4());
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    observer.register_function(
+        callback_id.clone(),
+        RegisterFunction::new_async(move |event: Value, metadata: Option<Value>| {
+            let events_tx = events_tx.clone();
+            async move {
+                let _ = events_tx.send((event, metadata));
+                Ok(Value::Null)
+            }
+        }),
+    );
+    let trigger = observer
+        .register_trigger(
+            RegisterTriggerInput::new(
+                "compose-operation",
+                callback_id,
+                json!({
+                    "operation_id": operation_id,
+                    "terminal_only": true,
+                }),
+            )
+            .with_metadata(json!({ "__binding": "e2e-binding" })),
+        )
+        .expect("register compose-operation trigger");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    (observer, trigger, events_rx)
 }
 
 fn operation_containers(operation: &Value) -> Vec<&str> {
@@ -731,7 +779,63 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn remove_drops_dependency_edges_and_keeps_survivors_running() {
+async fn update_accepts_multiple_workers_and_publishes_one_terminal_operation() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: update
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "1.2.3"
+  cache:
+    worker: package://api.workers.iii.dev/cache
+    version: "2.3.4"
+"#,
+        &[],
+    );
+    let operation_id = format!("compose:update-test:00000000-0000-0000-0000-{}", port);
+    let (observer, trigger, mut events) =
+        subscribe_to_terminal_operation(port, &operation_id).await;
+
+    let result = call(
+        port,
+        "compose::update",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["state@1.2.3", "cache@2.3.4"],
+            "operation_id": operation_id,
+        }),
+    )
+    .await
+    .expect("compose::update should answer");
+
+    assert_eq!(result["status"], "accepted", "{result}");
+    assert_eq!(result["requested"], 2, "{result}");
+    assert_eq!(result["operation_id"], operation_id, "{result}");
+    let (event, metadata) = tokio::time::timeout(Duration::from_secs(15), events.recv())
+        .await
+        .expect("update terminal event timed out")
+        .expect("update terminal event channel closed");
+    assert_eq!(event["operation_id"], operation_id, "{event}");
+    assert_eq!(event["terminal"], true, "{event}");
+    assert_eq!(metadata, Some(json!({ "__binding": "e2e-binding" })));
+    let operation = wait_for_operation(port, None, &operation_id).await;
+    assert_eq!(operation["status"], "succeeded", "{operation}");
+    assert_eq!(operation["requested"], 2, "{operation}");
+
+    trigger.unregister();
+    observer.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_accepts_multiple_workers_and_keeps_survivors_running() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -810,28 +914,39 @@ containers:
             .unwrap_or_else(|| panic!("missing pid for {key}: {status}"))
     };
     let keep_pid = pid(&before, "keep");
-    let discard_pid = pid(&before, "discard");
-
+    let operation_id = format!("compose:remove-test:00000000-0000-0000-0000-{}", port);
+    let (observer, trigger, mut events) =
+        subscribe_to_terminal_operation(port, &operation_id).await;
     let result = call(
         port,
         "compose::remove",
         json!({
             "file": file.to_str().unwrap(),
-            "worker": "foundation",
+            "workers": ["foundation", "discard"],
+            "operation_id": operation_id,
         }),
     )
     .await
     .expect("compose::remove should answer");
 
-    assert_eq!(result["status"], "ok", "{result}");
-    assert_eq!(result["worker"], "foundation", "{result}");
-    assert_eq!(result["changed"], true, "{result}");
-    for internal in ["containers", "down", "restarted", "up", "operation_id"] {
+    assert_eq!(result["status"], "accepted", "{result}");
+    assert_eq!(result["requested"], 2, "{result}");
+    assert_eq!(result["operation_id"], operation_id, "{result}");
+    for internal in ["containers", "down", "restarted", "up", "changed", "worker"] {
         assert!(
             result.get(internal).is_none(),
             "mutation leaked {internal}: {result}"
         );
     }
+    let (event, metadata) = tokio::time::timeout(Duration::from_secs(15), events.recv())
+        .await
+        .expect("remove terminal event timed out")
+        .expect("remove terminal event channel closed");
+    assert_eq!(event["operation_id"], operation_id, "{event}");
+    assert_eq!(event["terminal"], true, "{event}");
+    assert_eq!(metadata, Some(json!({ "__binding": "e2e-binding" })));
+    let operation = wait_for_operation(port, None, &operation_id).await;
+    assert_eq!(operation["status"], "succeeded", "{operation}");
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
     assert!(
@@ -846,6 +961,10 @@ containers:
         !edited.contains("  foundation:"),
         "named worker survived: {edited}"
     );
+    assert!(
+        !edited.contains("  discard:"),
+        "second named worker survived: {edited}"
+    );
 
     let after = call(
         port,
@@ -859,18 +978,16 @@ containers:
         keep_pid,
         "dependent restarted: {after}"
     );
-    assert_eq!(
-        pid(&after, "discard"),
-        discard_pid,
-        "unrelated worker restarted: {after}"
-    );
     assert!(
         after["containers"]
             .as_array()
             .expect("containers")
             .iter()
-            .all(|container| container["container"] != "foundation"),
-        "removed worker remains declared: {after}"
+            .all(|container| !matches!(
+                container["container"].as_str(),
+                Some("foundation" | "discard")
+            )),
+        "removed workers remain declared: {after}"
     );
 
     let later_up = call(
@@ -894,11 +1011,12 @@ containers:
     .await
     .expect("final status");
     assert_eq!(pid(&final_status, "keep"), keep_pid);
-    assert_eq!(pid(&final_status, "discard"), discard_pid);
 
     foundation.shutdown_async().await;
     keep.shutdown_async().await;
     discard.shutdown_async().await;
+    trigger.unregister();
+    observer.shutdown_async().await;
     daemon.shutdown().await;
 }
 

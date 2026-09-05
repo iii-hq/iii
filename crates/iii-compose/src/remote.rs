@@ -21,7 +21,7 @@
 //! fall back to `worker-compose.yaml` in the daemon's own directory, and say
 //! so when there is none.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc};
 
 use iii_sdk::{Error, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
@@ -58,15 +58,16 @@ pub struct ComposeRequest {
     /// `compose::update` reads a spec: `name`, `name@version`, or a path.
     /// `compose::remove` and `compose::restart` read a container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
-    /// have to know which of the two words this call wanted. `compose::add`
-    /// keeps this field as a compatibility alias for a single list item.
+    /// have to know which of the two words this call wanted. `compose::add`,
+    /// `compose::update`, and `compose::remove` keep this field as a
+    /// compatibility alias for a single list item.
     pub worker: Option<String>,
-    /// Workers to add in one file edit and one project restart.
+    /// Workers to add, update, or remove in one file edit and one reconciliation.
     ///
-    /// This is the canonical `compose::add` JSON field. The singular `worker`
-    /// field remains accepted for clients that used the old contract.
+    /// This is the canonical JSON field for all three operations. The singular
+    /// `worker` field remains accepted for clients that used the old contract.
     pub workers: Option<Vec<String>>,
-    /// Caller-selected operation id used to bind progress before submission.
+    /// Caller-selected operation id used to bind mutation progress before submission.
     pub operation_id: Option<String>,
     /// Last cursor returned for each selected worker.
     pub cursors: Option<BTreeMap<String, LogCursor>>,
@@ -115,36 +116,24 @@ struct ProjectOptions {
     file: Option<String>,
 }
 
-/// Request fields used by `compose::add`.
+/// Request fields used by batch worker mutations.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
-struct AddOptions {
+struct BatchWorkerOptions {
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
     file: Option<String>,
-    /// Canonical list of worker names, `name@version` references, registry
-    /// references, or local paths to add in one edit and one restart.
+    /// Canonical list of workers to mutate together. Add accepts worker names,
+    /// `name@version` references, registry references, or local paths. Update
+    /// accepts package names or `name@version` references. Remove accepts
+    /// declared worker keys.
     workers: Option<Vec<String>>,
-    /// Backward-compatible form for adding one worker.
+    /// Backward-compatible form for mutating one worker.
     worker: Option<String>,
     /// Caller-selected operation id for race-free progress subscription.
     operation_id: Option<String>,
-}
-
-/// Request fields used by single-worker compose-file edits.
-#[allow(dead_code)]
-#[derive(JsonSchema)]
-struct WorkerOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
-    namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
-    file: Option<String>,
-    /// Worker name, `name@version`, registry reference, or local path. The
-    /// accepted form depends on the operation.
-    worker: String,
 }
 
 /// `compose::restart` accepts either spelling for one container.
@@ -246,7 +235,7 @@ struct CancelOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-struct AddAcceptedOutcome {
+struct OperationAcceptedOutcome {
     operation_id: String,
     status: String,
     requested: usize,
@@ -395,10 +384,7 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Add => {
-            let workers = request
-                .workers
-                .or_else(|| request.worker.map(|worker| vec![worker]))
-                .unwrap_or_default();
+            let workers = requested_workers(request.workers, request.worker);
             if workers.is_empty() {
                 return daemon
                     .add(file.as_deref(), &[], operation_id())
@@ -408,91 +394,70 @@ async fn dispatch(
             }
 
             let requested = workers.len();
-            let operation_id = request
-                .operation_id
-                .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
-            let operation = daemon
-                .operations
-                .create_with_id(operation_id.clone(), requested)
-                .await
-                .map_err(|_| Error::Remote {
-                    code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
-                    message: format!("compose operation '{operation_id}' already exists"),
-                    stacktrace: None,
-                })?;
-            let operation_id = operation.id().to_string();
-            operation
-                .emit(
-                    None,
-                    "accepted",
-                    format!("adding {requested} requested workers"),
-                )
-                .await;
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("adding {requested} requested workers"),
+            )
+            .await?;
 
             let daemon_task = Arc::clone(&daemon);
-            let task_operation_id = operation_id.clone();
-            tokio::spawn(async move {
-                operation
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
                     .emit(None, "resolving", "resolving dependency trees")
                     .await;
-                if operation.is_cancelled() {
-                    operation
-                        .finish(
-                            crate::operation::OperationStatus::Cancelled,
-                            "operation cancelled",
-                        )
-                        .await;
-                    return;
-                }
-                let result = daemon_task
+                daemon_task
                     .add(file.as_deref(), &workers, task_operation_id)
-                    .await;
-                match result {
-                    Ok(outcome) => {
-                        let failed = outcome.is_failed();
-                        operation
-                            .finish(
-                                if failed {
-                                    crate::operation::OperationStatus::Failed
-                                } else {
-                                    crate::operation::OperationStatus::Succeeded
-                                },
-                                if failed {
-                                    "one or more workers failed"
-                                } else {
-                                    "all requested workers are ready"
-                                },
-                            )
-                            .await;
-                    }
-                    Err(ComposeError::OperationCancelled { .. }) => {
-                        operation
-                            .finish(
-                                crate::operation::OperationStatus::Cancelled,
-                                "operation cancelled",
-                            )
-                            .await
-                    }
-                    Err(error) => {
-                        operation
-                            .finish(crate::operation::OperationStatus::Failed, error.to_string())
-                            .await
-                    }
-                }
-            });
-            Ok(json!({
-                "operation_id": operation_id,
-                "status": "accepted",
-                "requested": requested
-            }))
+                    .await
+            };
+            spawn_mutation(
+                operation,
+                mutation,
+                "all requested workers are ready",
+                "one or more workers failed",
+            );
+            Ok(to_value(&accepted))
         }
-        Operation::Remove => match daemon
-            .remove(file.as_deref(), request.worker.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Remove => {
+            let workers = requested_workers(request.workers, request.worker);
+            if workers.is_empty() {
+                return daemon
+                    .remove(file.as_deref(), &[], operation_id())
+                    .await
+                    .map(|outcome| to_value(&outcome))
+                    .map_err(|err| compose_error(&err));
+            }
+            let requested = workers.len();
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("removing {requested} requested workers"),
+            )
+            .await?;
+
+            let daemon_task = Arc::clone(&daemon);
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
+                    .emit(None, "removing", format!("removing {requested} workers"))
+                    .await;
+                daemon_task
+                    .remove(file.as_deref(), &workers, task_operation_id)
+                    .await
+            };
+            spawn_mutation(
+                operation,
+                mutation,
+                "all requested workers were removed",
+                "one or more workers could not be removed",
+            );
+            Ok(to_value(&accepted))
+        }
         Operation::Restart => match daemon
             .restart(
                 file.as_deref(),
@@ -505,13 +470,47 @@ async fn dispatch(
             Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
-        Operation::Update => match daemon
-            .update(file.as_deref(), request.worker.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Update => {
+            let workers = requested_workers(request.workers, request.worker);
+            if workers.is_empty() {
+                return daemon
+                    .update(file.as_deref(), &[], operation_id())
+                    .await
+                    .map(|outcome| to_value(&outcome))
+                    .map_err(|err| compose_error(&err));
+            }
+            let requested = workers.len();
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("updating {requested} requested workers"),
+            )
+            .await?;
+
+            let daemon_task = Arc::clone(&daemon);
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
+                    .emit(
+                        None,
+                        "resolving",
+                        format!("resolving updates for {requested} workers"),
+                    )
+                    .await;
+                daemon_task
+                    .update(file.as_deref(), &workers, task_operation_id)
+                    .await
+            };
+            spawn_mutation(
+                operation,
+                mutation,
+                "all requested workers were updated",
+                "one or more workers could not be updated",
+            );
+            Ok(to_value(&accepted))
+        }
         Operation::Down => match daemon
             .down(
                 file.as_deref(),
@@ -608,19 +607,104 @@ async fn dispatch(
     }
 }
 
+async fn admit_mutation(
+    daemon: &Daemon,
+    requested_id: Option<String>,
+    requested: usize,
+    detail: String,
+) -> Result<(Arc<crate::operation::Operation>, OperationAcceptedOutcome), Error> {
+    let operation_id = requested_id.unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
+    let operation = daemon
+        .operations
+        .create_with_id(operation_id.clone(), requested)
+        .await
+        .map_err(|_| Error::Remote {
+            code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
+            message: format!("compose operation '{operation_id}' already exists"),
+            stacktrace: None,
+        })?;
+    operation.emit(None, "accepted", detail).await;
+    let accepted = OperationAcceptedOutcome {
+        operation_id,
+        status: "accepted".to_string(),
+        requested,
+    };
+    Ok((operation, accepted))
+}
+
+fn spawn_mutation<F>(
+    operation: Arc<crate::operation::Operation>,
+    mutation: F,
+    success_detail: &'static str,
+    failed_detail: &'static str,
+) where
+    F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if operation.is_cancelled() {
+            operation
+                .finish(
+                    crate::operation::OperationStatus::Cancelled,
+                    "operation cancelled",
+                )
+                .await;
+            return;
+        }
+
+        match mutation.await {
+            Ok(outcome) => {
+                let failed = outcome.is_failed();
+                operation
+                    .finish(
+                        if failed {
+                            crate::operation::OperationStatus::Failed
+                        } else {
+                            crate::operation::OperationStatus::Succeeded
+                        },
+                        if failed {
+                            failed_detail
+                        } else {
+                            success_detail
+                        },
+                    )
+                    .await;
+            }
+            Err(ComposeError::OperationCancelled { .. }) => {
+                operation
+                    .finish(
+                        crate::operation::OperationStatus::Cancelled,
+                        "operation cancelled",
+                    )
+                    .await;
+            }
+            Err(error) => {
+                operation
+                    .finish(crate::operation::OperationStatus::Failed, error.to_string())
+                    .await;
+            }
+        }
+    });
+}
+
 /// Serialize the generated root schema into the value carried over the wire.
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
 
-/// `compose::add` accepts its canonical list or the old singular field.
+fn requested_workers(workers: Option<Vec<String>>, worker: Option<String>) -> Vec<String> {
+    workers
+        .or_else(|| worker.map(|worker| vec![worker]))
+        .unwrap_or_default()
+}
+
+/// Batch worker mutations accept their canonical list or the old singular field.
 ///
 /// Both fields are optional in the Rust shape so they can share the common
 /// namespace and file properties. `anyOf` states the runtime rule that at
 /// least one input form must be present. Supplying both is valid; dispatch
 /// gives the canonical `workers` list precedence.
-fn add_options_schema() -> Option<Value> {
-    let mut schema = schema_for_value::<AddOptions>()?;
+fn batch_worker_options_schema() -> Option<Value> {
+    let mut schema = schema_for_value::<BatchWorkerOptions>()?;
     for field in ["workers", "worker"] {
         let types = schema
             .pointer_mut(&format!("/properties/{field}/type"))?
@@ -680,20 +764,22 @@ fn op_description(function_id: &str) -> &'static str {
              starting its project."
         }
         "compose::add" => {
-            "Declare one or more workers and their registry dependencies in the compose \
-             file, pin resolved versions, then reconcile changed workers once."
+            "Accept an observable operation that declares one or more workers and their registry \
+             dependencies in the compose file, pins resolved versions, then reconciles changed \
+             workers once."
         }
         "compose::remove" => {
-            "Remove one declared worker and dependency references to it, stop \
-             only that worker, then reconcile anything already missing."
+            "Accept an observable operation that removes one or more declared workers and \
+             dependency references to them, stops only those workers, then reconciles anything \
+             already missing."
         }
         "compose::restart" => {
             "Restart the whole project, or restart one named container without \
              changing its dependency graph."
         }
         "compose::update" => {
-            "Move one declared package worker to a requested or latest version, \
-             then restart the project."
+            "Accept an observable operation that moves one or more declared package workers to \
+             requested or latest versions, then restarts the project once."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -776,13 +862,13 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                add_options_schema(),
-                schema_for_value::<AddAcceptedOutcome>(),
+                batch_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::remove",
-                schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                batch_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::restart",
@@ -791,8 +877,8 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::update",
-                schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                batch_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::schema",
@@ -904,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn add_request_accepts_a_worker_list_and_the_singular_compatibility_field() {
+    fn batch_worker_request_accepts_a_list_and_the_singular_compatibility_field() {
         let listed: ComposeRequest = serde_json::from_value(json!({
             "workers": ["database", "web"],
         }))
@@ -921,36 +1007,54 @@ mod tests {
         .expect("the old singular field should deserialize");
         assert_eq!(singular.worker.as_deref(), Some("database"));
         assert_eq!(singular.workers, None);
+
+        assert_eq!(
+            requested_workers(None, singular.worker),
+            vec!["database".to_string()]
+        );
+        assert_eq!(
+            requested_workers(listed.workers, Some("ignored".to_string())),
+            vec!["database".to_string(), "web".to_string()]
+        );
     }
 
     #[test]
-    fn add_schema_requires_one_non_null_non_empty_worker_form() {
-        let schema = schema_entry("compose::add").1.as_ref().unwrap();
-        let validator = jsonschema::Validator::new(schema).expect("add schema should compile");
+    fn batch_worker_schemas_require_one_non_null_non_empty_worker_form() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema)
+                .unwrap_or_else(|error| panic!("{function_id} schema should compile: {error}"));
 
-        for valid in [
-            json!({ "workers": ["database", "web"] }),
-            json!({ "worker": "database" }),
-        ] {
-            let errors = validator
-                .iter_errors(&valid)
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>();
-            assert!(errors.is_empty(), "should accept {valid}: {errors:?}");
-        }
+            for valid in [
+                json!({ "workers": ["database", "web"] }),
+                json!({ "worker": "database" }),
+            ] {
+                let errors = validator
+                    .iter_errors(&valid)
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>();
+                assert!(
+                    errors.is_empty(),
+                    "{function_id} should accept {valid}: {errors:?}"
+                );
+            }
 
-        for invalid in [
-            json!({}),
-            json!({ "workers": [] }),
-            json!({ "workers": null }),
-            json!({ "worker": null }),
-            json!({ "workers": [], "worker": "database" }),
-            json!({ "worker": "" }),
-            json!({ "worker": "  " }),
-            json!({ "workers": [""] }),
-            json!({ "workers": ["  "] }),
-        ] {
-            assert!(!validator.is_valid(&invalid), "should reject {invalid}");
+            for invalid in [
+                json!({}),
+                json!({ "workers": [] }),
+                json!({ "workers": null }),
+                json!({ "worker": null }),
+                json!({ "workers": [], "worker": "database" }),
+                json!({ "worker": "" }),
+                json!({ "worker": "  " }),
+                json!({ "workers": [""] }),
+                json!({ "workers": ["  "] }),
+            ] {
+                assert!(
+                    !validator.is_valid(&invalid),
+                    "{function_id} should reject {invalid}"
+                );
+            }
         }
     }
 
@@ -963,23 +1067,27 @@ mod tests {
         assert!(up.contains_key("container"));
         assert!(!up.contains_key("worker"));
 
-        let (_, add, _) = schema_entry("compose::add");
-        let add = add.as_ref().unwrap()["properties"].as_object().unwrap();
-        assert!(add.contains_key("namespace"));
-        assert!(add.contains_key("file"));
-        assert!(add.contains_key("workers"));
-        assert!(add.contains_key("worker"));
-        assert!(!add.contains_key("container"));
-        assert_eq!(add["workers"]["minItems"], 1);
-        let alternatives = schema_entry("compose::add").1.as_ref().unwrap()["anyOf"]
-            .as_array()
-            .expect("add should require either request form");
-        for field in ["workers", "worker"] {
-            assert!(alternatives.iter().any(|alternative| {
-                alternative["required"]
-                    .as_array()
-                    .is_some_and(|required| required.iter().any(|item| item == field))
-            }));
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let (_, request, _) = schema_entry(function_id);
+            let properties = request.as_ref().unwrap()["properties"].as_object().unwrap();
+            for field in ["namespace", "file", "workers", "worker", "operation_id"] {
+                assert!(
+                    properties.contains_key(field),
+                    "{function_id} is missing {field}"
+                );
+            }
+            assert!(!properties.contains_key("container"));
+            assert_eq!(properties["workers"]["minItems"], 1);
+            let alternatives = request.as_ref().unwrap()["anyOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{function_id} should require either request form"));
+            for field in ["workers", "worker"] {
+                assert!(alternatives.iter().any(|alternative| {
+                    alternative["required"]
+                        .as_array()
+                        .is_some_and(|required| required.iter().any(|item| item == field))
+                }));
+            }
         }
 
         let (_, list, _) = schema_entry("compose::list");
@@ -1041,13 +1149,7 @@ mod tests {
 
     #[test]
     fn mutation_schemas_do_not_expose_reconciliation_internals() {
-        for id in [
-            "compose::up",
-            "compose::down",
-            "compose::remove",
-            "compose::restart",
-            "compose::update",
-        ] {
+        for id in ["compose::up", "compose::down", "compose::restart"] {
             let properties = schema_entry(id).2.as_ref().unwrap()["properties"]
                 .as_object()
                 .unwrap();
@@ -1063,13 +1165,27 @@ mod tests {
     }
 
     #[test]
-    fn add_response_is_an_observable_operation_admission() {
-        let properties = schema_entry("compose::add").2.as_ref().unwrap()["properties"]
-            .as_object()
-            .unwrap();
-        assert!(properties.contains_key("operation_id"));
-        assert!(properties.contains_key("status"));
-        assert!(properties.contains_key("requested"));
-        assert!(!properties.contains_key("containers"));
+    fn observable_mutation_responses_are_operation_admissions() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let properties = schema_entry(function_id).2.as_ref().unwrap()["properties"]
+                .as_object()
+                .unwrap();
+            assert!(
+                properties.contains_key("operation_id"),
+                "{function_id} is missing operation_id"
+            );
+            assert!(
+                properties.contains_key("status"),
+                "{function_id} is missing status"
+            );
+            assert!(
+                properties.contains_key("requested"),
+                "{function_id} is missing requested"
+            );
+            assert!(
+                !properties.contains_key("containers"),
+                "{function_id} exposes container internals"
+            );
+        }
     }
 }
