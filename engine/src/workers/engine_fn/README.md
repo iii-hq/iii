@@ -37,7 +37,7 @@ Every call is `caller → engine → handler`. The function id is the only contr
 
 ## Functions — `engine::*`
 
-Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list`, `engine::triggers::list`, and `engine::registered-triggers::list` hide internal `engine::*` rows unless `include_internal: true`.
+Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list`, `engine::triggers::list`, and `engine::registered-triggers::list` hide internal `engine::*` rows unless `include_internal: true`. `engine::registered-triggers::list` also hides registrations parked as `pending` (no provider for their trigger type yet) unless `include_pending: true`; every row carries a `status`.
 
 For exact request/response JSON Schemas, call `engine::functions::info { function_id: "engine::…" }`.
 

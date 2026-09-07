@@ -386,10 +386,10 @@ and worker lifecycle. Defined in
 | `engine::workers::info`       | Inspect one connected worker's full surface (functions, trigger types, registered triggers). Takes `name` plus an optional `namespace`. |
 | `engine::triggers::list`      | List every registered trigger type (filterable by `include_internal`).        |
 | `engine::triggers::info`      | Inspect one trigger type: schemas, owner, and live instance count. Accepts an optional `namespace`; absent resolves the caller's namespace first, then `default`. |
-| `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). Each row carries a `status`: `active`, or `pending` while its trigger type has no provider yet. |
+| `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). Each row carries a `status`; pass `include_pending: true` to also list registrations parked as `pending` while their trigger type has no provider. |
 | `engine::registered-triggers::info` | Inspect one registered trigger instance, with denormalized trigger and function detail. |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`). |
-| `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. The binding lives in the calling worker's namespace: the target resolves there and the provider is looked up there first, then in `default`. Returns the trigger id. |
+| `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. The binding is registered in the calling worker's namespace: the target resolves there and the provider is looked up there first, then in `default`. Returns the trigger id. |
 | `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
 
 Every row returned by `engine::functions::list`, `engine::functions::info`, `engine::workers::list`,

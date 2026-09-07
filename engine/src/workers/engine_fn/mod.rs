@@ -182,6 +182,12 @@ pub struct RegisteredTriggersListInput {
     /// Defaults to false.
     #[serde(default)]
     pub include_internal: Option<bool>,
+    /// Include registrations parked in `pending_triggers` because their trigger
+    /// type has no provider yet (rows with `status: "pending"`). Defaults to
+    /// false: a bare list is the set of live bindings, which is what every
+    /// caller before `status` existed was counting on.
+    #[serde(default)]
+    pub include_pending: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -959,23 +965,36 @@ impl EngineFunctionsWorker {
         }
     }
 
-    /// Live bindings and parked ones alike: a registration whose provider has
-    /// not shown up is still a registration, and the only way to see why it
-    /// never fires is to list it.
-    async fn list_registered_trigger_summaries(&self) -> Vec<RegisteredTriggerSummary> {
+    /// Live bindings, plus the parked ones when asked: a registration whose
+    /// provider has not shown up is still a registration, and the only way to
+    /// see why it never fires is to list it.
+    async fn list_registered_trigger_summaries(
+        &self,
+        include_pending: bool,
+    ) -> Vec<RegisteredTriggerSummary> {
         let index = self.function_owner_index().await;
         let registry = &self.engine.trigger_registry;
-        let active = registry.triggers.iter().map(|entry| {
-            Self::registered_trigger_summary(&index, entry.value(), RegisteredTriggerStatus::Active)
-        });
-        let pending = registry.pending_triggers.iter().map(|entry| {
-            Self::registered_trigger_summary(
-                &index,
-                entry.value(),
-                RegisteredTriggerStatus::Pending,
-            )
-        });
-        active.chain(pending).collect()
+        let mut rows: Vec<RegisteredTriggerSummary> = registry
+            .triggers
+            .iter()
+            .map(|entry| {
+                Self::registered_trigger_summary(
+                    &index,
+                    entry.value(),
+                    RegisteredTriggerStatus::Active,
+                )
+            })
+            .collect();
+        if include_pending {
+            rows.extend(registry.pending_triggers.iter().map(|entry| {
+                Self::registered_trigger_summary(
+                    &index,
+                    entry.value(),
+                    RegisteredTriggerStatus::Pending,
+                )
+            }));
+        }
+        rows
     }
 
     async fn list_worker_summaries(&self, filter_worker_id: Option<&str>) -> Vec<WorkerSummary> {
@@ -1880,7 +1899,9 @@ impl EngineFunctionsWorker {
         &self,
         input: RegisteredTriggersListInput,
     ) -> FunctionResult<RegisteredTriggersListResult, ErrorBody> {
-        let mut registered_triggers = self.list_registered_trigger_summaries().await;
+        let mut registered_triggers = self
+            .list_registered_trigger_summaries(input.include_pending.unwrap_or(false))
+            .await;
 
         if !input.include_internal.unwrap_or(false) {
             registered_triggers.retain(|t| !t.function_id.starts_with("engine::"));
@@ -2436,7 +2457,7 @@ mod tests {
     #[tokio::test]
     async fn list_registered_trigger_summaries_empty() {
         let (_engine, module) = setup_engine_and_module();
-        let triggers = module.list_registered_trigger_summaries().await;
+        let triggers = module.list_registered_trigger_summaries(false).await;
         assert!(triggers.is_empty());
     }
 
@@ -2451,7 +2472,7 @@ mod tests {
             serde_json::json!({"interval": 5}),
         );
 
-        let summaries = module.list_registered_trigger_summaries().await;
+        let summaries = module.list_registered_trigger_summaries(false).await;
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "trig-1");
         assert_eq!(summaries[0].trigger_type, "cron");
@@ -2472,7 +2493,7 @@ mod tests {
             serde_json::json!({"data": huge}),
         );
 
-        let summaries = module.list_registered_trigger_summaries().await;
+        let summaries = module.list_registered_trigger_summaries(false).await;
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0].config_summary;
         let char_count = summary.chars().count();
@@ -4842,8 +4863,10 @@ mod tests {
         assert_eq!(trig.provider_namespace, "orders");
     }
 
-    /// A parked registration is still a registration: `list` and `info` show
-    /// it as `pending`, and flip it to `active` once its provider registers.
+    /// A parked registration is still a registration: `list` shows it as
+    /// `pending` when asked (a bare list stays the set of live bindings), `info`
+    /// always resolves it, and both flip it to `active` once its provider
+    /// registers.
     #[tokio::test]
     async fn registered_triggers_list_and_info_include_pending_rows_with_status() {
         let (engine, module) = setup_engine_and_module();
@@ -4858,8 +4881,20 @@ mod tests {
         };
         assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
 
-        let listed = match module
+        let bare = match module
             .registered_triggers_list(RegisteredTriggersListInput::default())
+            .await
+        {
+            FunctionResult::Success(r) => r.registered_triggers,
+            _ => panic!("expected list success"),
+        };
+        assert!(bare.is_empty(), "a bare list is live bindings only");
+
+        let listed = match module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                include_pending: Some(true),
+                ..Default::default()
+            })
             .await
         {
             FunctionResult::Success(r) => r.registered_triggers,
