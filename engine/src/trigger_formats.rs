@@ -65,6 +65,9 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(deserializer)?;
+    if !s.starts_with('/') {
+        return Err(serde::de::Error::custom("api_path must start with '/'"));
+    }
     Ok(normalize_api_path(&s))
 }
 
@@ -432,5 +435,11 @@ mod tests {
         let json_str = r#"{"api_path": "/tasks/{tid}", "http_method": "GET"}"#;
         let config: HttpTriggerConfig = serde_json::from_str(json_str).unwrap();
         assert_eq!(config.api_path, "/tasks/:tid");
+    }
+
+    #[test]
+    fn test_http_trigger_config_deserialization_requires_leading_slash() {
+        let json_str = r#"{"api_path": "tasks/{tid}", "http_method": "GET"}"#;
+        assert!(serde_json::from_str::<HttpTriggerConfig>(json_str).is_err());
     }
 }
