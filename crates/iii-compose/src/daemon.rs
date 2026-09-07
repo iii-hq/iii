@@ -141,7 +141,7 @@ fn coalesce_containers(
                     spec: container.key.clone(),
                     reason: format!(
                         "the requested workers resolve container '{}' to conflicting sources, \
-                         versions, or dependencies",
+                         versions, dependencies, or settings",
                         container.key
                     ),
                 });
@@ -383,6 +383,21 @@ impl Daemon {
         workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
+        let workers = workers
+            .iter()
+            .cloned()
+            .map(crate::edit::WorkerInput::Spec)
+            .collect::<Vec<_>>();
+        self.add_configured(file, &workers, operation_id).await
+    }
+
+    /// Adds worker specs or full container declarations in one atomic file edit.
+    pub async fn add_configured(
+        &self,
+        file: Option<&Path>,
+        workers: &[crate::edit::WorkerInput],
+        operation_id: String,
+    ) -> Result<MutationOutcome> {
         if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
@@ -394,7 +409,7 @@ impl Daemon {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         let declared = ComposeFile::load(path)?;
-        let path_workers: BTreeSet<String> = declared
+        let mut path_workers: BTreeSet<String> = declared
             .containers
             .iter()
             .filter(|(_, container)| {
@@ -404,8 +419,15 @@ impl Daemon {
             .collect();
         let asked = workers
             .iter()
-            .map(|worker| crate::edit::parse_worker(worker))
+            .map(crate::edit::WorkerInput::parse)
             .collect::<Result<Vec<_>>>()?;
+        let declarations = coalesce_containers(asked.clone())?;
+        path_workers.extend(
+            declarations
+                .iter()
+                .filter(|worker| matches!(worker.source, crate::edit::Source::Path { .. }))
+                .map(|worker| worker.key.clone()),
+        );
         // A worker is not useful alone: its manifest names what it calls, and
         // the registry answers with that whole graph already pinned to versions
         // that satisfy each other. They are declared rather than started
@@ -416,7 +438,11 @@ impl Daemon {
         // after the things it calls.
         let path_workers = &path_workers;
         let mut expanded = futures::stream::iter(asked.clone().into_iter().enumerate().map(
-            |(index, worker)| async move {
+            |(index, mut worker)| async move {
+                // Coalesce registry graphs before applying explicit settings.
+                // A requested worker can also be another worker's dependency.
+                worker.fields.clear();
+                worker.start_after.clear();
                 let graph = self.expand(&worker, path_workers).await;
                 (index, graph)
             },
@@ -429,7 +455,17 @@ impl Daemon {
         for (_, graph) in expanded {
             wanted.extend(graph?);
         }
-        let wanted = coalesce_containers(wanted)?;
+        let mut wanted = coalesce_containers(wanted)?;
+        for worker in &mut wanted {
+            if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
+                worker.fields = declaration.fields.clone();
+                worker
+                    .start_after
+                    .extend(declaration.start_after.iter().cloned());
+                worker.start_after.sort();
+                worker.start_after.dedup();
+            }
+        }
 
         // Acquire registry artifacts before taking either the file mutation lock
         // or the project's runtime lock. `lifecycle::start_one` calls install
@@ -686,6 +722,7 @@ impl Daemon {
                     version: Some(version),
                 },
                 start_after: container.start_after.clone(),
+                fields: serde_yaml::Mapping::new(),
             });
         }
 
@@ -1344,6 +1381,7 @@ fn expand_graph(
             version: Some(node.version.clone()),
         },
         start_after: needs(&node.name),
+        fields: serde_yaml::Mapping::new(),
     };
 
     // Registry nodes are a set, not an ordered plan. Derive a deterministic
@@ -1435,6 +1473,7 @@ mod tests {
                 version: None,
             },
             start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
         }
     }
 
@@ -1610,6 +1649,7 @@ mod tests {
                     version: Some("1.0.0".to_string()),
                 },
                 start_after: vec!["console".to_string()],
+                fields: serde_yaml::Mapping::new(),
             }]
         );
     }
@@ -1653,6 +1693,7 @@ mod tests {
                     version: Some("1.0.0".to_string()),
                 },
                 start_after: vec!["console".to_string()],
+                fields: serde_yaml::Mapping::new(),
             }]
         );
     }

@@ -339,6 +339,37 @@ async fn add_rejects_an_engine_change_before_editing_the_file() {
 }
 
 #[tokio::test]
+async fn configured_add_rejects_invalid_batches_without_writing() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = daemon();
+    for workers in [
+        serde_json::json!([
+            {"worker": "./workers/api", "environment": {"MODE": "dev"}},
+            {"worker": "./workers/extra", "start_after": ["missing"]}
+        ]),
+        serde_json::json!([
+            {"worker": "./workers/api", "start_after": ["extra"]},
+            {"worker": "./workers/extra", "start_after": ["api"]}
+        ]),
+        serde_json::json!([{"worker": "./workers/api", "startup_timeout": "invalid"}]),
+        serde_json::json!([{"worker": "./workers/api", "scripts": {"pre_run_timeout": "1s"}}]),
+        serde_json::json!([
+            {"worker": "./workers/api", "environment": {"MODE": "dev"}},
+            {"worker": "./workers/api", "environment": {"MODE": "production"}}
+        ]),
+    ] {
+        let workers: Vec<iii_compose::edit::WorkerInput> = serde_json::from_value(workers).unwrap();
+        daemon
+            .add_configured(Some(&file), &workers, "invalid-add".to_string())
+            .await
+            .expect_err("invalid batch must fail");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), COMPOSE);
+    }
+}
+
+#[tokio::test]
 async fn update_rejects_an_engine_change_before_editing_the_file() {
     let containers =
         "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n";
