@@ -703,6 +703,7 @@ fn requested_workers(
         .unwrap_or_default()
 }
 
+/// Resolve legacy worker inputs and reject container objects for update and remove.
 fn requested_specs(
     workers: Option<Vec<WorkerInput>>,
     worker: Option<String>,
@@ -753,6 +754,7 @@ fn batch_worker_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// Extend the batch contract with the container object form accepted by add.
 fn add_worker_options_schema() -> Option<Value> {
     let mut schema = batch_worker_options_schema()?;
     let detailed = schema_for_value::<BatchWorkerOptions<WorkerInput>>()?;

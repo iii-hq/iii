@@ -34,6 +34,7 @@ pub enum WorkerInput {
     ),
 }
 
+/// Validate container field types while retaining explicit empty and null values.
 fn deserialize_definition<'de, D>(
     deserializer: D,
 ) -> std::result::Result<serde_json::Map<String, serde_json::Value>, D::Error>
@@ -749,6 +750,7 @@ fn rewrite(entry: &[&str], changes: &Mapping, indent: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Serialize one field as indented YAML, keeping version strings quoted.
 fn render_field(key: &str, value: &Value, indent: &str) -> Result<String> {
     let yaml = if key == "version" && value.is_string() {
         format!(
