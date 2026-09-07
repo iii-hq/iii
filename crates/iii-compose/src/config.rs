@@ -708,12 +708,12 @@ where
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct RawContainer {
-    worker: String,
+pub(crate) struct RawContainer {
+    pub(crate) worker: String,
     #[serde(default)]
-    version: Option<String>,
+    pub(crate) version: Option<String>,
     #[serde(default)]
-    start_after: Vec<String>,
+    pub(crate) start_after: Vec<String>,
     #[serde(default)]
     config_name: Option<String>,
     #[serde(default)]

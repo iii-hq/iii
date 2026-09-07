@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 use crate::{
     daemon::{Daemon, MutationOutcome},
+    edit::WorkerInput,
     error::ComposeError,
     logs::{LogCursor, LogStream, LogsOutcome},
     project::ContainerStatus,
@@ -66,7 +67,8 @@ pub struct ComposeRequest {
     ///
     /// This is the canonical JSON field for all three operations. The singular
     /// `worker` field remains accepted for clients that used the old contract.
-    pub workers: Option<Vec<String>>,
+    /// Add also accepts objects with the fields of a compose container.
+    pub workers: Option<Vec<WorkerInput>>,
     /// Caller-selected operation id used to bind mutation progress before submission.
     pub operation_id: Option<String>,
     /// Last cursor returned for each selected worker.
@@ -119,17 +121,18 @@ struct ProjectOptions {
 /// Request fields used by batch worker mutations.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
-struct BatchWorkerOptions {
+struct BatchWorkerOptions<T> {
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
     file: Option<String>,
     /// Canonical list of workers to mutate together. Add accepts worker names,
-    /// `name@version` references, registry references, or local paths. Update
+    /// `name@version` references, registry references, local paths, or container
+    /// objects with scripts, dependencies, and configuration fields. Update
     /// accepts package names or `name@version` references. Remove accepts
     /// declared worker keys.
-    workers: Option<Vec<String>>,
+    workers: Option<Vec<T>>,
     /// Backward-compatible form for mutating one worker.
     worker: Option<String>,
     /// Caller-selected operation id for race-free progress subscription.
@@ -410,7 +413,7 @@ async fn dispatch(
                     .emit(None, "resolving", "resolving dependency trees")
                     .await;
                 daemon_task
-                    .add(file.as_deref(), &workers, task_operation_id)
+                    .add_configured(file.as_deref(), &workers, task_operation_id)
                     .await
             };
             spawn_mutation(
@@ -422,7 +425,7 @@ async fn dispatch(
             Ok(to_value(&accepted))
         }
         Operation::Remove => {
-            let workers = requested_workers(request.workers, request.worker);
+            let workers = requested_specs(request.workers, request.worker)?;
             if workers.is_empty() {
                 return daemon
                     .remove(file.as_deref(), &[], operation_id())
@@ -471,7 +474,7 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Update => {
-            let workers = requested_workers(request.workers, request.worker);
+            let workers = requested_specs(request.workers, request.worker)?;
             if workers.is_empty() {
                 return daemon
                     .update(file.as_deref(), &[], operation_id())
@@ -691,10 +694,29 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
 
-fn requested_workers(workers: Option<Vec<String>>, worker: Option<String>) -> Vec<String> {
+fn requested_workers(
+    workers: Option<Vec<WorkerInput>>,
+    worker: Option<String>,
+) -> Vec<WorkerInput> {
     workers
-        .or_else(|| worker.map(|worker| vec![worker]))
+        .or_else(|| worker.map(|worker| vec![WorkerInput::Spec(worker)]))
         .unwrap_or_default()
+}
+
+fn requested_specs(
+    workers: Option<Vec<WorkerInput>>,
+    worker: Option<String>,
+) -> Result<Vec<String>, Error> {
+    requested_workers(workers, worker)
+        .into_iter()
+        .map(|input| match input {
+            WorkerInput::Spec(spec) => Ok(spec),
+            WorkerInput::Definition(_) => Err(compose_error(&ComposeError::InvalidWorkerSpec {
+                spec: "container object".to_string(),
+                reason: "container objects are supported only by compose::add".to_string(),
+            })),
+        })
+        .collect()
 }
 
 /// Batch worker mutations accept their canonical list or the old singular field.
@@ -704,7 +726,7 @@ fn requested_workers(workers: Option<Vec<String>>, worker: Option<String>) -> Ve
 /// least one input form must be present. Supplying both is valid; dispatch
 /// gives the canonical `workers` list precedence.
 fn batch_worker_options_schema() -> Option<Value> {
-    let mut schema = schema_for_value::<BatchWorkerOptions>()?;
+    let mut schema = schema_for_value::<BatchWorkerOptions<String>>()?;
     for field in ["workers", "worker"] {
         let types = schema
             .pointer_mut(&format!("/properties/{field}/type"))?
@@ -728,6 +750,16 @@ fn batch_worker_options_schema() -> Option<Value> {
             { "required": ["worker"] },
         ]),
     );
+    Some(schema)
+}
+
+fn add_worker_options_schema() -> Option<Value> {
+    let mut schema = batch_worker_options_schema()?;
+    let detailed = schema_for_value::<BatchWorkerOptions<WorkerInput>>()?;
+    schema["properties"]["workers"]["items"] = detailed["properties"]["workers"]["items"].clone();
+    schema["definitions"] = detailed["definitions"].clone();
+    schema["definitions"]["WorkerInput"]["anyOf"][0]["pattern"] = json!(r"\S");
+    schema["definitions"]["RawContainer"]["properties"]["worker"]["pattern"] = json!(r"\S");
     Some(schema)
 }
 
@@ -858,7 +890,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                batch_worker_options_schema(),
+                add_worker_options_schema(),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
@@ -993,7 +1025,10 @@ mod tests {
         .expect("workers should deserialize");
         assert_eq!(
             listed.workers,
-            Some(vec!["database".to_string(), "web".to_string()])
+            Some(vec![
+                WorkerInput::Spec("database".to_string()),
+                WorkerInput::Spec("web".to_string())
+            ])
         );
         assert_eq!(listed.worker, None);
 
@@ -1005,13 +1040,50 @@ mod tests {
         assert_eq!(singular.workers, None);
 
         assert_eq!(
-            requested_workers(None, singular.worker),
+            requested_specs(None, singular.worker).unwrap(),
             vec!["database".to_string()]
         );
         assert_eq!(
-            requested_workers(listed.workers, Some("ignored".to_string())),
+            requested_specs(listed.workers, Some("ignored".to_string())).unwrap(),
             vec!["database".to_string(), "web".to_string()]
         );
+    }
+
+    #[test]
+    fn only_add_accepts_full_container_objects_in_mixed_batches() {
+        let payload = json!({"workers": ["database", {
+            "worker": "./api",
+            "scripts": {"run": "./api", "pre_run": "echo ready", "pre_run_timeout": "10s", "post_run": "echo stopped"},
+            "start_after": ["database"],
+            "config_name": "api",
+            "config_override": {"port": 3000},
+            "working_dir": ".",
+            "environment": {"MODE": "dev"},
+            "env_file": ["./api.env"],
+            "startup_timeout": "5s"
+        }]});
+        let request: ComposeRequest = serde_json::from_value(payload.clone()).unwrap();
+        assert!(requested_specs(request.workers, request.worker).is_err());
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema).unwrap();
+            assert_eq!(
+                validator.is_valid(&payload),
+                function_id == "compose::add",
+                "{function_id}: {:?}",
+                validator.iter_errors(&payload).collect::<Vec<_>>()
+            );
+        }
+        let schema = schema_entry("compose::add").1.as_ref().unwrap();
+        let validator = jsonschema::Validator::new(schema).unwrap();
+        for invalid in [
+            json!({"workers": [{"worker": " "}]}),
+            json!({"workers": [{"worker": "api", "script": {"run": "./api"}}]}),
+            json!({"workers": [{"worker": "api", "scripts": {"unknown": "./api"}}]}),
+            json!({"workers": [{"scripts": {"run": "./api"}}]}),
+        ] {
+            assert!(!validator.is_valid(&invalid), "accepted {invalid}");
+        }
     }
 
     #[test]
