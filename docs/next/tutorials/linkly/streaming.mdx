@@ -15,16 +15,10 @@ links.
 ## Add the workers
 
 `iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
-manages the streaming. `iii-stream` must start with the engine, so uncomment the
-Ch. 5 lines under `engine.workers` and the Ch. 5 block under `containers`:
+manages the streaming. `iii-stream` is an engine worker, so it runs from the start; you only enable
+the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
-engine:
-  url: ws://127.0.0.1:49134
-  workers:
-    iii-stream: {}
-
-containers:
   click-streamer:
     worker: path://./click-streamer
     start_after: [pubsub]
