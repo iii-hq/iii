@@ -261,6 +261,9 @@ class III:
         self._functions: dict[str, RemoteFunctionData] = {}
         self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
+        # Failure acks keyed by trigger id, written only when a registration is
+        # rejected. Read through ``Trigger.registration_error``.
+        self._trigger_registration_errors: dict[str, dict[str, Any]] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
         self._queue: list[dict[str, Any]] = []
         self._reconnect_task: asyncio.Task[None] | None = None
@@ -493,6 +496,11 @@ class III:
             await self._send(trigger_type_data.message)
         for function_data in list(self._functions.values()):
             await self._send(function_data.message)
+        # Clear first: this replay re-requests every binding, so a rejection
+        # from the previous connection is stale. Keeping it would strand a
+        # retry loop on an error the engine may no longer have reason to
+        # repeat.
+        self._trigger_registration_errors.clear()
         for trigger in list(self._triggers.values()):
             await self._send(trigger)
 
@@ -950,6 +958,9 @@ class III:
         trigger_id = data.get("id", "")
         trigger_type = data.get("trigger_type", "")
         message = error.get("message", "")
+        # Record it so a caller polling ``Trigger.registration_error`` sees the
+        # cause, not just an operator reading the logs.
+        self._trigger_registration_errors[trigger_id] = error
         log.error(
             "[iii] Trigger registration failed for %r (%s): %s",
             trigger_id,
@@ -1209,11 +1220,18 @@ class III:
 
         def unregister() -> None:
             self._triggers.pop(trigger_id, None)
+            self._trigger_registration_errors.pop(trigger_id, None)
             self._send_if_connected(
                 UnregisterTriggerMessage(id=trigger_id, trigger_type=msg.trigger_type)
             )
 
-        return Trigger(unregister)
+        # Read through a callable rather than copying the value in: the ack
+        # arrives long after this handle is built, so a snapshot would stay
+        # ``None`` forever.
+        def registration_error() -> dict[str, Any] | None:
+            return self._trigger_registration_errors.get(trigger_id)
+
+        return Trigger(unregister, registration_error)
 
     def register_function(
         self,

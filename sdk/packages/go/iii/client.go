@@ -78,6 +78,10 @@ type Client struct {
 	triggers     map[string]*RegisterTriggerMessage
 	triggerTypes map[string]registeredTriggerType
 
+	// Failure acks keyed by trigger id, written only when a registration is
+	// rejected. Read through [Client.TriggerRegistrationError]. Guarded by mu.
+	triggerRegistrationErrors map[string]*ErrorBody
+
 	// pending maps an outstanding await-style invocation_id to the channel its result
 	// will be delivered on. Guarded by mu.
 	pending map[uuid.UUID]chan invocationOutcome
@@ -194,19 +198,20 @@ func WithNamespace(namespace string) Option {
 // [RegisterWorker] to create and connect in one step.
 func New(url string, opts ...Option) *Client {
 	c := &Client{
-		url:          url,
-		reconnect:    DefaultReconnectConfig(),
-		name:         defaultWorkerName(),
-		outbound:     make(chan []byte, 64),
-		state:        StateDisconnected,
-		functions:    map[string]registeredFunction{},
-		triggers:     map[string]*RegisterTriggerMessage{},
-		triggerTypes: map[string]registeredTriggerType{},
-		pending:      map[uuid.UUID]chan invocationOutcome{},
-		shutdown:     make(chan struct{}),
-		connected:    make(chan struct{}),
-		failed:       make(chan struct{}),
-		fatal:        make(chan struct{}),
+		url:                       url,
+		reconnect:                 DefaultReconnectConfig(),
+		name:                      defaultWorkerName(),
+		outbound:                  make(chan []byte, 64),
+		state:                     StateDisconnected,
+		functions:                 map[string]registeredFunction{},
+		triggers:                  map[string]*RegisterTriggerMessage{},
+		triggerRegistrationErrors: map[string]*ErrorBody{},
+		triggerTypes:              map[string]registeredTriggerType{},
+		pending:                   map[uuid.UUID]chan invocationOutcome{},
+		shutdown:                  make(chan struct{}),
+		connected:                 make(chan struct{}),
+		failed:                    make(chan struct{}),
+		fatal:                     make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -761,6 +766,10 @@ func (c *Client) onConnect() {
 			frames = append(frames, f)
 		}
 	}
+	// Clear first: this replay re-requests every binding, so a rejection from
+	// the previous connection is stale. Keeping it would strand a retry loop
+	// on an error the engine may no longer have reason to repeat.
+	clear(c.triggerRegistrationErrors)
 	for _, tr := range c.triggers {
 		if f, err := MarshalMessage(tr); err == nil {
 			frames = append(frames, f)
@@ -902,13 +911,57 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 			c.mu.Unlock()
 		}
 	case MsgTriggerRegistrationResult:
-		// Informational; nothing to do. (A trigger-registration error is the engine's
-		// to surface; the reference SDKs only log it.)
+		c.handleTriggerRegistrationResult(dec.TriggerRegistrationResult)
 	case MsgRegistrationRejected:
 		c.handleRegistrationRejected(dec.RegistrationRejected)
 	default:
 		// Unknown/unhandled inbound type; ignore.
 	}
+}
+
+// handleTriggerRegistrationResult logs a failed RegisterTrigger ack. Only
+// failures carry an Error, so a nil one is the success path and says nothing.
+//
+// A failure here means the binding never went live, and nothing else tells the
+// registering worker: the ack is the engine's one channel back. A boot-order
+// race, where a worker binds a trigger type before its provider has registered
+// it, arrives as trigger_type_not_found. Dropping that leaves the worker
+// believing a handler is bound when none is, and the handler simply never runs.
+// The failure is non-fatal and per-trigger, so the connection stays up; use
+// engine::registered-triggers::list with trigger_type, function_id, and
+// namespace to confirm whether a given binding is live.
+func (c *Client) handleTriggerRegistrationResult(msg *TriggerRegistrationResultMessage) {
+	if msg == nil || msg.Error == nil {
+		return
+	}
+	// Record it so a caller polling TriggerRegistrationError sees the cause,
+	// not just an operator reading the logs.
+	c.mu.Lock()
+	c.triggerRegistrationErrors[msg.ID] = msg.Error
+	c.mu.Unlock()
+	log.Printf("iii: trigger registration failed for %q (%s): %s: %s",
+		msg.ID, msg.TriggerType, msg.Error.Code, msg.Error.Message)
+}
+
+// TriggerRegistrationError reports the engine's rejection of the binding
+// registered under id, or nil if none arrived. Registration is asynchronous
+// and only failures are acked, so nil means "no failure reported yet", not
+// "confirmed live".
+//
+// The common cause is trigger_type_not_found from a boot-order race: the
+// binding was requested before the provider registered the trigger type. A
+// reconnect re-requests every binding and clears this.
+//
+// To confirm a binding IS live, call engine::registered-triggers::list with
+// trigger_type, function_id, and namespace.
+//
+// Unlike the other SDKs this is a client method rather than a field on a
+// handle: [Client.RegisterTrigger] takes the id from its caller and returns
+// only an error, so there is no handle to hang it on.
+func (c *Client) TriggerRegistrationError(id string) *ErrorBody {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.triggerRegistrationErrors[id]
 }
 
 // handleRegistrationRejected processes an engine registration rejection. A

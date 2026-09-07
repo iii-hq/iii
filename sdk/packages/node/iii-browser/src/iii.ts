@@ -7,6 +7,7 @@ import {
   type IIIReconnectionConfig,
 } from './iii-constants'
 import {
+  type ErrorBody,
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
@@ -156,6 +157,9 @@ class Sdk implements ISdk {
   private functions = new Map<string, RemoteFunctionData>()
   private invocations = new Map<string, Invocation & { timeout?: ReturnType<typeof setTimeout> }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
+  // Keyed by trigger id, written only on a failure ack. Read through the
+  // `registrationError` getter on the handle `registerTrigger` returned.
+  private triggerRegistrationErrors = new Map<string, ErrorBody>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private reconnectTimeout?: ReturnType<typeof setTimeout>
@@ -302,6 +306,7 @@ class Sdk implements ISdk {
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
+    const registrationErrors = this.triggerRegistrationErrors
 
     return {
       unregister: () => {
@@ -311,6 +316,14 @@ class Sdk implements ISdk {
           type: fullTrigger.type,
         })
         this.triggers.delete(id)
+        this.triggerRegistrationErrors.delete(id)
+      },
+      // A getter, not a captured value: the ack arrives long after this
+      // handle is built, so a copied field would read `undefined` forever.
+      // The map is captured because `this` inside a getter is the object
+      // literal, not the client.
+      get registrationError(): ErrorBody | undefined {
+        return registrationErrors.get(id)
       },
     }
   }
@@ -687,6 +700,10 @@ class Sdk implements ISdk {
     this.functions.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterFunction, message, true)
     })
+    // Clear first: a reconnect re-requests every binding, so a rejection from
+    // the previous connection is stale. Keeping it would strand a retry loop
+    // on an error the engine may no longer have any reason to repeat.
+    this.triggerRegistrationErrors.clear()
     this.triggers.forEach((trigger) => {
       this.sendMessage(MessageType.RegisterTrigger, trigger, true)
     })
@@ -940,6 +957,10 @@ class Sdk implements ISdk {
       this.onUnregisterTrigger(
         message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
       )
+    } else if (msgType === MessageType.TriggerRegistrationResult) {
+      this.onTriggerRegistrationResult(
+        message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+      )
     } else if (msgType === MessageType.RegistrationRejected) {
       this.onRegistrationRejected(
         message as { code: string; namespace: string; worker_name?: string; function_id?: string; owner_worker_id: string },
@@ -959,6 +980,29 @@ class Sdk implements ISdk {
    * would only reject the same name again, which with `maxRetries: -1` loops
    * forever).
    */
+  /**
+   * The engine's ack for a `registerTrigger`. Only failures carry an `error`.
+   * Log them: the binding never went live, and nothing else tells the worker.
+   * A boot-order race (binding a trigger type before its provider registers)
+   * arrives here as `trigger_type_not_found`.
+   */
+  private onTriggerRegistrationResult(message: {
+    id: string
+    trigger_type?: string
+    type?: string
+    function_id: string
+    error?: { code: string; message: string; stacktrace?: string }
+  }): void {
+    if (!message.error) return
+    const triggerType = message.trigger_type ?? message.type ?? ''
+    // Record before logging so a caller polling `trigger.registrationError`
+    // sees the cause, not just an operator reading the console.
+    this.triggerRegistrationErrors.set(message.id, message.error)
+    console.error(
+      `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
+    )
+  }
+
   private onRegistrationRejected(init: {
     code: string
     namespace: string

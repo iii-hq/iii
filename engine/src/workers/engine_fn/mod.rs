@@ -169,6 +169,11 @@ pub struct RegisteredTriggersListInput {
     /// Exact function id match.
     #[serde(default)]
     pub function_id: Option<String>,
+    /// Exact namespace match. Pair it with `function_id` to check binding
+    /// membership exactly: the same `function_id` can be registered once per
+    /// namespace, so an id-only filter can match another namespace's row.
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Worker-name match against the worker owning the target function.
     #[serde(default)]
     pub worker: Option<String>,
@@ -322,6 +327,9 @@ pub struct RegisteredTriggerSummary {
     pub id: String,
     pub trigger_type: String,
     pub function_id: String,
+    /// Namespace the target function is registered in. Carried because
+    /// `function_id` alone is not unique across namespaces.
+    pub namespace: String,
     pub worker_name: String,
     /// Full trigger config (e.g. `{ "api_path": "...", "http_method": "GET" }`
     /// for HTTP triggers, `{ "topic": "..." }` for events, etc.). Console
@@ -926,6 +934,7 @@ impl EngineFunctionsWorker {
                     id: t.id.clone(),
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
+                    namespace: t.namespace.clone(),
                     worker_name: Self::worker_name_for_function_id(
                         &index,
                         &t.namespace,
@@ -1345,6 +1354,7 @@ impl EngineFunctionsWorker {
                     id: t.id.clone(),
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
+                    namespace: t.namespace.clone(),
                     worker_name: Self::worker_name_for_function_id(
                         &index,
                         &t.namespace,
@@ -1830,7 +1840,7 @@ impl EngineFunctionsWorker {
 
     #[function(
         id = "engine::registered-triggers::list",
-        description = "List registered trigger instances (subscriber rows)."
+        description = "List registered trigger instances (subscriber rows). Filter by trigger_type + function_id + namespace to check whether one specific binding is live."
     )]
     pub async fn registered_triggers_list(
         &self,
@@ -1848,6 +1858,10 @@ impl EngineFunctionsWorker {
 
         if let Some(function_id) = input.function_id.as_deref() {
             registered_triggers.retain(|t| t.function_id == function_id);
+        }
+
+        if let Some(namespace) = input.namespace.as_deref() {
+            registered_triggers.retain(|t| t.namespace == namespace);
         }
 
         if let Some(worker) = input.worker.as_deref() {
@@ -2205,6 +2219,17 @@ mod tests {
         function_id: &str,
         config: Value,
     ) {
+        insert_trigger_instance_in(engine, id, trigger_type, function_id, config, "default");
+    }
+
+    fn insert_trigger_instance_in(
+        engine: &Engine,
+        id: &str,
+        trigger_type: &str,
+        function_id: &str,
+        config: Value,
+        namespace: &str,
+    ) {
         engine.trigger_registry.triggers.insert(
             id.to_string(),
             crate::trigger::Trigger {
@@ -2214,7 +2239,7 @@ mod tests {
                 config,
                 worker_id: None,
                 metadata: None,
-                namespace: "default".to_string(),
+                namespace: namespace.to_string(),
                 trigger_namespace: None,
                 home_namespace: crate::protocol::default_namespace(),
                 provider_namespace: crate::protocol::default_namespace(),
@@ -3059,6 +3084,7 @@ mod tests {
             id: "t-1".to_string(),
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             worker_name: "fn".to_string(),
             config: serde_json::json!({ "x": 1 }),
             config_summary: "{\"x\":1}".to_string(),
@@ -3067,6 +3093,7 @@ mod tests {
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["trigger_type"], "cron");
         assert_eq!(json["function_id"], "fn::handler");
+        assert_eq!(json["namespace"], crate::protocol::DEFAULT_NAMESPACE);
         assert_eq!(json["worker_name"], "fn");
         assert_eq!(json["config"], serde_json::json!({ "x": 1 }));
         assert_eq!(json["config_summary"], "{\"x\":1}");
@@ -3882,6 +3909,76 @@ mod tests {
             FunctionResult::Success(result) => {
                 assert_eq!(result.registered_triggers.len(), 1);
                 assert_eq!(result.registered_triggers[0].id, "a");
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    /// Membership check for one binding: the same `function_id` can be bound
+    /// in two namespaces, so a `trigger_type` + `function_id` filter alone
+    /// reports another namespace's row as if it were yours.
+    #[tokio::test]
+    async fn registered_triggers_list_filters_by_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        insert_trigger_instance_in(
+            &engine,
+            "mine",
+            "hook::pre-generate",
+            "user::handler",
+            serde_json::json!({}),
+            "default",
+        );
+        insert_trigger_instance_in(
+            &engine,
+            "theirs",
+            "hook::pre-generate",
+            "user::handler",
+            serde_json::json!({}),
+            "analytics",
+        );
+
+        let both = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                trigger_type: Some("hook::pre-generate".to_string()),
+                function_id: Some("user::handler".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match both {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 2);
+            }
+            _ => panic!("expected success"),
+        }
+
+        let mine = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                trigger_type: Some("hook::pre-generate".to_string()),
+                function_id: Some("user::handler".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match mine {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.registered_triggers.len(), 1);
+                assert_eq!(result.registered_triggers[0].id, "mine");
+                assert_eq!(result.registered_triggers[0].namespace, "default");
+            }
+            _ => panic!("expected success"),
+        }
+
+        let unbound = module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                trigger_type: Some("hook::pre-generate".to_string()),
+                function_id: Some("user::handler".to_string()),
+                namespace: Some("memory".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match unbound {
+            FunctionResult::Success(result) => {
+                assert!(result.registered_triggers.is_empty());
             }
             _ => panic!("expected success"),
         }

@@ -32,6 +32,13 @@ export type UnregisterTriggerMessage = {
   type?: string
 }
 
+/** The engine's wire-format error. Mirrors `ErrorBody` in the node SDK. */
+export type ErrorBody = {
+  code: string
+  message: string
+  stacktrace?: string
+}
+
 export type TriggerRegistrationResultMessage = {
   message_type: MessageType.TriggerRegistrationResult
   id: string

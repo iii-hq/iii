@@ -388,16 +388,36 @@ and worker lifecycle. Defined in
 | `engine::workers::info`       | Inspect one connected worker's full surface (functions, trigger types, registered triggers). Takes `name` plus an optional `namespace`. |
 | `engine::triggers::list`      | List every registered trigger type (filterable by `include_internal`).        |
 | `engine::triggers::info`      | Inspect one trigger type: schemas, owner, and live instance count.            |
-| `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). |
+| `engine::registered-triggers::list` | List every registered trigger instance. Filter by `include_internal`, `trigger_type`, `function_id`, `namespace`, `worker`, or `search`. |
 | `engine::registered-triggers::info` | Inspect one registered trigger instance, with denormalized trigger and function detail. |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`). |
 | `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. Returns the trigger id. |
 | `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
 
 Every row returned by `engine::functions::list`, `engine::functions::info`, `engine::workers::list`,
-and `engine::workers::info` carries a `namespace` field naming the registry key under which the entry
-is registered. It distinguishes two rows that share a `function_id` or a worker `name`. Neither
-`list` function takes a `namespace` filter; both return every namespace.
+`engine::workers::info`, and `engine::registered-triggers::list` carries a `namespace` field naming
+the registry key under which the entry is registered. It distinguishes two rows that share a
+`function_id` or a worker `name`. The `functions::list` and `workers::list` functions take no
+`namespace` filter and return every namespace; `registered-triggers::list` does take one.
+
+### Checking whether one binding is live
+
+`engine::triggers::info` reports `instance_count`, which is an aggregate over every function bound to
+that trigger type. A second worker bound to the same type keeps the count positive, so a count above
+zero does not prove that your own binding landed. To check one binding exactly, call
+`engine::registered-triggers::list` with all three of `trigger_type`, `function_id`, and `namespace`.
+An empty `registered_triggers` array means your binding is not live.
+
+```json
+{
+  "trigger_type": "harness::hook::pre-generate",
+  "function_id": "memory::on-pre-generate",
+  "namespace": "default"
+}
+```
+
+Use this in a boot-order retry loop. A worker that binds a trigger type before its provider registers
+gets `trigger_type_not_found`, and the acknowledgement is async, so the failure is easy to miss.
 
 ## Engine discovery triggers
 

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::Error;
+use crate::protocol::ErrorBody;
 
 /// Configuration passed to a [`TriggerHandler`] when a trigger instance is
 /// registered or unregistered.
@@ -39,23 +40,51 @@ pub trait TriggerHandler: Send + Sync {
 #[derive(Clone)]
 pub struct Trigger {
     unregister_fn: Arc<dyn Fn() + Send + Sync>,
+    registration_error_fn: Option<Arc<dyn Fn() -> Option<ErrorBody> + Send + Sync>>,
 }
 
 impl Trigger {
     pub fn new(unregister_fn: Arc<dyn Fn() + Send + Sync>) -> Self {
-        Self { unregister_fn }
+        Self {
+            unregister_fn,
+            registration_error_fn: None,
+        }
+    }
+
+    /// Attach the source this handle reads its rejection from. Separate from
+    /// [`new`](Trigger::new) so the existing constructor keeps its signature.
+    pub fn with_registration_error(
+        mut self,
+        registration_error_fn: Arc<dyn Fn() -> Option<ErrorBody> + Send + Sync>,
+    ) -> Self {
+        self.registration_error_fn = Some(registration_error_fn);
+        self
     }
 
     /// Remove this trigger from the engine.
     pub fn unregister(&self) {
         (self.unregister_fn)();
     }
+
+    /// The engine's rejection of this binding, if one arrived; `None`
+    /// otherwise. Registration is asynchronous and only failures are acked, so
+    /// `None` means "no failure reported yet", not "confirmed live".
+    ///
+    /// The common cause is `trigger_type_not_found` from a boot-order race:
+    /// the binding was requested before the provider registered the trigger
+    /// type. A reconnect re-sends the registration and clears this.
+    ///
+    /// To confirm a binding IS live, call `engine::registered-triggers::list`
+    /// with `trigger_type`, `function_id`, and `namespace`.
+    pub fn registration_error(&self) -> Option<ErrorBody> {
+        self.registration_error_fn.as_ref().and_then(|f| f())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -72,5 +101,37 @@ mod tests {
         trigger.unregister();
 
         assert!(called.load(Ordering::SeqCst));
+    }
+
+    /// A handle built without a source reports nothing rather than panicking:
+    /// `Trigger::new` stays usable on its own, which is what keeps its
+    /// signature unchanged for existing callers.
+    #[test]
+    fn registration_error_is_none_without_a_source() {
+        let trigger = Trigger::new(Arc::new(|| {}));
+
+        assert!(trigger.registration_error().is_none());
+    }
+
+    /// The handle must read through to the live map. A snapshot taken at
+    /// construction would stay `None` forever, since the ack always arrives
+    /// after `register_trigger` has returned.
+    #[test]
+    fn registration_error_reads_through_to_its_source() {
+        let slot: Arc<Mutex<Option<ErrorBody>>> = Arc::new(Mutex::new(None));
+        let reader = slot.clone();
+        let trigger = Trigger::new(Arc::new(|| {}))
+            .with_registration_error(Arc::new(move || reader.lock().unwrap().clone()));
+
+        assert!(trigger.registration_error().is_none());
+
+        *slot.lock().unwrap() = Some(ErrorBody {
+            code: "trigger_type_not_found".to_string(),
+            message: "Trigger type not found".to_string(),
+            stacktrace: None,
+        });
+
+        let err = trigger.registration_error().expect("error after the ack");
+        assert_eq!(err.code, "trigger_type_not_found");
     }
 }
