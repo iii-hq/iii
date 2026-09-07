@@ -342,10 +342,12 @@ navigating to the **Function** tab, selecting `compose::restart` and giving it t
 The same flow from the CLI:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://example.com/blog","code":"blog"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/blog; done
-iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'blog'"
+for n in $(seq 1 3); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/blog\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
 ```
 
 The exploratory version of [Ch. 3: Persist everything](/tutorials/linkly/persistence) steps through
@@ -453,9 +455,12 @@ redirect is a new message row.
 The same flow from the CLI:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://example.com/feed","code":"feed"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/feed; sleep 2s; done
+for n in $(seq 1 3); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/feed\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+  sleep 2s
+done
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 

@@ -231,19 +231,21 @@ worker.registerFunction("http::redirect", async (req) => {
 
 ### Try the click tracking
 
-Now let's see the click tracking in action. Save the file, create a link, and simulate clicking it a
-few times:
+Now let's see the click tracking in action. Save the file, create a few links, and simulate a click on
+each:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+for n in $(seq 1 3); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
 The durable history is now queryable with SQL:
 
 ```bash
-iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'iii'"
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
 ```
 
 ```json

@@ -120,12 +120,14 @@ The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those
 
 ## See it work
 
-With the engine running, create and follow a link a few times:
+With the engine running, create a few links and follow each:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+for n in $(seq 1 3); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
 Then read the live `clicks` stream:

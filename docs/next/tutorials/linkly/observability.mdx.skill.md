@@ -3,38 +3,39 @@
 # Ch. 2: Observe everything
 
 
-Every cross-worker call flows through the engine, so the engine traces and logs the whole system
-end to end. In this chapter you open the console to see that, then, if you want, read the same data
+Every cross-worker call flows through the engine, so the engine traces and logs the whole system end
+to end. In this chapter you open the console to see that, then, if you want, read the same data
 directly from the engine.
 
 ## Open the console
 
-The engine has been running since Chapter 1. Start the console, a browser UI for inspecting it:
+iii has a console worker that provides an easy to use web interface for monitoring and interacting
+with your iii application. Add it to your project with:
 
 ```bash
-iii console
+iii trigger compose::add worker=console
 ```
 
-Open it at [http://127.0.0.1:3113/traces](http://127.0.0.1:3113/traces). Every worker you added is
-listed with the functions and triggers it registered. Navigate to the traces tab and run the below
-command to watch the invocations stream live:
+Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"
+and then take a look at what happens in the Traces window within the console when you run the
+following:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 5); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
-Click any redirect to see a full waterfall of timed spans crossing from `http` into `link` and
-back:
+Click any redirect to see a full waterfall of timed spans crossing from `http` into `link` and back:
 
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
 
-You didn't add a tracing library or thread a request ID between services to get this.
-The engine injects `iii-observability` automatically, so it must not be declared in `config.yaml`
-or `worker-compose.yaml`. Every request gets a trace and every `Logger` line is collected
-automatically across workers. In iii, end-to-end observability is an inherent property of the
-system.
+You didn't add a tracing library or thread a request ID between services to get this. The engine
+injects `iii-observability` automatically. Every request gets a trace and every `Logger` line is
+collected automatically across workers. In iii, end-to-end observability is an inherent property of
+the system.
 
 <Info>
   **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
@@ -57,9 +58,11 @@ For most teams the console (or your own OTel backend) is all you need day to day
 Create some traffic:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 5); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 curl -s -o /dev/null http://127.0.0.1:3111/s/missing
 ```
 
@@ -85,7 +88,7 @@ iii trigger engine::logs::list limit=100 \
   "body": "link resolved",
   "data": {
     "log.data": {
-      "code": "iii",
+      "code": "iii-example-1",
       "found": true
     }
   },
