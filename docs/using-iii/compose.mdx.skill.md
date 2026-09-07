@@ -40,6 +40,28 @@ this operation.
 
 `compose::*` functions as documented below are the intended way to manage a running compose daemon.
 
+### Process names on Linux
+
+Compose includes its resolved namespace in the process label. The daemon uses `iii:c:<namespace>`,
+and an engine started by that daemon uses `iii:e:<namespace>`. The namespace comes from
+`--namespace`, then `namespace:` in the compose file, then `default`.
+
+For example, `iii compose --namespace orders --up` produces these labels when it starts an engine:
+
+```text
+iii:c:orders
+  +-- iii:e:orders
+```
+
+Use `ps -p <PID> -o pid,ppid,comm,args` to inspect both fields. The `args` field retains the full
+namespace and the original command arguments. Linux limits `comm` to 15 bytes, so namespaces longer
+than nine characters use their first two characters, `~`, and six hexadecimal hash characters in
+that field. Use `args` to read the full namespace when a short label is abbreviated.
+
+The daemon sets its command label through an early re-exec with the same PID, before starting
+the runtime or any children. Existing external engines keep their names. On other operating
+systems, process names retain their previous behavior.
+
 ### Compose logs
 
 Compose logs stdout and stderr output from started workers to `$HOME/.iii/compose/namespace/`.

@@ -63,8 +63,13 @@ impl ManagedEngine {
                 })??;
         let config_path = materialize_engine_config(spec, &namespace_dir)?;
         let log_path = engine_log_path(&state_root, daemon_namespace);
-        let mut engine =
-            Self::spawn_with_materialized_config(&executable, &config_path, &log_path).await?;
+        let mut engine = Self::spawn_with_materialized_config(
+            &executable,
+            &config_path,
+            &log_path,
+            daemon_namespace,
+        )
+        .await?;
         engine._namespace_lock = Some(namespace_lock);
         Ok(engine)
     }
@@ -73,8 +78,9 @@ impl ManagedEngine {
         executable: &Path,
         config_path: &Path,
         log_path: &Path,
+        namespace: &str,
     ) -> Result<Self> {
-        match Self::spawn_with_paths(executable, config_path, log_path).await {
+        match Self::spawn_with_paths(executable, config_path, log_path, namespace).await {
             Ok(mut engine) => {
                 engine.remove_config_on_stop = true;
                 Ok(engine)
@@ -90,6 +96,7 @@ impl ManagedEngine {
         executable: &Path,
         config_path: &Path,
         log_path: &Path,
+        namespace: &str,
     ) -> Result<Self> {
         let parent = log_path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
@@ -119,6 +126,19 @@ impl ManagedEngine {
             .arg("--config")
             .arg(config_path)
             .stdin(Stdio::null());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+
+            command
+                .as_std_mut()
+                .arg0(crate::process_title::command_name(
+                    crate::process_title::Role::Engine,
+                    namespace,
+                ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = namespace;
 
         let (process, output) =
             spawn_supervised_piped(command).map_err(|err| ComposeError::EngineSpawnFailed {
@@ -1225,7 +1245,7 @@ port: 60123
             "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\nprintf '\\033[31mengine stdout\\033[0m\\n'\nprintf '\\033]2;forged title\\007engine stderr\\n' >&2\nexit 7\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let status = tokio::time::timeout(Duration::from_secs(5), engine.wait())
@@ -1264,7 +1284,9 @@ port: 60123
         std::fs::create_dir(&log).unwrap();
 
         let error =
-            match ManagedEngine::spawn_with_materialized_config(&script, &config, &log).await {
+            match ManagedEngine::spawn_with_materialized_config(&script, &config, &log, "test")
+                .await
+            {
                 Ok(_) => panic!("a directory cannot be opened as the engine log"),
                 Err(error) => error,
             };
@@ -1290,7 +1312,7 @@ port: 60123
             "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=11 2>/dev/null | tr '\\000' x\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let status = tokio::time::timeout(Duration::from_secs(10), engine.wait())
@@ -1325,7 +1347,7 @@ port: 60123
             "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let pid = engine.pid();

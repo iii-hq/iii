@@ -299,8 +299,7 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let cli_args = match Cli::try_parse_from(&argv) {
         Ok(c) => c,
@@ -317,6 +316,35 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
+    // Re-exec for argv[0] before creating runtime threads or recording usage.
+    // Errors in compose configuration still go through its normal reporter.
+    #[cfg(target_os = "linux")]
+    if !cli_args.version && !cli_args.install_only_generate_ids {
+        use iii_compose::process_title::{self, Role};
+
+        let label = match &cli_args.command {
+            Some(Commands::Compose(args)) if cli_args.config.is_none() => {
+                iii_compose::process_namespace(args)
+                    .ok()
+                    .flatten()
+                    .map(|namespace| (Role::Compose, namespace))
+            }
+            None => argv
+                .first()
+                .and_then(|arg0| process_title::engine_namespace(arg0))
+                .map(|namespace| (Role::Engine, namespace.to_string())),
+            _ => None,
+        };
+        if let Some((role, namespace)) = label {
+            process_title::set_current(role, &namespace)?;
+        }
+    }
+
+    run(cli_args)
+}
+
+#[tokio::main]
+async fn run(cli_args: Cli) -> anyhow::Result<()> {
     // Docs generation is offline build tooling: handle it before telemetry
     // and any engine setup so the output stays deterministic.
     if let Some(Commands::GenDocs { out }) = &cli_args.command {

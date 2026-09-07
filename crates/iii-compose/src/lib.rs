@@ -37,6 +37,7 @@ pub mod namespace;
 pub mod operation;
 mod parallelism;
 pub mod process;
+pub mod process_title;
 pub mod project;
 pub mod registry;
 pub mod remote;
@@ -441,6 +442,25 @@ async fn serve(
     }
 
     result
+}
+
+/// Resolves the daemon's process label before the CLI starts its async runtime.
+/// Build and logs commands do not serve a namespace and need no process label.
+pub fn process_namespace(cli: &ComposeCli) -> Result<Option<String>> {
+    let ComposeCommand::Serve {
+        explicit_daemon_namespace,
+        file,
+        start,
+        ..
+    } = cli.plan()?
+    else {
+        return Ok(None);
+    };
+    let initial_file = load_invocation_file(&file, start)?;
+    Ok(Some(resolve_daemon_namespace(
+        explicit_daemon_namespace,
+        initial_file.as_ref(),
+    )))
 }
 
 fn resolve_daemon_namespace(
