@@ -1439,8 +1439,9 @@ impl MutationOutcome {
             .collect();
         let mut affected_workers = std::collections::BTreeSet::new();
         let mut primary_error = None;
-        let mut first_container_error = None;
-        let mut failed = Vec::new();
+        // Reconciliation can restart and then start the same container. Keep
+        // its first position, but let its last result describe the final state.
+        let mut latest_container_errors = indexmap::IndexMap::new();
 
         for operation in operations {
             if primary_error.is_none() {
@@ -1450,15 +1451,18 @@ impl MutationOutcome {
                 if result.changed && !requested.contains(result.container.as_str()) {
                     affected_workers.insert(result.container.clone());
                 }
-                if result.error.is_some() {
-                    failed.push(result.container.clone());
-                }
-                if first_container_error.is_none() {
-                    first_container_error = result.error.as_ref().map(MutationError::from);
-                }
+                latest_container_errors.insert(
+                    result.container.clone(),
+                    result.error.as_ref().map(MutationError::from),
+                );
             }
         }
 
+        let first_container_error = latest_container_errors.values().find_map(Clone::clone);
+        let failed: Vec<String> = latest_container_errors
+            .iter()
+            .filter_map(|(container, error)| error.as_ref().map(|_| container.clone()))
+            .collect();
         let error = if status == OpStatus::Failed {
             primary_error.or(first_container_error)
         } else {
@@ -2411,6 +2415,39 @@ mod mutation_outcome_tests {
         state::ChildStatus,
     };
 
+    fn optional_mailer_failure(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: false,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Failed,
+                changed: false,
+                error: Some(OpError {
+                    code: "STARTUP_TIMEOUT".into(),
+                    message: "container 'mailer' was not ready after 2s".into(),
+                }),
+            }],
+            primary_error: None,
+        }
+    }
+
+    fn ready_mailer(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: true,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Ready,
+                changed: true,
+                error: None,
+            }],
+            primary_error: None,
+        }
+    }
+
     #[test]
     fn concise_outcome_omits_healthy_containers_and_log_tails() {
         let primary_error = OpError {
@@ -2513,6 +2550,43 @@ mod mutation_outcome_tests {
             encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
             "{encoded}"
         );
+    }
+
+    #[test]
+    fn successful_outcome_reports_each_not_required_failure_once() {
+        let restart = optional_mailer_failure("restart");
+        let up = optional_mailer_failure("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            false,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!(
+            outcome.not_required_failures,
+            Some(vec!["mailer".to_string()])
+        );
+    }
+
+    #[test]
+    fn successful_outcome_omits_a_failure_recovered_by_a_later_operation() {
+        let restart = optional_mailer_failure("restart");
+        let up = ready_mailer("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            true,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!((outcome.error, outcome.not_required_failures), (None, None));
     }
 }
 

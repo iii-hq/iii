@@ -34,7 +34,7 @@ use crate::{
     config::{ComposeFile, RestartPolicy},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Children, LifecycleCtx, OpResult, OpStatus},
+    lifecycle::{self, Children, LifecycleCtx, OpResult},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
@@ -395,7 +395,11 @@ impl Project {
         self.mark(key, ChildStatus::Restarting, None).await;
 
         let result = self.restart_one(key, format!("supervisor:{key}")).await;
-        if result.status == OpStatus::Ok {
+        let ready = result
+            .containers
+            .iter()
+            .any(|result| result.container == key && result.state == ChildStatus::Ready);
+        if ready {
             // The record is already `Ready` and nothing more is owed. The spent
             // count survives, so a worker that comes back for a moment each
             // time still runs out of attempts.

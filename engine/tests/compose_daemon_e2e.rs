@@ -1373,11 +1373,12 @@ containers:
     daemon.shutdown().await;
 }
 
-/// The cap is what separates a restart policy from a busy loop. Once it is
-/// spent the supervisor does what it would have done with no policy at all:
-/// fails the container and takes its dependents down.
+/// `required` controls startup only, so a non-required container still spends
+/// its restart budget after it had become ready. Once the budget is spent the
+/// supervisor does what it would have done with no policy at all: fails the
+/// container and takes its dependents down.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_container_that_never_stays_up_exhausts_its_attempts_and_cascades() {
+async fn a_not_required_container_that_never_stays_up_exhausts_attempts_and_cascades() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -1398,6 +1399,7 @@ stop_timeout: 100ms
 containers:
   api:
     worker: path://./workers/api
+    required: false
     restart: on-failure
     scripts:
       run: "echo up >> attempts; while [ ! -f die ]; do sleep 0.05; done; exit 1"
