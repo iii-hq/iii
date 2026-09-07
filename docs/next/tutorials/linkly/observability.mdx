@@ -61,7 +61,7 @@ For most teams the console (or your own OTel backend) is all you need day to day
 Create some traffic:
 
 ```bash
-for n in $(seq 1 5); do
+for n in $(seq 6 10); do
   curl -s -X POST http://127.0.0.1:3111/links \
     -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
   curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
@@ -91,7 +91,7 @@ iii trigger engine::logs::list limit=100 \
   "body": "link resolved",
   "data": {
     "log.data": {
-      "code": "iii-example-1",
+      "code": "iii-example-6",
       "found": true
     }
   },
