@@ -3,41 +3,40 @@
 # Ch. 3: Persist everything
 
 
-Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine
-and everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
-record of links and a timestamped row for every click on a short code. `state` stays in the
-picture as a fast read cache in front of the database.
+Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine and
+everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
+record of links and a timestamped row for every click on a short code. `state` stays in the picture
+as a fast read cache in front of the database.
 
 <Info>
-  `state` can also persist on its own (`store_method: file_based` with a `file_path`). This
-  chapter uses a dedicated `database` worker instead, which gives you durable storage plus SQL to
-  query it.
+  `state` can also persist on its own (`store_method: file_based` with a `file_path`). This chapter
+  uses a dedicated `database` worker instead, which gives you durable storage plus SQL to query it.
 </Info>
 
 ## Add the database worker
 
 State is a fast cache, but you also want a durable record you can run SQL over: every link, and a
-timestamped row each time someone follows one. Stop Compose, uncomment the Ch. 3 block in
-`worker-compose.yaml`, and uncomment the `start_after` line under `link`:
+timestamped row each time someone follows one. Uncomment the Ch. 3 block in `worker-compose.yaml`,
+and uncomment the `start_after` line under `link`:
 
 ```yaml worker-compose.yaml
-  link:
-    worker: path://./link
-    start_after: [database]
+link:
+  worker: path://./link
+  start_after: [database]
 
-  database:
-    worker: package://database
-    version: "0.5.8"
-    config_name: database
-    working_dir: .
-    config_override:
-      databases:
-        primary:
-          pool:
-            acquire_timeout_ms: 5000
-            idle_timeout_ms: 30000
-            max: 10
-          url: sqlite:./data/iii.db
+database:
+  worker: package://database
+  version: "0.5.8"
+  config_name: database
+  working_dir: .
+  config_override:
+    databases:
+      primary:
+        pool:
+          acquire_timeout_ms: 5000
+          idle_timeout_ms: 30000
+          max: 10
+        url: sqlite:./data/iii.db
 ```
 
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
@@ -47,10 +46,10 @@ timestamped row each time someone follows one. Stop Compose, uncomment the Ch. 3
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-Start the project again:
+Restart the project with:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii trigger compose::restart
 ```
 
 The worker will be in charge of defining its own schema. We'll build up the necessary changes to
@@ -111,8 +110,7 @@ ensureSchema().catch((err) => logger.error("database: schema init failed", { err
 
 #### Setup database writing
 
-**Modify `link::create`** to write to both the database (durable record) and `state` (hot
-cache):
+**Modify `link::create`** to write to both the database (durable record) and `state` (hot cache):
 
 ```typescript src/index.ts {4-11}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -173,9 +171,8 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 ## Add click tracking
 
 Since we have a database now, you can start click tracking. Make a new function
-(`link::record_click`) to do that and save it to the database. The next chapter will move this
-work onto a queue so that it can run without touching the redirect's logic. Add it below
-`link::resolve`:
+(`link::record_click`) to do that and save it to the database. The next chapter will move this work
+onto a queue so that it can run without touching the redirect's logic. Add it below `link::resolve`:
 
 ```typescript src/index.ts
 worker.registerFunction(
@@ -228,8 +225,8 @@ worker.registerFunction("http::redirect", async (req) => {
 
 ### Try the click tracking
 
-Now let's see the click tracking in action. Save the file, create a few links, and simulate a click on
-each:
+Now let's see the click tracking in action. Save the file, create a few links, and simulate a click
+on each:
 
 ```bash
 for n in $(seq 1 3); do
@@ -269,8 +266,8 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
   database::query --help` to see what arguments `database::query` accepts.
 </Info>
 
-Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast,
-and every redirect appends a timestamped row to the `clicks` table. But that row is written on the
+Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast, and
+every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
 [Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so
 redirects stay fast.
