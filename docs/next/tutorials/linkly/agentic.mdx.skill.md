@@ -234,24 +234,32 @@ Try it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 Open a new tab: click the **+** in the menu bar, then select the **Triggers** page.
 
 On the Triggers page, open `POST /links`, put `{"url":"https://example.com","code":"home"}` in the
-body editor, and **Send Request**. You get `201` with the code.
+body editor, and **Send Request**. You get `201` with the code. Your first shortened link is now
+created.
 
 Then open `GET /s/:code`, set the `code` path parameter to `home`, and **Send Request** to see the
-`302` to `https://example.com`.
+`302` redirect from the shortened link to `https://example.com`.
 
-Open another tab with the **+**, then select the **States** page, and find the stored link under the
-`links` group.
+You can also open another tab with the **+**, then select the **States** page, and find the stored
+link under the `links` group.
 
 The same flow from the CLI:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
   -H 'Content-Type: application/json' -d '{"url":"https://example.org/docs","code":"docs"}'
+```
+
+```bash
 curl -i http://127.0.0.1:3111/s/docs
 ```
 
-[Ch. 1: Foundations](/tutorials/linkly/foundations) explains `registerWorker`, `registerFunction`,
-and `registerTrigger`.
+```bash
+iii trigger state::get scope="links" key="docs"
+```
+
+The exploratory version of [Ch. 1: Foundations](/tutorials/linkly/foundations) explains
+`registerWorker`, `registerFunction`, and `registerTrigger` in depth.
 
 ## Ch. 2: Observe everything
 
@@ -278,10 +286,14 @@ after all) but you can also run them manually here:
 
 ```bash
 iii trigger engine::traces::list # get a list of traces
+```
+
+```bash
 iii trigger engine::traces::tree trace_id=<your trace_id here> # read a specific trace
 ```
 
-[Ch. 2: Observe everything](/tutorials/linkly/observability) explains what the engine records.
+The exploratory version of [Ch. 2: Observe everything](/tutorials/linkly/observability) walks you
+through engine observability.
 
 ## Ch. 3: Persist everything
 
@@ -336,8 +348,8 @@ for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/blog; done
 iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'blog'"
 ```
 
-[Ch. 3: Persist everything](/tutorials/linkly/persistence) explains the cache-then-database read
-path.
+The exploratory version of [Ch. 3: Persist everything](/tutorials/linkly/persistence) steps through
+the cache-then-database read path.
 
 ## Ch. 4: Make it durable
 
@@ -401,8 +413,8 @@ curl -s -X PUT http://127.0.0.1:3111/links/link1 \
 iii trigger link::resolve code=link1
 ```
 
-[Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues, durable pub/sub, and
-regular pub/sub.
+The exploratory [Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues,
+durable pub/sub, and regular pub/sub.
 
 ## Ch. 5: Stream live clicks
 
@@ -447,7 +459,7 @@ for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/feed; sleep
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 
-[Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and
+The exploratory [Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and
 `TriggerAction.Void()`.
 
 ## Ch. 6: Move bulk data with channels
@@ -502,7 +514,7 @@ the result.
 
 From the CLI, run `iii trigger link::resolve code=mylink`.
 
-[Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) explains channels and
+Visit [Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) to understand channels and
 `createChannel`.
 
 ## Ch. 7: Bring in the browser
@@ -561,5 +573,5 @@ CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
 
 The browser shows a confirm prompt, and the delete happens after the user accepts.
 
-[Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the RBAC listener, the auth
-function, and browser-registered functions.
+The exploratory version of [Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the
+RBAC listener, the auth function, and browser-registered functions.
