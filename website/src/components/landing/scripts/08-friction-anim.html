@@ -1,0 +1,458 @@
+<!-- ============= FRICTION ANIMATION ENGINE ============= -->
+<script>
+  (() => {
+    const stage = document.getElementById('fanim-stage');
+    const canvas = document.getElementById('fanim-canvas');
+    if (!stage || !canvas) return;
+
+    const N = 22;
+    const OFF = [[-58,-34],[6,-64],[62,-16],[-30,28],[40,46],[-6,-4]];
+    const FOFF = [[-44,96],[14,110],[70,84],[104,34]];
+    const FOFF2 = [[-58,84],[-2,116],[58,92],[112,52]];
+    const E1 = [[0,1],[0,2],[1,2],[1,3],[2,3],[2,4],[3,4],[3,5],[4,5],[0,4],[1,5]];
+    const EF = [[6,7],[7,8],[8,9],[6,9],[6,1],[8,4],[9,2],[7,3],[9,5]];
+    const E1C = E1.map(([a, b]) => [a + 12, b + 12]);
+    const EFC = EF.map(([a, b]) => [a + 12, b + 12]);
+    const BROKEN_C = ['13-15','14-16','15-17','12-16','19-15'];
+    const PACE = 1;
+
+    const WAYS = [
+      {
+        id: 'old', label: 'the old way',
+        headline: 'every stack pulls against itself.',
+        sub: 'the work it takes to add a thing is the work it takes to change it.',
+        depT0: 1.0, depGap: 1.8, depDone: 1.7, depStep: 0.3,
+        phases: ['decide', 'install', 'integrate', 'test integration', 'containerize', 'log'],
+        ring: 12.4, ship: 13.0, feat: 21.2, rw: 21.9, dur: 1.25,
+        rework: ['design','integrate','test','redesign','integrate','test','ship','downtime','triage','fix'],
+        bad: [2, 7, 8], down: [7, 8], featFail: 2, featEdge: 1, featLink: 4, featDone: 5, featProd: 6,
+        redesign: 3, pfault: true,
+        tensions: ['integration <-> use', 'development <-> production', 'architecture <-> extensibility'],
+        desc: [
+          'to use a service you need to integrate a service, often multiple times at different parts of your application.',
+          'what works in development rarely survives the move to production.',
+          'existing architecture always resists extensibility. necessary changes which are impossible to plan for slow advancement.'
+        ]
+      },
+      {
+        id: 'iii', label: 'the iii way',
+        // Half the steps, so it plays slower: otherwise the phase captions are
+        // gone before they can be read.
+        rate: 0.6,
+        headline: 'the same stack, without the seams.',
+        sub: 'decide, add. what runs in dev is what runs in prod. extending it is test, ship.',
+        depT0: 0.8, depGap: 0.95, depDone: 0.55, depStep: 0.34,
+        phases: ['decide', 'add'],
+        ring: 6.4, ship: 7.0, feat: 9.6, rw: 10.4, dur: 1.25,
+        rework: ['test', 'ship'],
+        bad: [], down: [], featFail: -1, featEdge: 0, featLink: 0, featDone: 0, featProd: 1,
+        redesign: -1, pfault: false,
+        tensions: ['integration = use', 'development = production', 'architecture = extensibility'],
+        desc: [
+          'a service is a worker. decide, add — using it is the same act as integrating it, once.',
+          'the system you run in dev is the system that runs in prod. nothing is re-made to move it.',
+          'a new worker joins a running system. nothing is redesigned, nothing breaks: test, ship.'
+        ]
+      }
+    ];
+
+    // Each list item holds for the same wall-clock time on both sides, whatever
+    // the side's rate is: a rework step for STEP_S, a phase caption for PHASE_S.
+    // Story time runs at `rate`, so the story-time values are scaled by it.
+    const STEP_S = 1.25, PHASE_S = 0.3;
+    WAYS.forEach((s) => {
+      const r = s.rate || 1;
+      s.dur = STEP_S * r;
+      s.depStep = PHASE_S * r;
+    });
+
+    // ---- DOM the engine drives ----
+    const $tensions = document.getElementById('fanim-tensions');
+    const $ways = stage.querySelectorAll('.fanim-switch button');
+    const $marker = document.getElementById('fanim-switch-marker');
+
+    const tensionEls = WAYS[0].tensions.map((_, i) => {
+      const el = document.createElement('div');
+      el.className = 'fanim-tension';
+      el.innerHTML =
+        '<div class="fanim-tension-head">' +
+        '<span class="fanim-tension-bar"></span><span class="fanim-tension-name"></span></div>' +
+        '<div class="fanim-tension-body"><p></p></div>';
+      el.addEventListener('click', () => jumpTension(i));
+      $tensions.appendChild(el);
+      return {
+        el,
+        name: el.querySelector('.fanim-tension-name'),
+        desc: el.querySelector('.fanim-tension-body p')
+      };
+    });
+
+    // ---- State ----
+    const state = { way: 0, sub: 0, ph: -1 };
+    let P = [], E = {}, C = {}, colorTries = 0;
+    let t0 = performance.now(), last = t0, raf = null, dtLast = 0.016;
+    let w = 0, h = 0, dpr = 1, cx = 0, cy = 0, sized = false;
+    let logX, logY;
+
+    const W = () => WAYS[state.way];
+    const end = () => { const s = W(); return s.rw + s.rework.length * s.dur + 2.6; };
+    const phase = (st) => {
+      const s = W();
+      return st > s.rw ? Math.min(s.rework.length - 1, Math.floor((st - s.rw) / s.dur)) : -1;
+    };
+    const arrive = (i) => { const s = W(); return s.depT0 + i * s.depGap; };
+    const pace = () => PACE * (W().rate || 1);
+    const now = () => ((performance.now() - t0) / 1000) * pace();
+
+    function recolor(){
+      const cs = getComputedStyle(canvas);
+      const v = (n, fb) => cs.getPropertyValue(n).trim() || fb;
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      C = {
+        ink: v('--ink', dark ? '#f2f0ed' : '#0a0a0a'),
+        faint: v('--ink-faint', dark ? '#9c9893' : '#6b6865'),
+        ghost: v('--ink-ghost', dark ? '#5d5a55' : '#a3a09c'),
+        rule: v('--rule', dark ? '#2a2926' : '#d8d4cb'),
+        accent: v('--accent', dark ? '#3ea8ff' : '#ff5a1f'),
+        bg: v('--bg', dark ? '#111110' : '#f5f3ee'),
+        ok: dark ? 'oklch(0.72 0.13 152)' : 'oklch(0.56 0.11 150)'
+      };
+      if (!cs.getPropertyValue('--ink').trim() && ++colorTries < 60) setTimeout(recolor, 100);
+    }
+
+    function resize(){
+      const r = canvas.getBoundingClientRect();
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.max(1, Math.round(r.width * dpr));
+      canvas.height = Math.max(1, Math.round(r.height * dpr));
+      w = r.width; h = r.height;
+      // Vertically centred: the headline block that used to sit under the
+      // drawing is gone, so there is nothing to leave room for.
+      cx = r.width * 0.5; cy = r.height * 0.42;
+      sized = true;
+      render();
+    }
+
+    function reset(){
+      t0 = performance.now(); logX = undefined;
+      P.forEach((p) => { p.born = false; p.a = 0; p.d = 0; p.f = 0; });
+    }
+
+    function setWay(n){
+      if (n === state.way){ reset(); state.sub = 0; state.ph = -1; render(); return; }
+      reset();
+      state.way = n; state.sub = 0; state.ph = -1;
+      render();
+    }
+
+    function jumpTension(i){
+      const s = W();
+      const at = i === 0 ? 0.2 : i === 1 ? s.ring - 0.3 : s.feat - 0.5;
+      logX = undefined;
+      P.forEach((p, n) => { if (i === 0 || n >= 6){ p.born = false; p.a = 0; p.d = 0; p.f = 0; } });
+      t0 = performance.now() - (at * 1000) / pace();
+      state.sub = i; state.ph = phase(at);
+      render();
+    }
+
+    function zones(){
+      // The tensions park along the top now, so the drawing gets the full width,
+      // and dev/prod sit symmetrically about the centre.
+      const L = 40, R = Math.max(400, w - 40), span = R - L;
+      const dev = L + span * 0.27, prod = L + span * 0.73;
+      // g scales the whole drawing. The original capped it at 1, which pinned
+      // the clusters to their 1200px-wide size however big the stage got.
+      const g = Math.max(0.9, Math.min(2.2, Math.min(w / 1000, h / 620) * 1.35));
+      return { dev, prod, mid: (dev + prod) / 2, g };
+    }
+
+    const proj = (x, y) => ({ x: cx + x, y: cy + y, f: 1 });
+
+    // Where the active tension card docks, and where the dev/prod divider ends.
+    const dockY = () => Math.min(cy + 150 * zones().g, h - 180);
+
+    function target(i, st){
+      const s = W(), p = P[i];
+      const z = zones();
+      const devX = z.dev - w / 2, prodX = z.prod - w / 2, g = z.g;
+      const ph = phase(st);
+      if (i < 6){
+        const on = st > arrive(i);
+        if (on && !p.born){ p.born = true; p.x = devX + OFF[i][0] * 1.9 * g; p.y = OFF[i][1] * 1.9 * g; }
+        return { x: devX + OFF[i][0] * g, y: OFF[i][1] * g, a: on ? 1 : 0, f: 0, d: st > arrive(i) + s.depDone ? 1 : 0 };
+      }
+      if (i < 10){
+        const k = i - 6, on = st > s.feat + k * 0.25;
+        const o = s.redesign >= 0 && ph >= s.redesign ? FOFF2[k] : FOFF[k];
+        if (on && !p.born){ p.born = true; p.x = devX + o[0] * g; p.y = h * 0.7; }
+        const fault = s.featFail >= 0 && ph === s.featFail && (i === 7 || i === 9) ? 1 : 0;
+        return { x: devX + o[0] * g, y: o[1] * g, a: on ? 1 : 0, f: fault, d: ph >= s.featDone ? 1 : 0 };
+      }
+      if (i >= 12 && i < 18){
+        const k = i - 12, on = st > s.ship;
+        if (on && !p.born){ p.born = true; p.x = devX + OFF[k][0] * g; p.y = OFF[k][1] * g; }
+        const down = s.down.indexOf(ph) >= 0;
+        const moveFail = s.pfault && st > s.ship + 1.7 && st < s.feat - 1.6 && (k === 2 || k === 4);
+        const fault = (down && k > 0 && k < 5) || moveFail ? 1 : 0;
+        return { x: prodX + OFF[k][0] * g, y: OFF[k][1] * g, a: on ? 1 : 0, f: fault, d: 1 };
+      }
+      if (i >= 18){
+        const k = i - 18, on = ph >= s.featProd;
+        const o = s.redesign >= 0 ? FOFF2[k] : FOFF[k];
+        if (on && !p.born){ p.born = true; p.x = devX + o[0] * g; p.y = o[1] * g; }
+        const fault = s.down.indexOf(ph) >= 0 && k === 1 ? 1 : 0;
+        return { x: prodX + o[0] * g, y: o[1] * g, a: on ? 1 : 0, f: fault, d: 1 };
+      }
+      return { x: 0, y: 0, a: 0, f: 0, d: 0 };
+    }
+
+    function wantEdges(st){
+      const s = W(), want = {}, ph = phase(st);
+      const down = s.down.indexOf(ph) >= 0;
+      E1.forEach(([a, b]) => { if (st > arrive(Math.max(a, b)) + 0.9) want[a + '-' + b] = 0; });
+      if (ph >= s.featEdge){ want['6-7'] = 0; want['7-8'] = 0; want['8-9'] = 0; want['6-9'] = 0; want['6-1'] = 0; }
+      if (s.featFail >= 0 && ph >= s.featEdge && ph <= s.featFail){
+        want['8-4'] = ph === s.featFail ? 1 : 0;
+        want['9-2'] = ph === s.featFail ? 1 : 0;
+      }
+      if (ph >= s.featLink){ want['7-3'] = 0; want['9-5'] = 0; want['8-4'] = 0; }
+      const moving = s.pfault && st > s.ship + 1.7 && st < s.feat - 1.6;
+      if (st > s.ship + 0.3) E1C.forEach(([a, b]) => {
+        const key = a + '-' + b;
+        if (moving && key === '13-17') return;
+        want[key] = (down && BROKEN_C.indexOf(key) >= 0) || (moving && (key === '14-16' || key === '15-17')) ? 1 : 0;
+      });
+      if (ph >= s.featProd) ['18-19','19-20','20-21','18-21','18-13','19-15','21-17'].forEach((key) => {
+        want[key] = down && BROKEN_C.indexOf(key) >= 0 ? 1 : 0;
+      });
+      return want;
+    }
+
+    function frame(stamp){
+      let dt = ((stamp - last) / 1000) * pace(); last = stamp;
+      dt = Math.min(0.05, dt); dtLast = dt;
+      const st = now();
+      const k = 1 - Math.exp(-7 * dt);
+
+      if (st > end()) setWay(state.way === 0 ? 1 : 0);
+
+      for (let i = 0; i < N; i++){
+        if (i >= 10 && i < 12) continue;
+        const p = P[i], t = target(i, st);
+        const kk = i >= 12 ? 1 - Math.exp(-1.6 * dt) : k;
+        p.x += (t.x - p.x) * kk; p.y += (t.y - p.y) * kk;
+        p.a += (t.a - p.a) * (1 - Math.exp(-6 * dt));
+        p.f += (t.f - p.f) * (1 - Math.exp(-5 * dt));
+        p.d = (p.d || 0) + ((t.d || 0) - (p.d || 0)) * (1 - Math.exp(-5 * dt));
+      }
+      const want = wantEdges(st);
+      for (const key in E){
+        const e = E[key], has = key in want;
+        e.w += ((has ? 1 : 0) - e.w) * (1 - Math.exp(-4.5 * dt));
+        e.br += ((has && want[key] ? 1 : 0) - e.br) * (1 - Math.exp(-5 * dt));
+      }
+      draw(st);
+      sync(st);
+      raf = requestAnimationFrame(frame);
+    }
+
+    function sync(st){
+      const s = W();
+      const sub = st > s.feat - 0.6 ? 2 : st > s.ring - 0.4 ? 1 : 0;
+      const ph = phase(st);
+      if (sub !== state.sub || ph !== state.ph){ state.sub = sub; state.ph = ph; render(); }
+    }
+
+    function draw(st){
+      const ctx = canvas.getContext('2d'), s = W();
+      const ph = phase(st);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      ctx.lineWidth = 1;
+      ctx.font = "500 15px 'Chivo Mono', ui-monospace, monospace";
+      ctx.textAlign = 'center';
+
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = C.rule;
+      const mid = Math.round(zones().mid);
+      const dEnd = dockY() - 34;
+      // The divider starts level with the top of the labels, which sit clear of
+      // the parked tensions above them.
+      const labelY = 150;
+      ctx.beginPath(); ctx.moveTo(mid + 0.5, labelY - 13); ctx.lineTo(mid + 0.5, dEnd); ctx.stroke();
+      ctx.fillStyle = C.ghost;
+      ctx.textAlign = 'right'; ctx.fillText('Development', mid - 18, labelY);
+      ctx.textAlign = 'left'; ctx.fillText('Production', mid + 18, labelY);
+      ctx.textAlign = 'center';
+
+      const pts = P.map((p) => proj(p.x, p.y));
+
+      for (const key in E){
+        const e = E[key]; if (e.w < 0.02) continue;
+        const A = pts[e.a], B = pts[e.b];
+        const al = Math.min(P[e.a].a, P[e.b].a) * e.w;
+        if (al < 0.02) continue;
+        const brk = e.br;
+        const pending = Math.min(P[e.a].d || 0, P[e.b].d || 0) < 0.5;
+        ctx.globalAlpha = al * (brk > 0.5 ? 0.55 : pending ? 0.5 : 0.22);
+        ctx.strokeStyle = brk > 0.5 ? C.accent : pending ? C.ghost : C.ink;
+        if (brk > 0.5){
+          const g = 0.14 + 0.06 * Math.sin(st * 7 + e.a);
+          ctx.beginPath();
+          ctx.moveTo(A.x, A.y); ctx.lineTo(A.x + (B.x - A.x) * (0.5 - g), A.y + (B.y - A.y) * (0.5 - g));
+          ctx.moveTo(A.x + (B.x - A.x) * (0.5 + g), A.y + (B.y - A.y) * (0.5 + g)); ctx.lineTo(B.x, B.y);
+          ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(A.x, A.y);
+          ctx.lineTo(A.x + (B.x - A.x) * e.w, A.y + (B.y - A.y) * e.w); ctx.stroke();
+        }
+      }
+
+      const box = (idx, fade, alarm) => {
+        let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+        idx.forEach((i) => {
+          if (P[i].a > 0.85){
+            x0 = Math.min(x0, pts[i].x); y0 = Math.min(y0, pts[i].y);
+            x1 = Math.max(x1, pts[i].x); y1 = Math.max(y1, pts[i].y);
+          }
+        });
+        if (x1 <= x0) return null;
+        const m = 22 * zones().g;
+        ctx.globalAlpha = (alarm ? 0.85 : 0.55) * fade;
+        ctx.strokeStyle = alarm ? C.accent : C.rule;
+        ctx.strokeRect(Math.round(x0 - m) + 0.5, Math.round(y0 - m) + 0.5, Math.round(x1 - x0 + m * 2), Math.round(y1 - y0 + m * 2));
+        return { x0: x0 - m, y0: y0 - m, x1: x1 + m, y1: y1 + m };
+      };
+      let db = null, pb = null;
+      if (st > s.ring) db = box([0,1,2,3,4,5,6,7,8,9], Math.min(1, (st - s.ring) / 0.6), s.featFail >= 0 && ph === s.featFail);
+      if (st > s.ship){
+        pb = box([12,13,14,15,16,17,18,19,20,21], Math.min(1, (st - s.ship) / 0.6), s.down.indexOf(ph) >= 0);
+        const shipping = (st > s.ship && st < s.ship + 2.2) || ph === s.featProd;
+        if (pb && shipping){
+          ctx.globalAlpha = 0.8; ctx.fillStyle = C.faint;
+          ctx.fillText(state.way === 0 ? 'ship' : 'identical', (pb.x0 + pb.x1) / 2, pb.y1 + 26);
+        }
+      }
+      const anchor = ph >= s.featProd ? (pb || db) : (db || pb);
+      if (ph >= 0 && anchor){
+        const raw = (st - s.rw) / s.dur, lastPh = s.rework.length - 1;
+        const fr = raw >= lastPh ? Math.min(1, raw - lastPh) : raw % 1;
+        const tx = anchor.x0 - 14, ty = Math.max(anchor.y0 + 14, 152);
+        if (logX === undefined){ logX = tx; logY = ty; }
+        const ks = 1 - Math.exp(-2.6 * Math.min(0.05, dtLast || 0.016));
+        logX += (tx - logX) * ks; logY += (ty - logY) * ks;
+        ctx.textAlign = 'right';
+        for (let j = Math.min(4, ph); j >= 0; j--){
+          const a = Math.max(0, 1 - (j + fr) * 0.26);
+          if (a <= 0.02) continue;
+          const bad = s.bad.indexOf(ph - j) >= 0;
+          ctx.globalAlpha = a * 0.95; ctx.fillStyle = bad ? C.accent : C.faint;
+          ctx.fillText(s.rework[ph - j], logX, logY + (j + fr) * 23);
+        }
+        ctx.textAlign = 'center';
+      }
+
+      let cur = -1;
+      for (let i = 0; i < 6; i++) if (st > arrive(i) && st < arrive(i) + s.depGap) cur = i;
+      if (cur >= 0){
+        const raw = (st - arrive(cur)) / s.depStep, lastPh = s.phases.length - 1;
+        const p2 = Math.min(lastPh, Math.floor(raw)), fr = raw >= lastPh ? Math.min(1, raw - lastPh) : raw % 1;
+        ctx.textAlign = 'center'; ctx.fillStyle = C.faint;
+        for (let j = Math.min(2, p2); j >= 0; j--){
+          const a = Math.max(0, 1 - (j + fr) * 0.36);
+          if (a <= 0.02) continue;
+          ctx.globalAlpha = a * 0.95;
+          const px = Math.min(pts[cur].x, zones().mid - 110);
+          ctx.fillText(s.phases[p2 - j], px, pts[cur].y + 30 + (j + fr) * 20);
+        }
+      }
+
+      for (let i = 0; i < N; i++){
+        const p = P[i]; if (p.a < 0.02) continue;
+        const size = 5.5, half = size / 2;
+        ctx.globalAlpha = p.a;
+        if (p.f > 0.4){
+          ctx.fillStyle = C.accent; ctx.fillRect(pts[i].x - half - 1, pts[i].y - half - 1, size + 2, size + 2);
+          ctx.globalAlpha = p.a * 0.4; ctx.strokeStyle = C.accent;
+          ctx.strokeRect(Math.round(pts[i].x - half - 5) + 0.5, Math.round(pts[i].y - half - 5) + 0.5, Math.round(size + 10), Math.round(size + 10));
+        } else if ((p.d || 0) > 0.5){
+          ctx.fillStyle = C.ok; ctx.fillRect(pts[i].x - half, pts[i].y - half, size, size);
+        } else {
+          ctx.globalAlpha = p.a * 0.8; ctx.strokeStyle = C.ghost;
+          ctx.strokeRect(Math.round(pts[i].x - half) + 0.5, Math.round(pts[i].y - half) + 0.5, Math.round(size), Math.round(size));
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ---- DOM render: nav state and where each tension sits ----
+    function render(){
+      const s = W();
+      $ways.forEach((b) => {
+        const on = Number(b.dataset.way) === state.way;
+        b.classList.toggle('on', on);
+        if (on){
+          $marker.style.transform = 'translateX(' + b.offsetLeft + 'px)';
+          $marker.style.width = b.offsetWidth + 'px';
+        }
+      });
+
+      if (!sized) return;
+      const z = zones();
+      const ay = dockY();
+      const x0 = Math.max(215, Math.min(z.dev, w - 460));
+      const x1 = Math.max(x0 + 190, Math.min(z.mid, w - 250));
+      const x2 = Math.max(x1 + 190, Math.min(z.prod, w - 60));
+      const at = [x0, x1, x2];
+      // Parked: a centred row along the top, under the bar. Active: docked to
+      // the moment in the story it belongs to.
+      const cardW = Math.min(520, w - 72);
+      const colW = Math.min(400, (w - 72) / 3);
+      const rowLeft = (w - colW * 3) / 2;
+      tensionEls.forEach((t, i) => {
+        const on = i === state.sub;
+        t.name.textContent = s.tensions[i];
+        t.desc.textContent = s.desc[i];
+        t.el.classList.toggle('on', on);
+        t.el.style.left =
+          (on ? Math.max(16, Math.min(at[i] - cardW / 2, w - cardW - 16)) : rowLeft + i * colW) + 'px';
+        t.el.style.top = (on ? ay : 78) + 'px';
+        t.el.style.width = (on ? cardW : colW - 24) + 'px';
+        t.el.style.opacity = on ? '1' : '0.55';
+      });
+    }
+
+    // ---- Wiring ----
+    for (let i = 0; i < N; i++) P.push({ x: 0, y: 0, z: 0, a: 0, f: 0, d: 0, born: false });
+    const addEdges = (l) => l.forEach(([a, b]) => { E[a + '-' + b] = { a, b, w: 0, br: 0 }; });
+    addEdges(E1); addEdges(EF); addEdges(E1C); addEdges(EFC);
+    recolor();
+    resize();
+
+    $ways.forEach((b) => b.addEventListener('click', () => setWay(Number(b.dataset.way))));
+    // The marker is measured from the label widths, which move when the mono
+    // font finishes loading.
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+
+    new ResizeObserver(resize).observe(canvas);
+    // The site's theme toggle rewrites data-theme on <html>; the canvas colors
+    // are read once and have to be re-read when it does.
+    new MutationObserver(recolor).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    });
+
+    // Only run while on screen.
+    new IntersectionObserver((ents) => {
+      for (const e of ents){
+        if (e.isIntersecting && !raf){
+          last = performance.now();
+          raf = requestAnimationFrame(frame);
+        } else if (!e.isIntersecting && raf){
+          cancelAnimationFrame(raf);
+          raf = null;
+        }
+      }
+    }, { threshold: 0.05 }).observe(stage);
+  })();
+</script>
