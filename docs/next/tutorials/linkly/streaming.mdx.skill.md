@@ -12,7 +12,7 @@ links.
 ## Add the workers
 
 `iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
-manages the streaming. `iii-stream` must start with the engine, so stop Compose and uncomment the
+manages the streaming. `iii-stream` must start with the engine, so uncomment the
 Ch. 5 lines under `engine.workers` and the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
@@ -110,10 +110,10 @@ worker.registerTrigger({
 logger.info("click-streamer ready");
 ```
 
-Start the project again:
+Restart Compose so it picks up the change:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii trigger compose::restart
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.

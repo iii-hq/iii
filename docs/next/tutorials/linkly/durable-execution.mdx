@@ -14,8 +14,7 @@ independent subscribers: a Python analytics worker and a cache refresher, both d
 
 ## Add the workers
 
-This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Stop Compose and
-uncomment the Ch. 4 block in `worker-compose.yaml`:
+This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomment the Ch. 4 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
   queue:
@@ -322,10 +321,10 @@ Analytics keeps its counts in its own database, so the `link` worker never has t
 That is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary`
 one from Chapter 3.
 
-Start the project again:
+Restart Compose so it picks up the change:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii trigger compose::restart
 ```
 
 ### See it work

@@ -15,7 +15,7 @@ worker stays focused on single links.
 
 ## Add the worker
 
-Stop Compose and uncomment the Ch. 6 block in `worker-compose.yaml`:
+Uncomment the Ch. 6 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
   bulk-importer:
@@ -83,10 +83,10 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
 logger.info("bulk-importer ready");
 ```
 
-Start the project again:
+Restart Compose so it picks up the change:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii trigger compose::restart
 ```
 
 ## See it work

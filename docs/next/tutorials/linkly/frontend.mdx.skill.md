@@ -12,7 +12,7 @@ needs a human's go-ahead.
 
 A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the
 trusted port your local workers use. The `auth` worker holds the authentication logic that gates
-those connections. Stop Compose and uncomment the Ch. 7 block in `worker-compose.yaml`:
+those connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
   auth:
@@ -58,10 +58,10 @@ Uncomment the Ch. 7 `rbac-proxy` container:
           - match("link::request_delete")
 ```
 
-Restart the project so Compose can start the proxy:
+Restart Compose so it starts the proxy:
 
 ```bash
-iii compose --up --file worker-compose.yaml
+iii trigger compose::restart
 ```
 
 `expose_functions` is an allowlist of which functions a browser session can call. The browser reads
