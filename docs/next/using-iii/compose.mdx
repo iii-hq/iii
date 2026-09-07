@@ -113,20 +113,22 @@ WantedBy=multi-user.target
 These are the functions that control the compose worker and are the canonical way of interacting
 with it and making basic changes to the `worker-compose.yaml` file.
 
-| Function            | Takes                                                       | Returns                                                                    |
-| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `compose::up`       | `file`, `container`                                         | An operation result.                                                       |
-| `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
-| `compose::status`   | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
-| `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
-| `compose::list`     | nothing                                                     | The daemon name, its namespace, its pid, and every project it holds.       |
-| `compose::validate` | `file`                                                      | A validation report.                                                       |
-| `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
-| `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
-| `compose::restart`  | `file`, `container`                                         | The `down` and the `up`, or one worker's restart.                          |
-| `compose::update`   | `file`, `worker`                                            | Both versions, and the restart that followed.                              |
-| `compose::stop`     | nothing                                                     | The daemon name, its pid, and the projects it is about to stop.            |
-| `compose::schema`   | `function_id`                                               | Request/response JSON Schemas, descriptions, timeouts, and retry safety.   |
+| Function             | Takes                                                       | Returns                                                                    |
+| -------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `compose::up`        | `file`, `container`                                         | A concise [mutation outcome](#mutation-outcomes).                          |
+| `compose::down`      | `file`, `container`                                         | A concise [mutation outcome](#mutation-outcomes).                          |
+| `compose::status`    | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
+| `compose::logs`      | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
+| `compose::list`      | nothing                                                     | The daemon name, its namespace, its pid, and every project it holds.       |
+| `compose::validate`  | `file`                                                      | A validation report.                                                       |
+| `compose::add`       | `file`, `workers`, `operation_id`                           | An [accepted operation](#observable-operations): its id and worker count.  |
+| `compose::remove`    | `file`, `workers`, `operation_id`                           | An [accepted operation](#observable-operations): its id and worker count.  |
+| `compose::restart`   | `file`, `container`                                         | A concise [mutation outcome](#mutation-outcomes).                          |
+| `compose::update`    | `file`, `workers`, `operation_id`                           | An [accepted operation](#observable-operations): its id and worker count.  |
+| `compose::operation` | `operation_id`                                              | An operation's latest snapshot: its status, phase, and progress.           |
+| `compose::cancel`    | `operation_id`                                              | The operation id and whether cancellation was accepted.                    |
+| `compose::stop`      | nothing                                                     | The daemon name, its pid, and the projects it is about to stop.            |
+| `compose::schema`    | `function_id`                                               | Request/response JSON Schemas, descriptions, timeouts, and retry safety.   |
 
 `file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
 working directory; without one, the call fails with `NO_COMPOSE_FILE`. A relative `file` path is
@@ -143,8 +145,81 @@ iii trigger compose::list    --namespace dev
 iii trigger compose::add     --namespace dev file=./worker-compose.yaml worker=database worker=web
 iii trigger compose::remove  --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::restart --namespace dev file=./worker-compose.yaml
+iii trigger compose::operation --namespace dev operation_id=deploy-42
+iii trigger compose::cancel  --namespace dev operation_id=deploy-42
 iii trigger compose::schema  --namespace dev function_id=compose::up
 iii trigger compose::stop    --namespace dev
+```
+
+### Mutation outcomes
+
+`compose::up`, `compose::down`, and `compose::restart` return one concise outcome rather than the
+full reconciliation state. Full worker state stays available through
+[`compose::status`](#checking-status), and process output through [`compose::logs`](#viewing-logs).
+
+| Field              | Description                                                                    |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `status`           | `ok` or `failed`.                                                              |
+| `changed`          | `true` when the call changed anything.                                         |
+| `worker`           | The primary worker a targeted mutation named. Absent for whole-project calls.  |
+| `workers`          | Every explicitly requested worker, present when more than one was supplied.    |
+| `version`          | The resolved package version, when the mutation resolves one.                  |
+| `affected_workers` | Other workers the mutation had to change, such as restarted dependents.        |
+| `error`            | The first worker failure, as a stable `code` and a sanitized `message`.        |
+
+Optional fields are omitted from the response when they do not apply.
+
+### Observable operations
+
+`compose::add`, `compose::remove`, and `compose::update` do not wait for reconciliation. A call
+that names workers is admitted immediately and returns an acceptance:
+
+```json
+{ "operation_id": "compose:6f0c33f0-…", "status": "accepted", "requested": 2 }
+```
+
+The mutation then runs in the background under that `operation_id`. Pass your own `operation_id`
+in the request to choose the id yourself. A caller-selected id lets you bind a progress trigger
+before submitting the mutation, so no event can be missed. An id that is already in use is refused
+with `OPERATION_ID_ALREADY_EXISTS`.
+
+A call that names no workers reconciles the file in place and returns a
+[mutation outcome](#mutation-outcomes) directly.
+
+#### Completion events
+
+The daemon publishes operation progress through the `compose-operation` trigger type. Bind a
+function to it to receive events. The trigger config takes `operation_id`, which you omit to
+receive every operation from the daemon, and `terminal_only`, which delivers only the final
+completion event.
+
+```typescript
+worker.registerTrigger({
+  type: "compose-operation",
+  function_id: "deploy::on_complete",
+  config: { operation_id: "deploy-42", terminal_only: true },
+});
+```
+
+Each event holds `sequence`, `operation_id`, `phase`, `detail`, `elapsed_ms`, and `terminal`, plus
+`container`, `current`, and `total` when they apply. Every operation ends with exactly one terminal
+event: `phase` is `complete` and `terminal` is `true`, whether the operation succeeded, failed, or
+was cancelled.
+
+#### Checking and cancelling an operation
+
+`compose::operation` takes `operation_id` and returns the operation's latest snapshot, intended for
+reconnect and recovery: `operation_id`, `status` (`running`, `succeeded`, `failed`, or
+`cancelled`), `phase`, `requested`, `total`, `completed`, `last_sequence`, and `last_event`.
+
+`compose::cancel` takes `operation_id`, requests cancellation, and returns the id with a
+`cancelled` flag. A cancelled mutation finishes with status `cancelled` and reports
+`OPERATION_CANCELLED`.
+
+```bash
+iii trigger compose::add       --namespace dev worker=database worker=web operation_id=deploy-42
+iii trigger compose::operation --namespace dev operation_id=deploy-42
+iii trigger compose::cancel    --namespace dev operation_id=deploy-42
 ```
 
 ### Starting a project
@@ -180,27 +255,37 @@ registry package name (`state`), a package name with a version (`state@0.21.4`),
 
 A JSON payload for this function can use a single list: `{ "workers": ["database", "web"] }`.
 
-| Field     | Description                                    |
-| --------- | ---------------------------------------------- |
-| `file`    | The project to edit.                           |
-| `workers` | The canonical JSON list of workers to declare. |
-| `worker`  | One worker. Repeatable on the CLI.             |
+| Field          | Description                                                             |
+| -------------- | ------------------------------------------------------------------------ |
+| `file`         | The project to edit.                                                    |
+| `workers`      | The canonical JSON list of workers to declare.                          |
+| `worker`       | One worker. Repeatable on the CLI.                                      |
+| `operation_id` | A caller-selected id for the [operation](#observable-operations).       |
+
+The call returns as soon as the operation is accepted. Follow it through
+[completion events](#completion-events) or [`compose::operation`](#checking-and-cancelling-an-operation).
 
 An package without a version specified will pin to the latest available version (ex. `0.23.1`).
 
 Workers whose declarations did not change remain running. Existing workers whose resolved versions
 changed restart in place, and newly declared workers start through the normal dependency plan.
 
-### Removing a worker
+### Removing workers
 
-`compose::remove worker=state` removes the named worker and every reference to it. The changes are
-validated before a worker is removed. Compose then stops only that worker and runs an idempotent
-`up`.
+`compose::remove worker=state` removes the named workers and every reference to them. The changes
+are validated before a worker is removed. Compose then stops only those workers and runs an
+idempotent `up`. On the CLI, repeat `worker=` for each worker; a JSON payload can use a single
+`workers` list.
 
-| Field    | Description           |
-| -------- | --------------------- |
-| `file`   | The project to edit.  |
-| `worker` | The worker to remove. |
+| Field          | Description                                                       |
+| -------------- | ------------------------------------------------------------------ |
+| `file`         | The project to edit.                                              |
+| `workers`      | The canonical JSON list of declared worker keys to remove.        |
+| `worker`       | One worker. Repeatable on the CLI.                                |
+| `operation_id` | A caller-selected id for the [operation](#observable-operations). |
+
+The call returns as soon as the operation is accepted. Follow it through
+[completion events](#completion-events) or [`compose::operation`](#checking-and-cancelling-an-operation).
 
 Removal does not resolve the registry graph or remove other workers that were added with this
 worker. Those remain declared until they are removed explicitly.
@@ -218,17 +303,23 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 | `file`   | The project to restart. |
 | `worker` | The worker to restart.  |
 
-### Updating a worker
+### Updating workers
 
 `compose::update worker=state` updates a worker to either the current `latest` version when no
-version is specified or to the target version when it is.
+version is specified or to the target version when it is. On the CLI, repeat `worker=` for each
+worker; a JSON payload can use a single `workers` list.
 
 If the requested version is already installed this operation is treated as a NOOP.
 
-| Field    | Description                                |
-| -------- | ------------------------------------------ |
-| `file`   | The project to edit.                       |
-| `worker` | The worker spec: `name` or `name@version`. |
+| Field          | Description                                                       |
+| -------------- | ------------------------------------------------------------------ |
+| `file`         | The project to edit.                                              |
+| `workers`      | The canonical JSON list of worker specs to update.                |
+| `worker`       | One worker spec: `name` or `name@version`. Repeatable on the CLI. |
+| `operation_id` | A caller-selected id for the [operation](#observable-operations). |
+
+The call returns as soon as the operation is accepted. Follow it through
+[completion events](#completion-events) or [`compose::operation`](#checking-and-cancelling-an-operation).
 
 ```text
 worker=state            the version the registry calls latest
@@ -647,7 +738,7 @@ Compose can output the following error codes:
 | Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                       |
 | Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `CONFIG_PUBLISH_FAILED`, `ENGINE_CALL_FAILED`, `PROJECT_DID_NOT_START`                            |
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED` |
-| Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                   |
+| Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `OPERATION_CANCELLED`, `OPERATION_ID_ALREADY_EXISTS`, `IO_ERROR`                                                                                             |
 | Command line        | `FILE_REQUIRES_UP`, `BUILD_CONFLICTS_WITH_SERVE_OPTIONS`                                                                                                                                                                                                                                                                                                        |
 
 ## Related
