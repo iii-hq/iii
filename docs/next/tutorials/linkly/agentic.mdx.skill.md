@@ -6,8 +6,8 @@
 This path builds Linkly with an AI agent. You give the agent one prompt per chapter; it writes the
 workers, and you check the result.
 
-The goal here is to build a working link shortener service while demonstrating not just iii's
-efficiency when building systems agentically but its 4 core properties which we call CODE:
+The goal here is to build a working link shortener service while demonstrating iii's
+efficiency when building systems agentically, along with its 4 core properties which we call CODE:
 
 - Composability
 - Observability
@@ -190,7 +190,7 @@ builds that functionality: a `link::create` and a `link::resolve` function. Thes
 **extended** by the HTTP worker which can expose any function as an http endpoint.
 
 Since we started the project with `iii compose` and the http worker is already specified in
-`worker-compose.yaml` there is nothing else to do to get http functionality out of the box.
+`worker-compose.yaml` there is nothing else to do; the http worker provides http functionality by default.
 
 Importantly this agent doesn't need to build it, or make a decision on which library to use, how to
 set it up, and how to run it. The HTTP worker, like all iii workers, has shipped as a self-contained
@@ -575,8 +575,7 @@ watch the live counter.
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::request_delete` with
-`{"code":"<code>","session":"<session>"}` (the tab prints its session id). Alternatively, from the
-CLI, run `iii trigger link::request_delete code=<code> session=<session>`.
+`{"code":"<code>","session":"<session>"}` (the tab prints its session id).
 
 The browser shows a confirm prompt, and the delete happens after the user accepts.
 
