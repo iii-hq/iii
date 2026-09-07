@@ -59,14 +59,6 @@ pub struct Project {
     logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
-    /// Attempt bookkeeping for the containers the supervisor is currently
-    /// retrying, keyed by container.
-    ///
-    /// Deliberately not in [`DaemonState`], so not on disk. An attempt count
-    /// describes one supervisor's patience with one crash loop, and a daemon
-    /// that restarts re-reconciles from scratch: carrying the old count over
-    /// would let a project come back with its budget already spent.
-    restarts: Mutex<BTreeMap<String, RestartAttempts>>,
 }
 
 /// How often the supervisor checks whether a ready child is still alive.
@@ -97,7 +89,7 @@ const RESTART_MAX_ATTEMPTS: u32 = 5;
 const RESTART_BUDGET_RESET_AFTER: Duration = Duration::from_secs(60);
 
 /// Where one container is in its restart budget.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct RestartAttempts {
     /// Attempts already spent in this run of failures.
     spent: u32,
@@ -110,6 +102,78 @@ struct RestartAttempts {
     /// comes back for a second each time, which is the busy loop wearing a
     /// slower coat. Only [`Project::refill_budget_if_it_held`] clears it.
     due: Option<Instant>,
+}
+
+/// Identifies one supervisor claim. Operator operations invalidate the active
+/// claim before they change the same container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestartLease(u64);
+
+#[derive(Debug, Clone, Copy)]
+enum RestartCause {
+    UnexpectedExit,
+    RetryDue,
+}
+
+/// In-memory restart state for one daemon run.
+///
+/// Deliberately not in [`DaemonState`], so not on disk. An attempt count
+/// describes one supervisor's patience with one crash loop, and a daemon that
+/// restarts re-reconciles from scratch: carrying the old count over would let
+/// a project come back with its budget already spent.
+#[derive(Debug, Default)]
+struct RestartBookkeeping {
+    attempts: BTreeMap<String, RestartAttempts>,
+    leases: BTreeMap<String, RestartLease>,
+    next_lease: u64,
+}
+
+impl RestartBookkeeping {
+    fn claim(&mut self, key: &str) -> Option<RestartLease> {
+        if self.leases.contains_key(key) {
+            return None;
+        }
+        self.next_lease = self.next_lease.wrapping_add(1);
+        let lease = RestartLease(self.next_lease);
+        self.leases.insert(key.to_string(), lease);
+        Some(lease)
+    }
+
+    fn is_current(&self, key: &str, lease: RestartLease) -> bool {
+        self.leases
+            .get(key)
+            .is_some_and(|current| *current == lease)
+    }
+
+    fn release(&mut self, key: &str, lease: RestartLease) {
+        if self.is_current(key, lease) {
+            self.leases.remove(key);
+        }
+    }
+
+    /// Transfers control from the supervisor to an operator operation without
+    /// refilling the crash-loop budget.
+    fn operator_took_control(&mut self, target: Option<&str>) {
+        match target {
+            Some(key) => {
+                self.leases.remove(key);
+                if let Some(attempt) = self.attempts.get_mut(key) {
+                    attempt.due = None;
+                }
+            }
+            None => {
+                self.leases.clear();
+                for attempt in self.attempts.values_mut() {
+                    attempt.due = None;
+                }
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.attempts.remove(key);
+        self.leases.remove(key);
+    }
 }
 
 impl RestartAttempts {
@@ -127,6 +191,7 @@ impl RestartAttempts {
 struct Inner {
     children: Children,
     state: DaemonState,
+    restarts: RestartBookkeeping,
 }
 
 impl Project {
@@ -173,8 +238,8 @@ impl Project {
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
                 state,
+                restarts: RestartBookkeeping::default(),
             }),
-            restarts: Mutex::new(BTreeMap::new()),
         });
 
         project.reconcile_recovered().await;
@@ -311,13 +376,10 @@ impl Project {
             // immediately: its dependents stay up, and the exit only cascades
             // once the budget below is spent.
             if self.restart_policy(&key).await.wants_restart(code) {
-                self.refill_budget_if_it_held(&key).await;
-                if self.spend_attempt(&key).await {
-                    self.run_restart_attempt(&key).await;
-                    continue;
+                if let Some(lease) = self.claim_restart(&key, RestartCause::UnexpectedExit).await {
+                    self.run_restart_attempt(&key, lease, RestartCause::UnexpectedExit)
+                        .await;
                 }
-                self.report_gave_up(&key).await;
-                self.cascade_failure(&key, Self::exhausted_reason()).await;
                 continue;
             }
 
@@ -334,8 +396,10 @@ impl Project {
     pub(crate) async fn drive_restarts(&self) {
         let now = Instant::now();
         let due: Vec<String> = {
-            let attempts = self.restarts.lock().await;
-            attempts
+            let inner = self.inner.lock().await;
+            inner
+                .restarts
+                .attempts
                 .iter()
                 .filter(|(_, attempt)| attempt.due.is_some_and(|due| due <= now))
                 .map(|(key, _)| key.clone())
@@ -343,32 +407,52 @@ impl Project {
         };
 
         for key in due {
-            // An operator who ran `up` or `restart` in the meantime has taken
-            // the container back, and the supervisor stops competing for it.
-            // The spent count stays: the operator changed who is driving, not
-            // whether this container has been crashing.
-            let still_waiting = {
-                let inner = self.inner.lock().await;
+            if let Some(lease) = self.claim_restart(&key, RestartCause::RetryDue).await {
+                self.run_restart_attempt(&key, lease, RestartCause::RetryDue)
+                    .await;
+            }
+        }
+    }
+
+    /// Claims the right to restart under the same lock used by operator
+    /// operations. The attempt is not spent until the claim is checked again
+    /// immediately before the bounce.
+    async fn claim_restart(&self, key: &str, cause: RestartCause) -> Option<RestartLease> {
+        let mut inner = self.inner.lock().await;
+        if !Self::restart_is_eligible(&inner, key, cause, Instant::now()) {
+            if matches!(cause, RestartCause::RetryDue)
+                && !inner
+                    .state
+                    .containers
+                    .get(key)
+                    .is_some_and(|record| record.status == ChildStatus::Restarting)
+                && let Some(attempt) = inner.restarts.attempts.get_mut(key)
+            {
+                attempt.due = None;
+            }
+            return None;
+        }
+        inner.restarts.claim(key)
+    }
+
+    fn restart_is_eligible(inner: &Inner, key: &str, cause: RestartCause, now: Instant) -> bool {
+        match cause {
+            RestartCause::UnexpectedExit => inner
+                .children
+                .get(key)
+                .is_some_and(|child| matches!(child.poll(), crate::process::Outcome::Exited(_))),
+            RestartCause::RetryDue => {
                 inner
                     .state
                     .containers
-                    .get(&key)
+                    .get(key)
                     .is_some_and(|record| record.status == ChildStatus::Restarting)
-            };
-            if !still_waiting {
-                if let Some(attempt) = self.restarts.lock().await.get_mut(&key) {
-                    attempt.due = None;
-                }
-                continue;
+                    && inner
+                        .restarts
+                        .attempts
+                        .get(key)
+                        .is_some_and(|attempt| attempt.due.is_some_and(|due| due <= now))
             }
-
-            if self.spend_attempt(&key).await {
-                self.run_restart_attempt(&key).await;
-                continue;
-            }
-
-            self.report_gave_up(&key).await;
-            self.cascade_failure(&key, Self::exhausted_reason()).await;
         }
     }
 
@@ -377,13 +461,43 @@ impl Project {
     /// cannot drift apart. It also means the attempt inherits the rule that a
     /// restart touches one container and not a graph, which is what keeps the
     /// dependents up while this one is gone.
-    async fn run_restart_attempt(&self, key: &str) {
-        let spent = self
-            .restarts
-            .lock()
-            .await
-            .get(key)
-            .map_or(1, |attempt| attempt.spent);
+    async fn run_restart_attempt(&self, key: &str, lease: RestartLease, cause: RestartCause) {
+        let mut inner = self.inner.lock().await;
+        if !inner.restarts.is_current(key, lease)
+            || !Self::restart_is_eligible(&inner, key, cause, Instant::now())
+        {
+            inner.restarts.release(key, lease);
+            return;
+        }
+
+        if matches!(cause, RestartCause::UnexpectedExit)
+            && inner
+                .state
+                .containers
+                .get(key)
+                .map_or(0, |record| seconds_since(record.started_at))
+                >= RESTART_BUDGET_RESET_AFTER.as_secs()
+        {
+            inner.restarts.attempts.remove(key);
+        }
+
+        let spent = {
+            let attempt = inner.restarts.attempts.entry(key.to_string()).or_default();
+            if attempt.spent >= RESTART_MAX_ATTEMPTS {
+                None
+            } else {
+                attempt.spent += 1;
+                Some(attempt.spent)
+            }
+        };
+        let Some(spent) = spent else {
+            inner.restarts.release(key, lease);
+            drop(inner);
+            self.report_gave_up(key).await;
+            self.cascade_failure(key, Self::exhausted_reason()).await;
+            return;
+        };
+
         daemon_line(
             &self.project_namespace,
             &format!("restarting {key} (attempt {spent} of {RESTART_MAX_ATTEMPTS})"),
@@ -392,42 +506,54 @@ impl Project {
 
         // Written before the start so a `compose::status` racing the attempt
         // says `restarting` rather than the `failed` this is trying to undo.
-        self.mark(key, ChildStatus::Restarting, None).await;
+        if let Some(entry) = inner.state.containers.get_mut(key) {
+            entry.status = ChildStatus::Restarting;
+        }
+        let restarting = inner.state.clone();
+        let _ = self.store.save(&restarting);
 
-        let result = self.restart_one(key, format!("supervisor:{key}")).await;
+        let result = self
+            .restart_one_locked(&mut inner, key, format!("supervisor:{key}"))
+            .await;
         let ready = result
             .containers
             .iter()
             .any(|result| result.container == key && result.state == ChildStatus::Ready);
+        inner.restarts.release(key, lease);
         if ready {
             // The record is already `Ready` and nothing more is owed. The spent
             // count survives, so a worker that comes back for a moment each
             // time still runs out of attempts.
-            if let Some(attempt) = self.restarts.lock().await.get_mut(key) {
+            if let Some(attempt) = inner.restarts.attempts.get_mut(key) {
                 attempt.due = None;
             }
+            let snapshot = inner.state.clone();
+            drop(inner);
+            let _ = self.store.save(&snapshot);
             return;
         }
 
         // Only wait if there is something to wait for. Backing off after the
         // last attempt would hold the container in `restarting` for a wait
         // nobody is going to use, and delay the operator's answer by it.
-        let exhausted = {
-            let mut attempts = self.restarts.lock().await;
-            match attempts.get_mut(key) {
-                Some(attempt) if attempt.spent < RESTART_MAX_ATTEMPTS => {
-                    attempt.due = Some(Instant::now() + RestartAttempts::backoff(attempt.spent));
-                    false
-                }
-                _ => true,
+        let exhausted = match inner.restarts.attempts.get_mut(key) {
+            Some(attempt) if attempt.spent < RESTART_MAX_ATTEMPTS => {
+                attempt.due = Some(Instant::now() + RestartAttempts::backoff(attempt.spent));
+                false
             }
+            _ => true,
         };
+
+        if !exhausted && let Some(entry) = inner.state.containers.get_mut(key) {
+            entry.status = ChildStatus::Restarting;
+        }
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
 
         if exhausted {
             self.report_gave_up(key).await;
             self.cascade_failure(key, Self::exhausted_reason()).await;
-        } else {
-            self.mark(key, ChildStatus::Restarting, None).await;
         }
     }
 
@@ -435,7 +561,7 @@ impl Project {
     /// compose did for every unexpected exit before there was a policy, and
     /// what it still does once one has run out of attempts.
     async fn cascade_failure(&self, key: &str, reason: String) {
-        self.restarts.lock().await.remove(key);
+        self.inner.lock().await.restarts.remove(key);
 
         // Cascade through the same path a targeted `down` takes: it stops
         // the dependents first and ends on the dead container itself, which
@@ -468,38 +594,6 @@ impl Project {
             .containers
             .get(key)
             .map_or(RestartPolicy::No, |container| container.restart)
-    }
-
-    /// Takes one attempt from the budget. `false` means it is spent, which is
-    /// the supervisor's cue to stop and let the failure cascade.
-    async fn spend_attempt(&self, key: &str) -> bool {
-        let mut attempts = self.restarts.lock().await;
-        let attempt = attempts.entry(key.to_string()).or_insert(RestartAttempts {
-            spent: 0,
-            due: None,
-        });
-        if attempt.spent >= RESTART_MAX_ATTEMPTS {
-            return false;
-        }
-        attempt.spent += 1;
-        true
-    }
-
-    /// Refills the budget of a container that had held ready long enough to
-    /// count as recovered, so this crash starts a new run of failures rather
-    /// than continuing one the container already came back from.
-    async fn refill_budget_if_it_held(&self, key: &str) {
-        let held_for = {
-            let inner = self.inner.lock().await;
-            inner
-                .state
-                .containers
-                .get(key)
-                .map_or(0, |record| seconds_since(record.started_at))
-        };
-        if held_for >= RESTART_BUDGET_RESET_AFTER.as_secs() {
-            self.restarts.lock().await.remove(key);
-        }
     }
 
     fn exhausted_reason() -> String {
@@ -655,7 +749,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -690,7 +787,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -736,7 +836,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(None);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
 
         {
             let mut current = self.file.write().await;
@@ -847,7 +950,12 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(None);
+        let Inner {
+            children,
+            state,
+            restarts,
+        } = &mut *inner;
 
         let stopped = {
             let current = self.file.read().await;
@@ -875,6 +983,7 @@ impl Project {
                     )
                     .await,
                 );
+                restarts.remove(worker);
             }
             stopped
         };
@@ -915,13 +1024,29 @@ impl Project {
     /// Bounces one container. See [`lifecycle::restart_one`] for why this does
     /// not take the container's graph with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
+        let mut inner = self.inner.lock().await;
+        inner.restarts.operator_took_control(Some(key));
+        let result = self.restart_one_locked(&mut inner, key, operation_id).await;
+
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        result
+    }
+
+    async fn restart_one_locked(
+        &self,
+        inner: &mut Inner,
+        key: &str,
+        operation_id: String,
+    ) -> OpResult {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        let Inner {
+            children, state, ..
+        } = inner;
         let file = self.file.read().await;
-
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
@@ -935,13 +1060,7 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
-        let result =
-            lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await;
-
-        let snapshot = state.clone();
-        drop(inner);
-        let _ = self.store.save(&snapshot);
-        result
+        lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -949,7 +1068,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -1137,7 +1259,10 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
 
 #[cfg(test)]
 mod restart_backoff_tests {
-    use super::{RESTART_BACKOFF_BASE, RESTART_BACKOFF_MAX, RESTART_MAX_ATTEMPTS, RestartAttempts};
+    use super::{
+        RESTART_BACKOFF_BASE, RESTART_BACKOFF_MAX, RESTART_MAX_ATTEMPTS, RestartAttempts,
+        RestartBookkeeping,
+    };
 
     /// The wait doubles per attempt and then stops doubling. A ceiling the
     /// budget can never reach would be a ceiling in name only, so this pins
@@ -1168,6 +1293,56 @@ mod restart_backoff_tests {
         assert!(
             total >= RESTART_BACKOFF_BASE,
             "attempts after the first always wait"
+        );
+    }
+
+    #[test]
+    fn operator_control_invalidates_a_supervisor_lease() {
+        let mut restarts = RestartBookkeeping::default();
+        let lease = restarts.claim("api").expect("claim restart");
+
+        restarts.operator_took_control(Some("api"));
+
+        assert!(!restarts.is_current("api", lease));
+    }
+
+    #[test]
+    fn operator_control_pauses_retries_without_refilling_the_budget() {
+        let mut restarts = RestartBookkeeping::default();
+        restarts.attempts.insert(
+            "api".to_string(),
+            RestartAttempts {
+                spent: 3,
+                due: Some(tokio::time::Instant::now()),
+            },
+        );
+
+        restarts.operator_took_control(Some("api"));
+
+        let attempt = restarts.attempts["api"];
+        assert_eq!((attempt.spent, attempt.due), (3, None));
+    }
+
+    #[test]
+    fn removing_a_container_forgets_its_restart_bookkeeping() {
+        let mut restarts = RestartBookkeeping::default();
+        restarts.attempts.insert(
+            "api".to_string(),
+            RestartAttempts {
+                spent: 3,
+                due: Some(tokio::time::Instant::now()),
+            },
+        );
+        let lease = restarts.claim("api").expect("claim restart");
+
+        restarts.remove("api");
+
+        assert_eq!(
+            (
+                restarts.attempts.contains_key("api"),
+                restarts.is_current("api", lease),
+            ),
+            (false, false)
         );
     }
 }
