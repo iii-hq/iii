@@ -660,8 +660,8 @@ async fn start_one_until_shutdown(
     // for the child we are about to start.
     let baseline = wait_or_interrupt!(ctx.engine.readiness_baseline(ctx.project_namespace, key))?;
 
-    // A package is fetched here rather than at validation time: resolving it
-    // needs the registry, and `validate` is offline by contract.
+    // A package is acquired here rather than at validation time. Project load
+    // attaches a locked registry result, while `validate` stays offline.
     let (start, shipped_config) = match &container.worker {
         crate::config::WorkerSource::Package { reference } => {
             let range = container.version.as_deref().unwrap_or("*");
@@ -675,12 +675,19 @@ async fn start_one_until_shutdown(
                     )
                     .await;
             }
-            let installed = wait_or_interrupt!(crate::registry::install(
-                key,
-                reference,
-                range,
-                ctx.package_cache,
-            ))?;
+            let installed = match &container.resolved_package {
+                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved(
+                    key,
+                    resolved,
+                    ctx.package_cache,
+                ))?,
+                None => wait_or_interrupt!(crate::registry::install(
+                    key,
+                    reference,
+                    range,
+                    ctx.package_cache,
+                ))?,
+            };
             report::starting(
                 key,
                 &format!("starting {} {}", installed.name, installed.version),

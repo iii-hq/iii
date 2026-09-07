@@ -140,7 +140,7 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
 | `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
 | `compose::restart`  | `file`, `container`                                         | The `down` and the `up`, or one worker's restart.                          |
-| `compose::update`   | `file`, `worker`                                            | Both versions, and the restart that followed.                              |
+| `compose::update`   | `file`, `worker`                                            | The resolved version and a restart when the package content changed.       |
 | `compose::stop`     | nothing                                                     | The daemon name, its pid, and the projects it is about to stop.            |
 | `compose::schema`   | `function_id`                                               | Request/response JSON Schemas, descriptions, timeouts, and retry safety.   |
 
@@ -243,7 +243,8 @@ A container object accepts these fields:
 | `env_file` | List of environment file paths, relative to the compose file. |
 | `startup_timeout` | Maximum wait for worker registration, such as `30s`. |
 
-A package without a version pins to the latest available version, for example `0.23.1`.
+A package without a version pins to the latest available version, for example `0.23.1`. An explicit
+selector such as `state@next` stays as `next` in `worker-compose.yaml`.
 Unknown fields and invalid field types are rejected. Compose validates the complete edited file
 before it writes any changes.
 
@@ -256,6 +257,26 @@ Workers whose declarations did not change remain running. Existing workers whose
 dependencies, or settings changed restart in place. Newly declared workers start through the normal
 dependency plan. If the resolved declaration already matches the file, the call makes no file
 changes and causes no restart.
+
+### Package lock
+
+Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
+requested selector. The lock keeps the resolved version, package type, artifact URLs, SHA-256
+digests, and default configuration returned by the registry.
+
+```text
+worker-compose.yaml: next
+          |
+          v
+worker-compose.lock: 0.22.8 + SHA-256
+          |
+          v
+package cache: verified artifact
+```
+
+Normal starts and restarts use the lock without resolving `next` again. If the cache is empty,
+Compose downloads the URL in the lock and verifies its SHA-256 digest. Commit the lock so local
+development, CI, and deployments use the same package content.
 
 ### Removing a worker
 
@@ -286,10 +307,15 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 ### Updating a worker
 
-`compose::update worker=state` updates a worker to either the current `latest` version when no
-version is specified or to the target version when it is.
+`compose::update worker=state` refreshes the selector in the compose file. For a tag or range such as
+`next`, it resolves that same selector again. For an exact version, it keeps the existing behavior
+and selects the version that the registry calls `latest`. Use `worker=state@<selector>` to change the
+selector.
 
-If the requested version is already installed this operation is treated as a NOOP.
+Compose downloads and verifies the new artifact before it changes the lock or stops a worker. A
+failed resolve or download leaves the prior lock and running workers unchanged. If the resolved
+artifact and default configuration did not change, Compose updates lock metadata when needed and
+does not restart the project.
 
 | Field    | Description                                |
 | -------- | ------------------------------------------ |
@@ -297,8 +323,9 @@ If the requested version is already installed this operation is treated as a NOO
 | `worker` | The worker spec: `name` or `name@version`. |
 
 ```text
-worker=state            the version the registry calls latest
+worker=state            refresh a declared tag/range, or select latest from an exact version
 worker=state@0.21.4     that version, which is also how a downgrade is spelled
+worker=state@next       the version currently selected by the next tag
 ```
 
 The worker has to be declared already in order to be updated, and it has to be a `package://`. Use
@@ -307,7 +334,7 @@ The worker has to be declared already in order to be updated, and it has to be a
 Workers specified with `path://` are not versioned, any updates to these workers will be reflected
 the next time the worker is restarted.
 
-<Note>Unlike `compose::restart worker=state`, an update restarts the whole project.</Note>
+<Note>An update that changes package content restarts the whole project.</Note>
 
 ### Checking status
 
@@ -641,10 +668,10 @@ iii compose build [-f, --file <PATH>]
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
 
-`build` reads and validates the compose file, then downloads every `package://` worker into the same
-cache used by `compose::up`. The file defaults to `./worker-compose.yaml`. The command does not
-connect to an engine, start a worker, or run lifecycle hooks. Local `path://` workers and
-engine-managed workers need no registry download and are skipped.
+`build` reads and validates the compose file, prepares `worker-compose.lock`, then downloads every
+`package://` worker into the same cache used by `compose::up`. The file defaults to
+`./worker-compose.yaml`. The command does not connect to an engine, start a worker, or run lifecycle
+hooks. Local `path://` workers and engine-managed workers need no registry download and are skipped.
 
 ```bash
 iii compose build --file worker-compose.yaml

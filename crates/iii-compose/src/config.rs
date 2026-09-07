@@ -100,6 +100,9 @@ impl Default for Scripts {
 pub struct Container {
     pub worker: WorkerSource,
     pub version: Option<String>,
+    /// Registry result selected by `worker-compose.lock` for this declaration.
+    /// It is runtime state and is never read from `worker-compose.yaml`.
+    pub resolved_package: Option<crate::registry::ResolvedPackage>,
     pub start_after: Vec<String>,
     /// The configuration entry this container owns.
     ///
@@ -413,6 +416,7 @@ fn validate_container(
     Ok(Container {
         worker,
         version: raw.version.clone(),
+        resolved_package: None,
         start_after: raw.start_after.clone(),
         config_name,
         config_override: raw.config_override.clone(),

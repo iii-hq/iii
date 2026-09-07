@@ -30,6 +30,7 @@ pub mod error;
 pub mod hooks;
 pub mod interpolate;
 pub mod lifecycle;
+mod lockfile;
 pub mod logs;
 mod managed_engine;
 pub mod manifest;

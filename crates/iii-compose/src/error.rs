@@ -24,6 +24,9 @@ pub enum ComposeError {
     #[error("{path} is not valid compose YAML: {message}")]
     Yaml { path: PathBuf, message: String },
 
+    #[error("{path} is not a valid worker compose lock: {message}")]
+    InvalidLock { path: PathBuf, message: String },
+
     #[error("containers must declare at least one worker")]
     EmptyContainers,
 
@@ -497,6 +500,7 @@ impl ComposeError {
             // the one that really is about a compose file.
             Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
+            Self::InvalidLock { .. } => "INVALID_COMPOSE_LOCK",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",

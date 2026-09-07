@@ -156,6 +156,13 @@ fn coalesce_containers(
     Ok(unique)
 }
 
+fn should_refresh_selector(requested: Option<&str>, current: &str) -> bool {
+    match requested {
+        Some(requested) => requested != current || semver::Version::parse(requested).is_err(),
+        None => true,
+    }
+}
+
 pub struct Daemon {
     /// What this daemon registered as. Fixed, and the same on every machine:
     /// what tells two daemons apart is the namespace, not the name.
@@ -273,12 +280,17 @@ impl Daemon {
         };
 
         cell.get_or_try_init(|| async {
-            let compose = ComposeFile::load(file)?;
+            let mut compose = ComposeFile::load(file)?;
             self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
             let namespace = self.project_namespace(&compose);
             crate::manifest::validate_offline(&compose, &namespace)?;
+
+            let package_cache = crate::state::StateStore::package_cache()?;
+            let prepared =
+                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+            prepared.write_if_changed()?;
 
             let project = Project::open(
                 &self.daemon_namespace,
@@ -367,10 +379,9 @@ impl Daemon {
     /// Adds containers to a project's file, then reconciles the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
-    /// [`crate::edit`]. A version the caller did not pin is resolved once and
-    /// written out, because `compose::add` promising "the latest" and a later
-    /// `up` silently getting a different one is the drift a compose file exists
-    /// to prevent.
+    /// [`crate::edit`]. A request without a selector is pinned to the resolved
+    /// version in the compose file. An explicit selector such as `next` stays
+    /// in that file and its concrete result is recorded in the compose lock.
     ///
     /// Reconciliation leaves unchanged containers running, restarts existing
     /// declarations whose resolved version changed, and starts declarations
@@ -452,8 +463,23 @@ impl Daemon {
         .await;
         expanded.sort_by_key(|(index, _)| *index);
         let mut wanted = Vec::new();
-        for (_, graph) in expanded {
-            wanted.extend(graph?);
+        let mut selected_versions = BTreeMap::new();
+        for (_, expansion) in expanded {
+            let (containers, versions) = expansion?;
+            for (container, version) in versions {
+                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
+                    && current != version
+                {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: container.clone(),
+                        reason: format!(
+                            "the requested workers resolve container '{container}' to conflicting \
+                             versions {current} and {version}"
+                        ),
+                    });
+                }
+            }
+            wanted.extend(containers);
         }
         let mut wanted = coalesce_containers(wanted)?;
         for worker in &mut wanted {
@@ -467,54 +493,7 @@ impl Daemon {
             }
         }
 
-        // Acquire registry artifacts before taking either the file mutation lock
-        // or the project's runtime lock. `lifecycle::start_one` calls install
-        // again, but that second call is a cheap verified cache hit.
-        let package_cache = crate::state::StateStore::package_cache()?;
         let operation = crate::operation::active(&operation_id);
-        let installs: Vec<(String, String, String)> = wanted
-            .iter()
-            .filter_map(|worker| match &worker.source {
-                crate::edit::Source::Package {
-                    reference,
-                    version: Some(version),
-                } => Some((worker.key.clone(), reference.clone(), version.clone())),
-                _ => None,
-            })
-            .collect();
-        let acquired: Vec<Result<()>> =
-            futures::stream::iter(installs.into_iter().map(|(key, reference, version)| {
-                let package_cache = package_cache.clone();
-                let operation = operation.clone();
-                async move {
-                    if let Some(operation) = operation {
-                        operation
-                            .emit(
-                                Some(&key),
-                                "installing",
-                                format!("acquiring {reference}@{version}"),
-                            )
-                            .await;
-                    }
-                    crate::registry::install(&key, &reference, &version, &package_cache)
-                        .await
-                        .map(|_| ())
-                }
-            }))
-            .buffer_unordered(4)
-            .collect()
-            .await;
-        for result in acquired {
-            result?;
-        }
-
-        if operation
-            .as_ref()
-            .is_some_and(|operation| operation.is_cancelled())
-        {
-            return Err(ComposeError::OperationCancelled { operation_id });
-        }
-
         let _mutation = self.lock_mutation(path).await;
         if operation
             .as_ref()
@@ -552,30 +531,44 @@ impl Daemon {
             .collect::<Vec<_>>();
         let container = requested[0].clone();
 
-        if added.is_empty() && replaced.is_empty() {
+        let yaml_changed = !added.is_empty() || !replaced.is_empty();
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let prepared = crate::lockfile::prepare_with_versions(
+            &mut current,
+            &package_cache,
+            &BTreeSet::new(),
+            &selected_versions,
+        )
+        .await?;
+        restart.retain(|key| {
+            current.containers.get(key).is_some_and(|container| {
+                matches!(container.worker, crate::config::WorkerSource::Path { .. })
+                    || prepared.package_changed(key)
+            })
+        });
+        for key in declared.containers.keys() {
+            if prepared.package_changed(key) && !restart.contains(key) {
+                restart.push(key.clone());
+            }
+        }
+
+        if !yaml_changed && !prepared.changed() {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 Some(&container),
                 Some(&requested),
-                wanted
-                    .iter()
-                    .find(|worker| worker.key == container)
-                    .and_then(|worker| match &worker.source {
-                        crate::edit::Source::Package { version, .. } => version.clone(),
-                        crate::edit::Source::Path { .. } => None,
-                    }),
+                prepared.resolved_version(&container).map(str::to_string),
                 std::iter::empty::<&OpResult>(),
             ));
         }
-        let edited = &edited;
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(edited, path)?;
-        write_atomically(path, edited)?;
+        if yaml_changed {
+            write_atomically(path, &edited)?;
+        }
+        prepared.write_if_changed()?;
 
-        let current = ComposeFile::load(path)?;
         let project = self.project(path).await?;
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
@@ -595,13 +588,7 @@ impl Daemon {
         } else {
             OpStatus::Ok
         };
-        let version = wanted
-            .iter()
-            .find(|worker| worker.key == container)
-            .and_then(|worker| match &worker.source {
-                crate::edit::Source::Package { version, .. } => version.clone(),
-                crate::edit::Source::Path { .. } => None,
-            });
+        let version = prepared.resolved_version(&container).map(str::to_string);
         let operations = restarted.iter().chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
             status,
@@ -632,20 +619,36 @@ impl Daemon {
         &self,
         asked: &crate::edit::NewContainer,
         path_workers: &BTreeSet<String>,
-    ) -> Result<Vec<crate::edit::NewContainer>> {
+    ) -> Result<(Vec<crate::edit::NewContainer>, BTreeMap<String, String>)> {
         let crate::edit::Source::Package { reference, version } = &asked.source else {
-            return Ok(vec![asked.clone()]);
+            return Ok((vec![asked.clone()], BTreeMap::new()));
         };
 
         let range = version.clone().unwrap_or_else(|| "*".to_string());
         let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
-        expand_graph(asked, reference, graph, path_workers)
+        let selected_versions = graph
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), node.version.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let containers = expand_graph(asked, reference, graph, path_workers)?;
+        let selected_versions = containers
+            .iter()
+            .filter(|container| matches!(&container.source, crate::edit::Source::Package { .. }))
+            .filter_map(|container| {
+                selected_versions
+                    .get(&container.key)
+                    .map(|version| (container.key.clone(), version.clone()))
+            })
+            .collect();
+        Ok((containers, selected_versions))
     }
 
     /// Moves declared containers to other versions of the same packages.
     ///
-    /// `worker=state` takes whatever the registry calls latest;
-    /// `worker=state@1.2.3` takes that one, which is how a downgrade is spelled.
+    /// `worker=state` refreshes a declared tag or range. An exact declaration
+    /// moves to what the registry calls latest. `worker=state@1.2.3` selects
+    /// that exact version, which is how a downgrade is spelled.
     /// Every container has to be declared already. This edits existing lines;
     /// `compose::add` is the call that adds them.
     ///
@@ -685,6 +688,7 @@ impl Daemon {
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
         let mut wanted = Vec::with_capacity(asked.len());
+        let mut force = BTreeSet::new();
         for worker in &asked {
             let crate::edit::Source::Package { reference, version } = &worker.source else {
                 return Err(ComposeError::NotAPackageContainer {
@@ -707,9 +711,20 @@ impl Daemon {
                 });
             }
 
-            // Asked for by version, or whatever the registry calls latest today.
+            // A non-exact declaration is a channel or range. An update without
+            // `@...` refreshes that selector while keeping it in the compose
+            // file. Exact versions keep the established "move to latest"
+            // behavior.
+            let current_selector = container.version.as_deref().unwrap_or("*");
+            let should_refresh = should_refresh_selector(version.as_deref(), current_selector);
+            if should_refresh {
+                force.insert(worker.key.clone());
+            }
             let version = match version {
                 Some(version) => version.clone(),
+                None if semver::Version::parse(current_selector).is_err() => {
+                    current_selector.to_string()
+                }
                 None => crate::registry::latest_version(&worker.key, reference).await?,
             };
 
@@ -726,26 +741,41 @@ impl Daemon {
             });
         }
 
-        let version = wanted
-            .iter()
-            .find(|worker| worker.key == primary)
-            .and_then(|worker| match &worker.source {
-                crate::edit::Source::Package { version, .. } => version.clone(),
-                crate::edit::Source::Path { .. } => None,
-            });
         let mut edited = text.clone();
-        let mut changed = false;
+        let mut yaml_changed = false;
         for worker in &wanted {
             match crate::edit::upsert_container(&edited, worker)? {
                 crate::edit::Outcome::Unchanged => {}
                 crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
                     edited = text;
-                    changed = true;
+                    yaml_changed = true;
                 }
             }
         }
 
-        if !changed {
+        if !yaml_changed && force.is_empty() {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                Some(&primary),
+                Some(&requested),
+                compose
+                    .containers
+                    .get(&primary)
+                    .and_then(|container| container.version.clone()),
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
+
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let prepared = crate::lockfile::prepare(&mut current, &package_cache, &force).await?;
+        let package_changed = requested
+            .iter()
+            .any(|container| prepared.package_changed(container));
+        let version = prepared.resolved_version(&primary).map(str::to_string);
+
+        if !yaml_changed && !prepared.changed() {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -756,10 +786,21 @@ impl Daemon {
             ));
         }
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(&edited, path)?;
-        write_atomically(path, &edited)?;
+        if yaml_changed {
+            write_atomically(path, &edited)?;
+        }
+        prepared.write_if_changed()?;
+
+        if !package_changed {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                true,
+                Some(&primary),
+                Some(&requested),
+                version,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
 
         // The whole project, not just this container, and deliberately so. A
         // cached project is the file as it was read, so the new version is only
@@ -833,15 +874,19 @@ impl Daemon {
             edited = next;
         }
 
-        let current = crate::ComposeFile::parse(&edited, path)?;
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let prepared =
+            crate::lockfile::prepare(&mut current, &package_cache, &BTreeSet::new()).await?;
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
         write_atomically(path, &edited)?;
+        prepared.write_if_changed()?;
 
         let (stopped, up) = project
             .reconcile_removals(current, &removal_order, operation_id)
@@ -1443,9 +1488,16 @@ fn expand_graph(
                 let mut root = asked.clone();
                 root.start_after = needs(&asked.key);
                 if let Some(node) = nodes.get(asked.key.as_str()) {
+                    let version = match &root.source {
+                        crate::edit::Source::Package {
+                            version: Some(version),
+                            ..
+                        } => version.clone(),
+                        _ => node.version.clone(),
+                    };
                     root.source = crate::edit::Source::Package {
                         reference: reference.to_string(),
-                        version: Some(node.version.clone()),
+                        version: Some(version),
                     };
                 }
                 Ok(root)
@@ -1475,6 +1527,43 @@ mod tests {
             start_after: Vec::new(),
             fields: serde_yaml::Mapping::new(),
         }
+    }
+
+    #[test]
+    fn an_unchanged_tag_is_refreshed_by_update() {
+        assert!(should_refresh_selector(Some("next"), "next"));
+    }
+
+    #[test]
+    fn an_unchanged_exact_version_is_not_refreshed_when_explicit() {
+        assert!(!should_refresh_selector(Some("0.22.8"), "0.22.8"));
+    }
+
+    #[test]
+    fn expanded_graph_keeps_an_explicit_root_selector() {
+        let mut asked = package("state");
+        let crate::edit::Source::Package { version, .. } = &mut asked.source else {
+            unreachable!();
+        };
+        *version = Some("next".to_string());
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "state".to_string(),
+                version: "0.22.8".to_string(),
+                kind: "binary".to_string(),
+            }],
+            edges: Vec::new(),
+        };
+
+        let expanded = expand_graph(&asked, "state", graph, &BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            expanded[0].source,
+            crate::edit::Source::Package {
+                reference: "state".to_string(),
+                version: Some("next".to_string()),
+            }
+        );
     }
 
     #[test]

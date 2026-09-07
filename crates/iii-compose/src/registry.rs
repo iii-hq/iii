@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ComposeError, Result};
@@ -72,7 +72,7 @@ struct ResolvedWorker {
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
-    binaries: std::collections::HashMap<String, Artifact>,
+    binaries: std::collections::BTreeMap<String, RegistryArtifact>,
     /// A bundle ships one archive for every platform, named here rather than in
     /// `binaries`. The registry sends both fields or neither.
     #[serde(default)]
@@ -84,10 +84,24 @@ struct ResolvedWorker {
     config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Artifact {
-    sha256: String,
-    url: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryArtifact {
+    pub sha256: String,
+    pub url: String,
+}
+
+/// Immutable registry result stored in `worker-compose.lock`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub artifacts: std::collections::BTreeMap<String, RegistryArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_config: Option<serde_yaml::Value>,
 }
 
 /// What was installed, and therefore how it is started.
@@ -168,10 +182,11 @@ pub async fn install(
     version_range: &str,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let (registry, name) = split_reference(reference);
-    install_from_registry(container, &registry, &name, version_range, cache_root).await
+    let resolved = resolve_package(container, reference, version_range).await?;
+    install_resolved(container, &resolved, cache_root).await
 }
 
+#[cfg(test)]
 async fn install_from_registry(
     container: &str,
     registry: &str,
@@ -180,13 +195,94 @@ async fn install_from_registry(
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
     let target = host_target();
+    let worker = resolve(container, registry, name, version_range, target).await?;
+    let resolved = into_resolved_package(container, worker, target)?;
+    install_resolved(container, &resolved, cache_root).await
+}
 
-    let resolved = resolve(container, registry, name, version_range, target).await?;
+/// Resolves a selector such as `next` to the immutable package metadata that
+/// can be stored in a compose lock.
+pub async fn resolve_package(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+) -> Result<ResolvedPackage> {
+    let (registry, name) = split_reference(reference);
+    let target = host_target();
+    let worker = resolve(container, &registry, &name, version_range, target).await?;
+    into_resolved_package(container, worker, target)
+}
+
+fn into_resolved_package(
+    container: &str,
+    worker: ResolvedWorker,
+    target: &str,
+) -> Result<ResolvedPackage> {
+    let mut artifacts = match worker.kind.as_str() {
+        "binary" => worker.binaries,
+        "bundle" => {
+            let (Some(url), Some(sha256)) = (worker.archive_url, worker.sha256) else {
+                return Err(ComposeError::PackageNotResolved {
+                    container: container.to_string(),
+                    name: worker.name,
+                    range: worker.version,
+                    message: "the registry resolved it as a bundle but sent no archive_url + \
+                              sha256 pair, so the archive could not be verified"
+                        .to_string(),
+                });
+            };
+            std::iter::once((target.to_string(), RegistryArtifact { sha256, url })).collect()
+        }
+        _ => std::collections::BTreeMap::new(),
+    };
+    for (artifact_target, artifact) in &mut artifacts {
+        if artifact.url.trim().is_empty() {
+            return Err(ComposeError::PackageNotResolved {
+                container: container.to_string(),
+                name: worker.name,
+                range: worker.version,
+                message: format!("the registry returned an empty URL for {artifact_target}"),
+            });
+        }
+        if artifact.sha256.len() != 64
+            || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(ComposeError::PackageNotResolved {
+                container: container.to_string(),
+                name: worker.name,
+                range: worker.version,
+                message: format!(
+                    "the registry returned an invalid SHA-256 digest for {artifact_target}"
+                ),
+            });
+        }
+        artifact.sha256.make_ascii_lowercase();
+    }
+    let default_config = match worker.config {
+        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
+        _ => None,
+    };
+    Ok(ResolvedPackage {
+        name: worker.name,
+        version: worker.version,
+        kind: worker.kind,
+        artifacts,
+        default_config,
+    })
+}
+
+/// Installs exactly the package represented by a lock entry, without asking
+/// the registry to resolve its selector again.
+pub async fn install_resolved(
+    container: &str,
+    resolved: &ResolvedPackage,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
+    let target = host_target();
 
     let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
-            let (program, status) =
-                install_binary(container, &resolved, target, cache_root).await?;
+            let (program, status) = install_binary(container, resolved, target, cache_root).await?;
             (Payload::Binary(program), status)
         }
         // Refused before the download on a platform that could not start it:
@@ -196,12 +292,13 @@ async fn install_from_registry(
         "bundle" => {
             return Err(ComposeError::BundleNeedsAVm {
                 container: container.to_string(),
-                name: resolved.name,
+                name: resolved.name.clone(),
             });
         }
         #[cfg(unix)]
         "bundle" => {
-            let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
+            let (install_dir, status) =
+                install_bundle(container, resolved, target, cache_root).await?;
             (Payload::Bundle(install_dir), status)
         }
         // `engine` workers are compiled into the engine itself: there is no
@@ -210,22 +307,17 @@ async fn install_from_registry(
         _ => {
             return Err(ComposeError::UnsupportedPackageKind {
                 container: container.to_string(),
-                name: resolved.name,
-                kind: resolved.kind,
+                name: resolved.name.clone(),
+                kind: resolved.kind.clone(),
             });
         }
     };
 
-    let default_config = match resolved.config {
-        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
-        _ => None,
-    };
-
     Ok(InstalledPackage {
-        name: resolved.name,
-        version: resolved.version,
+        name: resolved.name.clone(),
+        version: resolved.version.clone(),
         payload,
-        default_config,
+        default_config: resolved.default_config.clone(),
         status,
     })
 }
@@ -233,8 +325,7 @@ async fn install_from_registry(
 /// The version the registry hands back for `*`, so `compose::add` can pin what
 /// it just resolved rather than writing a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
-    let (registry, name) = split_reference(reference);
-    let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
+    let resolved = resolve_package(container, reference, "*").await?;
     Ok(resolved.version)
 }
 
@@ -287,25 +378,11 @@ pub async fn resolve_graph(container: &str, reference: &str, version_range: &str
 /// Installs a native executable for this host's target.
 async fn install_binary(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
     target: &str,
     cache_root: &Path,
 ) -> Result<(PathBuf, InstallStatus)> {
-    let artifact =
-        resolved
-            .binaries
-            .get(target)
-            .ok_or_else(|| ComposeError::UnsupportedPlatform {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                version: resolved.version.clone(),
-                target: target.to_string(),
-                available: {
-                    let mut targets: Vec<String> = resolved.binaries.keys().cloned().collect();
-                    targets.sort();
-                    targets.join(", ")
-                },
-            })?;
+    let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let install_dir = cache_root.join(format!(
@@ -326,6 +403,28 @@ async fn install_binary(
     Ok((program, InstallStatus::Downloaded))
 }
 
+fn artifact_for_target<'a>(
+    container: &str,
+    resolved: &'a ResolvedPackage,
+    target: &str,
+) -> Result<&'a RegistryArtifact> {
+    resolved
+        .artifacts
+        .get(target)
+        .ok_or_else(|| ComposeError::UnsupportedPlatform {
+            container: container.to_string(),
+            name: resolved.name.clone(),
+            version: resolved.version.clone(),
+            target: target.to_string(),
+            available: resolved
+                .artifacts
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
+}
+
 /// Installs a bundle: one archive, no target in its identity.
 ///
 /// Unix only, because starting one is: see [`ComposeError::BundleNeedsAVm`].
@@ -337,26 +436,13 @@ async fn install_binary(
 #[cfg(unix)]
 async fn install_bundle(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
+    target: &str,
     cache_root: &Path,
 ) -> Result<(PathBuf, InstallStatus)> {
-    // The registry sends both or neither. Without the digest the archive cannot
-    // be verified, and an unverifiable artefact is not installed.
-    let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
-        (Some(url), Some(sha256)) => (url, sha256),
-        _ => {
-            return Err(ComposeError::PackageNotResolved {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                range: resolved.version.clone(),
-                message: "the registry resolved it as a bundle but sent no archive_url + sha256 \
-                          pair, so the archive could not be verified"
-                    .to_string(),
-            });
-        }
-    };
+    let artifact = artifact_for_target(container, resolved, target)?;
 
-    let digest = validated_cache_digest(container, resolved, sha256)?;
+    let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let install_dir = cache_root.join(format!(
         "{}-{}-bundle-{digest}",
         resolved.name, resolved.version
@@ -369,11 +455,7 @@ async fn install_bundle(
     }
     remove_invalid_install(&install_dir)?;
 
-    let artifact = Artifact {
-        sha256: sha256.clone(),
-        url: url.clone(),
-    };
-    download_and_extract(container, &artifact, &install_dir).await?;
+    download_and_extract(container, artifact, &install_dir).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Err(ComposeError::PackageArtifactEmpty {
@@ -388,7 +470,7 @@ async fn install_bundle(
 /// Returns the normalized digest used as the immutable part of a cache key.
 fn validated_cache_digest(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
     sha256: &str,
 ) -> Result<String> {
     if sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -503,7 +585,7 @@ async fn send_resolve_request(
 /// version holding a separator or `..` would place the download outside the
 /// cache. The registry is whatever `package://<host>/…` names, so this is not a
 /// check on our own service: it is a check on wherever compose was pointed.
-fn is_path_safe(value: &str) -> bool {
+pub(crate) fn is_path_safe(value: &str) -> bool {
     !value.is_empty()
         && value != ".."
         && !value.starts_with('.')
@@ -609,7 +691,7 @@ fn registry_message(status: u16, body: &str) -> String {
 /// directory until the digest matches.
 async fn download_and_extract(
     container: &str,
-    artifact: &Artifact,
+    artifact: &RegistryArtifact,
     install_dir: &Path,
 ) -> Result<()> {
     let client = reqwest::Client::builder()

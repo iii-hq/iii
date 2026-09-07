@@ -795,8 +795,8 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::add" => {
             "Accept an observable operation that declares one or more workers and their registry \
-             dependencies in the compose file, pins resolved versions, then reconciles changed \
-             workers once."
+             dependencies in the compose file, locks resolved packages, then reconciles changed \
+             workers once. Explicit selectors remain in the compose file."
         }
         "compose::remove" => {
             "Accept an observable operation that removes one or more declared workers and \
@@ -808,8 +808,8 @@ fn op_description(function_id: &str) -> &'static str {
              changing its dependency graph."
         }
         "compose::update" => {
-            "Accept an observable operation that moves one or more declared package workers to \
-             requested or latest versions, then restarts the project once."
+            "Accept an observable operation that refreshes declared package selectors or moves \
+             workers to requested versions. It restarts the project when package content changes."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
