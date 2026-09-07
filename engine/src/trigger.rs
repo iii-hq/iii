@@ -245,8 +245,10 @@ pub struct Trigger {
     /// Taken from the `RegisterTrigger` message's `namespace` (not the registering
     /// connection): the trigger names its target namespace explicitly, and an
     /// absent value means [`crate::protocol::DEFAULT_NAMESPACE`] — see
-    /// `Engine::fire_triggers`. Also defaults to `default` for engine-internal /
-    /// durable registrations and for wire payloads that predate the field.
+    /// `Engine::fire_triggers`. Also defaults to `default` for engine-internal
+    /// registrations and for wire payloads that predate the field. A durable
+    /// `engine::register_trigger` binding takes the calling connection's
+    /// namespace instead: its target is the caller's own function.
     #[serde(default = "crate::protocol::default_namespace")]
     pub namespace: String,
     /// Namespace the caller named for the provider, if any.
@@ -276,8 +278,7 @@ pub struct Trigger {
 
 impl Trigger {
     /// The three namespace fields for an engine-internal binding: one declared
-    /// in engine configuration, or registered through
-    /// `engine::register_trigger` rather than by a worker connection.
+    /// in engine configuration rather than by a worker connection.
     ///
     /// These are engine orchestration, so they are at home in
     /// [`DEFAULT_NAMESPACE`] and resolve their provider there — which is also
