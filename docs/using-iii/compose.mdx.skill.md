@@ -429,7 +429,7 @@ Namespaces are arbitrary and their usage depends largely on the given usecase. T
 a specific way of constructing your iii application.
 
 The two primary points where Namespaces are used are during Worker registration via Compose and
-during Function and Trigger interactions. All have ways of declaring which namespace to use.
+during Trigger and Function interactions. All have ways of declaring which namespace to use.
 
 ### Precedence
 
