@@ -68,10 +68,11 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
       });
       imported += 1;
     } catch (err) {
-      // Skip a row the application rejects (a code already taken). Re-throw
-      // anything else (a timeout, a worker that is down) so a broken import
-      // fails loudly instead of counting rows it never created as "skipped".
-      if (!String(err).includes("already taken")) throw err;
+      // Skip a row the database rejects (a code already taken, refused by the
+      // PRIMARY KEY on links.code). Re-throw anything else (a timeout, a worker
+      // that is down) so a broken import fails loudly instead of counting rows
+      // it never created as "skipped".
+      if (!String(err).includes("UNIQUE constraint failed")) throw err;
       skipped += 1;
       logger.warn("bulk import row skipped", { code, error: String(err) });
     }

@@ -123,14 +123,18 @@ iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
 
 <Info>
   The `jq` pipe walks the nested `roots` tree, indenting each span by depth and printing its
-  `service_name` and duration in milliseconds. You get the full path of one redirect, across two
+  `service_name` and duration in milliseconds. You get the full path of one redirect, across three
   workers:
 </Info>
 
 ```text
-GET /s/:code (iii) 2.044 ms
-  execute http::redirect (iii-node) 1.444 ms
-    execute link::resolve (iii-node) 0.52 ms
+GET /s/:code (http) 6.686 ms
+  call engine::channels::create (iii) 0.062 ms
+  execute http::redirect (iii-node) 3.569 ms
+    execute link::resolve (iii-node) 1.233 ms
+      call state::get (iii) 0.309 ms
+        execute state::get (state) 0.06 ms
+  call engine::channels::create (iii) 0.031 ms
 ```
 
 This shows the redirect arriving through `/s/:code` via the `http` worker's Trigger, calling

@@ -45,7 +45,7 @@ Uncomment the Ch. 7 `rbac-proxy` container:
 ```yaml worker-compose.yaml
   rbac-proxy:
     worker: package://rbac-proxy
-    version: "1.0.5"
+    version: "1.0.6"
     config_name: rbac-proxy
     config_override:
       host: 127.0.0.1
@@ -272,9 +272,8 @@ useEffect(() => {
     type: "stream",
     function_id: "ui::on_click",
     config: { stream_name: "clicks", group_id: "all" },
-    // ui::on_click lives in this tab's namespace; the clicks stream lives in
-    // the project namespace, so point the trigger type there.
-    trigger_namespace: "default",
+    // ui::on_click lives in this tab's namespace, so the trigger resolves it
+    // there. registerTrigger fills that in from the worker's namespace.
   });
   return () => {
     trig.unregister();

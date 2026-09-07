@@ -8,7 +8,8 @@ original URL.
 
 ## Create the project
 
-A iii project is a directory with a `config.yaml` file that describes your system. Create one:
+A iii project is a directory with a `worker-compose.yaml` file that describes your system. Create
+one:
 
 ```bash
 iii project init linkly --template linkly
@@ -37,12 +38,12 @@ engine:
 containers:
   http:
     worker: package://http
-    version: "0.21.8"
+    version: "0.21.9"
     config_name: http
 
   state:
     worker: package://state
-    version: "0.22.7"
+    version: "0.22.8"
     config_name: state
     config_override:
       adapter:

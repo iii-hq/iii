@@ -14,7 +14,7 @@ This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomm
 ```yaml worker-compose.yaml
   queue:
     worker: package://queue
-    version: "0.21.10"
+    version: "0.21.11"
     config_name: queue
     working_dir: .
     config_override:
@@ -25,7 +25,7 @@ This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomm
           concurrency: 5
   pubsub:
     worker: package://pubsub
-    version: "0.21.4"
+    version: "0.21.5"
   analytics:
     worker: path://./analytics
     start_after: [database, pubsub]
