@@ -91,7 +91,7 @@ pub async fn handle_dispatch(
             }
         };
 
-        let asset_name = platform::asset_name(spec.name);
+        let asset_name = platform::asset_name(spec);
         let asset = match github::find_asset(&release, &asset_name) {
             Some(a) => a,
             None => {
@@ -101,7 +101,7 @@ pub async fn handle_dispatch(
         };
 
         let checksum_url = if spec.has_checksum {
-            let checksum_name = platform::checksum_asset_name(spec.name);
+            let checksum_name = platform::checksum_asset_name(spec);
             github::find_asset(&release, &checksum_name).map(|a| a.browser_download_url.clone())
         } else {
             None

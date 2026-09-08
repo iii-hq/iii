@@ -51,6 +51,20 @@ pub fn current_target() -> &'static str {
     compile_error!("unsupported target platform for iii")
 }
 
+/// Resolves the release target published for a binary from the CLI's preferred
+/// target for the current host.
+fn release_target_for<'a>(spec: &BinarySpec, host_target: &'a str) -> &'a str {
+    spec.asset_target_overrides
+        .iter()
+        .find_map(|(from, to)| (*from == host_target).then_some(*to))
+        .unwrap_or(host_target)
+}
+
+/// Returns the release target published for a binary on the current host.
+pub fn release_target(spec: &BinarySpec) -> &'static str {
+    release_target_for(spec, current_target())
+}
+
 /// Returns the archive extension for the current platform.
 pub fn archive_extension() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -60,15 +74,20 @@ pub fn archive_extension() -> &'static str {
     }
 }
 
-/// Constructs the expected asset filename for a binary on the current platform.
-/// e.g., "iii-console-aarch64-apple-darwin.tar.gz"
-pub fn asset_name(binary_name: &str) -> String {
+/// Constructs the expected asset filename for a binary and host target.
+fn asset_name_for(spec: &BinarySpec, host_target: &str) -> String {
     format!(
         "{}-{}.{}",
-        binary_name,
-        current_target(),
+        spec.name,
+        release_target_for(spec, host_target),
         archive_extension()
     )
+}
+
+/// Constructs the expected asset filename for a binary on the current platform.
+/// e.g., "iii-console-aarch64-apple-darwin.tar.gz"
+pub fn asset_name(spec: &BinarySpec) -> String {
+    asset_name_for(spec, current_target())
 }
 
 /// Returns the platform-appropriate data directory for iii.
@@ -131,10 +150,9 @@ pub fn state_file_path() -> PathBuf {
     data_dir().join("state.json")
 }
 
-/// Checks whether the current platform is supported by the given binary.
-/// Returns Ok(()) if supported, or an error with a helpful message if not.
-pub fn check_platform_support(spec: &BinarySpec) -> Result<(), RegistryError> {
-    let target = current_target();
+/// Checks whether a host target maps to a supported release target.
+fn check_platform_support_for(spec: &BinarySpec, host_target: &str) -> Result<(), RegistryError> {
+    let target = release_target_for(spec, host_target);
     if spec.supported_targets.contains(&target) {
         Ok(())
     } else {
@@ -150,6 +168,12 @@ pub fn check_platform_support(spec: &BinarySpec) -> Result<(), RegistryError> {
             supported,
         })
     }
+}
+
+/// Checks whether the current platform is supported by the given binary.
+/// Returns Ok(()) if supported, or an error with a helpful message if not.
+pub fn check_platform_support(spec: &BinarySpec) -> Result<(), RegistryError> {
+    check_platform_support_for(spec, current_target())
 }
 
 /// Formats a target triple into a human-readable string.
@@ -186,11 +210,20 @@ pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
     iii::bin_resolve::find_existing_binary(binary_name)
 }
 
+/// Constructs the expected checksum asset filename for a binary and host target.
+fn checksum_asset_name_for(spec: &BinarySpec, host_target: &str) -> String {
+    format!(
+        "{}-{}.sha256",
+        spec.name,
+        release_target_for(spec, host_target)
+    )
+}
+
 /// Constructs the expected checksum asset filename for a binary.
 /// e.g., "iii-console-aarch64-apple-darwin.sha256"
 /// Note: taiki-e produces checksums as separate assets WITHOUT the archive extension.
-pub fn checksum_asset_name(binary_name: &str) -> String {
-    format!("{}-{}.sha256", binary_name, current_target())
+pub fn checksum_asset_name(spec: &BinarySpec) -> String {
+    checksum_asset_name_for(spec, current_target())
 }
 
 /// Ensures the storage directories exist.
@@ -218,6 +251,13 @@ pub fn ensure_dirs() -> Result<(), super::error::StorageError> {
 mod tests {
     use super::*;
 
+    fn binary_spec(name: &str) -> &'static BinarySpec {
+        crate::cli::registry::REGISTRY
+            .iter()
+            .find(|spec| spec.name == name)
+            .unwrap_or_else(|| panic!("{name} must be registered"))
+    }
+
     #[test]
     fn test_current_target_not_empty() {
         assert!(!current_target().is_empty());
@@ -231,9 +271,44 @@ mod tests {
 
     #[test]
     fn test_asset_name_format() {
-        let name = asset_name("iii-console");
+        let console = binary_spec("iii-console");
+        let name = asset_name(console);
         assert!(name.starts_with("iii-console-"));
         assert!(name.ends_with(archive_extension()));
+    }
+
+    #[test]
+    fn worker_release_target_uses_gnu_on_linux_x86_64() {
+        let worker = binary_spec("iii-worker");
+
+        assert_eq!(
+            release_target_for(worker, "x86_64-unknown-linux-musl"),
+            "x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn worker_asset_names_use_gnu_on_linux_x86_64() {
+        let worker = binary_spec("iii-worker");
+
+        assert_eq!(
+            asset_name_for(worker, "x86_64-unknown-linux-musl"),
+            "iii-worker-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(
+            checksum_asset_name_for(worker, "x86_64-unknown-linux-musl"),
+            "iii-worker-x86_64-unknown-linux-gnu.sha256"
+        );
+    }
+
+    #[test]
+    fn worker_platform_support_accepts_linux_x86_64() {
+        let worker = binary_spec("iii-worker");
+
+        assert!(
+            check_platform_support_for(worker, "x86_64-unknown-linux-musl").is_ok(),
+            "Linux x86_64 must be supported through the worker's GNU asset override"
+        );
     }
 
     #[test]
@@ -310,9 +385,8 @@ mod tests {
 
     #[test]
     fn test_platform_support_check() {
-        use crate::cli::registry::REGISTRY;
         // iii-console supports all major platforms
-        let console = &REGISTRY[0];
+        let console = binary_spec("iii-console");
         let result = check_platform_support(console);
         assert!(result.is_ok());
     }
