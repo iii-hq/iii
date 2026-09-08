@@ -135,8 +135,22 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        terminal.contains("engine started"),
+        terminal.contains("Engine Ready"),
         "unexpected output:\n{terminal}"
+    );
+    let progress = String::from_utf8_lossy(&output.stderr);
+    let waiting = progress.find("Engine Waiting for connection").unwrap();
+    let ready = progress.find("Engine Ready").unwrap();
+    let containers = progress.find("Containers Starting").unwrap();
+    let failed = progress.find("Containers Failed").unwrap();
+    assert!(
+        waiting < ready && ready < containers && containers < failed,
+        "{progress}"
+    );
+    assert!(!progress.contains("Containers Ready"), "{progress}");
+    assert!(
+        !progress.contains('\x1b'),
+        "redirected output must not animate: {progress}"
     );
     assert!(
         terminal.contains(compose.to_str().unwrap()),
@@ -238,7 +252,8 @@ fn compose_without_engine_section_uses_and_preserves_an_external_engine() {
 
     assert!(!output.status.success(), "missing project worker must fail");
     assert!(terminal.contains("compose serving"), "{terminal}");
-    assert!(!terminal.contains("engine started"), "{terminal}");
+    assert!(terminal.contains("Engine Connecting"), "{terminal}");
+    assert!(!terminal.contains("Engine Starting"), "{terminal}");
     assert!(engine_survived, "Compose stopped the external engine");
     assert!(
         engine_reachable,
@@ -311,7 +326,8 @@ fn cli_engine_overrides_file_engine_and_preserves_the_external_engine() {
     assert!(!output.status.success(), "missing project worker must fail");
     assert!(terminal.contains("compose serving"), "{terminal}");
     assert!(terminal.contains("namespace: cli-namespace"), "{terminal}");
-    assert!(!terminal.contains("engine started"), "{terminal}");
+    assert!(terminal.contains("Engine Connecting"), "{terminal}");
+    assert!(!terminal.contains("Engine Starting"), "{terminal}");
     assert!(engine_survived, "Compose stopped the external engine");
     assert!(
         engine_reachable,
@@ -348,7 +364,9 @@ fn compose_up_rejects_an_occupied_managed_engine_listener() {
         terminal.contains("MANAGED_ENGINE_LISTENER_UNAVAILABLE"),
         "{terminal}"
     );
-    assert!(!terminal.contains("engine started"), "{terminal}");
+    assert!(terminal.contains("Engine Failed"), "{terminal}");
+    assert!(terminal.contains("Containers Not started"), "{terminal}");
+    assert!(!terminal.contains("Engine Ready"), "{terminal}");
 }
 
 #[cfg(unix)]
@@ -394,6 +412,9 @@ fn signal_during_managed_engine_startup_stops_the_engine() {
     let output = child.wait_with_output().unwrap();
 
     assert!(output.status.success(), "compose exited with {output:?}");
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Cancelled"), "{progress}");
+    assert!(!progress.contains("Containers Ready"), "{progress}");
     assert!(
         !generated_config.exists(),
         "managed engine config survived shutdown"
@@ -608,6 +629,9 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "compose exited with {output:?}");
     assert!(stopped.exists(), "worker shutdown trap did not run");
+    let progress = String::from_utf8_lossy(&output.stderr);
+    assert!(progress.contains("Engine Ready"), "{progress}");
+    assert!(progress.contains("Containers Ready"), "{progress}");
 
     let terminal = format!(
         "{}{}",

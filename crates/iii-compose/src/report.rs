@@ -32,7 +32,7 @@
 use std::{
     io::{IsTerminal, Write},
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use colored::{Color, Colorize};
@@ -60,6 +60,7 @@ const CLEAR_LINE: &str = "\r\x1b[2K";
 /// "where is all of it" — which is a block that is redrawn, not a line that is
 /// replaced.
 struct Console {
+    startup: Option<StartupRows>,
     rows: Vec<Row>,
     /// How many lines the block occupies on screen, so the next draw knows how
     /// far up to go. Zero when nothing is drawn.
@@ -79,20 +80,192 @@ struct Row {
 enum RowState {
     /// Declared, and waiting on something earlier in the graph.
     Waiting,
-    Starting,
+    Starting {
+        what: String,
+        began: Instant,
+    },
     Ready {
         what: String,
         elapsed: Duration,
     },
     Failed,
+    Error {
+        what: String,
+        elapsed: Duration,
+    },
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
+}
+
+struct StartupRows {
+    engine: Row,
+    containers: Row,
+}
+
+/// Owns the foreground startup panel. Early returns must leave a final status,
+/// never an animated row above an error.
+pub(crate) struct StartupProgress {
+    finished: bool,
+}
+
+impl StartupProgress {
+    pub(crate) fn start(managed: bool) -> Self {
+        let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+        state.startup = Some(StartupRows::new(managed));
+        if animated() {
+            redraw(&mut state);
+            ensure_ticker();
+        } else if let Some(startup) = &state.startup {
+            eprintln!("{}", render_row(&startup.engine, 0, false));
+            eprintln!("{}", render_row(&startup.containers, 0, false));
+        }
+        Self { finished: false }
+    }
+
+    pub(crate) fn engine_waiting(&self) {
+        self.update_engine("Waiting for connection", false);
+    }
+
+    pub(crate) fn engine_ready(&self) {
+        self.update_engine("Ready", true);
+    }
+
+    fn update_engine(&self, message: &str, ready: bool) {
+        let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+        let Some(startup) = &mut state.startup else {
+            return;
+        };
+        let RowState::Starting { what, began } = &mut startup.engine.state else {
+            return;
+        };
+        if ready {
+            startup.engine.state = RowState::Ready {
+                what: message.to_string(),
+                elapsed: began.elapsed(),
+            };
+        } else {
+            *what = message.to_string();
+        }
+        if animated() {
+            redraw(&mut state);
+        } else {
+            eprintln!("{}", render_row(&startup.engine, 0, false));
+        }
+    }
+
+    pub(crate) fn containers_starting(&self) {
+        let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+        let Some(startup) = &mut state.startup else {
+            return;
+        };
+        startup.containers.state = RowState::Starting {
+            what: "Starting".to_string(),
+            began: Instant::now(),
+        };
+        if animated() {
+            redraw(&mut state);
+        } else {
+            eprintln!("{}", render_row(&startup.containers, 0, false));
+        }
+    }
+
+    pub(crate) fn finish(&mut self, success: bool, message: &str) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+        let Some(startup) = &mut state.startup else {
+            return;
+        };
+        startup.finish(success, message);
+        // Pending/active child rows cannot keep spinning after a failed or
+        // cancelled operation.
+        for row in &mut state.rows {
+            match row.state {
+                RowState::Waiting => row.state = RowState::Skipped("Not started".to_string()),
+                RowState::Starting { .. } => row.state = RowState::Skipped("Cancelled".to_string()),
+                _ => {}
+            }
+        }
+        if animated() {
+            redraw(&mut state);
+        } else if let Some(startup) = &state.startup {
+            if !matches!(startup.engine.state, RowState::Ready { .. }) {
+                eprintln!("{}", render_row(&startup.engine, 0, false));
+            }
+            eprintln!("{}", render_row(&startup.containers, 0, false));
+        }
+        state.startup = None;
+        state.rows.clear();
+        state.drawn = 0;
+    }
+}
+
+impl Drop for StartupProgress {
+    fn drop(&mut self) {
+        self.finish(false, "Failed");
+    }
+}
+
+impl StartupRows {
+    fn new(managed: bool) -> Self {
+        Self {
+            engine: Row {
+                key: "Engine".to_string(),
+                depth: 0,
+                state: RowState::Starting {
+                    what: if managed { "Starting" } else { "Connecting" }.to_string(),
+                    began: Instant::now(),
+                },
+            },
+            containers: Row {
+                key: "Containers".to_string(),
+                depth: 0,
+                state: RowState::Waiting,
+            },
+        }
+    }
+
+    fn finish(&mut self, success: bool, message: &str) {
+        let row = if matches!(self.containers.state, RowState::Waiting)
+            && !matches!(self.engine.state, RowState::Ready { .. })
+        {
+            self.containers.state = RowState::Skipped("Not started".to_string());
+            &mut self.engine
+        } else {
+            // An empty project can finish even while an external engine is
+            // unavailable. Completing that project does not prove connection.
+            if matches!(self.engine.state, RowState::Starting { .. }) {
+                self.engine.state = RowState::Skipped("Not connected".to_string());
+            }
+            &mut self.containers
+        };
+        let elapsed = match &row.state {
+            RowState::Starting { began, .. } => began.elapsed(),
+            _ => Duration::ZERO,
+        };
+        row.state = if success {
+            RowState::Ready {
+                what: message.to_string(),
+                elapsed,
+            }
+        } else if message == "Cancelled" {
+            RowState::Skipped(message.to_string())
+        } else {
+            RowState::Error {
+                what: message.to_string(),
+                elapsed,
+            }
+        };
+    }
 }
 
 fn console() -> &'static Mutex<Console> {
     static CONSOLE: OnceLock<Mutex<Console>> = OnceLock::new();
     CONSOLE.get_or_init(|| {
         Mutex::new(Console {
+            startup: None,
             rows: Vec::new(),
             drawn: 0,
             frame: 0,
@@ -122,7 +295,10 @@ pub fn plan(rows: &[(String, usize)]) {
                 state: RowState::Waiting,
             })
             .collect();
-        state.drawn = 0;
+        // The engine panel already owns the block above these new child rows.
+        if state.startup.is_none() {
+            state.drawn = 0;
+        }
         state.frame = 0;
         redraw(&mut state);
     }
@@ -135,8 +311,10 @@ pub fn plan_done() {
     let mut state = console
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.rows.clear();
-    state.drawn = 0;
+    if state.startup.is_none() {
+        state.rows.clear();
+        state.drawn = 0;
+    }
 }
 
 fn set(key: &str, to: RowState) -> bool {
@@ -148,6 +326,20 @@ fn set(key: &str, to: RowState) -> bool {
         return false;
     };
     row.state = to;
+    let ready = state
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(row.state, RowState::Ready { .. })
+                || matches!(&row.state, RowState::Skipped(why) if why == "already running")
+        })
+        .count();
+    let total = state.rows.len();
+    if let Some(startup) = &mut state.startup
+        && let RowState::Starting { what, .. } = &mut startup.containers.state
+    {
+        *what = format!("Starting ({ready}/{total})");
+    }
     redraw(&mut state);
     true
 }
@@ -158,25 +350,44 @@ fn redraw(state: &mut Console) {
     if state.drawn > 0 {
         out.push_str(&format!("\x1b[{}A", state.drawn));
     }
-    for row in &state.rows {
+    let headers = state
+        .startup
+        .iter()
+        .flat_map(|startup| [&startup.engine, &startup.containers])
+        .map(|row| (row, ""));
+    let indent = if state.startup.is_some() { "  " } else { "" };
+    for (row, prefix) in headers.chain(state.rows.iter().map(|row| (row, indent))) {
         out.push_str(CLEAR_LINE);
-        out.push_str(&render_row(row, state.frame));
+        out.push_str(prefix);
+        out.push_str(&render_row(row, state.frame, true));
         out.push('\n');
     }
-    state.drawn = state.rows.len();
+    state.drawn = state.rows.len() + if state.startup.is_some() { 2 } else { 0 };
     let mut stderr = std::io::stderr().lock();
     let _ = write!(stderr, "{out}");
     let _ = stderr.flush();
 }
 
-fn render_row(row: &Row, frame: usize) -> String {
+fn render_row(row: &Row, frame: usize, animate: bool) -> String {
     let indent = "  ".repeat(row.depth);
     match &row.state {
-        RowState::Waiting => format!("{indent}{} {}", SKIPPED.dimmed(), row.key.dimmed()),
-        RowState::Starting => format!(
-            "{indent}{} {}",
-            FRAMES[frame % FRAMES.len()].cyan(),
-            row.key.bold()
+        RowState::Waiting => format!(
+            "{indent}{} {} {}",
+            SKIPPED.dimmed(),
+            row.key.dimmed(),
+            "Pending".dimmed()
+        ),
+        RowState::Starting { what, began } => format!(
+            "{indent}{} {} {} {}",
+            if animate {
+                FRAMES[frame % FRAMES.len()]
+            } else {
+                RUNNING
+            }
+            .cyan(),
+            row.key.bold(),
+            what.dimmed(),
+            format!("({})", format_elapsed(began.elapsed())).dimmed(),
         ),
         RowState::Ready { what, elapsed } => format!(
             "{indent}{} {} {} {}",
@@ -186,6 +397,13 @@ fn render_row(row: &Row, frame: usize) -> String {
             format!("({})", format_elapsed(*elapsed)).dimmed()
         ),
         RowState::Failed => format!("{indent}{} {}", FAILED.red(), row.key.bold().red()),
+        RowState::Error { what, elapsed } => format!(
+            "{indent}{} {} {} {}",
+            FAILED.red(),
+            row.key.bold(),
+            what.red(),
+            format!("({})", format_elapsed(*elapsed)).dimmed(),
+        ),
         RowState::Skipped(why) => format!(
             "{indent}{} {} {}",
             SKIPPED.dimmed(),
@@ -195,7 +413,7 @@ fn render_row(row: &Row, frame: usize) -> String {
     }
 }
 
-/// Whether progress can animate./// Whether progress can animate. A pipe or a file gets static lines.
+/// Whether progress can animate. A pipe or a file gets static lines.
 fn animated() -> bool {
     static ANIMATED: OnceLock<bool> = OnceLock::new();
     *ANIMATED.get_or_init(|| std::io::stderr().is_terminal())
@@ -257,10 +475,11 @@ fn ensure_ticker() {
                 let mut state = console
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let turning = state
-                    .rows
-                    .iter()
-                    .any(|row| matches!(row.state, RowState::Starting));
+                let turning = state.startup.is_some()
+                    || state
+                        .rows
+                        .iter()
+                        .any(|row| matches!(row.state, RowState::Starting { .. }));
                 if turning {
                     state.frame = state.frame.wrapping_add(1);
                     redraw(&mut state);
@@ -273,7 +492,24 @@ fn ensure_ticker() {
 /// A container is being worked on. On a terminal this spins until the container
 /// settles; anywhere else it is a plain line.
 pub fn starting(key: &str, what: &str) {
-    if set(key, RowState::Starting) {
+    let began = {
+        let state = console().lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .rows
+            .iter()
+            .find_map(|row| match &row.state {
+                RowState::Starting { began, .. } if row.key == key => Some(*began),
+                _ => None,
+            })
+            .unwrap_or_else(Instant::now)
+    };
+    if set(
+        key,
+        RowState::Starting {
+            what: what.to_string(),
+            began,
+        },
+    ) {
         return;
     }
     line(&format!(
@@ -344,6 +580,7 @@ pub fn stopped(key: &str) {
 
 /// Undone by a rollback. Amber, not red: nothing went wrong with this one.
 pub fn rolled_back(key: &str) {
+    set(key, RowState::Skipped("rolled back".to_string()));
     line(&format!(
         "{} {} {}",
         SKIPPED.yellow(),
@@ -461,6 +698,99 @@ fn pick_color(taken: &[Color], last: Option<Color>) -> Color {
 mod tests {
     use super::*;
 
+    #[test]
+    fn engine_failure_leaves_containers_not_started() {
+        let mut startup = StartupRows::new(true);
+        startup.finish(false, "Connection timed out");
+        assert!(matches!(startup.engine.state, RowState::Error { .. }));
+        assert!(
+            matches!(&startup.containers.state, RowState::Skipped(why) if why == "Not started")
+        );
+    }
+
+    #[test]
+    fn container_failure_preserves_confirmed_engine_readiness() {
+        let mut startup = StartupRows::new(true);
+        startup.engine.state = RowState::Ready {
+            what: "Ready".to_string(),
+            elapsed: Duration::from_secs(6),
+        };
+        startup.containers.state = RowState::Starting {
+            what: "Starting (1/3)".to_string(),
+            began: Instant::now(),
+        };
+        startup.finish(false, "Failed");
+        assert!(matches!(startup.engine.state, RowState::Ready { .. }));
+        assert!(matches!(startup.containers.state, RowState::Error { .. }));
+    }
+
+    #[test]
+    fn empty_project_does_not_claim_an_unconnected_engine_is_ready() {
+        let mut startup = StartupRows::new(false);
+        startup.containers.state = RowState::Starting {
+            what: "Starting".to_string(),
+            began: Instant::now(),
+        };
+        startup.finish(true, "Ready");
+        assert!(matches!(&startup.engine.state, RowState::Skipped(why) if why == "Not connected"));
+        assert!(matches!(startup.containers.state, RowState::Ready { .. }));
+    }
+
+    #[test]
+    fn redirected_startup_reports_transitions_without_animation() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "report::tests::startup_panel_fixture",
+                "--nocapture",
+            ])
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let starting = stderr.find("Engine Starting").unwrap();
+        let waiting = stderr.find("Engine Waiting for connection").unwrap();
+        let ready = stderr.find("Engine Ready").unwrap();
+        let containers = stderr.find("Containers Starting").unwrap();
+        let done = stderr.find("Containers Ready").unwrap();
+        assert!(
+            starting < waiting && waiting < ready && ready < containers && containers < done,
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains('\x1b') && !FRAMES.iter().any(|frame| stderr.contains(frame)),
+            "{stderr}"
+        );
+    }
+
+    /// Also usable under a PTY to inspect redraws without starting real workers.
+    #[tokio::test]
+    #[ignore = "subprocess fixture for the progress renderer"]
+    async fn startup_panel_fixture() {
+        let mut progress = StartupProgress::start(true);
+        progress.engine_waiting();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        progress.engine_ready();
+        line("compose serving");
+        progress.containers_starting();
+        plan(&[("api".to_string(), 0), ("redis".to_string(), 1)]);
+        starting("redis", "waiting for engine registration");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        ready("redis", Duration::from_millis(250));
+        starting("api", "installing package");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        starting("api", "waiting for engine registration");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        ready("api", Duration::from_millis(500));
+        plan_done();
+        progress.finish(true, "Ready");
+        // The finished panel must not be redrawn over subsequent output.
+        line("after startup");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
     /// A container keeps its colour once it has one, and red is never handed
     /// out — in this output red means a failure.
     #[test]
@@ -533,9 +863,12 @@ mod tests {
         let row = Row {
             key: "api".to_string(),
             depth: 0,
-            state: RowState::Starting,
+            state: RowState::Starting {
+                what: "starting".to_string(),
+                began: Instant::now(),
+            },
         };
-        assert!(!render_row(&row, usize::MAX).is_empty());
+        assert!(!render_row(&row, usize::MAX, true).is_empty());
     }
 
     /// Depth is what makes the block a graph rather than a list, and it is
@@ -558,8 +891,8 @@ mod tests {
                 elapsed: Duration::from_millis(10),
             },
         };
-        let drawn_parent = render_row(&parent, 0);
-        let drawn_child = render_row(&child, 0);
+        let drawn_parent = render_row(&parent, 0, true);
+        let drawn_child = render_row(&child, 0, true);
         assert!(!drawn_parent.starts_with(' '), "{drawn_parent:?}");
         assert!(drawn_child.starts_with("  "), "{drawn_child:?}");
     }
