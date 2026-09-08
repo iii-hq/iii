@@ -1,6 +1,6 @@
 ---
-title: "Namespaces"
-description: "Set worker namespaces, call namespaced functions, and handle namespace conflicts."
+title: "Isolate workers and functions with namespaces"
+description: "Set a worker's namespace, trigger functions across namespaces, resolve name conflicts, and route engine::* builtins to the default namespace."
 owner: "devrel"
 type: "how-to"
 ---
@@ -118,6 +118,12 @@ trusted runtime configuration.
 Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
 call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
 no namespace of its own resolves in `default`, as before.
+
+An implicit call whose `function_id` starts with `engine::` is the one exception: the SDK routes it
+to `default` where the engine's own builtins live, regardless of the worker's namespace. An explicit
+`namespace` on the request still wins, so you can point a builtin call at another namespace when you
+need to (`engine::workers::list` in `sandbox`, for example). This applies to the Rust, Node, Browser,
+Python, and Go SDKs.
 
 <Tabs>
   <Tab title="CLI">
