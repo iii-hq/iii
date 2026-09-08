@@ -704,6 +704,7 @@ async fn start_one_until_shutdown(
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
     };
 
+    report::starting(key, "configuring");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
             .emit(Some(key), "configuring", "resolving configuration")
@@ -735,6 +736,7 @@ async fn start_one_until_shutdown(
     };
 
     if let Some(script) = &container.scripts.pre_run {
+        report::starting(key, "running pre-run hook");
         let Some(result) = hooks::await_pre_run_until_shutdown(
             &spawn_ctx,
             script,
@@ -759,6 +761,7 @@ async fn start_one_until_shutdown(
         // back is an ordinary child, so readiness, stop, crash cascade and log
         // capture below are unchanged.
         None => {
+            report::starting(key, "preparing VM runtime");
             if let Some(operation) = operation_id.and_then(crate::operation::active) {
                 operation
                     .emit(Some(key), "preparing", "preparing VM runtime")
@@ -782,6 +785,7 @@ async fn start_one_until_shutdown(
             container: key.to_string(),
             message: err.to_string(),
         })?;
+    report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
             .emit(Some(key), "registering", "waiting for engine registration")
