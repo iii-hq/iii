@@ -641,18 +641,18 @@ function FunctionsPage() {
                 dispatchUi({ type: 'SET_SCHEMA_DIALOG_OPEN', payload: open })
               }
             >
-              <DialogContent className="w-[80vw] max-w-[80vw] max-h-[85vh] overflow-hidden flex flex-col">
+              <DialogContent className="w-[80vw] max-w-[80vw] h-[90vh] max-h-[90vh] overflow-hidden flex flex-col">
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 pr-6">
                     <FileJson className="h-4 w-4 text-muted" />
                     Function Schemas
                   </DialogTitle>
-                  <DialogDescription className="font-mono text-xs">
+                  <DialogDescription className="font-mono text-xs break-all">
                     {selectedFunction.function_id}
                   </DialogDescription>
                 </DialogHeader>
 
-                <div className="min-h-0 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
                   {functionDetailLoading ? (
                     <div className="md:col-span-2 space-y-3 py-4">
                       <Skeleton className="h-32 w-full" />
@@ -664,32 +664,34 @@ function FunctionsPage() {
                     </div>
                   ) : (
                     <>
-                      <div className="min-w-0">
-                        <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+                      <div className="min-w-0 min-h-0 flex flex-col">
+                        <h3 className="mb-2 shrink-0 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
                           Request Schema
                         </h3>
-                        <div className="min-h-32 max-h-[60vh] overflow-auto rounded border border-border bg-black/40 p-3">
+                        <div className="min-h-32 flex-1 overflow-y-auto overflow-x-hidden rounded border border-border bg-black/40 p-3">
                           {functionDetail?.request_schema ? (
                             <JsonViewer
                               data={functionDetail.request_schema}
                               collapsed={false}
                               maxDepth={8}
+                              className="min-w-0 [overflow-wrap:anywhere] [&_pre]:overflow-x-hidden [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
                             />
                           ) : (
                             <p className="text-xs text-muted">No request schema provided.</p>
                           )}
                         </div>
                       </div>
-                      <div className="min-w-0">
-                        <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+                      <div className="min-w-0 min-h-0 flex flex-col">
+                        <h3 className="mb-2 shrink-0 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
                           Response Schema
                         </h3>
-                        <div className="min-h-32 max-h-[60vh] overflow-auto rounded border border-border bg-black/40 p-3">
+                        <div className="min-h-32 flex-1 overflow-y-auto overflow-x-hidden rounded border border-border bg-black/40 p-3">
                           {functionDetail?.response_schema ? (
                             <JsonViewer
                               data={functionDetail.response_schema}
                               collapsed={false}
                               maxDepth={8}
+                              className="min-w-0 [overflow-wrap:anywhere] [&_pre]:overflow-x-hidden [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
                             />
                           ) : (
                             <p className="text-xs text-muted">No response schema provided.</p>
