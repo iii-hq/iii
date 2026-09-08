@@ -258,8 +258,12 @@ impl Daemon {
         )
     }
 
-    /// Resolves, acquires, and persists package locks before a start operation.
-    async fn prepare_start_file(&self, file: &Path) -> Result<ComposeFile> {
+    /// Resolves, acquires, and persists package locks before loading a project.
+    ///
+    /// The caller holds this compose file's mutation lock through this call, so
+    /// another mutation cannot replace the lock between persistence and the
+    /// resolved-package attachment.
+    async fn prepare_start_project(&self, file: &Path) -> Result<Arc<Project>> {
         let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
@@ -268,7 +272,9 @@ impl Daemon {
         let prepared =
             crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
         prepared.write_if_changed()?;
-        Ok(compose)
+        let project = self.project(file).await?;
+        project.attach_resolved_packages(&compose).await;
+        Ok(project)
     }
 
     /// The project `file` declares, loading it if this is the first time.
@@ -359,9 +365,8 @@ impl Daemon {
         operation_id: String,
     ) -> Result<OpResult> {
         let file = self.resolve_file(file)?;
-        let current = self.prepare_start_file(file).await?;
-        let project = self.project(file).await?;
-        project.attach_resolved_packages(&current).await;
+        let _mutation = self.lock_mutation(file).await;
+        let project = self.prepare_start_project(file).await?;
         Ok(project.up(container, operation_id).await)
     }
 
@@ -376,9 +381,8 @@ impl Daemon {
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Result<Option<OpResult>> {
         let file = self.resolve_file(file)?;
-        let current = self.prepare_start_file(file).await?;
-        let project = self.project(file).await?;
-        project.attach_resolved_packages(&current).await;
+        let _mutation = self.lock_mutation(file).await;
+        let project = self.prepare_start_project(file).await?;
         if shutdown.requested() {
             return Ok(None);
         }
@@ -818,7 +822,7 @@ impl Daemon {
         // picked up once the project is dropped and re-read — and dropping it
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
@@ -952,7 +956,8 @@ impl Daemon {
             ));
         }
 
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let _mutation = self.lock_mutation(path).await;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             down.changed || up.changed,
@@ -970,20 +975,19 @@ impl Daemon {
     /// supervised by nothing. Re-reading is the point — a project is held as
     /// its file was when it was first loaded, so without this a restart would
     /// start exactly what was already running and report success.
+    /// The caller holds the compose file's mutation lock.
     async fn restart_project(
         &self,
-        file: Option<&Path>,
+        path: &Path,
         container: Option<&str>,
         operation_id: &str,
     ) -> Result<(OpResult, OpResult)> {
-        let path = self.resolve_file(file)?.to_path_buf();
         let down = self
-            .down(file, container, format!("{operation_id}-down"))
+            .down(Some(path), container, format!("{operation_id}-down"))
             .await?;
-        self.forget(&path).await;
-        let up = self
-            .up(file, container, format!("{operation_id}-up"))
-            .await?;
+        self.forget(path).await;
+        let project = self.prepare_start_project(path).await?;
+        let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
 
