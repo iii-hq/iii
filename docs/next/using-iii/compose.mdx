@@ -598,13 +598,14 @@ containers:
 
 ### Top-level fields
 
-| Field             | Type   | Default | Description                                                                                   |
-| ----------------- | ------ | ------- | --------------------------------------------------------------------------------------------- |
-| `namespace`       | string | absent  | Namespace the project's workers register in. A project that declares none lands in `default`. |
-| `startup_timeout` | string | `60s`   | Readiness budget for every worker. A worker may override it.                                  |
-| `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                            |
-| `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                          |
-| `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                                 |
+| Field              | Type    | Default | Description                                                                                         |
+| ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `namespace`        | string  | absent  | Namespace the project's workers register in. A project that declares none lands in `default`.       |
+| `startup_timeout`  | string  | `60s`   | Readiness budget for every worker. A worker may override it.                                        |
+| `stop_timeout`     | string  | `10s`   | Grace between the polite stop and the forced kill.                                                  |
+| `required_default` | boolean | `false` | Fallback for workers that omit `required`. An explicit worker value wins.                            |
+| `engine`           | map     | absent  | Present when this Compose invocation owns and configures the engine.                                |
+| `containers`       | map     | empty   | Project workers. May be empty only when `engine:` is present.                                       |
 
 ### Engine fields
 
@@ -638,7 +639,7 @@ Each key under `containers` is the name the worker registers under.
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
-| `required`        | boolean        | `true`               | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
+| `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
 | `restart`         | string         | `no`                 | What happens when the worker exits after it was ready. `no`, `on-failure`, or `always`.                    |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 
