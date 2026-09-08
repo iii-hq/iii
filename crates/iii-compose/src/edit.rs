@@ -17,7 +17,95 @@
 //! `start_after` fields, because a dangling edge would make the file impossible
 //! to start. Every caller parses the result before it is written.
 
+use serde::Deserialize;
+use serde_yaml::{Mapping, Value};
+
 use crate::error::{ComposeError, Result};
+
+/// An add request accepts the short worker spec or a container declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum WorkerInput {
+    Spec(String),
+    Definition(
+        #[serde(deserialize_with = "deserialize_definition")]
+        #[schemars(with = "crate::config::RawContainer")]
+        serde_json::Map<String, serde_json::Value>,
+    ),
+}
+
+/// Validate container field types while retaining explicit empty and null values.
+fn deserialize_definition<'de, D>(
+    deserializer: D,
+) -> std::result::Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    crate::config::RawContainer::deserialize(&value).map_err(serde::de::Error::custom)?;
+    // Keep field presence: an omitted map must not clear an existing map.
+    match value {
+        serde_json::Value::Object(fields) => Ok(fields),
+        _ => Err(serde::de::Error::custom("expected a container object")),
+    }
+}
+
+impl WorkerInput {
+    /// Validates the declaration with the same field types as the compose file.
+    pub fn parse(&self) -> Result<NewContainer> {
+        let fields = match self {
+            Self::Spec(spec) => return parse_worker(spec),
+            Self::Definition(fields) => fields,
+        };
+        let raw: crate::config::RawContainer =
+            serde_json::from_value(serde_json::Value::Object(fields.clone()))
+                .map_err(|err| invalid("container", &err.to_string()))?;
+        let mut new = parse_worker(&raw.worker)?;
+        if let Some(version) = raw.version {
+            match &mut new.source {
+                Source::Package {
+                    version: pinned, ..
+                } => {
+                    if pinned.as_ref().is_some_and(|pinned| pinned != &version) {
+                        return Err(invalid(
+                            &raw.worker,
+                            "worker and version specify different versions",
+                        ));
+                    }
+                    *pinned = Some(version);
+                }
+                Source::Path { .. } => {
+                    new.fields
+                        .insert(Value::from("version"), Value::from(version));
+                }
+            }
+        }
+        new.start_after = raw.start_after;
+        new.start_after.sort();
+        new.start_after.dedup();
+        for (key, value) in fields {
+            if key != "worker" && key != "version" {
+                new.fields.insert(
+                    Value::from(key.clone()),
+                    serde_yaml::to_value(value)
+                        .map_err(|err| invalid(&raw.worker, &err.to_string()))?,
+                );
+            }
+        }
+        if fields.contains_key("version") && matches!(new.source, Source::Path { .. }) {
+            new.fields
+                .entry(Value::from("version"))
+                .or_insert(Value::Null);
+        }
+        if fields.contains_key("start_after") {
+            new.fields.insert(
+                Value::from("start_after"),
+                Value::Sequence(new.start_after.iter().cloned().map(Value::from).collect()),
+            );
+        }
+        Ok(new)
+    }
+}
 
 /// Registry a bare worker name resolves against, spelled as a reference host.
 const DEFAULT_REGISTRY_HOST: &str = "api.workers.iii.dev";
@@ -56,20 +144,21 @@ pub struct NewContainer {
     /// Containers this one calls. Two workers may need the same one, so the
     /// shared worker is declared once and named here by both.
     pub start_after: Vec<String>,
+    /// Explicit fields to replace. Omitted fields keep their existing values.
+    pub fields: Mapping,
 }
 
 /// What the edit did, so the caller can report it and decide whether to restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Added(String),
-    /// Same key, different version: an upgrade or a downgrade, both wanted.
+    /// The source, version, dependencies, or explicit settings changed.
     Replaced {
         text: String,
         from: String,
         to: String,
     },
-    /// Same key, same version. Nothing to do, and saying so beats a no-op
-    /// restart of a project that is already what was asked for.
+    /// The declaration already has the requested source and settings.
     Unchanged,
 }
 
@@ -81,11 +170,17 @@ pub enum Outcome {
 /// misread those as directories.
 pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     let spec = spec.trim();
+    let explicit_path = spec.starts_with("path://");
+    let explicit_package = spec.starts_with("package://");
+    let spec = spec
+        .strip_prefix("path://")
+        .or_else(|| spec.strip_prefix("package://"))
+        .unwrap_or(spec);
     if spec.is_empty() {
         return Err(invalid(spec, "it is empty"));
     }
 
-    if spec.starts_with('.') || spec.starts_with('/') {
+    if explicit_path || (!explicit_package && (spec.starts_with('.') || spec.starts_with('/'))) {
         let key = spec
             .trim_end_matches('/')
             .rsplit('/')
@@ -98,6 +193,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
                 path: spec.to_string(),
             },
             start_after: Vec::new(),
+            fields: Mapping::new(),
         });
     }
 
@@ -130,6 +226,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
         key: key.to_string(),
         source: Source::Package { reference, version },
         start_after: Vec::new(),
+        fields: Mapping::new(),
     })
 }
 
@@ -152,7 +249,7 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
     let containers = find_containers(&lines)?;
 
     let indent = entry_indent(&lines, &containers);
-    let block = render(new, &indent);
+    let block = render(new, &indent)?;
 
     match find_entry(&lines, &containers, &indent, &new.key) {
         Some(entry) => {
@@ -160,7 +257,13 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             // Without this the version comparison below reads `unpinned` for a
             // `path://` entry, calls a resolved package a version change, and
             // rewrites the operator's local worker away.
-            let declared = declared_kind(&lines[entry.clone()]);
+            let existing_fields = entry_fields(text, &new.key)?;
+            let declared_source = existing_fields
+                .get("worker")
+                .and_then(Value::as_str)
+                .map(parse_worker)
+                .transpose()?;
+            let declared = declared_source.as_ref().map(|worker| worker.source.kind());
             let wanted_kind = new.source.kind();
             if let Some(declared) = declared
                 && declared != wanted_kind
@@ -173,20 +276,33 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
                 });
             }
 
-            let existing = declared_version(&lines[entry.clone()]);
+            let existing = existing_fields
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let wanted = wanted_version(new);
-            // Version alone is not the whole declaration. An entry written
-            // before its dependencies were known carries the right version and
-            // no `start_after`, and leaving it would start the worker by where
-            // its line happens to sit rather than after what it calls.
-            let mut needs = new.start_after.clone();
-            needs.sort();
-            if existing == wanted && declared_needs(&lines[entry.clone()]) == needs {
+            let mut changes = declaration_fields(new, Some(&existing_fields))?;
+            if declared_source.as_ref().is_some_and(|declared| {
+                match (&declared.source, &new.source) {
+                    (
+                        Source::Package {
+                            reference: from, ..
+                        },
+                        Source::Package { reference: to, .. },
+                    ) => from == to,
+                    (Source::Path { path: from }, Source::Path { path: to }) => from == to,
+                    _ => false,
+                }
+            }) {
+                changes.remove("worker");
+            }
+            changes.retain(|key, value| existing_fields.get(key) != Some(value));
+            if changes.is_empty() {
                 return Ok(Outcome::Unchanged);
             }
             let mut out: Vec<String> = lines[..entry.start].iter().map(|l| l.to_string()).collect();
             out.extend(
-                rewrite(&lines[entry.clone()], new, &indent)
+                rewrite(&lines[entry.clone()], &changes, &indent)?
                     .lines()
                     .map(str::to_string),
             );
@@ -462,9 +578,15 @@ fn entry_indent(lines: &[&str], containers: &Block) -> String {
 /// The line range of one container entry: its key line and everything indented
 /// under it, plus any comment lines directly above that describe it.
 fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Option<Entry> {
-    let head = format!("{indent}{key}:");
-    let at =
-        (containers.start..containers.end).find(|i| lines[*i].trim_end() == head.trim_end())?;
+    let at = (containers.start..containers.end).find(|i| {
+        lines[*i]
+            .strip_prefix(indent)
+            .filter(|body| !body.starts_with(char::is_whitespace))
+            .and_then(|body| body.split_once(':'))
+            .filter(|(_, value)| value.trim().is_empty() || value.trim_start().starts_with('#'))
+            .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
+            .is_some_and(|name| name == key)
+    })?;
 
     let mut end = at + 1;
     for line in &lines[at + 1..containers.end] {
@@ -488,72 +610,16 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
 
 type Entry = std::ops::Range<usize>;
 
-/// The `start_after:` an entry declares, sorted so two lists compare by content
-/// rather than by the order someone wrote them in.
-fn declared_needs(entry: &[&str]) -> Vec<String> {
-    let mut inside = false;
-    let mut needs = Vec::new();
-    for line in entry {
-        let trimmed = line.trim();
-        // `start_after: [queue, state]` declares the same thing as a block list,
-        // and reading it as empty would rewrite an entry that already says what
-        // was asked for — and a rewrite is where fields get lost.
-        if let Some(inline) = trimmed.strip_prefix("start_after:")
-            && let Some(list) = inline
-                .trim()
-                .strip_prefix('[')
-                .and_then(|rest| rest.strip_suffix(']'))
-        {
-            needs.extend(
-                list.split(',')
-                    .map(|name| name.trim().trim_matches(['"', '\'']).to_string())
-                    .filter(|name| !name.is_empty()),
-            );
-            continue;
-        }
-        if trimmed == "start_after:" {
-            inside = true;
-            continue;
-        }
-        if inside {
-            match trimmed.strip_prefix("- ") {
-                Some(name) => needs.push(name.trim().trim_matches(['"', '\'']).to_string()),
-                // The list ended; anything after it belongs to another key.
-                None if !trimmed.is_empty() => break,
-                None => {}
-            }
-        }
-    }
-    needs.sort();
-    needs
-}
-
-/// The `version:` an entry declares, if it declares one.
-/// Whether the entry names a registry package or a directory, read from its
-/// `worker:` line. `None` when the entry has none, which a hand-written file
-/// may do when the manifest supplies it.
-fn declared_kind(entry: &[&str]) -> Option<&'static str> {
-    entry.iter().find_map(|line| {
-        let value = line.trim().strip_prefix("worker:")?.trim();
-        let value = value.trim_matches(['"', '\'']);
-        if value.starts_with("path://") || value.starts_with('.') || value.starts_with('/') {
-            Some("path")
-        } else if value.starts_with("package://") {
-            Some("package")
-        } else {
-            None
-        }
-    })
-}
-
-fn declared_version(entry: &[&str]) -> Option<String> {
-    entry.iter().find_map(|line| {
-        let trimmed = line.trim();
-        trimmed
-            .strip_prefix("version:")
-            .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
-            .filter(|value| !value.is_empty())
-    })
+/// Read values for comparison only. Unchanged text is never serialized.
+fn entry_fields(text: &str, key: &str) -> Result<Mapping> {
+    // Aliases can refer to anchors in other containers.
+    let value: Value = serde_yaml::from_str(text).map_err(|err| invalid(key, &err.to_string()))?;
+    value
+        .get("containers")
+        .and_then(|containers| containers.get(key))
+        .and_then(Value::as_mapping)
+        .cloned()
+        .ok_or_else(|| invalid(key, "expected a container mapping"))
 }
 
 fn wanted_version(new: &NewContainer) -> Option<String> {
@@ -563,104 +629,302 @@ fn wanted_version(new: &NewContainer) -> Option<String> {
     }
 }
 
-/// Rewrites an existing entry, keeping every line it does not own.
-///
-/// A replacement changes the version and the dependencies. Everything else in
-/// the entry belongs to whoever wrote it — `env_file` naming the credentials a
-/// worker needs, `config_name`, `working_dir`, a `scripts.run` — and rendering
-/// the block afresh would drop all of it, leaving a project that starts and
-/// cannot work.
-fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
-    let inner = format!("{indent}{indent}");
-    let mut kept: Vec<&str> = Vec::new();
-    let mut skipping_list = false;
-
-    for line in entry
-        .iter()
-        .skip_while(|line| !line.trim_end().ends_with(':'))
-        .skip(1)
-    {
-        let trimmed = line.trim();
-        // The list items under a `start_after:` we are replacing.
-        if skipping_list {
-            if trimmed.starts_with("- ") {
-                continue;
-            }
-            skipping_list = false;
-        }
-        if trimmed.starts_with("worker:") || trimmed.starts_with("version:") {
-            continue;
-        }
-        if trimmed.starts_with("start_after:") {
-            skipping_list = !trimmed.contains('[');
-            continue;
-        }
-        kept.push(line);
+/// Build only the fields owned by this request, including resolved dependencies.
+fn declaration_fields(new: &NewContainer, existing: Option<&Mapping>) -> Result<Mapping> {
+    let mut fields = Mapping::new();
+    let source = match &new.source {
+        Source::Package { reference, .. } => format!("package://{reference}"),
+        Source::Path { path } => format!("path://{path}"),
+    };
+    fields.insert(Value::from("worker"), Value::from(source));
+    if let Some(version) = wanted_version(new) {
+        fields.insert(Value::from("version"), Value::from(version));
     }
+    let mut needs = new.start_after.clone();
+    if !new.fields.contains_key("start_after")
+        && let Some(Value::Sequence(dependencies)) =
+            existing.and_then(|fields| fields.get("start_after"))
+    {
+        needs.extend(
+            dependencies
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
+    needs.sort();
+    needs.dedup();
+    if !needs.is_empty() || new.fields.contains_key("start_after") {
+        let value =
+            serde_yaml::to_value(needs).map_err(|err| invalid(&new.key, &err.to_string()))?;
+        // Preserve order and comments when the dependency set is unchanged.
+        let previous = existing.and_then(|fields| fields.get("start_after"));
+        let same = previous.and_then(Value::as_sequence).is_some_and(|old| {
+            let mut old = old.clone();
+            old.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+            old.dedup();
+            value.as_sequence() == Some(&old)
+        });
+        fields.insert(
+            Value::from("start_after"),
+            if same {
+                previous.cloned().unwrap_or(value)
+            } else {
+                value
+            },
+        );
+    }
+    for (key, value) in &new.fields {
+        if key.as_str() != Some("start_after") {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(fields)
+}
 
+/// Replace complete fields at the container's indentation. Nested keys with the
+/// same names (for example config_override.worker) belong to their parent field.
+fn rewrite(entry: &[&str], changes: &Mapping, indent: &str) -> Result<String> {
+    let inner = entry
+        .iter()
+        .find_map(|line| {
+            let trimmed = line.trim_start();
+            let width = line.len() - trimmed.len();
+            (width > indent.len() && !trimmed.is_empty() && !trimmed.starts_with('#'))
+                .then(|| line[..width].to_string())
+        })
+        .unwrap_or_else(|| format!("{indent}{indent}"));
+    let mut remaining = changes.clone();
     let mut out = String::new();
-    // The comments above the key, and the key itself, exactly as they were.
-    for line in entry
-        .iter()
-        .take_while(|line| !line.trim_end().ends_with(':'))
-    {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.push_str(&format!("{indent}{}:\n", new.key));
-    match &new.source {
-        Source::Package { reference, version } => {
-            out.push_str(&format!("{inner}worker: package://{reference}\n"));
-            if let Some(version) = version {
-                out.push_str(&format!("{inner}version: \"{version}\"\n"));
+    let mut index = 0;
+    while index < entry.len() {
+        let line = entry[index];
+        let key = line
+            .strip_prefix(&inner)
+            .filter(|body| !body.starts_with(char::is_whitespace))
+            .and_then(|body| body.split_once(':'))
+            .and_then(|(key, _)| serde_yaml::from_str::<String>(key).ok());
+        if let Some(key) = key
+            && let Some(value) = remaining.remove(Value::from(key.clone()))
+        {
+            out.push_str(&render_field(&key, &value, &inner)?);
+            index += 1;
+            let start = index;
+            while index < entry.len() {
+                let next = entry[index];
+                let body = next.trim_start();
+                let width = next.len() - body.len();
+                // YAML also permits sequence items at the field's indentation.
+                if body.is_empty()
+                    || width > inner.len()
+                    || (width == inner.len() && (body.starts_with("- ") || body.starts_with('#')))
+                {
+                    index += 1;
+                } else {
+                    break;
+                }
             }
-        }
-        Source::Path { path } => {
-            out.push_str(&format!("{inner}worker: path://{path}\n"));
+            // Keep trailing blank lines and comments for the next field.
+            while index > start {
+                let previous = entry[index - 1];
+                let body = previous.trim_start();
+                if body.is_empty()
+                    || (previous.len() - body.len() == inner.len() && body.starts_with('#'))
+                {
+                    index -= 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+            index += 1;
         }
     }
-    if !new.start_after.is_empty() {
-        out.push_str(&format!("{inner}start_after:\n"));
-        for dependency in &new.start_after {
-            out.push_str(&format!("{inner}{indent}- {dependency}\n"));
+    for (key, value) in remaining {
+        if let Some(key) = key.as_str() {
+            out.push_str(&render_field(key, &value, &inner)?);
         }
     }
-    for line in kept {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
+    Ok(out)
+}
+
+/// Serialize one field as indented YAML, keeping version strings quoted.
+fn render_field(key: &str, value: &Value, indent: &str) -> Result<String> {
+    let yaml = if key == "version" && value.is_string() {
+        format!(
+            "version: {}\n",
+            serde_json::to_string(value.as_str().unwrap_or_default())
+                .map_err(|err| invalid(key, &err.to_string()))?
+        )
+    } else {
+        let mut field = Mapping::new();
+        field.insert(Value::from(key), value.clone());
+        serde_yaml::to_string(&field).map_err(|err| invalid(key, &err.to_string()))?
+    };
+    Ok(yaml
+        .lines()
+        .map(|line| format!("{indent}{line}\n"))
+        .collect())
 }
 
 /// The YAML for one entry, indented to match the file.
-fn render(new: &NewContainer, indent: &str) -> String {
+fn render(new: &NewContainer, indent: &str) -> Result<String> {
     let inner = format!("{indent}{indent}");
-    let mut out = String::new();
-    out.push_str(&format!("{indent}{MARKER}\n"));
-    out.push_str(&format!("{indent}{}:\n", new.key));
-    match &new.source {
-        Source::Package { reference, version } => {
-            out.push_str(&format!("{inner}worker: package://{reference}\n"));
-            if let Some(version) = version {
-                out.push_str(&format!("{inner}version: \"{version}\"\n"));
-            }
-        }
-        Source::Path { path } => {
-            out.push_str(&format!("{inner}worker: path://{path}\n"));
+    let key = serde_yaml::to_string(&new.key).map_err(|err| invalid(&new.key, &err.to_string()))?;
+    let mut out = format!("{indent}{MARKER}\n{indent}{}:\n", key.trim_end());
+    for (key, value) in declaration_fields(new, None)? {
+        if let Some(key) = key.as_str() {
+            out.push_str(&render_field(key, &value, &inner)?);
         }
     }
-    if !new.start_after.is_empty() {
-        out.push_str(&format!("{inner}start_after:\n"));
-        for dependency in &new.start_after {
-            out.push_str(&format!("{inner}{indent}- {dependency}\n"));
-        }
-    }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured(value: serde_json::Value) -> NewContainer {
+        serde_json::from_value::<WorkerInput>(value)
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn changed(text: &str, new: &NewContainer) -> String {
+        match upsert_container(text, new).unwrap() {
+            Outcome::Added(text) | Outcome::Replaced { text, .. } => text,
+            Outcome::Unchanged => panic!("expected an edit"),
+        }
+    }
+
+    #[test]
+    fn configured_worker_round_trips_every_container_field() {
+        let request = serde_json::json!({
+            "worker": "path://workers/api",
+            "version": "local",
+            "start_after": ["database"],
+            "config_name": "api-config",
+            "config_override": {"url": "${API_URL}", "port": 3000, "enabled": true},
+            "scripts": {
+                "pre_run": "echo 'prepare: #1'\necho ready",
+                "pre_run_timeout": "10s",
+                "run": "./api --name 'a: b'",
+                "post_run": "echo stopped"
+            },
+            "working_dir": ".",
+            "environment": {"MODE": "on", "COUNT": "123"},
+            "env_file": ["./api.env"],
+            "startup_timeout": "5s"
+        });
+        let worker = configured(request.clone());
+        let out = changed(
+            "containers:\n  database:\n    worker: path://./database\n",
+            &worker,
+        );
+        let document: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(document["containers"]["api"], request);
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn a_version_change_preserves_settings_that_reference_an_external_anchor() {
+        let text = "containers:\n  defaults:\n    worker: path://./defaults\n    config_override: &defaults { version: nested }\n  api:\n    worker: package://api.workers.iii.dev/api\n    version: '1.0.0'\n    config_override: *defaults\n";
+        let out = changed(text, &parse_worker("api@1.1.0").unwrap());
+        assert_eq!(out, text.replace("version: '1.0.0'", "version: \"1.1.0\""));
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+    }
+
+    #[test]
+    fn configuration_changes_replace_only_explicit_fields() {
+        let text = "containers:\n  api:\n    worker: path://./api\n    scripts:\n      run: |\n        echo old\n\n        echo obsolete\n    # keep the environment\n    environment: { MODE: 'on' }\n    config_override:\n      worker: custom\n      version: 'nested'\n      start_after: [nested]\n    env_file: [./api.env]\n";
+        let worker = configured(serde_json::json!({
+            "worker": "./api", "scripts": {"run": "echo 'new: #value'"}
+        }));
+        let out = changed(text, &worker);
+        assert!(out.ends_with("    # keep the environment\n    environment: { MODE: 'on' }\n    config_override:\n      worker: custom\n      version: 'nested'\n      start_after: [nested]\n    env_file: [./api.env]\n"), "{out}");
+        let parsed = crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            parsed.containers["api"].scripts.run.as_deref(),
+            Some("echo 'new: #value'")
+        );
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn explicit_empty_fields_clear_values_and_omitted_fields_preserve_them() {
+        let text = "containers:\n  api:\n    worker: path://./api\n    start_after: [database] # keep order\n    environment: { MODE: dev }\n    env_file: [./api.env]\n    config_override: {port: 3000}\n  database:\n    worker: path://./database\n";
+        assert_eq!(
+            upsert_container(text, &parse_worker("./api").unwrap()).unwrap(),
+            Outcome::Unchanged
+        );
+        let worker = configured(serde_json::json!({
+            "worker": "./api", "start_after": [], "environment": {}, "env_file": [], "config_override": null
+        }));
+        let out = changed(text, &worker);
+        let parsed = crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        let api = &parsed.containers["api"];
+        assert!(api.start_after.is_empty());
+        assert!(api.environment.is_empty());
+        assert!(api.env_file.is_empty());
+        assert!(api.config_override.is_none());
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn configured_package_keeps_resolved_and_explicit_dependencies() {
+        let mut worker = configured(serde_json::json!({
+            "worker": "api", "version": "1.2.3", "start_after": ["custom"],
+            "config_override": {"mode": "production"}
+        }));
+        worker.start_after.push("database".to_string());
+        let out = changed("containers: {}\n", &worker);
+        let document: Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            document["containers"]["api"]["start_after"],
+            serde_yaml::to_value(["custom", "database"]).unwrap()
+        );
+        assert_eq!(
+            document["containers"]["api"]["version"].as_str(),
+            Some("1.2.3")
+        );
+    }
+
+    #[test]
+    fn changing_the_source_or_nested_config_at_the_same_version_is_an_edit() {
+        let text = "containers:\n  api:\n    worker: package://old.example/api\n    version: '1.2.3'\n    config_override:\n      worker: nested\n      version: nested\n";
+        let worker = configured(serde_json::json!({
+            "worker": "new.example/api", "version": "1.2.3", "config_override": {"port": 3001}
+        }));
+        let out = changed(text, &worker);
+        let parsed = crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            parsed.containers["api"].config_override.as_ref().unwrap()["port"].as_u64(),
+            Some(3001)
+        );
+        assert!(out.contains("worker: package://new.example/api"));
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn configured_workers_reject_unknown_fields_wrong_types_and_conflicting_versions() {
+        for value in [
+            serde_json::json!({"worker": "./api", "script": {"run": "./api"}}),
+            serde_json::json!({"worker": "./api", "scripts": {"start": "./api"}}),
+            serde_json::json!({"worker": "./api", "start_after": "database"}),
+            serde_json::json!({"worker": "./api", "environment": {"PORT": 3000}}),
+        ] {
+            assert!(serde_json::from_value::<WorkerInput>(value).is_err());
+        }
+        let input: WorkerInput = serde_json::from_value(serde_json::json!({
+            "worker": "api@1.0.0", "version": "2.0.0"
+        }))
+        .unwrap();
+        assert_eq!(input.parse().unwrap_err().code(), "INVALID_WORKER_SPEC");
+    }
 
     const FILE: &str = "\
 namespace: default
@@ -815,6 +1079,7 @@ containers:
                 version: Some("0.21.4".to_string()),
             },
             start_after: vec!["queue".to_string()],
+            fields: serde_yaml::Mapping::new(),
         };
 
         let once = added(FILE);
@@ -1119,6 +1384,7 @@ containers:
                 version: Some("1.2.3".to_string()),
             },
             start_after: vec![],
+            fields: serde_yaml::Mapping::new(),
         };
 
         let err = upsert_container(text, &new).unwrap_err();
@@ -1134,6 +1400,7 @@ containers:
                 path: "./workers/state".to_string(),
             },
             start_after: vec![],
+            fields: serde_yaml::Mapping::new(),
         };
 
         assert_eq!(
@@ -1152,6 +1419,7 @@ containers:
                 version: Some("1.2.3".to_string()),
             },
             start_after: vec![],
+            fields: serde_yaml::Mapping::new(),
         };
 
         assert!(matches!(

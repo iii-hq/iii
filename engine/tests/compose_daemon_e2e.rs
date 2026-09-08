@@ -494,6 +494,73 @@ async fn validating_a_file_does_not_take_the_project_on() {
     daemon.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_add_writes_settings_runs_hooks_and_is_idempotent() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: path://./workers/api\n",
+        &["api"],
+    );
+    let workers: Vec<iii_compose::edit::WorkerInput> = serde_json::from_value(serde_json::json!([{
+        "worker": "./workers/api",
+        "working_dir": ".",
+        "scripts": {"pre_run": "printf '%s\\n' \"$MODE\" >> hook-output", "run": "exit 1"},
+        "environment": {"MODE": "dev"},
+        "config_override": {"port": 3000},
+        "startup_timeout": "1s"
+    }]))
+    .unwrap();
+    // The child exits by design. A failed start retains the requested file edit.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        daemon.add_configured(Some(&file), &workers, "configured-add".to_string()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(serde_json::to_value(outcome).unwrap()["changed"], true);
+    let initial_hooks = std::fs::read_to_string(tmp.path().join("hook-output")).unwrap();
+    assert!(!initial_hooks.is_empty());
+    assert!(initial_hooks.lines().all(|mode| mode == "dev"));
+    let once = std::fs::read_to_string(&file).unwrap();
+    let outcome = daemon
+        .add_configured(Some(&file), &workers, "same-add".to_string())
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(outcome).unwrap()["changed"], false);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), once);
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("hook-output")).unwrap(),
+        initial_hooks
+    );
+
+    let mut changed = workers;
+    if let iii_compose::edit::WorkerInput::Definition(fields) = &mut changed[0] {
+        fields.insert(
+            "environment".to_string(),
+            serde_json::json!({"MODE": "prod"}),
+        );
+    }
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        daemon.add_configured(Some(&file), &changed, "changed-add".to_string()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(serde_json::to_value(outcome).unwrap()["changed"], true);
+    let final_hooks = std::fs::read_to_string(tmp.path().join("hook-output")).unwrap();
+    let changed_hooks = final_hooks.strip_prefix(&initial_hooks).unwrap();
+    assert!(!changed_hooks.is_empty());
+    assert!(changed_hooks.lines().all(|mode| mode == "prod"));
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_edits_several_workers_and_reconciles_the_project_once() {
     isolate_state();
@@ -534,22 +601,25 @@ containers:
         "compose::add",
         json!({
             "file": file.to_str().unwrap(),
-            "workers": ["./workers/database", "./workers/web"],
+            "workers": [{
+                "worker": "./workers/database",
+                "start_after": ["existing"],
+                "scripts": {"pre_run": "printf '%s' \"$MODE\" > mode && cat \"$III_CONFIG\" > config"},
+                "environment": {"MODE": "dev"},
+                "config_override": {"port": 3000}
+            }, "./workers/web"],
         }),
     );
     let ready = async {
-        wait_for_start_markers(&[
-            existing_started.as_path(),
-            database_started.as_path(),
-            web_started.as_path(),
-        ])
-        .await;
+        wait_for_start_markers(&[existing_started.as_path(), web_started.as_path()]).await;
         let existing = register_test_worker(port, "addition", "existing");
-        let database = register_test_worker(port, "addition", "database");
         let web = register_test_worker(port, "addition", "web");
-        for worker in ["existing", "database", "web"] {
+        for worker in ["existing", "web"] {
             wait_for_worker_state(&daemon, "addition", worker, true).await;
         }
+        wait_for_start_markers(&[database_started.as_path()]).await;
+        let database = register_test_worker(port, "addition", "database");
+        wait_for_worker_state(&daemon, "addition", "database", true).await;
         (existing, database, web)
     };
     let (result, (existing, database, web)) = tokio::join!(add, ready);
@@ -582,6 +652,15 @@ containers:
     );
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("workers/database/mode")).unwrap(),
+        "dev"
+    );
+    let delivered: Value = serde_yaml::from_str(
+        &std::fs::read_to_string(tmp.path().join("workers/database/config")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delivered, json!({"port": 3000}));
     for worker in ["database", "web"] {
         assert_eq!(
             edited.matches(&format!("  {worker}:\n")).count(),
