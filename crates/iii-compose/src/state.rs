@@ -150,11 +150,20 @@ pub enum Reconciliation {
     /// A live PID that is not provably the recorded process — a recycled PID, or
     /// a platform that cannot fingerprint. Never signalled; reported instead.
     Unverifiable,
+    /// This daemon stopped it on purpose and recorded that. Nothing to adopt,
+    /// nothing to mourn: `down` leaves the record behind, and a
+    /// `compose::restart` re-opens the project right after its own `down`, so
+    /// every container used to be reported as "exited while the daemon was
+    /// away" on every restart (Linkly e2e, MOT-4723).
+    Stopped,
 }
 
 /// Read-only: inspects the recorded child and returns what to do. Signals
 /// nothing, kills nothing.
 pub fn reconcile(record: &ChildRecord) -> Reconciliation {
+    if record.status == ChildStatus::Stopped {
+        return Reconciliation::Stopped;
+    }
     if !crate::process::is_running(record.pid) {
         return Reconciliation::Gone;
     }
@@ -307,4 +316,34 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::{ChildRecord, ChildStatus, Reconciliation, reconcile};
+    use crate::process::BirthIdentity;
+
+    /// Prevents: `compose::restart` (down → forget → up) reporting every
+    /// container as "exited while the daemon was away" — the records it just
+    /// stopped are Stopped on purpose, whatever their old pid is doing now.
+    #[test]
+    fn a_record_this_daemon_stopped_is_neither_gone_nor_adoptable() {
+        let dead = ChildRecord::new(
+            u32::MAX - 7,
+            BirthIdentity::Unavailable,
+            ChildStatus::Stopped,
+        );
+        assert_eq!(reconcile(&dead), Reconciliation::Stopped);
+        // A live, even verifiable-looking pid does not turn a deliberate stop
+        // back into an adoption.
+        let alive = ChildRecord::new(
+            std::process::id(),
+            BirthIdentity::Unavailable,
+            ChildStatus::Stopped,
+        );
+        assert_eq!(reconcile(&alive), Reconciliation::Stopped);
+        // Anything else still goes through the liveness check.
+        let failed = ChildRecord::new(u32::MAX - 7, BirthIdentity::Unavailable, ChildStatus::Ready);
+        assert_eq!(reconcile(&failed), Reconciliation::Gone);
+    }
 }

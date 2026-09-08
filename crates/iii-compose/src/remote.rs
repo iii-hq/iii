@@ -579,8 +579,18 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         // Answers first, exits after: the serve loop picks the request up and
-        // runs the same teardown a signal would.
-        Operation::Stop => Ok(daemon.request_stop().await),
+        // runs the same teardown a signal would. A target on this call is a
+        // mistake worth refusing: `compose::stop container=harness` used to
+        // ignore the field and take the whole project — and its managed
+        // engine — down (MOT-4723).
+        Operation::Stop => match request.container.as_deref().or(request.worker.as_deref()) {
+            Some(container) if !container.trim().is_empty() => {
+                Err(compose_error(&ComposeError::StopTakesNoContainer {
+                    container: container.to_string(),
+                }))
+            }
+            _ => Ok(daemon.request_stop().await),
+        },
         // Validation is a question about a file, so it holds nothing: naming a
         // file here must not leave the daemon owning a project, and must not
         // write the durable state that would bind that id to it.

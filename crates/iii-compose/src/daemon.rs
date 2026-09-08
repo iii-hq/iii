@@ -485,7 +485,9 @@ impl Daemon {
         for (_, graph) in expanded {
             wanted.extend(graph?);
         }
-        let mut wanted = coalesce_containers(wanted)?;
+        let wanted = coalesce_containers(wanted)?;
+        let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
+        let mut wanted = keep_declared_dependencies(wanted, &asked_keys, &declared);
         for worker in &mut wanted {
             if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
                 worker.fields = declaration.fields.clone();
@@ -1293,6 +1295,54 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Drop graph-expanded dependencies the compose file already declares.
+///
+/// `compose::add worker=X` resolves X's whole dependency graph, and every node
+/// used to come back as a fresh declaration — including ones the operator had
+/// already pinned. `upsert_container` then rewrote them: adding
+/// `provider-openai-codex` to the Linkly scaffold moved `state: package://state
+/// version: "0.22.8"` to `package://api.workers.iii.dev/state` `"0.22.9"`
+/// without anyone asking (MOT-4723). A pin the operator wrote stays theirs;
+/// `compose::update worker=<dep>` is how a version moves. Only nodes that are
+/// NOT yet declared are added, plus whatever the caller explicitly asked for.
+/// A declared dependency whose pin differs from what the registry resolved is
+/// logged, never silently rewritten.
+fn keep_declared_dependencies(
+    wanted: Vec<crate::edit::NewContainer>,
+    asked: &BTreeSet<String>,
+    declared: &ComposeFile,
+) -> Vec<crate::edit::NewContainer> {
+    wanted
+        .into_iter()
+        .filter(|worker| {
+            if asked.contains(&worker.key) {
+                return true;
+            }
+            let Some(existing) = declared.containers.get(&worker.key) else {
+                return true;
+            };
+            if let crate::edit::Source::Package {
+                version: Some(resolved),
+                ..
+            } = &worker.source
+                && existing.version.as_deref() != Some(resolved.as_str())
+            {
+                crate::report::daemon_line(
+                    &format!(
+                        "{}: kept the declared version {} (the registry resolved {resolved} for this \
+                         add); run compose::update worker={} to move it",
+                        worker.key,
+                        existing.version.as_deref().unwrap_or("unpinned"),
+                        worker.key
+                    ),
+                    true,
+                );
+            }
+            false
+        })
+        .collect()
+}
+
 /// Turns one registry answer into the declarations Compose can own.
 ///
 /// Engine-kind dependencies are omitted because the engine already provides
@@ -1978,5 +2028,67 @@ mod mutation_outcome_tests {
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
+    }
+}
+
+#[cfg(test)]
+mod declared_dependency_tests {
+    use std::collections::BTreeSet;
+
+    use super::keep_declared_dependencies;
+    use crate::edit::{NewContainer, Source};
+
+    fn resolved(name: &str, version: &str) -> NewContainer {
+        NewContainer {
+            key: name.to_string(),
+            source: Source::Package {
+                reference: format!("api.workers.iii.dev/{name}"),
+                version: Some(version.to_string()),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        }
+    }
+
+    /// Prevents: `compose::add worker=provider-openai-codex` rewriting the
+    /// operator's `state: package://state version: "0.22.8"` to the registry's
+    /// latest (MOT-4723). Declared dependencies stay as declared; only the
+    /// asked worker and genuinely new dependencies are written.
+    #[test]
+    fn an_add_leaves_already_declared_dependencies_alone() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n  http:\n    worker: package://http\n    version: \"0.21.9\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["provider-openai-codex".to_string()].into();
+        let wanted = vec![
+            resolved("state", "0.22.9"),
+            resolved("llm-router", "1.4.19"),
+            resolved("provider-openai-codex", "0.4.9"),
+        ];
+
+        let kept = keep_declared_dependencies(wanted, &asked, &declared);
+        let keys: Vec<&str> = kept.iter().map(|worker| worker.key.as_str()).collect();
+
+        assert_eq!(keys, vec!["llm-router", "provider-openai-codex"]);
+    }
+
+    #[test]
+    fn an_explicitly_asked_worker_is_always_written_even_when_declared() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["state".to_string()].into();
+
+        let kept = keep_declared_dependencies(vec![resolved("state", "0.22.9")], &asked, &declared);
+
+        assert_eq!(
+            kept.len(),
+            1,
+            "compose::add worker=state is the operator moving the pin on purpose"
+        );
     }
 }

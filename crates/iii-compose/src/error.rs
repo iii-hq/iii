@@ -80,6 +80,14 @@ pub enum ComposeError {
     #[error("container '{container}' depends on itself")]
     SelfDependency { container: String },
 
+    #[error(
+        "compose::stop stops every project this daemon holds and exits; it takes no container. \
+         '{container}' was ignored by earlier versions and the whole project went down with the \
+         engine. Use compose::down container={container} to stop one container, or \
+         compose::stop with no target to stop the daemon."
+    )]
+    StopTakesNoContainer { container: String },
+
     #[error("dependency cycle: {path}")]
     DependencyCycle { path: String },
 
@@ -511,6 +519,7 @@ impl ComposeError {
             Self::EngineAlreadyOwned { .. } => "ENGINE_ALREADY_OWNED",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
+            Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
