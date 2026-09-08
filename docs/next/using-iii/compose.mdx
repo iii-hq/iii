@@ -617,8 +617,9 @@ containers:
 
 Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
 and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
-`iii-worker-manager#rbac`. The engine starts `iii-engine-functions`, `iii-telemetry`, and
-`iii-observability` automatically. Do not declare these workers in the compose file.
+`iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
+usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
+these workers.
 
 <Note>
   Changes to these worker configurations take effect only after the engine restarts.
