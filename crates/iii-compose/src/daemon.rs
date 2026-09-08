@@ -1412,7 +1412,7 @@ pub struct MutationOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<MutationError>,
     /// Workers that failed while the operation still succeeded, which is only
-    /// possible for a container declaring `required: false`.
+    /// possible for a container whose effective `required` value is `false`.
     ///
     /// `status: ok` used to mean every planned container is up. It now means
     /// every *required* one is, so the return has to name the rest rather than
@@ -1468,9 +1468,9 @@ impl MutationOutcome {
         } else {
             first_container_error
         };
-        // A succeeding operation with a failed container is the `required:
-        // false` case and nothing else: a required failure is what makes the
-        // status `failed` in the first place.
+        // A succeeding operation with a failed container is the non-required
+        // case and nothing else: a required failure is what makes the status
+        // `failed` in the first place.
         let not_required_failures =
             (status == OpStatus::Ok && !failed.is_empty()).then_some(failed);
 

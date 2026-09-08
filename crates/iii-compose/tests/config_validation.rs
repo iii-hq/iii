@@ -562,28 +562,78 @@ containers:
     );
 }
 
-/// A file written before the field existed keeps the strict rule, and a
-/// container opts out one at a time rather than for the project.
 #[test]
-fn required_defaults_to_true_and_is_declared_per_container() {
+fn required_defaults_to_false() {
     let file = parse(
         r#"
 namespace: orders
 containers:
   api:
     worker: path://./workers/api
-  mailer:
-    worker: path://./workers/mailer
-    required: false
 "#,
     )
     .expect("required is part of the container schema");
 
-    assert!(
-        file.containers["api"].required,
-        "a container that says nothing is required"
+    assert_eq!(
+        (file.required_default, file.containers["api"].required),
+        (false, false)
     );
-    assert!(!file.containers["mailer"].required);
+}
+
+#[test]
+fn containers_inherit_required_default_unless_they_override_it() {
+    let file = parse(
+        r#"
+namespace: default
+startup_timeout: 360s
+stop_timeout: 10s
+required_default: true
+
+engine:
+  url: ws://127.0.0.1:49134
+
+containers:
+  queue:
+    worker: package://queue
+    version: "0.21.9"
+    required: false
+
+  state:
+    worker: package://state
+    version: "0.22.5-rc.1"
+
+  session-manager:
+    worker: package://session-manager
+    version: "1.0.14-rc.4"
+"#,
+    )
+    .expect("required_default is part of the compose schema");
+
+    assert_eq!(
+        (
+            file.required_default,
+            file.containers["queue"].required,
+            file.containers["state"].required,
+            file.containers["session-manager"].required,
+        ),
+        (true, false, true, true)
+    );
+}
+
+#[test]
+fn explicit_required_true_overrides_the_false_default() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    required: true
+"#,
+    )
+    .expect("required is part of the container schema");
+
+    assert!(file.containers["api"].required);
 }
 
 #[test]
@@ -596,6 +646,38 @@ containers:
   mailer:
     worker: path://./workers/mailer
     required: "no"
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+#[test]
+fn rejects_a_null_required() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: null
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+#[test]
+fn rejects_a_non_boolean_required_default() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+required_default: "yes"
+containers:
+  api:
+    worker: path://./workers/api
 "#
         ),
         "INVALID_COMPOSE_FILE"

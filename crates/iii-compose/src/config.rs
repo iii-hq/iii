@@ -161,11 +161,10 @@ pub struct Container {
     pub startup_timeout: Duration,
     /// Whether a failed start fails the operation that started it.
     ///
-    /// `true` is the default and the rule everything else is written against:
-    /// an `up` that cannot start a declared container refuses and undoes
-    /// itself. `false` says the project would rather run without this one, so
-    /// the failure is reported against the container and the operation carries
-    /// on.
+    /// A container declaration wins over [`ComposeFile::required_default`].
+    /// When neither is present, this is `false`: the project runs without a
+    /// container that failed to start. `true` makes the `up` refuse and undo
+    /// what it started.
     ///
     /// Dependents carry on too. `start_after` is a start order, not a claim
     /// that the dependent cannot run without the dependency, so a container
@@ -202,6 +201,9 @@ pub struct ComposeFile {
     pub startup_timeout: Duration,
     /// Grace between the polite stop and the forced kill, project-wide.
     pub stop_timeout: Duration,
+    /// Fallback for containers that do not declare `required` themselves.
+    /// Defaults to `false`.
+    pub required_default: bool,
     /// Present when this Compose invocation owns the engine process. Absent
     /// projects must connect to an externally managed engine.
     pub engine: Option<EngineSpec>,
@@ -286,13 +288,20 @@ impl ComposeFile {
             DEFAULT_STARTUP_TIMEOUT,
         )?;
         let stop_timeout = file_duration("stop_timeout", &raw.stop_timeout, DEFAULT_STOP_TIMEOUT)?;
+        let required_default = raw.required_default;
         let engine = raw.engine.map(validate_engine).transpose()?;
 
         let mut containers = IndexMap::with_capacity(raw_containers.len());
         for (key, raw_container) in &raw_containers {
             containers.insert(
                 key.clone(),
-                validate_container(key, raw_container, &base_dir, startup_timeout)?,
+                validate_container(
+                    key,
+                    raw_container,
+                    &base_dir,
+                    startup_timeout,
+                    required_default,
+                )?,
             );
         }
 
@@ -302,6 +311,7 @@ impl ComposeFile {
             base_dir,
             startup_timeout,
             stop_timeout,
+            required_default,
             engine,
             containers,
         };
@@ -394,6 +404,7 @@ fn validate_container(
     raw: &RawContainer,
     base_dir: &Path,
     file_startup_timeout: Duration,
+    required_default: bool,
 ) -> Result<Container> {
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
@@ -485,7 +496,7 @@ fn validate_container(
             .map(|path| resolve_relative(base_dir, path))
             .collect(),
         startup_timeout,
-        required: raw.required,
+        required: raw.required.unwrap_or(required_default),
         restart: raw.restart,
     })
 }
@@ -658,6 +669,11 @@ struct RawComposeFile {
     startup_timeout: Option<String>,
     #[serde(default)]
     stop_timeout: Option<String>,
+    /// Fallback for containers that omit `required`. The default keeps
+    /// containers optional unless the project chooses the strict rule.
+    #[serde(default)]
+    #[schemars(default)]
+    required_default: bool,
     #[serde(default)]
     engine: Option<RawEngineSpec>,
     #[serde(default, deserialize_with = "deserialize_optional_unique_map")]
@@ -789,11 +805,17 @@ pub(crate) struct RawContainer {
     env_file: Vec<PathBuf>,
     #[serde(default)]
     startup_timeout: Option<String>,
-    /// Absent means `true`: the default is the strict rule, so a file written
-    /// before this field existed keeps the behaviour it was written against.
-    #[serde(default = "required_by_default")]
-    #[schemars(default = "required_by_default")]
-    required: bool,
+    /// Absent inherits the file's `required_default`. Deserialization keeps the
+    /// absence visible until the container is validated.
+    // Schemars uses this serialization rule to omit the raw `None` default from
+    // the schema. The YAML value is still a non-nullable boolean.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    required: Option<bool>,
     /// Absent means `no`: a file written before this field existed keeps the
     /// behaviour it was written against, which is that a ready container that
     /// exits stays down.
@@ -802,8 +824,11 @@ pub(crate) struct RawContainer {
     restart: RestartPolicy,
 }
 
-fn required_by_default() -> bool {
-    true
+fn deserialize_optional_bool<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -919,5 +944,26 @@ containers:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    #[test]
+    fn worker_compose_schema_exposes_required_inheritance() {
+        let schema = worker_compose_schema_json();
+        let container = &schema["definitions"]["RawContainer"];
+
+        assert_eq!(
+            (
+                schema["properties"]["required_default"]["type"].as_str(),
+                schema["properties"]["required_default"]["default"].as_bool(),
+                container["properties"]["required"]["type"].as_str(),
+                container["properties"]["required"].get("default").is_some(),
+                container["required"].as_array().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| field.as_str() == Some("required"))
+                }),
+            ),
+            (Some("boolean"), Some(false), Some("boolean"), false, false,)
+        );
     }
 }

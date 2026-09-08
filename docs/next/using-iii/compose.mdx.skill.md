@@ -181,23 +181,42 @@ ready stay as they are.
 
 #### compose::up failures
 
-A project that fails to start due to a project-related issue ends the command with
-`PROJECT_DID_NOT_START`. Partial starts are rolled back in reverse dependency order.
+A worker is not required by default. If it fails to start, its failure is reported against that
+worker, nothing is rolled back, and the operation still returns `ok`. Workers that name it in
+`start_after` start anyway, because `start_after` is a start order and not a claim that the dependent
+cannot run without it. The response lists every worker that failed this way in
+`not_required_failures`, and `error` carries the first reason.
 
-A worker that declares `required: false` is the exception:
+Set `required: true` when a worker must fail the operation:
 
 ```yaml
 containers:
-  mailer:
-    worker: path://./workers/mailer
-    required: false
+  database:
+    worker: path://./workers/database
+    required: true
 ```
 
-Its failure is reported against that worker, nothing is rolled back, and the operation still returns
-`ok`. Workers that name it in `start_after` start anyway, because `start_after` is a start order and
-not a claim that the dependent cannot run without it. The response lists every worker that failed
-this way in `not_required_failures`, so an `ok` still says which workers are down, and `error`
-carries the first reason.
+A required failure ends the command with `PROJECT_DID_NOT_START`. Partial starts are rolled back in
+reverse dependency order.
+
+Use `required_default` to change the fallback for all containers in the file. An explicit container
+value wins over the file value:
+
+```yaml
+required_default: true
+
+containers:
+  queue:
+    worker: package://queue
+    version: "0.21.9"
+    required: false
+  state:
+    worker: package://state
+    version: "0.22.5-rc.1"
+```
+
+In this example, `state` inherits `required_default: true`, while `queue` remains false. If both
+fields are absent, the effective value is false.
 
 #### Restarting a worker that exits
 

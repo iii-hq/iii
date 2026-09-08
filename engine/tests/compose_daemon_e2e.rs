@@ -343,6 +343,7 @@ const TWO_WORKERS: &str = r#"
 namespace: orders
 startup_timeout: 2s
 stop_timeout: 1s
+required_default: true
 containers:
   database:
     worker: path://./workers/database
@@ -1178,12 +1179,12 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
     daemon.shutdown().await;
 }
 
-/// `required: false` moves the blast radius of a failed start from the whole
-/// operation to the one container that declared it, and a dependent starts on
-/// the same declaration: `start_after` is a start order, not a claim that the
-/// dependent cannot run without it.
+/// The default `required: false` moves the blast radius of a failed start from
+/// the whole operation to the one container that failed, and a dependent
+/// starts on the same declaration: `start_after` is a start order, not a claim
+/// that the dependent cannot run without it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_container_that_is_not_required_fails_alone_and_its_dependent_still_starts() {
+async fn a_container_uses_the_false_required_default_and_its_dependent_still_starts() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -1199,7 +1200,6 @@ stop_timeout: 100ms
 containers:
   mailer:
     worker: path://./workers/mailer
-    required: false
     scripts:
       run: "sleep 30"
   api:
@@ -1559,7 +1559,7 @@ containers:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_required_failure_is_reported_after_a_not_required_failure() {
+async fn an_inherited_required_failure_is_reported_after_an_explicit_optional_failure() {
     isolate_state();
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
@@ -1571,6 +1571,7 @@ async fn a_required_failure_is_reported_after_a_not_required_failure() {
 namespace: optional
 startup_timeout: 2s
 stop_timeout: 100ms
+required_default: true
 containers:
   mailer:
     worker: path://./workers/mailer
@@ -1580,7 +1581,6 @@ containers:
   api:
     worker: path://./workers/api
     start_after: [mailer]
-    required: true
     scripts:
       run: "exit 9"
 "#,
@@ -1845,6 +1845,7 @@ async fn a_configuration_that_cannot_be_read_stops_the_container() {
 namespace: orders
 startup_timeout: 2s
 stop_timeout: 1s
+required_default: true
 containers:
   database:
     worker: path://./workers/database
