@@ -515,8 +515,8 @@ fn is_path_safe(value: &str) -> bool {
 /// Refuses a resolve answer before anything in it reaches the filesystem.
 ///
 /// The whole graph is checked, not only the worker asked for: `compose::add`
-/// turns every node into a declaration, and each one can later be installed
-/// under its own name.
+/// can turn each node into a declaration. Even a node below a local dependency
+/// boundary remains untrusted registry input and must carry a safe name.
 fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> Result<()> {
     let refuse = |field: &str, value: &str| ComposeError::RegistryNameRefused {
         container: container.to_string(),

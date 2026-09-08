@@ -40,6 +40,28 @@ this operation.
 
 `compose::*` functions as documented below are the intended way to manage a running compose daemon.
 
+### Process names on Linux
+
+Compose includes its resolved namespace in the process label. The daemon uses `iii:c:<namespace>`,
+and an engine started by that daemon uses `iii:e:<namespace>`. The namespace comes from
+`--namespace`, then `namespace:` in the compose file, then `default`.
+
+For example, `iii compose --namespace orders --up` produces these labels when it starts an engine:
+
+```text
+iii:c:orders
+  +-- iii:e:orders
+```
+
+Use `ps -p <PID> -o pid,ppid,comm,args` to inspect both fields. The `args` field retains the full
+namespace and the original command arguments. Linux limits `comm` to 15 bytes, so namespaces longer
+than nine characters use their first two characters, `~`, and six hexadecimal hash characters in
+that field. Use `args` to read the full namespace when a short label is abbreviated.
+
+The daemon sets its command label through an early re-exec with the same PID, before starting
+the runtime or any children. Existing external engines keep their names. On other operating
+systems, process names retain their previous behavior.
+
 ### Compose logs
 
 Compose logs stdout and stderr output from started workers to `$HOME/.iii/compose/namespace/`.
@@ -172,18 +194,68 @@ and reconciles the project once. On the CLI, repeat `worker=` for each worker. E
 registry package name (`state`), a package name with a version (`state@0.21.4`), or a directory
 (`./workers/api`).
 
-A JSON payload for this function can use a single list: `{ "workers": ["database", "web"] }`.
+A JSON payload can mix worker names and container objects in the same list. Each object accepts
+the container fields from `worker-compose.yaml`. The container key comes from the last part of
+the worker name or directory path.
+
+```bash
+iii trigger compose::add --namespace dev file=./worker-compose.yaml --json '{
+  "workers": [
+    "database",
+    {
+      "worker": "./workers/api",
+      "start_after": ["database"],
+      "scripts": {
+        "pre_run": "pnpm build",
+        "pre_run_timeout": "60s",
+        "run": "pnpm start",
+        "post_run": "echo stopped"
+      },
+      "config_name": "api",
+      "config_override": { "port": 3000 },
+      "working_dir": "./workers/api",
+      "environment": { "NODE_ENV": "development" },
+      "env_file": ["./api.env"],
+      "startup_timeout": "30s"
+    }
+  ]
+}'
+```
 
 | Field     | Description                                    |
 | --------- | ---------------------------------------------- |
 | `file`    | The project to edit.                           |
-| `workers` | The canonical JSON list of workers to declare. |
+| `workers` | A JSON list of worker names or container objects. |
 | `worker`  | One worker. Repeatable on the CLI.             |
 
-An package without a version specified will pin to the latest available version (ex. `0.23.1`).
+A container object accepts these fields:
 
-Workers whose declarations did not change remain running. Existing workers whose resolved versions
-changed restart in place, and newly declared workers start through the normal dependency plan.
+| Field | Description |
+| ----- | ----------- |
+| `worker` | Required. A package name, `name@version`, registry reference, or local path. Also accepts `package://` and `path://` sources. |
+| `version` | Package version. Must agree with a version included in `worker`. |
+| `start_after` | Container keys to start first. Compose adds the package's resolved dependencies to this list. |
+| `scripts` | `pre_run`, `pre_run_timeout`, `run`, and `post_run`. `run` is valid only for local workers. |
+| `config_name` | Name of the worker's base configuration. |
+| `config_override` | Configuration value applied over the base configuration. |
+| `working_dir` | Working directory, relative to the compose file. |
+| `environment` | Environment variables with string values. |
+| `env_file` | List of environment file paths, relative to the compose file. |
+| `startup_timeout` | Maximum wait for worker registration, such as `30s`. |
+
+A package without a version pins to the latest available version, for example `0.23.1`.
+Unknown fields and invalid field types are rejected. Compose validates the complete edited file
+before it writes any changes.
+
+For an existing container, omitted fields other than `version` keep their values. A supplied field replaces that entire
+field, including maps such as `scripts`, `environment`, and `config_override`. Use `{}` or `[]` to
+clear maps or lists. An omitted `start_after` keeps existing dependencies; a supplied list replaces
+them and includes any required package dependencies.
+
+Workers whose declarations did not change remain running. Existing workers whose source, version,
+dependencies, or settings changed restart in place. Newly declared workers start through the normal
+dependency plan. If the resolved declaration already matches the file, the call makes no file
+changes and causes no restart.
 
 ### Removing a worker
 

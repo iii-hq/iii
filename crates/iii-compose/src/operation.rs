@@ -4,9 +4,9 @@
 //! Observable operations for long Compose mutations.
 //!
 //! Compose is a trigger provider. Clients bind `compose-operation` before
-//! submitting an add and receive structured dependency-tree transitions. A
-//! compact snapshot remains available for reconnect/recovery only; normal
-//! progress delivery never polls.
+//! submitting an add, update, or remove and receive structured mutation
+//! transitions. A compact snapshot remains available for reconnect/recovery
+//! only; normal progress delivery never polls.
 
 use std::{
     collections::BTreeMap,
@@ -27,6 +27,9 @@ use tokio::sync::{RwLock, watch};
 pub struct ProgressSubscription {
     /// Operation to follow. Omit to receive every operation from this daemon.
     pub operation_id: Option<String>,
+    /// Deliver only the terminal success/failure event for the operation.
+    #[serde(default)]
+    pub terminal_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -102,8 +105,12 @@ impl ProgressEmitter {
             .filter(|binding| {
                 serde_json::from_value::<ProgressSubscription>(binding.config.clone())
                     .ok()
-                    .and_then(|config| config.operation_id)
-                    .is_none_or(|id| id == event.operation_id)
+                    .is_none_or(|config| {
+                        config
+                            .operation_id
+                            .is_none_or(|id| id == event.operation_id)
+                            && (!config.terminal_only || event.terminal)
+                    })
             })
             .cloned()
             .collect();
@@ -111,18 +118,28 @@ impl ProgressEmitter {
             let client = self.client.clone();
             let event = event.clone();
             async move {
+                let function_id = binding.function_id.clone();
                 let request = TriggerRequest {
-                    function_id: binding.function_id,
+                    function_id: function_id.clone(),
                     payload: serde_json::to_value(event).unwrap_or_default(),
                     action: Some(TriggerAction::Void),
                     timeout_ms: Some(5_000),
                 };
+                let request = match binding.metadata {
+                    Some(metadata) => request.metadata(metadata),
+                    None => request.into(),
+                };
                 let request = if let Some(namespace) = binding.namespace {
                     request.namespace(namespace)
                 } else {
-                    request.into()
+                    request
                 };
-                let _ = client.trigger(request).await;
+                if let Err(error) = client.trigger(request).await {
+                    eprintln!(
+                        "compose-operation delivery failed for trigger {} ({}): {}",
+                        binding.id, function_id, error
+                    );
+                }
             }
         });
         futures::future::join_all(deliveries).await;
@@ -428,5 +445,52 @@ mod tests {
                 .expect("first operation should remain"),
             &first
         ));
+    }
+
+    #[test]
+    fn terminal_only_subscription_filters_progress_events() {
+        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
+            "operation_id": "compose:test",
+            "terminal_only": true,
+        }))
+        .expect("subscription should deserialize");
+
+        let progress = ProgressEvent {
+            sequence: 1,
+            operation_id: "compose:test".into(),
+            container: None,
+            phase: "waiting".into(),
+            detail: "resolving".into(),
+            current: None,
+            total: None,
+            elapsed_ms: 0,
+            terminal: false,
+        };
+        let terminal = ProgressEvent {
+            terminal: true,
+            sequence: 2,
+            phase: "complete".into(),
+            detail: "done".into(),
+            ..progress.clone()
+        };
+
+        let matches = |event: &ProgressEvent| {
+            config
+                .operation_id
+                .as_ref()
+                .is_none_or(|id| id == &event.operation_id)
+                && (!config.terminal_only || event.terminal)
+        };
+        assert!(!matches(&progress));
+        assert!(matches(&terminal));
+    }
+
+    #[test]
+    fn subscription_defaults_to_all_events() {
+        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
+            "operation_id": "compose:test"
+        }))
+        .expect("subscription should deserialize");
+        assert!(!config.terminal_only);
     }
 }

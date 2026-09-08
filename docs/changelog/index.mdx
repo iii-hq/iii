@@ -5,10 +5,41 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.23.0" description="Upcoming">
-  ## Breaking: Compose startup uses `--up`
+<Update label="0.23.0" description="September 2026">
+  ## Worker Compose
 
-  `iii compose up` is replaced by `iii compose --up`. The positional `up` form is rejected, and `--file` is valid only with `--up`; bare `iii compose` starts the daemon without starting a project. Migrate explicit files to `iii compose --up --file worker-compose.yaml`.
+  - Project workers now run through Compose and are declared in `worker-compose.yaml`.
+  - Compose manages dependency order, lifecycle, configuration, scripts, status, and logs.
+  - The legacy `iii worker`, `worker::*`, and engine-managed project worker lifecycle are removed.
+  - Workers with `runtime.base_image` run in VMs, with source changes forwarded before restart.
+
+  <Callout type="warning">
+    Existing projects must follow [Move workers from config.yaml to
+    Compose](/upgrading/workers-to-compose) before their first 0.23 start.
+  </Callout>
+
+  ## Namespaces
+
+  - Namespaces isolate projects, workers, functions, and triggers on a shared engine.
+  - Namespace support is available in the CLI, Console, and Node, browser, Python, Rust, and Go SDKs.
+  - Workers without a namespace continue to use `default`.
+  - RabbitMQ durable subscriptions now use namespace-aware queue names.
+
+  See [Upgrade from 0.22.x](/upgrading/from-0-22-x) for the queue and authorization migration
+  checklist.
+
+  ## Observability
+
+  - Traces can persist across engine restarts.
+  - The Console adds observability configuration and live trace updates.
+  - `engine::traces::list` now returns compact trace summaries. Use `engine::traces::spans` for full
+    span details.
+
+  ## Reliability
+
+  - Improved queue routing across namespaces.
+  - Improved trace archive cleanup and summary pagination.
+  - Reduced CLI telemetry traffic.
 </Update>
 
 <Update label="0.22.1" description="August 2026">

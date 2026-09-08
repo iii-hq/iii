@@ -9,6 +9,46 @@ A managed project now has one `worker-compose.yaml`. Its `engine:` section confi
 `containers:` declares project workers. If a direct `config.yaml` still declares a project worker,
 startup and reload stop with `UNSUPPORTED_CONFIG_WORKERS` and list every entry to migrate.
 
+## Hand the migration to a coding agent
+
+The steps below are mechanical, so a coding agent with shell access to the project can carry them
+out. Copy this prompt into the agent, then review the resulting `worker-compose.yaml` before
+starting it.
+
+```text Prompt wrap
+Migrate this iii project from config.yaml worker declarations to worker-compose.yaml (iii 0.23). Read https://iii.dev/docs/upgrading/workers-to-compose.md first and follow it exactly.
+
+Before changing anything:
+1. Locate every config.yaml (including any path passed with --config), any existing worker-compose.yaml, iii.lock, the configuration worker's storage directory (./config by default), and the state, queue, and stream data paths. Copy all of them into ./backup-pre-compose/, preserving each source's relative path so two files with the same name never collide, and stop if a destination already exists. Do not delete the originals.
+2. Make sure this project is not already supervised separately (ex. systemd, Kubernetes). If the repository does not make this clear, ask me before writing the file.
+
+Write worker-compose.yaml:
+- Move configuration, iii-worker-manager, iii-http-functions, iii-stream, and iii-sandbox into the engine.workers map. The map value is the worker config itself; drop the old nested config: key. Multiple instances use a #instance suffix.
+- Do not declare iii-engine-functions, iii-telemetry, or iii-observability. The engine injects them.
+- Move every other worker under containers:. Rename it per the table on the page (iii-state or state becomes state, iii-http or http becomes http, and so on). Registry workers use package://api.workers.iii.dev/<name> with an explicit version; local workers use path://. Copy each old config: value to config_override and keep every storage path unchanged.
+- Translate iii-exec commands into scripts.pre_run, scripts.run, and scripts.post_run.
+- Pin versions from iii.lock or the registry. Never invent a version number.
+- For a separately supervised engine, keep only the five engine-owned workers in the list-shaped config.yaml and omit engine: from the Compose file.
+
+Stored configuration: for every worker whose configuration id changed (for example iii-state to state), read the old value with configuration::get and raw: true so ${VAR} templates are copied as templates rather than expanded values, put it under config_override or write it to the new id with configuration::set, and verify the new worker before removing the old entry. Do not rename YAML files as a shortcut.
+
+Never edit ~/.iii/compose/<namespace>/engine-config.yaml. Compose generates it.
+
+Start the project. iii compose stays in the foreground, so run it in a second terminal or send it to the background with its output in a log file, then wait until it has started every container:
+  iii compose --namespace dev --up --file worker-compose.yaml
+  (for a separately supervised engine: start the engine with iii --config config.yaml under its own supervisor, then iii compose --namespace dev --engine <that engine's ws:// URL> --up --file worker-compose.yaml)
+
+With the daemon running, show me the output of:
+  iii trigger -n dev compose::status file=worker-compose.yaml
+  iii trigger engine::workers::list
+  iii trigger engine::triggers::list
+If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii trigger command.
+
+If startup reports UNSUPPORTED_CONFIG_WORKERS, UNSUPPORTED_ENGINE_WORKER, ENGINE_WORKER_IS_INJECTED, or any other error from the Common errors list on the page, fix the cause and rerun. Do not work around an error by deleting a worker.
+
+Report back: the resolved path and diff of every configuration file you changed, including any passed with --config, the full new worker-compose.yaml, which stored configuration ids you migrated, and anything you could not migrate.
+```
+
 ## Back up the project
 
 Keep a copy of:

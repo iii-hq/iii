@@ -562,18 +562,18 @@ impl Project {
         (restarted, up, interrupted)
     }
 
-    /// Applies a removal without dropping supervision of surviving containers.
+    /// Applies removals without dropping supervision of surviving containers.
     ///
-    /// The removed worker is stopped against the old declaration so its
-    /// cleanup hook and environment are still available. The validated new
-    /// declaration then replaces the held file, and normal idempotent `up`
-    /// starts only anything that was already missing.
-    pub async fn reconcile_removal(
+    /// Removed workers are stopped against the old declaration so their cleanup
+    /// hooks and environments are still available. The validated new declaration
+    /// then replaces the held file, and normal idempotent `up` starts only
+    /// anything that was already missing.
+    pub async fn reconcile_removals(
         &self,
         file: ComposeFile,
-        removed: &str,
+        removed: &[String],
         operation_id: String,
-    ) -> (OpResult, OpResult) {
+    ) -> (Vec<OpResult>, OpResult) {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
@@ -594,14 +594,20 @@ impl Project {
                 package_cache: &package_cache,
                 vm_dir: &vm_dir,
             };
-            lifecycle::remove_one(
-                &ctx,
-                children,
-                &mut state.containers,
-                removed,
-                format!("{operation_id}-down"),
-            )
-            .await
+            let mut stopped = Vec::with_capacity(removed.len());
+            for (index, worker) in removed.iter().enumerate() {
+                stopped.push(
+                    lifecycle::remove_one(
+                        &ctx,
+                        children,
+                        &mut state.containers,
+                        worker,
+                        format!("{operation_id}-remove-{index}"),
+                    )
+                    .await,
+                );
+            }
+            stopped
         };
 
         {

@@ -339,6 +339,37 @@ async fn add_rejects_an_engine_change_before_editing_the_file() {
 }
 
 #[tokio::test]
+async fn configured_add_rejects_invalid_batches_without_writing() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = daemon();
+    for workers in [
+        serde_json::json!([
+            {"worker": "./workers/api", "environment": {"MODE": "dev"}},
+            {"worker": "./workers/extra", "start_after": ["missing"]}
+        ]),
+        serde_json::json!([
+            {"worker": "./workers/api", "start_after": ["extra"]},
+            {"worker": "./workers/extra", "start_after": ["api"]}
+        ]),
+        serde_json::json!([{"worker": "./workers/api", "startup_timeout": "invalid"}]),
+        serde_json::json!([{"worker": "./workers/api", "scripts": {"pre_run_timeout": "1s"}}]),
+        serde_json::json!([
+            {"worker": "./workers/api", "environment": {"MODE": "dev"}},
+            {"worker": "./workers/api", "environment": {"MODE": "production"}}
+        ]),
+    ] {
+        let workers: Vec<iii_compose::edit::WorkerInput> = serde_json::from_value(workers).unwrap();
+        daemon
+            .add_configured(Some(&file), &workers, "invalid-add".to_string())
+            .await
+            .expect_err("invalid batch must fail");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), COMPOSE);
+    }
+}
+
+#[tokio::test]
 async fn update_rejects_an_engine_change_before_editing_the_file() {
     let containers =
         "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n";
@@ -348,7 +379,7 @@ async fn update_rejects_an_engine_change_before_editing_the_file() {
     let err = daemon
         .update(
             Some(&file),
-            Some("state@2.0.0"),
+            &["state@2.0.0".to_string()],
             "update-after-engine-change".to_string(),
         )
         .await
@@ -356,6 +387,54 @@ async fn update_rejects_an_engine_change_before_editing_the_file() {
 
     assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
     assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
+async fn update_accepts_multiple_unchanged_package_workers() {
+    let containers = concat!(
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n",
+        "  cache:\n    worker: package://api.workers.iii.dev/cache\n    version: '2.0.0'\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let original = std::fs::read_to_string(&file).unwrap();
+
+    let outcome = daemon
+        .update(
+            Some(&file),
+            &["state@1.0.0".to_string(), "cache@2.0.0".to_string()],
+            "batch-update-unchanged".to_string(),
+        )
+        .await
+        .expect("the batch should succeed");
+    let outcome = serde_json::to_value(outcome).unwrap();
+
+    assert_eq!(outcome["status"], "ok");
+    assert_eq!(outcome["changed"], false);
+    assert_eq!(outcome["worker"], "state");
+    assert_eq!(outcome["workers"], serde_json::json!(["state", "cache"]));
+    assert_eq!(std::fs::read_to_string(file).unwrap(), original);
+}
+
+#[tokio::test]
+async fn update_rejects_the_batch_before_editing_when_one_worker_is_not_a_package() {
+    let containers = concat!(
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n",
+        "  api:\n    worker: path://./workers/api\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let original = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .update(
+            Some(&file),
+            &["state@2.0.0".to_string(), "api@2.0.0".to_string()],
+            "batch-update-invalid".to_string(),
+        )
+        .await
+        .expect_err("the path worker should reject the whole batch");
+
+    assert_eq!(err.code(), "NOT_A_PACKAGE_CONTAINER");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), original);
 }
 
 #[tokio::test]
@@ -370,7 +449,7 @@ async fn remove_rejects_an_engine_change_before_editing_the_file() {
     let err = daemon
         .remove(
             Some(&file),
-            Some("api"),
+            &["api".to_string()],
             "remove-after-engine-change".to_string(),
         )
         .await
@@ -391,12 +470,34 @@ async fn remove_validates_the_edited_file_before_writing_it() {
     let err = daemon
         .remove(
             Some(&file),
-            Some("api"),
+            &["api".to_string()],
             "remove-only-container".to_string(),
         )
         .await
         .expect_err("remove must reject an empty edited project");
 
     assert_eq!(err.code(), "EMPTY_CONTAINERS");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), before);
+}
+
+#[tokio::test]
+async fn remove_validates_every_worker_before_writing_the_batch() {
+    let containers = concat!(
+        "  api:\n    worker: path://./workers/api\n",
+        "  extra:\n    worker: path://./workers/extra\n",
+    );
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let err = daemon
+        .remove(
+            Some(&file),
+            &["api".to_string(), "missing".to_string()],
+            "remove-invalid-batch".to_string(),
+        )
+        .await
+        .expect_err("an unknown worker must reject the complete removal batch");
+
+    assert_eq!(err.code(), "UNKNOWN_CONTAINER");
     assert_eq!(std::fs::read_to_string(file).unwrap(), before);
 }
