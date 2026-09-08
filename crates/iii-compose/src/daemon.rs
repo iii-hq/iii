@@ -156,6 +156,7 @@ fn coalesce_containers(
     Ok(unique)
 }
 
+/// Returns whether update must resolve a selector instead of keeping its lock.
 fn should_refresh_selector(requested: Option<&str>, current: &str) -> bool {
     match requested {
         Some(requested) => requested != current || semver::Version::parse(requested).is_err(),
@@ -257,6 +258,19 @@ impl Daemon {
         )
     }
 
+    /// Resolves, acquires, and persists package locks before a start operation.
+    async fn prepare_start_file(&self, file: &Path) -> Result<ComposeFile> {
+        let mut compose = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&compose)?;
+        let namespace = self.project_namespace(&compose);
+        crate::manifest::validate_offline(&compose, &namespace)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let prepared =
+            crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+        prepared.write_if_changed()?;
+        Ok(compose)
+    }
+
     /// The project `file` declares, loading it if this is the first time.
     ///
     /// Loading is idempotent: the same file reached twice is the same project,
@@ -287,10 +301,7 @@ impl Daemon {
             let namespace = self.project_namespace(&compose);
             crate::manifest::validate_offline(&compose, &namespace)?;
 
-            let package_cache = crate::state::StateStore::package_cache()?;
-            let prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
-            prepared.write_if_changed()?;
+            crate::lockfile::attach(&mut compose)?;
 
             let project = Project::open(
                 &self.daemon_namespace,
@@ -348,9 +359,9 @@ impl Daemon {
         operation_id: String,
     ) -> Result<OpResult> {
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
+        let current = self.prepare_start_file(file).await?;
         let project = self.project(file).await?;
+        project.attach_resolved_packages(&current).await;
         Ok(project.up(container, operation_id).await)
     }
 
@@ -365,9 +376,9 @@ impl Daemon {
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Result<Option<OpResult>> {
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
+        let current = self.prepare_start_file(file).await?;
         let project = self.project(file).await?;
+        project.attach_resolved_packages(&current).await;
         if shutdown.requested() {
             return Ok(None);
         }
@@ -878,9 +889,7 @@ impl Daemon {
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
-        let package_cache = crate::state::StateStore::package_cache()?;
-        let prepared =
-            crate::lockfile::prepare(&mut current, &package_cache, &BTreeSet::new()).await?;
+        let prepared = crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()).await?;
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.

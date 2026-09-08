@@ -17,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -42,8 +43,8 @@ struct LockedContainer {
     resolved: ResolvedPackage,
 }
 
-/// A complete lock candidate whose artifacts have already been acquired.
-/// Writing it is separate so callers can validate all other file changes first.
+/// A complete lock candidate with optional artifact acquisition results.
+/// Writing stays separate so callers can validate all other file changes first.
 pub struct PreparedLock {
     path: PathBuf,
     lock: ComposeLock,
@@ -88,6 +89,54 @@ impl PreparedLock {
     pub fn install_statuses(&self) -> &BTreeMap<String, crate::registry::InstallStatus> {
         &self.install_statuses
     }
+
+    /// Acquires every resolved artifact with the Compose concurrency limit.
+    async fn install(&mut self, cache_root: &Path) -> Result<()> {
+        let requests = self
+            .lock
+            .containers
+            .iter()
+            .map(|(key, entry)| (key.clone(), entry.resolved.clone()))
+            .collect::<Vec<_>>();
+        let cache_root = cache_root.to_path_buf();
+        let mut installs = futures::stream::iter(requests.into_iter().map(|(key, resolved)| {
+            let cache_root = cache_root.clone();
+            async move {
+                let result = crate::registry::install_resolved(&key, &resolved, &cache_root).await;
+                (key, result)
+            }
+        }))
+        .buffer_unordered(crate::parallelism::max_parallel_workers());
+
+        while let Some((key, result)) = installs.next().await {
+            self.install_statuses.insert(key, result?.status);
+        }
+        Ok(())
+    }
+}
+
+/// Attaches matching package metadata from an existing lock without resolving
+/// selectors or acquiring artifacts. Missing and stale entries stay detached
+/// until an operation that can create a lock prepares them.
+pub fn attach(compose: &mut ComposeFile) -> Result<()> {
+    let Some(lock) = load(&lock_path(&compose.path))? else {
+        return Ok(());
+    };
+    for (key, container) in &mut compose.containers {
+        let WorkerSource::Package { reference } = &container.worker else {
+            continue;
+        };
+        let requested = container.version.as_deref().unwrap_or("*");
+        let worker = format!("package://{reference}");
+        if let Some(entry) = lock
+            .containers
+            .get(key)
+            .filter(|entry| entry.worker == worker && entry.requested == requested)
+        {
+            container.resolved_package = Some(entry.resolved.clone());
+        }
+    }
+    Ok(())
 }
 
 /// Resolves missing, changed, or explicitly forced declarations, verifies the
@@ -109,11 +158,31 @@ pub async fn prepare_with_versions(
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
 ) -> Result<PreparedLock> {
+    let mut prepared = prepare_metadata_with_versions(compose, force, selected_versions).await?;
+    prepared.install(cache_root).await?;
+    Ok(prepared)
+}
+
+/// Resolves and attaches lock metadata without acquiring package artifacts.
+/// Removal uses this to prune the lock before it stops existing workers.
+pub async fn prepare_metadata(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+) -> Result<PreparedLock> {
+    prepare_metadata_with_versions(compose, force, &BTreeMap::new()).await
+}
+
+/// Builds a lock candidate and attaches its resolved packages to the runtime
+/// model. Artifact acquisition is a separate step for operations that need it.
+async fn prepare_metadata_with_versions(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    selected_versions: &BTreeMap<String, String>,
+) -> Result<PreparedLock> {
     let path = lock_path(&compose.path);
     let previous = load(&path)?;
     let mut containers = BTreeMap::new();
     let mut package_changes = BTreeSet::new();
-    let mut install_statuses = BTreeMap::new();
 
     let declarations = compose
         .containers
@@ -153,9 +222,6 @@ pub async fn prepare_with_versions(
             },
         };
 
-        let installed =
-            crate::registry::install_resolved(&key, &entry.resolved, cache_root).await?;
-        install_statuses.insert(key.clone(), installed.status);
         if previous
             .as_ref()
             .and_then(|lock| lock.containers.get(&key))
@@ -179,10 +245,11 @@ pub async fn prepare_with_versions(
         lock,
         changed,
         package_changes,
-        install_statuses,
+        install_statuses: BTreeMap::new(),
     })
 }
 
+/// Compares the package fields that can change worker runtime behavior.
 fn runtime_package_changed(previous: &ResolvedPackage, next: &ResolvedPackage) -> bool {
     let target = crate::registry::host_target();
     previous.kind != next.kind
@@ -202,6 +269,7 @@ pub fn lock_path(compose_path: &Path) -> PathBuf {
     compose_path.with_extension("lock")
 }
 
+/// Reads and validates a lock, treating a missing file as an unlocked project.
 fn load(path: &Path) -> Result<Option<ComposeLock>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -222,6 +290,7 @@ fn load(path: &Path) -> Result<Option<ComposeLock>> {
     Ok(Some(lock))
 }
 
+/// Validates all untrusted lock fields before they reach the cache or runtime.
 fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
     let invalid = |message: String| ComposeError::InvalidLock {
         path: path.to_path_buf(),
@@ -293,6 +362,7 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
     Ok(())
 }
 
+/// Replaces a lock only after its complete contents are durable in a temp file.
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
     let temp = path.with_extension(format!("lock-{}.tmp", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
@@ -404,6 +474,32 @@ mod tests {
         write_atomically(&path, &yaml).unwrap();
 
         assert_eq!(load(&path).unwrap(), Some(lock()));
+    }
+
+    #[test]
+    fn attach_uses_locked_metadata_without_acquiring_the_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n",
+        )
+        .unwrap();
+        let lock_path = lock_path(&compose_path);
+        write_atomically(&lock_path, &serde_yaml::to_string(&lock()).unwrap()).unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        attach(&mut compose).unwrap();
+
+        let resolved = compose
+            .containers
+            .get("state")
+            .unwrap()
+            .resolved_package
+            .as_ref()
+            .unwrap();
+        assert_eq!(resolved.version, "0.22.8");
+        assert!(!dir.path().join("cache").exists());
     }
 
     #[test]

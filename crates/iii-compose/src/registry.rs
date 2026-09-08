@@ -213,6 +213,7 @@ pub async fn resolve_package(
     into_resolved_package(container, worker, target)
 }
 
+/// Converts and validates one registry response for lock persistence.
 fn into_resolved_package(
     container: &str,
     worker: ResolvedWorker,
@@ -403,6 +404,7 @@ async fn install_binary(
     Ok((program, InstallStatus::Downloaded))
 }
 
+/// Selects the artifact that can run on this Compose host.
 fn artifact_for_target<'a>(
     container: &str,
     resolved: &'a ResolvedPackage,
