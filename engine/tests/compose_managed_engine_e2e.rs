@@ -6,7 +6,9 @@ use std::{net::TcpListener, process::Command};
 use std::{process::Stdio, time::Duration, time::Instant};
 
 fn iii_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_iii"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
+    command.env_remove("CLICOLOR_FORCE").env("NO_COLOR", "1");
+    command
 }
 
 #[cfg(unix)]

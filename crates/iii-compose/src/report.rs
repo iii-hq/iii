@@ -745,6 +745,7 @@ mod tests {
                 "report::tests::startup_panel_fixture",
                 "--nocapture",
             ])
+            .env_remove("CLICOLOR_FORCE")
             .env("NO_COLOR", "1")
             .output()
             .unwrap();
