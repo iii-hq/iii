@@ -385,9 +385,31 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
-    restart_one_inner(ctx, children, records, key, operation_id, None)
+    restart_one_inner(ctx, children, records, key, operation_id, None, None)
         .await
         .expect("restart without a shutdown signal cannot be interrupted")
+}
+
+pub(crate) async fn restart_one_supervised(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    attempt: u32,
+    total_attempts: u32,
+) -> OpResult {
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        None,
+        Some((attempt, total_attempts)),
+    )
+    .await
+    .expect("supervised restart without a shutdown signal cannot be interrupted")
 }
 
 pub(crate) async fn restart_one_until_shutdown(
@@ -398,7 +420,16 @@ pub(crate) async fn restart_one_until_shutdown(
     operation_id: String,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> Option<OpResult> {
-    restart_one_inner(ctx, children, records, key, operation_id, Some(shutdown)).await
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        Some(shutdown),
+        None,
+    )
+    .await
 }
 
 async fn restart_one_inner(
@@ -408,6 +439,7 @@ async fn restart_one_inner(
     key: &str,
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
+    retry: Option<(u32, u32)>,
 ) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -421,7 +453,11 @@ async fn restart_one_inner(
         return None;
     }
 
-    report::plan(&[(key.to_string(), 0)]);
+    if let Some((attempt, total_attempts)) = retry {
+        report::retry_starting(key, attempt, total_attempts);
+    } else {
+        report::plan(&[(key.to_string(), 0)]);
+    }
     let stopped = stop_one(ctx, children, records, key).await;
 
     // The child is gone, but the engine learns that from a socket closing and
@@ -445,7 +481,11 @@ async fn restart_one_inner(
 
     let result = match outcome {
         StartAttempt::Ready(record, child) => {
-            report::ready(key, took);
+            if let Some((attempt, total_attempts)) = retry {
+                report::retry_recovered(key, attempt, total_attempts, took);
+            } else {
+                report::ready(key, took);
+            }
             records.insert(key.to_string(), record);
             children.insert(key.to_string(), child);
             ContainerResult {

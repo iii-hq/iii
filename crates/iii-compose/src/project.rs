@@ -513,7 +513,7 @@ impl Project {
         let _ = self.store.save(&restarting);
 
         let result = self
-            .restart_one_locked(&mut inner, key, format!("supervisor:{key}"))
+            .restart_one_locked(&mut inner, key, format!("supervisor:{key}"), Some(spent))
             .await;
         let ready = result
             .containers
@@ -536,22 +536,27 @@ impl Project {
         // Only wait if there is something to wait for. Backing off after the
         // last attempt would hold the container in `restarting` for a wait
         // nobody is going to use, and delay the operator's answer by it.
-        let exhausted = match inner.restarts.attempts.get_mut(key) {
+        let next_retry = match inner.restarts.attempts.get_mut(key) {
             Some(attempt) if attempt.spent < RESTART_MAX_ATTEMPTS => {
-                attempt.due = Some(Instant::now() + RestartAttempts::backoff(attempt.spent));
-                false
+                let delay = RestartAttempts::backoff(attempt.spent);
+                attempt.due = Some(Instant::now() + delay);
+                Some((attempt.spent + 1, delay))
             }
-            _ => true,
+            _ => None,
         };
 
-        if !exhausted && let Some(entry) = inner.state.containers.get_mut(key) {
+        if next_retry.is_some()
+            && let Some(entry) = inner.state.containers.get_mut(key)
+        {
             entry.status = ChildStatus::Restarting;
         }
         let snapshot = inner.state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
 
-        if exhausted {
+        if let Some((next_attempt, delay)) = next_retry {
+            crate::report::retry_waiting(key, next_attempt, RESTART_MAX_ATTEMPTS, delay);
+        } else {
             self.report_gave_up(key).await;
             self.cascade_failure(key, Self::exhausted_reason()).await;
         }
@@ -1026,7 +1031,9 @@ impl Project {
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(Some(key));
-        let result = self.restart_one_locked(&mut inner, key, operation_id).await;
+        let result = self
+            .restart_one_locked(&mut inner, key, operation_id, None)
+            .await;
 
         let snapshot = inner.state.clone();
         drop(inner);
@@ -1039,6 +1046,7 @@ impl Project {
         inner: &mut Inner,
         key: &str,
         operation_id: String,
+        supervised_attempt: Option<u32>,
     ) -> OpResult {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
@@ -1060,7 +1068,20 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
-        lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await
+        if let Some(attempt) = supervised_attempt {
+            lifecycle::restart_one_supervised(
+                &ctx,
+                children,
+                &mut state.containers,
+                key,
+                operation_id,
+                attempt,
+                RESTART_MAX_ATTEMPTS,
+            )
+            .await
+        } else {
+            lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await
+        }
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
