@@ -14,14 +14,14 @@ needs a human's go-ahead.
 
 ## Add the workers
 
-A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the
-trusted port your local workers use. The `auth` worker holds the authentication logic that gates
-those connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
+A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the trusted port
+your local workers use. The `auth` worker holds the authentication logic that gates those
+connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
-  auth:
-    worker: path://./auth
-    env_file: ['./.env']
+auth:
+  worker: path://./auth
+  env_file: ["./.env"]
 ```
 
 The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`
@@ -33,12 +33,6 @@ this value for anything beyond your machine.
   Make sure to `cd ..`!
 </Note>
 
-Install the worker's dependencies once:
-
-```bash
-cd auth && npm install && cd ..
-```
-
 ## Put a proxy in front for browsers
 
 The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
@@ -47,19 +41,19 @@ and reverse-proxies to the engine, authenticating every connection and gating ev
 Uncomment the Ch. 7 `rbac-proxy` container:
 
 ```yaml worker-compose.yaml
-  rbac-proxy:
-    worker: package://rbac-proxy
-    version: "1.0.6"
-    config_name: rbac-proxy
-    config_override:
-      host: 127.0.0.1
-      port: 3110
-      engine_url: ws://127.0.0.1:49134
-      rbac:
-        auth_function_id: auth::browser
-        expose_functions:
-          - match("link::create")
-          - match("link::request_delete")
+rbac-proxy:
+  worker: package://rbac-proxy
+  version: "1.0.6"
+  config_name: rbac-proxy
+  config_override:
+    host: 127.0.0.1
+    port: 3110
+    engine_url: ws://127.0.0.1:49134
+    rbac:
+      auth_function_id: auth::browser
+      expose_functions:
+        - match("link::create")
+        - match("link::request_delete")
 ```
 
 Restart Compose so it starts the proxy:
@@ -132,7 +126,6 @@ two tabs both registering `ui::on_click` in `default` would collide. `namespaces
 its own `browser-<session>` namespace and permits registration only there: the tab's functions live
 in isolation, and it still calls `link::*` in `default` through the `expose_functions` allowlist.
 
-
 ## Add a server-initiated delete
 
 First give the `link` worker a `link::delete` that removes a link from both the database and the
@@ -155,10 +148,9 @@ worker.registerFunction("link::delete", async (payload: { code: string }) => {
 
 Now add a wrapper that asks the connected browser first, then deletes only if the browser confirms.
 The server-side `worker.trigger` of a browser-registered function is the same primitive you've used
-between server workers, in reverse. This lets us reverse the typical pattern: instead of the browser asking the server for
-confirmation, the server asks the browser.
-Other implementations would achieve this with SSE but here it works like normal synchronous
-code.
+between server workers, in reverse. This lets us reverse the typical pattern: instead of the browser
+asking the server for confirmation, the server asks the browser. Other implementations would achieve
+this with SSE but here it works like normal synchronous code.
 
 ```typescript link/src/index.ts
 worker.registerFunction(
@@ -395,14 +387,14 @@ session so the server calls back the right tab:
 iii trigger link::request_delete code=<code> session=<session from the tab>
 ```
 
-That tab shows a confirm prompt, and the server deletes only after you click OK. The `session`
-names the tab's namespace, so the server asks exactly the browser that owns it, never another tab.
+That tab shows a confirm prompt, and the server deletes only after you click OK. The `session` names
+the tab's namespace, so the server asks exactly the browser that owns it, never another tab.
 
 ## Conclusion
 
 The client is a worker that is exactly the same as every other worker. We connected it through an
-RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the
-browser isn't trusted like our other workers. However any other worker can be gated this same way.
+RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the browser isn't
+trusted like our other workers. However any other worker can be gated this same way.
 
 Once everything is set up our client calls server functions directly, subscribes to streams for live
 updates, and registers functions the server calls back, all on the same iii bus as the rest of

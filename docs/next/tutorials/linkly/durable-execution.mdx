@@ -14,26 +14,27 @@ independent subscribers: a Python analytics worker and a cache refresher, both d
 
 ## Add the workers
 
-This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomment the Ch. 4 block in `worker-compose.yaml`:
+This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomment the Ch. 4 block
+in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
-  queue:
-    worker: package://queue
-    version: "0.21.11"
-    config_name: queue
-    working_dir: .
-    config_override:
-      queue_configs:
-        clicks:
-          type: standard
-          max_retries: 5
-          concurrency: 5
-  pubsub:
-    worker: package://pubsub
-    version: "0.21.5"
-  analytics:
-    worker: path://./analytics
-    start_after: [database, pubsub]
+queue:
+  worker: package://queue
+  version: "0.21.11"
+  config_name: queue
+  working_dir: .
+  config_override:
+    queue_configs:
+      clicks:
+        type: standard
+        max_retries: 5
+        concurrency: 5
+pubsub:
+  worker: package://pubsub
+  version: "0.21.5"
+analytics:
+  worker: path://./analytics
+  start_after: [database, pubsub]
 ```
 
 Also uncomment the `analytics` database under the Ch. 3 block's `config_override`:
@@ -220,22 +221,21 @@ Queues and events are useful within a single worker but also between workers. Th
 writing all of our code in TypeScript. However workers are not restricted to specific languages or
 runtimes. So this time we'll create an analytics worker in Python to count links.
 
-### Create a new worker
+### Adding a second worker
+
+We already referenced the analytics worker in `worker-compose.yaml`, now let's give it some code.
 
 The `analytics` directory holds a Python worker, with an `analytics/src/main.py` entrypoint and an
 `iii.worker.yaml` manifest of its own:
 
 ```yaml analytics/iii.worker.yaml
 name: analytics
+runtime:
+  # Base OCI image used as the worker rootfs when virtualized.
+  base_image: docker.io/iiidev/python:latest
 scripts:
   install: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
   start: .venv/bin/python src/main.py
-```
-
-Install its dependencies once:
-
-```bash
-cd analytics && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
 ```
 
 ### Subscribe to link.created events

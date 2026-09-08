@@ -39,7 +39,20 @@ database:
         url: sqlite:./data/iii.db
 ```
 
-<Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
+{/* TODO: Improve this doc once we can add workers w/ config in compose. Move users to compose::add. */}
+
+<Note>
+  For simplicity and ease of configuration we've pre-included the database configuration and are
+  instructing you to uncomment entries and restart the entire project. This is not necessary, you
+  can also:
+
+1. Add a worker with `iii trigger compose::add worker=database`
+2. Configure it in `worker-compose.yaml`
+3. Restart just that worker with `iii trigger compose::restart worker=database`.
+
+In this way you can modify a running system without restarting the entire thing.
+
+</Note>
 
 <Info>
   The database worker supports more than SQLite, refer to the [`database` worker
@@ -73,10 +86,15 @@ write and read from our new database while using our state worker as a hot cache
 
 #### Create a schema
 
-Add an `ensureSchema()` function at the end of `link/src/index.ts` that creates both tables on
-startup. The database worker accepts SQL through its `database::execute` function. The database
-worker can register a moment after `link`, so retry until it answers instead of crashing on the
-first call:
+Add an `ensureSchema()` function to `link/src/index.ts` that creates both tables on startup. The
+database worker accepts SQL through its `database::execute` function. The database worker can
+register a moment after `link`, so add a few retries:
+
+<Note>
+  `start_after` in `worker-compose.yaml` controls worker start order. In this case we are having the
+  `link` worker `start_after` database. This helps with reliability but it does not guarantee that
+  the `database` worker will be ready when the `link` worker starts.
+</Note>
 
 ```typescript src/index.ts
 async function ensureSchema(): Promise<void> {

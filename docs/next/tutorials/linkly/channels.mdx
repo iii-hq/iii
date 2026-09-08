@@ -18,15 +18,9 @@ worker stays focused on single links.
 Uncomment the Ch. 6 block in `worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
-  bulk-importer:
-    worker: path://./bulk-importer
-    start_after: [link]
-```
-
-Install the worker's dependencies once:
-
-```bash
-cd bulk-importer && npm install && cd ..
+bulk-importer:
+  worker: path://./bulk-importer
+  start_after: [link]
 ```
 
 ## Import a CSV over a channel
@@ -145,8 +139,8 @@ node import-links.js
 { "imported": 2, "skipped": 0 }
 ```
 
-Run it again and it reports `{ "imported": 0, "skipped": 2 }`: the codes are already
-taken, so the importer skips those rows instead of aborting the batch.
+Run it again and it reports `{ "imported": 0, "skipped": 2 }`: the codes are already taken, so the
+importer skips those rows instead of aborting the batch.
 
 Both new links resolve immediately:
 

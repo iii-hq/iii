@@ -71,11 +71,11 @@ this chapter. The `config_override` block declares that default explicitly.
 [Ch. 3: Persist everything](/tutorials/linkly/persistence) will swap this approach for durable
 storage.
 
-## Create the link worker
+## Explore the link worker
 
 The `link` directory holds the worker that stores and retrieves short links.
 
-### Configure the entrypoints
+### The worker entrypoints
 
 A worker is a self-contained service. Here, the `link` worker is a Node package but it could be any
 language or runtime.
@@ -85,7 +85,7 @@ language or runtime.
 ```yaml iii.worker.yaml
 name: link
 runtime:
-  # Base OCI image used as the worker rootfs. Override to pin a version.
+  # Base OCI image used as the worker rootfs when virtualized.
   base_image: docker.io/iiidev/node:latest
 scripts:
   install: "npm install"
@@ -124,12 +124,18 @@ TypeScript source directly and reloads the worker whenever you save a change.
 }
 ```
 
-### Write the worker entry point
+### The worker entry point
 
-`link/src/index.ts` is the worker's entry point. You'll build it up in a few small steps rather than
-pasting one large file at once.
+`link/src/index.ts` is the worker's entry point. You'll build it up in a few small steps. All of the
+code below is contained within `index.ts`, you can uncomment it rather than copy and pasting.
 
-#### Open the connection to the engine
+<Info>
+  Pay attention to code blocks that note they will be replaced by future codeblocks. We are building
+  this application in much the same way you would in the real world and will be revising prior code
+  to add features and functionality as we go.
+</Info>
+
+#### Opening a connection to the engine
 
 `registerWorker` opens the connection to the engine. Add the connection setup and a small helper
 that generates random short codes to `index.ts`:
@@ -208,11 +214,10 @@ logger.info("link worker ready");
 The `state::set` / `state::get` calls pass a `scope` (`links`) and a `key` (the short code). Scopes
 keep different kinds of data in `state` from colliding; later chapters add more.
 
-## Start the engine
+## Start the project
 
 From the project root, start the engine and Compose project. The workers register their functions
-with the engine. `--up` is a `iii compose` flag, as shown in the generated
-[CLI reference](/cli-reference/index#iii-compose):
+with the engine. `--up` is a `iii compose` flag that starts the engine along with the workers:
 
 ```bash
 iii compose --up

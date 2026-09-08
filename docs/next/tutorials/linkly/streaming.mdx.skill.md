@@ -16,15 +16,9 @@ manages the streaming. `iii-stream` is an engine worker, so it runs from the sta
 the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
-  click-streamer:
-    worker: path://./click-streamer
-    start_after: [pubsub]
-```
-
-Install the worker's dependencies once:
-
-```bash
-cd click-streamer && npm install && cd ..
+click-streamer:
+  worker: path://./click-streamer
+  start_after: [pubsub]
 ```
 
 ## Broadcast clicks in real time
