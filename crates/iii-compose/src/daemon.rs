@@ -487,6 +487,10 @@ impl Daemon {
         }
         let wanted = coalesce_containers(wanted)?;
         let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
+        // Against the snapshot read above, so the registry artifacts acquired
+        // below are only the ones this add can actually declare. The decision
+        // that matters is repeated under the mutation lock against the text
+        // being edited: another add may declare a dependency in between.
         let mut wanted = keep_declared_dependencies(wanted, &asked_keys, &declared);
         for worker in &mut wanted {
             if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
@@ -559,6 +563,11 @@ impl Daemon {
             source,
         })?;
         self.validate_engine_policy_text(path, &text)?;
+        // The declaration this edit lands on, not the pre-lock snapshot: a
+        // dependency another add declared while this one resolved its graph
+        // and acquired artifacts must keep its pin too.
+        let current = ComposeFile::parse(&text, path.to_path_buf())?;
+        let wanted = keep_declared_dependencies(wanted, &asked_keys, &current);
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -1306,7 +1315,10 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 /// `compose::update worker=<dep>` is how a version moves. Only nodes that are
 /// NOT yet declared are added, plus whatever the caller explicitly asked for.
 /// A declared dependency whose pin differs from what the registry resolved is
-/// logged, never silently rewritten.
+/// logged, never silently rewritten. `add_configured` runs this twice: once on
+/// its pre-lock snapshot to size the artifact fetch, and again under the
+/// mutation lock against the text it is about to edit, which is the call that
+/// decides what gets written.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
     asked: &BTreeSet<String>,
