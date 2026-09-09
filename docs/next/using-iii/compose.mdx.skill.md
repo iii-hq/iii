@@ -233,14 +233,36 @@ containers:
 `no` is the default. `on-failure` retries a failed start or a worker that exits with a non-zero
 status. `always` also restarts it when it exits successfully after it was ready.
 
-Compose tries five replacements. The first retry is immediate. Later retries wait from 500ms up to
-30 seconds. During `up`, the progress row shows the current attempt and wait. For a run-time exit,
-only the named worker bounces: workers that name it in `start_after` keep running and see their
-connection drop and reconnect. `compose::status` reports the worker as `restarting` while it waits
-for a run-time replacement. Once the five are spent, `required` controls whether the startup
-operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
-`last_error` says the supervisor gave up. A worker that stays ready for a minute counts as recovered,
-so its next run-time crash starts the five over.
+The short form uses five attempts, a 500ms base delay, a 30-second maximum delay, and a 60-second
+stability window. Use the object form to change these values for one worker:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: 500ms
+      max_delay: 30s
+      max_attempts: 5
+      window: 60s
+```
+
+| Field | Description | Default |
+| ----- | ----------- | ------- |
+| `condition` | Required in the object form. Accepts `no`, `on-failure`, or `always`. | `no` in the short form |
+| `delay` | Base delay for exponential backoff after a replacement fails. | `500ms` |
+| `max_delay` | Maximum delay between replacement attempts. | `30s` |
+| `max_attempts` | Maximum replacement attempts after the original process fails. | `5` |
+| `window` | Time a ready worker must stay active before its run-time attempt budget resets. | `60s` |
+
+The first replacement is immediate. If it fails, later attempts use exponential backoff from
+`delay` up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a
+run-time exit, only the named worker bounces: workers that name it in `start_after` keep running and
+see their connection drop and reconnect. `compose::status` reports the worker as `restarting` while
+it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
+startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
+`last_error` says the supervisor gave up.
 
 ### Stopping a project
 

@@ -3,7 +3,7 @@
 //! Every rejection asserts the stable error code, not the prose: the codes are
 //! the contract `compose::*` callers match on.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use iii_compose::{ComposeFile, RestartPolicy};
 
@@ -712,16 +712,108 @@ containers:
     .expect("restart is part of the container schema");
 
     assert_eq!(
-        file.containers["api"].restart,
+        file.containers["api"].restart.condition,
         RestartPolicy::No,
         "a container that says nothing keeps the old behaviour"
     );
-    assert_eq!(file.containers["mailer"].restart, RestartPolicy::OnFailure);
-    assert_eq!(file.containers["clock"].restart, RestartPolicy::Always);
     assert_eq!(
-        file.containers["batch"].restart,
+        file.containers["mailer"].restart.condition,
+        RestartPolicy::OnFailure
+    );
+    assert_eq!(
+        file.containers["clock"].restart.condition,
+        RestartPolicy::Always
+    );
+    assert_eq!(
+        file.containers["batch"].restart.condition,
         RestartPolicy::No,
         "an unquoted `no` is the policy, not the boolean false"
+    );
+}
+
+#[test]
+fn restart_object_configures_backoff_attempts_and_window() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: 750ms
+      max_delay: 20s
+      max_attempts: 8
+      window: 2m
+"#,
+    )
+    .expect("restart accepts the configurable object form");
+
+    let restart = &file.containers["api"].restart;
+    assert_eq!(
+        (
+            restart.condition,
+            restart.delay,
+            restart.max_delay,
+            restart.max_attempts,
+            restart.window,
+        ),
+        (
+            RestartPolicy::OnFailure,
+            Duration::from_millis(750),
+            Duration::from_secs(20),
+            8,
+            Duration::from_secs(120),
+        )
+    );
+}
+
+#[test]
+fn restart_object_uses_existing_defaults_for_omitted_limits() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: always
+"#,
+    )
+    .expect("restart limits are optional");
+
+    let restart = &file.containers["api"].restart;
+    assert_eq!(
+        (
+            restart.delay,
+            restart.max_delay,
+            restart.max_attempts,
+            restart.window,
+        ),
+        (
+            Duration::from_millis(500),
+            Duration::from_secs(30),
+            5,
+            Duration::from_secs(60),
+        )
+    );
+}
+
+#[test]
+fn rejects_an_invalid_restart_duration() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: soon
+"#
+        ),
+        "INVALID_DURATION"
     );
 }
 

@@ -31,7 +31,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{ComposeFile, RestartPolicy},
+    config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
     lifecycle::{self, Children, LifecycleCtx, OpResult},
@@ -344,7 +344,7 @@ impl Project {
             // A container that asked to be restarted gets the first attempt
             // immediately: its dependents stay up, and the exit only cascades
             // once the budget below is spent.
-            if self.restart_policy(&key).await.wants_restart(code) {
+            if self.restart_config(&key).await.wants_restart(code) {
                 if let Some(lease) = self.claim_restart(&key, RestartCause::UnexpectedExit).await {
                     self.run_restart_attempt(&key, lease, RestartCause::UnexpectedExit)
                         .await;
@@ -431,6 +431,7 @@ impl Project {
     /// restart touches one container and not a graph, which is what keeps the
     /// dependents up while this one is gone.
     async fn run_restart_attempt(&self, key: &str, lease: RestartLease, cause: RestartCause) {
+        let restart_config = self.restart_config(key).await;
         let mut inner = self.inner.lock().await;
         if !inner.restarts.is_current(key, lease)
             || !Self::restart_is_eligible(&inner, key, cause, Instant::now())
@@ -444,15 +445,17 @@ impl Project {
                 .state
                 .containers
                 .get(key)
-                .map_or(0, |record| seconds_since(record.started_at))
-                >= restart::BUDGET_RESET_AFTER.as_secs()
+                .map_or(Duration::ZERO, |record| {
+                    Duration::from_secs(seconds_since(record.started_at))
+                })
+                >= restart_config.window
         {
             inner.restarts.attempts.remove(key);
         }
 
         let spent = {
             let attempt = inner.restarts.attempts.entry(key.to_string()).or_default();
-            if attempt.spent >= restart::MAX_ATTEMPTS {
+            if attempt.spent >= restart_config.max_attempts {
                 None
             } else {
                 attempt.spent += 1;
@@ -462,8 +465,9 @@ impl Project {
         let Some(spent) = spent else {
             inner.restarts.release(key, lease);
             drop(inner);
-            self.report_gave_up(key).await;
-            self.cascade_failure(key, Self::exhausted_reason()).await;
+            self.report_gave_up(key, restart_config.max_attempts).await;
+            self.cascade_failure(key, Self::exhausted_reason(restart_config.max_attempts))
+                .await;
             return;
         };
 
@@ -471,7 +475,7 @@ impl Project {
             &self.project_namespace,
             &format!(
                 "restarting {key} (attempt {spent} of {})",
-                restart::MAX_ATTEMPTS
+                restart_config.max_attempts
             ),
             Tone::Warn,
         );
@@ -485,7 +489,12 @@ impl Project {
         let _ = self.store.save(&restarting);
 
         let result = self
-            .restart_one_locked(&mut inner, key, format!("supervisor:{key}"), Some(spent))
+            .restart_one_locked(
+                &mut inner,
+                key,
+                format!("supervisor:{key}"),
+                Some((spent, restart_config.max_attempts)),
+            )
             .await;
         let ready = result
             .containers
@@ -509,8 +518,8 @@ impl Project {
         // last attempt would hold the container in `restarting` for a wait
         // nobody is going to use, and delay the operator's answer by it.
         let next_retry = match inner.restarts.attempts.get_mut(key) {
-            Some(attempt) if attempt.spent < restart::MAX_ATTEMPTS => {
-                let delay = restart::backoff(attempt.spent);
+            Some(attempt) if attempt.spent < restart_config.max_attempts => {
+                let delay = restart::backoff(&restart_config, attempt.spent);
                 attempt.due = Some(Instant::now() + delay);
                 Some((attempt.spent + 1, delay))
             }
@@ -527,10 +536,11 @@ impl Project {
         let _ = self.store.save(&snapshot);
 
         if let Some((next_attempt, delay)) = next_retry {
-            crate::report::retry_waiting(key, next_attempt, restart::MAX_ATTEMPTS, delay);
+            crate::report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
         } else {
-            self.report_gave_up(key).await;
-            self.cascade_failure(key, Self::exhausted_reason()).await;
+            self.report_gave_up(key, restart_config.max_attempts).await;
+            self.cascade_failure(key, Self::exhausted_reason(restart_config.max_attempts))
+                .await;
         }
     }
 
@@ -564,26 +574,24 @@ impl Project {
     /// This container's declared answer to exiting after it was ready. A
     /// container the file no longer declares gets `no`, matching `is_required`:
     /// the rule that stops is the one to fall back on.
-    async fn restart_policy(&self, key: &str) -> RestartPolicy {
+    async fn restart_config(&self, key: &str) -> RestartConfig {
         self.file
             .read()
             .await
             .containers
             .get(key)
-            .map_or(RestartPolicy::No, |container| container.restart)
+            .map(|container| container.restart.clone())
+            .unwrap_or_default()
     }
 
-    fn exhausted_reason() -> String {
-        format!(
-            "did not stay up after {} restart attempts",
-            restart::MAX_ATTEMPTS
-        )
+    fn exhausted_reason(max_attempts: u32) -> String {
+        format!("did not stay up after {max_attempts} restart attempts")
     }
 
-    async fn report_gave_up(&self, key: &str) {
+    async fn report_gave_up(&self, key: &str, max_attempts: u32) {
         daemon_line(
             &self.project_namespace,
-            &format!("{key} {}: giving up", Self::exhausted_reason()),
+            &format!("{key} {}: giving up", Self::exhausted_reason(max_attempts)),
             Tone::Warn,
         );
     }
@@ -1021,7 +1029,7 @@ impl Project {
         inner: &mut Inner,
         key: &str,
         operation_id: String,
-        supervised_attempt: Option<u32>,
+        supervised_attempt: Option<(u32, u32)>,
     ) -> OpResult {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
@@ -1043,7 +1051,7 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
-        if let Some(attempt) = supervised_attempt {
+        if let Some((attempt, total_attempts)) = supervised_attempt {
             lifecycle::restart_one_supervised(
                 &ctx,
                 children,
@@ -1051,7 +1059,7 @@ impl Project {
                 key,
                 operation_id,
                 attempt,
-                restart::MAX_ATTEMPTS,
+                total_attempts,
             )
             .await
         } else {

@@ -41,6 +41,18 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
 
+/// Default base wait between failed replacement attempts.
+pub const DEFAULT_RESTART_DELAY: Duration = Duration::from_millis(500);
+
+/// Default ceiling for the exponential restart delay.
+pub const DEFAULT_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// Default replacement attempts available after a failed start or exit.
+pub const DEFAULT_RESTART_MAX_ATTEMPTS: u32 = 5;
+
+/// Default time a ready container must hold before its restart budget refills.
+pub const DEFAULT_RESTART_WINDOW: Duration = Duration::from_secs(60);
+
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
@@ -128,6 +140,52 @@ impl RestartPolicy {
     }
 }
 
+/// Restart behavior and retry limits for one container.
+///
+/// A scalar `restart` value uses these defaults. The object form can override
+/// each limit while keeping the same restart conditions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartConfig {
+    /// Which exits cause a restart.
+    pub condition: RestartPolicy,
+    /// Base delay used by exponential backoff.
+    pub delay: Duration,
+    /// Longest delay between two replacement attempts.
+    pub max_delay: Duration,
+    /// Replacement attempts available after a failed start or exit.
+    pub max_attempts: u32,
+    /// Time a ready container must hold before its restart budget refills.
+    pub window: Duration,
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self {
+            condition: RestartPolicy::No,
+            delay: DEFAULT_RESTART_DELAY,
+            max_delay: DEFAULT_RESTART_MAX_DELAY,
+            max_attempts: DEFAULT_RESTART_MAX_ATTEMPTS,
+            window: DEFAULT_RESTART_WINDOW,
+        }
+    }
+}
+
+impl From<RestartPolicy> for RestartConfig {
+    fn from(condition: RestartPolicy) -> Self {
+        Self {
+            condition,
+            ..Self::default()
+        }
+    }
+}
+
+impl RestartConfig {
+    /// Whether an exit with this status should be answered with a restart.
+    pub fn wants_restart(&self, exit_code: i32) -> bool {
+        self.condition.wants_restart(exit_code)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Container {
     pub worker: WorkerSource,
@@ -177,7 +235,7 @@ pub struct Container {
     /// run-time exit takes the container's transitive dependents down. Anything
     /// else asks Compose to try the container again, with backoff and a capped
     /// number of attempts.
-    pub restart: RestartPolicy,
+    pub restart: RestartConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -497,8 +555,31 @@ fn validate_container(
             .collect(),
         startup_timeout,
         required: raw.required.unwrap_or(required_default),
-        restart: raw.restart,
+        restart: validate_restart(key, &raw.restart)?,
     })
+}
+
+fn validate_restart(key: &str, raw: &RawRestart) -> Result<RestartConfig> {
+    match raw {
+        RawRestart::Condition(condition) => Ok((*condition).into()),
+        RawRestart::Config(raw) => Ok(RestartConfig {
+            condition: raw.condition,
+            delay: restart_duration(key, &raw.delay, DEFAULT_RESTART_DELAY)?,
+            max_delay: restart_duration(key, &raw.max_delay, DEFAULT_RESTART_MAX_DELAY)?,
+            max_attempts: raw.max_attempts.unwrap_or(DEFAULT_RESTART_MAX_ATTEMPTS),
+            window: restart_duration(key, &raw.window, DEFAULT_RESTART_WINDOW)?,
+        }),
+    }
+}
+
+fn restart_duration(key: &str, raw: &Option<String>, default: Duration) -> Result<Duration> {
+    match raw {
+        None => Ok(default),
+        Some(value) => parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
+            container: key.to_string(),
+            value: value.clone(),
+        }),
+    }
 }
 
 impl Container {
@@ -821,7 +902,34 @@ pub(crate) struct RawContainer {
     /// exits stays down.
     #[serde(default)]
     #[schemars(default)]
-    restart: RestartPolicy,
+    restart: RawRestart,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum RawRestart {
+    Condition(RestartPolicy),
+    Config(RawRestartConfig),
+}
+
+impl Default for RawRestart {
+    fn default() -> Self {
+        Self::Condition(RestartPolicy::No)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawRestartConfig {
+    condition: RestartPolicy,
+    #[serde(default)]
+    delay: Option<String>,
+    #[serde(default)]
+    max_delay: Option<String>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    window: Option<String>,
 }
 
 fn deserialize_optional_bool<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
@@ -964,6 +1072,32 @@ containers:
                 }),
             ),
             (Some("boolean"), Some(false), Some("boolean"), false, false,)
+        );
+    }
+
+    #[test]
+    fn worker_compose_schema_exposes_both_restart_forms() {
+        let schema = worker_compose_schema_json();
+        let restart = &schema["definitions"]["RawRestart"];
+        let restart_config = &schema["definitions"]["RawRestartConfig"];
+        let properties = &restart_config["properties"];
+
+        assert_eq!(
+            (
+                restart["anyOf"].as_array().map(Vec::len),
+                restart_config["required"]
+                    .as_array()
+                    .is_some_and(|required| {
+                        required
+                            .iter()
+                            .any(|field| field.as_str() == Some("condition"))
+                    }),
+                properties.get("delay").is_some(),
+                properties.get("max_delay").is_some(),
+                properties.get("max_attempts").is_some(),
+                properties.get("window").is_some(),
+            ),
+            (Some(2), true, true, true, true, true)
         );
     }
 }

@@ -123,6 +123,7 @@ enum StartAttempt {
 
 struct RetryRecovery {
     attempt: u32,
+    total_attempts: u32,
     elapsed: Duration,
 }
 
@@ -273,7 +274,7 @@ async fn up_inner(
                         report::retry_recovered(
                             key,
                             recovery.attempt,
-                            restart::MAX_ATTEMPTS,
+                            recovery.total_attempts,
                             recovery.elapsed,
                         );
                     } else {
@@ -714,32 +715,38 @@ pub async fn down(
 
 /// Starts a container and applies its restart policy before the operation
 /// settles. The original start is not part of the replacement budget, which
-/// matches run-time supervision: a worker gets up to five replacements after
-/// the process it was using failed.
+/// matches run-time supervision: a worker gets the configured number of
+/// replacements after the process it was using failed.
 async fn start_one_with_retries(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     mut shutdown: Option<crate::shutdown::ShutdownSignal>,
     operation_id: Option<&str>,
 ) -> StartAttempt {
-    let policy = ctx
+    let restart_config = ctx
         .file
         .containers
         .get(key)
-        .map_or(RestartPolicy::No, |container| container.restart);
+        .map(|container| container.restart.clone())
+        .unwrap_or_default();
     let mut error = match start_one_attempt(ctx, key, shutdown.clone(), operation_id).await {
-        StartAttempt::Failed(error) if retries_start_failure(policy, &error) => error,
+        StartAttempt::Failed(error) if retries_start_failure(restart_config.condition, &error) => {
+            error
+        }
         settled => return settled,
     };
 
-    for attempt in 1..=restart::MAX_ATTEMPTS {
-        report::retry_starting(key, attempt, restart::MAX_ATTEMPTS);
+    for attempt in 1..=restart_config.max_attempts {
+        report::retry_starting(key, attempt, restart_config.max_attempts);
         if let Some(operation) = operation_id.and_then(crate::operation::active) {
             operation
                 .emit(
                     Some(key),
                     "retrying",
-                    format!("starting attempt {attempt} of {}", restart::MAX_ATTEMPTS),
+                    format!(
+                        "starting attempt {attempt} of {}",
+                        restart_config.max_attempts
+                    ),
                 )
                 .await;
         }
@@ -756,6 +763,7 @@ async fn start_one_with_retries(
                     child,
                     recovery: Some(RetryRecovery {
                         attempt,
+                        total_attempts: restart_config.max_attempts,
                         elapsed: began.elapsed(),
                     }),
                 };
@@ -764,13 +772,15 @@ async fn start_one_with_retries(
             StartAttempt::Interrupted => return StartAttempt::Interrupted,
         }
 
-        if attempt == restart::MAX_ATTEMPTS || !retries_start_failure(policy, &error) {
+        if attempt == restart_config.max_attempts
+            || !retries_start_failure(restart_config.condition, &error)
+        {
             break;
         }
 
-        let delay = restart::backoff(attempt);
+        let delay = restart::backoff(&restart_config, attempt);
         let next_attempt = attempt + 1;
-        report::retry_waiting(key, next_attempt, restart::MAX_ATTEMPTS, delay);
+        report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
         if let Some(operation) = operation_id.and_then(crate::operation::active) {
             operation
                 .emit(
@@ -778,7 +788,7 @@ async fn start_one_with_retries(
                     "retrying",
                     format!(
                         "waiting before attempt {next_attempt} of {}",
-                        restart::MAX_ATTEMPTS
+                        restart_config.max_attempts
                     ),
                 )
                 .await;
