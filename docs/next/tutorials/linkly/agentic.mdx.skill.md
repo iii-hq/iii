@@ -272,9 +272,11 @@ agent and consumes that same data, and a CLI that also does this.
 <CodeGroup>
 
 ```text Prompt
-Send five redirects through http://127.0.0.1:3111/s/home, then read the traces the engine collected
-with `iii trigger engine::traces::list`. Show me the span tree for one redirect with
-`iii trigger engine::traces::tree`.
+Make sure a link with code "home" exists (POST /links with { "url": "https://example.com", "code": "home" };
+a 409 means it is already there), then send five redirects through http://127.0.0.1:3111/s/home.
+Read the traces the engine collected with engine::traces::list, filtered with name "GET /s/:code" so
+you get the redirects and not the console's own traffic. Show me the span tree for one redirect with
+engine::traces::tree.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial and give me the command to observe this trace (ie. `iii trigger engine::traces::tree trace_id=<your trace_id here>`)
 ```
@@ -285,7 +287,7 @@ You can explore the CLI too, the agent likely gave you a command how to (we told
 after all) but you can also run them manually here:
 
 ```bash
-iii trigger engine::traces::list # get a list of traces
+iii trigger engine::traces::list name="GET /s/:code" limit=5 # the redirect traces, not the console's
 ```
 
 ```bash
@@ -428,12 +430,17 @@ subscribers in real time through a `clicks` stream via the stream worker.
 ```text Prompt
 Push every click to subscribers in real time.
 
-- Create a click-streamer worker that broadcasts to a "clicks" stream, and add it with compose. Use the stream worker and its functionality.
-- Have link::record_click publish each click so the streamer broadcasts it. We will make the subscribers in a later step.
+- Create a click-streamer worker that stores every click in a "clicks" stream with stream::set
+  (stream_name "clicks", group_id "all", one item per click, so stream::list reads them back), and add
+  it with compose. Use the stream worker and its functionality.
+- Have link::record_click publish each click so the streamer stores it. Build the stored item from the
+  fields you need ({ code, clicked_at }) instead of forwarding the delivered payload as-is: the engine
+  stamps bookkeeping fields such as _caller_worker_id on every delivery. We will make the subscribers
+  in a later step.
 
 Pick the topic name first, then run two subagents on separate files at the same time:
-- Subagent A: the click-streamer worker that subscribes to that topic and broadcasts to the "clicks"
-  stream, added it with compose.
+- Subagent A: the click-streamer worker that subscribes to that topic and stores each click in the
+  "clicks" stream with stream::set, added with compose.
 - Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
   topic.
 
@@ -490,7 +497,8 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
   the imported and skipped counts.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer.
-- Create an example CSV for the user (example.csv). Do not import the CSV. Use test data (test.csv).
+- Create an example CSV for the user (example.csv). Do not import it. For the client's test run,
+  create test.csv with exactly two rows whose codes are mylink and mydocslink (any https URLs).
 
 Agree on the import_csv payload shape first, then run two subagents on separate files at the same
 time:
@@ -554,7 +562,8 @@ Turn a browser tab into a worker.
   Never pass the raw UUID as a namespace argument; always pass the fully-constructed string so the
   server can use it without knowing the prefix convention.
 - Have redirect links point at the http worker serving the redirects, not the frontend.
-- Have the frontend show all existing generated links on load.
+- Have the frontend show all existing generated links on load, and show the tab's own
+  `browser-<session>` namespace on the page so it can be copied.
 
 This chapter has the most independent pieces. Add and configure the rbac-proxy yourself first, since
 the others depend on it, then run three subagents on separate directories at the same time:
@@ -580,7 +589,8 @@ watch the live counter.
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::request_delete` with
-`{"code":"<code>","session":"<session>"}` (the tab prints its session id).
+`{"code":"<code>","browser_namespace":"browser-<session>"}`, copying the namespace the app shows on
+the page.
 
 The browser shows a confirm prompt, and the delete happens after the user accepts.
 

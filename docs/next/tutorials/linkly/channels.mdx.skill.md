@@ -135,6 +135,9 @@ node import-links.js
 { "imported": 2, "skipped": 0 }
 ```
 
+The SDK prints a few `[iii]` / `[OTel]` connection lines around that object; the
+`{ imported, skipped }` line is the importer's answer.
+
 Run it again and it reports `{ "imported": 0, "skipped": 2 }`: the codes are already taken, so the
 importer skips those rows instead of aborting the batch.
 

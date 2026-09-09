@@ -72,7 +72,7 @@ curl -s -o /dev/null http://127.0.0.1:3111/s/missing
 Then check the logs:
 
 ```bash
-iii trigger engine::logs::list limit=100 \
+iii trigger engine::logs::list limit=500 \
   | jq '.logs[]
       | select(.body == "link resolved")
       | { body,
