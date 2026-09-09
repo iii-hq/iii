@@ -507,8 +507,8 @@ containers:
 
 Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
 and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
-`iii-worker-manager#rbac`. Internal `iii-engine-functions`, `iii-telemetry`, and `iii-observability`
-are injected and must not be declared.
+`iii-worker-manager#rbac`. The engine starts `iii-engine-functions`, `iii-telemetry`, and
+`iii-observability` automatically. Do not declare these workers in the compose file.
 
 <Note>
   These workers are always engine managed and started so this method of operating these workers is
