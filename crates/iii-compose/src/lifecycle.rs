@@ -28,7 +28,7 @@ use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
-    config::{ComposeFile, Container},
+    config::{ComposeFile, Container, RestartPolicy},
     configuration::{ConfigFile, merge},
     dag,
     engine::EngineClient,
@@ -37,7 +37,7 @@ use crate::{
     logs::LogStore,
     manifest::{StartSpec, VmSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
-    report,
+    report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
     state::{ChildRecord, ChildStatus},
 };
@@ -112,9 +112,18 @@ pub struct LifecycleCtx<'a> {
 /// What one container's start produced: which one, how long it took, and
 /// whether it came up.
 enum StartAttempt {
-    Ready(ChildRecord, Supervised),
+    Ready {
+        record: ChildRecord,
+        child: Supervised,
+        recovery: Option<RetryRecovery>,
+    },
     Failed(ComposeError),
     Interrupted,
+}
+
+struct RetryRecovery {
+    attempt: u32,
+    elapsed: Duration,
 }
 
 enum StartFailure {
@@ -242,7 +251,7 @@ async fn up_inner(
             async move {
                 let began = Instant::now();
                 let outcome =
-                    start_one_attempt(ctx, &key, shutdown, Some(&start_operation_id)).await;
+                    start_one_with_retries(ctx, &key, shutdown, Some(&start_operation_id)).await;
                 (key, began.elapsed(), outcome)
             }
         }))
@@ -255,8 +264,21 @@ async fn up_inner(
         while let Some((key, took, outcome)) = outcomes.next().await {
             let key = &key;
             match outcome {
-                StartAttempt::Ready(record, child) => {
-                    report::ready(key, took);
+                StartAttempt::Ready {
+                    record,
+                    child,
+                    recovery,
+                } => {
+                    if let Some(recovery) = recovery {
+                        report::retry_recovered(
+                            key,
+                            recovery.attempt,
+                            restart::MAX_ATTEMPTS,
+                            recovery.elapsed,
+                        );
+                    } else {
+                        report::ready(key, took);
+                    }
                     records.insert(key.clone(), record);
                     children.insert(key.clone(), child);
                     started.push(key.clone());
@@ -480,7 +502,11 @@ async fn restart_one_inner(
     let took = started.elapsed();
 
     let result = match outcome {
-        StartAttempt::Ready(record, child) => {
+        StartAttempt::Ready {
+            record,
+            child,
+            recovery: _,
+        } => {
             if let Some((attempt, total_attempts)) = retry {
                 report::retry_recovered(key, attempt, total_attempts, took);
             } else {
@@ -686,6 +712,114 @@ pub async fn down(
     }
 }
 
+/// Starts a container and applies its restart policy before the operation
+/// settles. The original start is not part of the replacement budget, which
+/// matches run-time supervision: a worker gets up to five replacements after
+/// the process it was using failed.
+async fn start_one_with_retries(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    mut shutdown: Option<crate::shutdown::ShutdownSignal>,
+    operation_id: Option<&str>,
+) -> StartAttempt {
+    let policy = ctx
+        .file
+        .containers
+        .get(key)
+        .map_or(RestartPolicy::No, |container| container.restart);
+    let mut error = match start_one_attempt(ctx, key, shutdown.clone(), operation_id).await {
+        StartAttempt::Failed(error) if retries_start_failure(policy, &error) => error,
+        settled => return settled,
+    };
+
+    for attempt in 1..=restart::MAX_ATTEMPTS {
+        report::retry_starting(key, attempt, restart::MAX_ATTEMPTS);
+        if let Some(operation) = operation_id.and_then(crate::operation::active) {
+            operation
+                .emit(
+                    Some(key),
+                    "retrying",
+                    format!("starting attempt {attempt} of {}", restart::MAX_ATTEMPTS),
+                )
+                .await;
+        }
+
+        let began = Instant::now();
+        match start_one_attempt(ctx, key, shutdown.clone(), operation_id).await {
+            StartAttempt::Ready {
+                record,
+                child,
+                recovery: _,
+            } => {
+                return StartAttempt::Ready {
+                    record,
+                    child,
+                    recovery: Some(RetryRecovery {
+                        attempt,
+                        elapsed: began.elapsed(),
+                    }),
+                };
+            }
+            StartAttempt::Failed(next_error) => error = next_error,
+            StartAttempt::Interrupted => return StartAttempt::Interrupted,
+        }
+
+        if attempt == restart::MAX_ATTEMPTS || !retries_start_failure(policy, &error) {
+            break;
+        }
+
+        let delay = restart::backoff(attempt);
+        let next_attempt = attempt + 1;
+        report::retry_waiting(key, next_attempt, restart::MAX_ATTEMPTS, delay);
+        if let Some(operation) = operation_id.and_then(crate::operation::active) {
+            operation
+                .emit(
+                    Some(key),
+                    "retrying",
+                    format!(
+                        "waiting before attempt {next_attempt} of {}",
+                        restart::MAX_ATTEMPTS
+                    ),
+                )
+                .await;
+        }
+        if !wait_for_retry(&mut shutdown, delay).await {
+            return StartAttempt::Interrupted;
+        }
+    }
+
+    StartAttempt::Failed(error)
+}
+
+/// `on-failure` excludes the one start outcome that is not a failure: a child
+/// that exits successfully before registration. Every other startup error is a
+/// failed attempt, including a rejected `pre_run` hook.
+fn retries_start_failure(policy: RestartPolicy, error: &ComposeError) -> bool {
+    match policy {
+        RestartPolicy::No => false,
+        RestartPolicy::Always => true,
+        RestartPolicy::OnFailure => {
+            !matches!(error, ComposeError::ChildExitedBeforeReady { code: 0, .. })
+        }
+    }
+}
+
+async fn wait_for_retry(
+    shutdown: &mut Option<crate::shutdown::ShutdownSignal>,
+    delay: Duration,
+) -> bool {
+    if let Some(signal) = shutdown {
+        tokio::select! {
+            biased;
+            _ = signal.wait() => false,
+            _ = tokio::time::sleep(delay) => true,
+        }
+    } else {
+        tokio::time::sleep(delay).await;
+        true
+    }
+}
+
 async fn start_one_attempt(
     ctx: &LifecycleCtx<'_>,
     key: &str,
@@ -693,7 +827,11 @@ async fn start_one_attempt(
     operation_id: Option<&str>,
 ) -> StartAttempt {
     match start_one_until_shutdown(ctx, key, shutdown, operation_id).await {
-        Ok((record, child)) => StartAttempt::Ready(record, child),
+        Ok((record, child)) => StartAttempt::Ready {
+            record,
+            child,
+            recovery: None,
+        },
         Err(StartFailure::Failed(error)) => StartAttempt::Failed(error),
         Err(StartFailure::Interrupted) => StartAttempt::Interrupted,
     }
@@ -1381,6 +1519,28 @@ containers:
     fn an_unknown_target_is_rejected_before_anything_starts() {
         let err = plan_targets(&file(), Some("ghost")).unwrap_err();
         assert_eq!(err.code(), "UNKNOWN_CONTAINER");
+    }
+
+    #[test]
+    fn on_failure_does_not_retry_a_clean_exit_before_ready() {
+        let error = ComposeError::ChildExitedBeforeReady {
+            container: "api".to_string(),
+            code: 0,
+            tail: None,
+        };
+
+        assert!(!retries_start_failure(RestartPolicy::OnFailure, &error));
+    }
+
+    #[test]
+    fn always_retries_a_clean_exit_before_ready() {
+        let error = ComposeError::ChildExitedBeforeReady {
+            container: "api".to_string(),
+            code: 0,
+            tail: None,
+        };
+
+        assert!(retries_start_failure(RestartPolicy::Always, &error));
     }
 
     #[test]

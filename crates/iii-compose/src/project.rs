@@ -37,6 +37,7 @@ use crate::{
     lifecycle::{self, Children, LifecycleCtx, OpResult},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
+    restart,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
 };
 
@@ -65,28 +66,6 @@ pub struct Project {
 /// Fast enough that a crash is reported while the operator is still watching,
 /// slow enough that an idle project costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Wait before the second restart attempt. Each further attempt doubles it, up
-/// to [`RESTART_BACKOFF_MAX`]. The first attempt does not wait at all: a worker
-/// that died because of a transient is back before the operator looks up, and
-/// one that is genuinely broken has stopped being hammered within seconds.
-const RESTART_BACKOFF_BASE: Duration = Duration::from_millis(500);
-
-/// Ceiling on the wait between attempts. Past this, a longer backoff would only
-/// delay the operator's answer without giving the worker anything it needs.
-const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(30);
-
-/// Consecutive attempts before the supervisor gives up. On the last one it does
-/// what it would have done with no policy at all: fail the container and take
-/// its dependents down. A cap is what separates a restart policy from a busy
-/// loop.
-const RESTART_MAX_ATTEMPTS: u32 = 5;
-
-/// How long a container has to hold `Ready` before its attempt budget refills.
-/// Without it, a worker that crashes once an hour would spend five attempts
-/// over an afternoon and then never be restarted again, which is the opposite
-/// of what its file asked for.
-const RESTART_BUDGET_RESET_AFTER: Duration = Duration::from_secs(60);
 
 /// Where one container is in its restart budget.
 #[derive(Debug, Clone, Copy, Default)]
@@ -173,16 +152,6 @@ impl RestartBookkeeping {
     fn remove(&mut self, key: &str) {
         self.attempts.remove(key);
         self.leases.remove(key);
-    }
-}
-
-impl RestartAttempts {
-    /// Backoff before the attempt after `spent` have been made: doubling from
-    /// [`RESTART_BACKOFF_BASE`], held at [`RESTART_BACKOFF_MAX`].
-    fn backoff(spent: u32) -> Duration {
-        RESTART_BACKOFF_BASE
-            .saturating_mul(2u32.saturating_pow(spent.saturating_sub(1)))
-            .min(RESTART_BACKOFF_MAX)
     }
 }
 
@@ -476,14 +445,14 @@ impl Project {
                 .containers
                 .get(key)
                 .map_or(0, |record| seconds_since(record.started_at))
-                >= RESTART_BUDGET_RESET_AFTER.as_secs()
+                >= restart::BUDGET_RESET_AFTER.as_secs()
         {
             inner.restarts.attempts.remove(key);
         }
 
         let spent = {
             let attempt = inner.restarts.attempts.entry(key.to_string()).or_default();
-            if attempt.spent >= RESTART_MAX_ATTEMPTS {
+            if attempt.spent >= restart::MAX_ATTEMPTS {
                 None
             } else {
                 attempt.spent += 1;
@@ -500,7 +469,10 @@ impl Project {
 
         daemon_line(
             &self.project_namespace,
-            &format!("restarting {key} (attempt {spent} of {RESTART_MAX_ATTEMPTS})"),
+            &format!(
+                "restarting {key} (attempt {spent} of {})",
+                restart::MAX_ATTEMPTS
+            ),
             Tone::Warn,
         );
 
@@ -537,8 +509,8 @@ impl Project {
         // last attempt would hold the container in `restarting` for a wait
         // nobody is going to use, and delay the operator's answer by it.
         let next_retry = match inner.restarts.attempts.get_mut(key) {
-            Some(attempt) if attempt.spent < RESTART_MAX_ATTEMPTS => {
-                let delay = RestartAttempts::backoff(attempt.spent);
+            Some(attempt) if attempt.spent < restart::MAX_ATTEMPTS => {
+                let delay = restart::backoff(attempt.spent);
                 attempt.due = Some(Instant::now() + delay);
                 Some((attempt.spent + 1, delay))
             }
@@ -555,7 +527,7 @@ impl Project {
         let _ = self.store.save(&snapshot);
 
         if let Some((next_attempt, delay)) = next_retry {
-            crate::report::retry_waiting(key, next_attempt, RESTART_MAX_ATTEMPTS, delay);
+            crate::report::retry_waiting(key, next_attempt, restart::MAX_ATTEMPTS, delay);
         } else {
             self.report_gave_up(key).await;
             self.cascade_failure(key, Self::exhausted_reason()).await;
@@ -602,7 +574,10 @@ impl Project {
     }
 
     fn exhausted_reason() -> String {
-        format!("did not stay up after {RESTART_MAX_ATTEMPTS} restart attempts")
+        format!(
+            "did not stay up after {} restart attempts",
+            restart::MAX_ATTEMPTS
+        )
     }
 
     async fn report_gave_up(&self, key: &str) {
@@ -1076,7 +1051,7 @@ impl Project {
                 key,
                 operation_id,
                 attempt,
-                RESTART_MAX_ATTEMPTS,
+                restart::MAX_ATTEMPTS,
             )
             .await
         } else {
@@ -1280,42 +1255,7 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
 
 #[cfg(test)]
 mod restart_backoff_tests {
-    use super::{
-        RESTART_BACKOFF_BASE, RESTART_BACKOFF_MAX, RESTART_MAX_ATTEMPTS, RestartAttempts,
-        RestartBookkeeping,
-    };
-
-    /// The wait doubles per attempt and then stops doubling. A ceiling the
-    /// budget can never reach would be a ceiling in name only, so this pins
-    /// both halves.
-    #[test]
-    fn backoff_doubles_and_then_holds_at_the_ceiling() {
-        assert_eq!(RestartAttempts::backoff(1), RESTART_BACKOFF_BASE);
-        assert_eq!(RestartAttempts::backoff(2), RESTART_BACKOFF_BASE * 2);
-        assert_eq!(RestartAttempts::backoff(3), RESTART_BACKOFF_BASE * 4);
-        assert_eq!(
-            RestartAttempts::backoff(30),
-            RESTART_BACKOFF_MAX,
-            "a long-running loop must not overflow into an unbounded wait"
-        );
-    }
-
-    /// Without a cap the policy is a busy loop, which is what the issue this
-    /// field came from was written to avoid.
-    #[test]
-    fn the_budget_is_spent_in_bounded_time() {
-        let total: std::time::Duration = (1..=RESTART_MAX_ATTEMPTS)
-            .map(RestartAttempts::backoff)
-            .sum();
-        assert!(
-            total <= RESTART_BACKOFF_MAX * RESTART_MAX_ATTEMPTS,
-            "every attempt waits at most the ceiling"
-        );
-        assert!(
-            total >= RESTART_BACKOFF_BASE,
-            "attempts after the first always wait"
-        );
-    }
+    use super::{RestartAttempts, RestartBookkeeping};
 
     #[test]
     fn operator_control_invalidates_a_supervisor_lease() {

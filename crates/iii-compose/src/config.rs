@@ -96,12 +96,11 @@ impl Default for Scripts {
     }
 }
 
-/// What the supervisor does when a container that had become ready exits.
+/// What Compose does when a start fails or a ready container exits.
 ///
-/// A run-time answer only. Whether a container that never became ready fails
-/// the operation that started it is [`Container::required`], and the two are
-/// deliberately separate: a policy that also covered the start would give one
-/// field two blast radii again, which is the thing `required` exists to fix.
+/// [`Container::required`] still controls the operation outcome: after the
+/// retry budget is spent, a required failure fails and rolls back `up`, while
+/// a non-required failure is reported and lets the rest of the graph start.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, PartialOrd, Ord,
 )]
@@ -171,12 +170,13 @@ pub struct Container {
     /// that waited on a non-required one starts as if it had come up. A
     /// dependent that genuinely needs it says so by failing on its own.
     pub required: bool,
-    /// What happens when this container exits after it was ready.
+    /// What happens when this container fails to start or exits after it was
+    /// ready.
     ///
-    /// `no` is the default and matches the behaviour this field was added to:
-    /// the exit takes the container's transitive dependents down with it and
-    /// nothing comes back until someone runs `up` again. Anything else asks the
-    /// supervisor to try again, with a backoff and a capped number of attempts.
+    /// `no` is the default. A failed first start settles immediately, while a
+    /// run-time exit takes the container's transitive dependents down. Anything
+    /// else asks Compose to try the container again, with backoff and a capped
+    /// number of attempts.
     pub restart: RestartPolicy,
 }
 

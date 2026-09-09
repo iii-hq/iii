@@ -1269,9 +1269,67 @@ containers:
     daemon.shutdown().await;
 }
 
-/// `restart: on-failure` answers the run-time half of the same question
-/// `required` answers at start time: a ready container that exits comes back
-/// instead of taking its dependents down with it.
+/// A restart policy also covers the first start. This worker rejects two
+/// `pre_run` attempts and accepts the third, so `up` must keep the operation
+/// open through retry 2/5 and return only after the worker is ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pre_run_failure_is_retried_before_up_settles() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let attempts = tmp.path().join("workers/api/attempts");
+    let started = tmp.path().join("workers/api/started");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: startup-retry
+startup_timeout: 5s
+stop_timeout: 100ms
+containers:
+  api:
+    worker: path://./workers/api
+    required: true
+    restart: on-failure
+    scripts:
+      pre_run: "printf 'attempt\\n' >> attempts; [ $(wc -l < attempts) -ge 3 ]"
+      run: "touch started && sleep 30"
+"#,
+        &["api"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_attempts(&attempts, 3).await;
+        wait_for_start_markers(&[started.as_path()]).await;
+        let api = register_test_worker(port, "startup-retry", "api");
+        wait_for_worker_state(&daemon, "startup-retry", "api", true).await;
+        api
+    };
+    let (up, api) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+
+    assert_eq!(up["status"], "ok", "the retried worker did not start: {up}");
+    assert_eq!(
+        std::fs::read_to_string(&attempts)
+            .expect("read attempts")
+            .lines()
+            .count(),
+        3,
+        "the original start and two replacements should run"
+    );
+
+    api.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+/// A ready container that exits comes back instead of taking its dependents
+/// down with it when it declares `restart: on-failure`.
 ///
 /// The dependent staying up is the point. A restart is one container bouncing,
 /// so `web` sees its dependency drop and reconnect, which is the cost the file

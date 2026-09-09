@@ -613,6 +613,13 @@ fn show_retry(key: &str, attempt: u32, total: u32, phase: RetryPhase) {
 
 fn show_retry_row(row: Row) {
     let animate = animated();
+    // During `up`, keep this row inside the dependency tree and preserve its
+    // depth. A run-time retry has no active plan, so it falls through and owns
+    // a one-row block as before.
+    if animate && set(&row.key, row.state.clone()) {
+        return;
+    }
+
     let static_line = {
         let mut state = console()
             .lock()

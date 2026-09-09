@@ -224,10 +224,10 @@ containers:
 In this example, `state` inherits `required_default: true`, while `queue` remains false. If both
 fields are absent, the effective value is false.
 
-#### Restarting a worker that exits
+#### Retrying a worker that fails
 
-A worker that exits after it was ready takes its dependents down with it and stays down. To ask for
-it back instead, declare a restart policy:
+By default, a failed first start settles immediately. A worker that exits after it was ready takes
+its dependents down with it and stays down. To retry either case, declare a restart policy:
 
 ```yaml
 containers:
@@ -236,18 +236,17 @@ containers:
     restart: on-failure
 ```
 
-`no` is the default. `on-failure` restarts the worker when it exited with a non-zero status, and
-`always` restarts it whatever the status.
+`no` is the default. `on-failure` retries a failed start or a worker that exits with a non-zero
+status. `always` also restarts it when it exits successfully after it was ready.
 
-The supervisor tries five times, waiting longer before each attempt, from 500ms up to 30 seconds.
-Only the named worker bounces: workers that name it in `start_after` keep running and see their
+Compose tries five replacements. The first retry is immediate. Later retries wait from 500ms up to
+30 seconds. During `up`, the progress row shows the current attempt and wait. For a run-time exit,
+only the named worker bounces: workers that name it in `start_after` keep running and see their
 connection drop and reconnect. `compose::status` reports the worker as `restarting` while it waits
-for the next attempt. Once the five are spent, the worker is marked `failed`, its dependents are
-stopped, and `last_error` says the supervisor gave up. A worker that stays ready for a minute counts
-as recovered, so its next crash starts the five over.
-
-The policy covers exits only. A worker that never becomes ready in the first place is `required`'s
-question, not this one.
+for a run-time replacement. Once the five are spent, `required` controls whether the startup
+operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
+`last_error` says the supervisor gave up. A worker that stays ready for a minute counts as recovered,
+so its next run-time crash starts the five over.
 
 ### Stopping a project
 
@@ -641,7 +640,7 @@ Each key under `containers` is the name the worker registers under.
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
 | `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
-| `restart`         | string         | `no`                 | What happens when the worker exits after it was ready. `no`, `on-failure`, or `always`.                    |
+| `restart`         | string         | `no`                 | What happens after a failed start or a run-time exit. `no`, `on-failure`, or `always`.                     |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with
