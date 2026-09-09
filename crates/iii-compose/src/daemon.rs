@@ -449,13 +449,10 @@ impl Daemon {
         let declarations = coalesce_containers(asked.clone())?;
         let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
         let operation = crate::operation::active(&operation_id);
-        // The plan is made against a snapshot, unlocked. If the file moved
-        // underneath — another add declared a dependency of this graph as
-        // `path://`, whose own dependencies this plan would now write below an
-        // operator-owned boundary — the plan is stale, so it is redone against
-        // the fresh text; the artifact cache makes the second pass cheap. Only
-        // the file the plan was made against is ever edited: past the replan
-        // limit the add fails instead, and the caller retries.
+        // The plan is made against a snapshot, unlocked. Only the file it was
+        // made against is ever edited: a file that moved underneath (another
+        // add declaring one of this graph's dependencies as `path://`, say)
+        // is planned again, and past the limit the add fails for a retry.
         let mut replans = 0;
         let (_mutation, text, wanted) = loop {
             let (snapshot, wanted) = self
@@ -1357,17 +1354,11 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// Drop graph-expanded dependencies the compose file already declares.
 ///
-/// `compose::add worker=X` resolves X's whole dependency graph, and every node
-/// used to come back as a fresh declaration — including ones the operator had
-/// already pinned. `upsert_container` then rewrote them: adding
-/// `provider-openai-codex` to the Linkly scaffold moved `state: package://state
-/// version: "0.22.8"` to `package://api.workers.iii.dev/state` `"0.22.9"`
-/// without anyone asking (MOT-4723). A pin the operator wrote stays theirs;
-/// `compose::update worker=<dep>` is how a version moves. Only nodes that are
-/// NOT yet declared are added, plus whatever the caller explicitly asked for.
-/// A declared dependency whose pin differs from what the registry resolved is
-/// logged, never silently rewritten. `add_configured` applies this to the
-/// snapshot it plans against, and only ever edits that same text.
+/// `compose::add worker=X` resolves X's whole dependency graph. Only nodes not
+/// yet declared are added, plus what the caller explicitly asked for: a pin the
+/// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
+/// version moves. A declared dependency whose pin differs from what the
+/// registry resolved is logged, never rewritten.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
     asked: &BTreeSet<String>,
@@ -2111,10 +2102,6 @@ mod declared_dependency_tests {
         }
     }
 
-    /// Prevents: `compose::add worker=provider-openai-codex` rewriting the
-    /// operator's `state: package://state version: "0.22.8"` to the registry's
-    /// latest (MOT-4723). Declared dependencies stay as declared; only the
-    /// asked worker and genuinely new dependencies are written.
     #[test]
     fn an_add_leaves_already_declared_dependencies_alone() {
         let declared = crate::ComposeFile::parse(

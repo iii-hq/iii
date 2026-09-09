@@ -590,10 +590,8 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         // Answers first, exits after: the serve loop picks the request up and
-        // runs the same teardown a signal would. A target on this call is a
-        // mistake worth refusing: `compose::stop container=harness` used to
-        // ignore the field and take the whole project — and its managed
-        // engine — down (MOT-4723).
+        // runs the same teardown a signal would. Stop takes the whole daemon
+        // down, so a request that names a container is refused, not ignored.
         Operation::Stop => match stop_target(&request) {
             Some(container) => Err(compose_error(&ComposeError::StopTakesNoContainer {
                 container: container.to_string(),

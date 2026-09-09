@@ -150,11 +150,9 @@ pub enum Reconciliation {
     /// A live PID that is not provably the recorded process — a recycled PID, or
     /// a platform that cannot fingerprint. Never signalled; reported instead.
     Unverifiable,
-    /// This daemon stopped it on purpose and recorded that. Nothing to adopt,
-    /// nothing to mourn: `down` leaves the record behind, and a
-    /// `compose::restart` re-opens the project right after its own `down`, so
-    /// every container used to be reported as "exited while the daemon was
-    /// away" on every restart (Linkly e2e, MOT-4723).
+    /// This daemon stopped it on purpose and recorded that: nothing to adopt,
+    /// nothing to report. `down` leaves the record behind and `restart`
+    /// re-opens the project right after it.
     Stopped,
 }
 
@@ -323,9 +321,6 @@ mod reconcile_tests {
     use super::{ChildRecord, ChildStatus, Reconciliation, reconcile};
     use crate::process::BirthIdentity;
 
-    /// Prevents: `compose::restart` (down → forget → up) reporting every
-    /// container as "exited while the daemon was away" — the records it just
-    /// stopped are Stopped on purpose, whatever their old pid is doing now.
     #[test]
     fn a_record_this_daemon_stopped_is_neither_gone_nor_adoptable() {
         let dead = ChildRecord::new(
