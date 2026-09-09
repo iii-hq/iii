@@ -4459,6 +4459,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_null_result_from_the_executor_reaches_the_caller_as_null() {
+        // A worker-routed function (state::get on a missing key) answers
+        // `"result": null`. The caller must receive `null`, not an omitted
+        // field: the TS SDK resolves an omitted field as `undefined` and a
+        // strict `=== null` check never fires (MOT-4732).
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterFunction {
+                    id: "kv::get".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("register");
+
+        let caller_invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(caller_invocation_id),
+                    function_id: "kv::get".to_string(),
+                    data: json!({ "key": "missing" }),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: None,
+                },
+            )
+            .await
+            .expect("invoke");
+
+        // The executor side of the same worker receives the dispatch.
+        let dispatched = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for the dispatch")
+            .expect("channel open");
+        let executor_invocation_id = match dispatched {
+            Outbound::Protocol(Message::InvokeFunction {
+                invocation_id: Some(id),
+                ..
+            }) => id,
+            other => panic!("expected InvokeFunction, got {other:?}"),
+        };
+
+        // Reply exactly as the wire carries it: the frame says `null`.
+        let frame = format!(
+            r#"{{"type":"invocationresult","invocation_id":"{executor_invocation_id}","function_id":"kv::get","result":null}}"#
+        );
+        let reply: Message = serde_json::from_str(&frame).expect("frame parses");
+        engine.router_msg(&worker, &reply).await.expect("reply");
+
+        let answered = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for the caller's result")
+            .expect("channel open");
+        match &answered {
+            Outbound::Protocol(Message::InvocationResult {
+                invocation_id,
+                result,
+                error,
+                ..
+            }) => {
+                assert_eq!(*invocation_id, caller_invocation_id);
+                assert_eq!(*result, Some(serde_json::Value::Null));
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+        let Outbound::Protocol(message) = answered else {
+            unreachable!()
+        };
+        let wire = serde_json::to_string(&message).expect("serializes");
+        assert!(
+            wire.contains(r#""result":null"#),
+            "caller must see null: {wire}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_router_msg_invoke_function_success_sends_invocation_result() {
         ensure_default_meter();
         let engine = Engine::new();
