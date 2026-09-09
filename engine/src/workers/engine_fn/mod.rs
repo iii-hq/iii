@@ -151,10 +151,16 @@ pub struct TriggersListInput {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TriggerInfoInput {
     pub id: String,
-    /// Which provider of this id. Absent means the one in the default
-    /// namespace, where every in-process engine provider lives.
+    /// Which provider of this id. `Some` is strict: that namespace or nothing.
+    /// Absent resolves the way a trigger registered by the caller would: the
+    /// caller's connection namespace first, then `default`, where every
+    /// in-process engine provider lives.
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Injected by the engine from the calling worker. Absent for in-process
+    /// callers, whose home is `default`.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
@@ -176,6 +182,12 @@ pub struct RegisteredTriggersListInput {
     /// Defaults to false.
     #[serde(default)]
     pub include_internal: Option<bool>,
+    /// Include registrations parked in `pending_triggers` because their trigger
+    /// type has no provider yet (rows with `status: "pending"`). Defaults to
+    /// false: a bare list is the set of live bindings, which is what every
+    /// caller before `status` existed was counting on.
+    #[serde(default)]
+    pub include_pending: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -317,12 +329,22 @@ pub struct TriggerTypeDetail {
     pub instance_count: usize,
 }
 
+/// Whether a registered trigger is bound to a live provider or parked in
+/// `pending_triggers` waiting for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RegisteredTriggerStatus {
+    Active,
+    Pending,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RegisteredTriggerSummary {
     pub id: String,
     pub trigger_type: String,
     pub function_id: String,
     pub worker_name: String,
+    pub status: RegisteredTriggerStatus,
     /// Full trigger config (e.g. `{ "api_path": "...", "http_method": "GET" }`
     /// for HTTP triggers, `{ "topic": "..." }` for events, etc.). Console
     /// list views need this structured payload to render method/path/topic.
@@ -338,6 +360,7 @@ pub struct RegisteredTriggerDetail {
     pub trigger_type: String,
     pub function_id: String,
     pub worker_name: String,
+    pub status: RegisteredTriggerStatus,
     pub config: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -486,13 +509,15 @@ pub struct RegisterTriggerInput {
     /// recover per-trigger context the engine routing otherwise drops.
     #[serde(default)]
     pub metadata: Option<Value>,
-    /// Injected by the engine from the calling worker; scopes the trigger so it
-    /// is GC'd when that worker disconnects. Absent for in-process callers.
+    /// Injected by the engine from the calling worker. Its connection namespace
+    /// is where the binding is at home: the target `function_id` resolves there
+    /// and the provider lookup starts there. Not an owner — the binding outlives
+    /// the connection. Absent for in-process callers, whose home is `default`.
     #[serde(rename = "_caller_worker_id", default)]
     pub caller_worker_id: Option<String>,
     /// Namespace to find the trigger type's provider in. Absent asks the engine
-    /// to resolve it, which for a durable registration means
-    /// [`crate::protocol::DEFAULT_NAMESPACE`] — its home — and nothing else.
+    /// to resolve it: the caller's connection namespace first, then
+    /// [`crate::protocol::DEFAULT_NAMESPACE`].
     #[serde(default)]
     pub trigger_namespace: Option<String>,
 }
@@ -599,6 +624,16 @@ impl EngineFunctionsWorker {
             out.push('…');
             out
         }
+    }
+
+    /// The connection namespace of the worker behind an injected
+    /// `_caller_worker_id`. In-process callers carry none and are at home in
+    /// [`crate::protocol::DEFAULT_NAMESPACE`].
+    fn caller_namespace(&self, caller_worker_id: Option<&str>) -> String {
+        caller_worker_id
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .map(|id| self.engine.worker_registry.get_namespace(&id))
+            .unwrap_or_else(crate::protocol::default_namespace)
     }
 
     /// Builds a `(namespace, function_id) -> worker_name` map by scanning both
@@ -914,28 +949,52 @@ impl EngineFunctionsWorker {
             .collect()
     }
 
-    async fn list_registered_trigger_summaries(&self) -> Vec<RegisteredTriggerSummary> {
+    fn registered_trigger_summary(
+        index: &HashMap<(String, String), String>,
+        t: &Trigger,
+        status: RegisteredTriggerStatus,
+    ) -> RegisteredTriggerSummary {
+        RegisteredTriggerSummary {
+            id: t.id.clone(),
+            trigger_type: t.trigger_type.clone(),
+            function_id: t.function_id.clone(),
+            worker_name: Self::worker_name_for_function_id(index, &t.namespace, &t.function_id),
+            status,
+            config: t.config.clone(),
+            config_summary: Self::config_summary(&t.config),
+        }
+    }
+
+    /// Live bindings, plus the parked ones when asked: a registration whose
+    /// provider has not shown up is still a registration, and the only way to
+    /// see why it never fires is to list it.
+    async fn list_registered_trigger_summaries(
+        &self,
+        include_pending: bool,
+    ) -> Vec<RegisteredTriggerSummary> {
         let index = self.function_owner_index().await;
-        self.engine
-            .trigger_registry
+        let registry = &self.engine.trigger_registry;
+        let mut rows: Vec<RegisteredTriggerSummary> = registry
             .triggers
             .iter()
             .map(|entry| {
-                let t = entry.value();
-                RegisteredTriggerSummary {
-                    id: t.id.clone(),
-                    trigger_type: t.trigger_type.clone(),
-                    function_id: t.function_id.clone(),
-                    worker_name: Self::worker_name_for_function_id(
-                        &index,
-                        &t.namespace,
-                        &t.function_id,
-                    ),
-                    config: t.config.clone(),
-                    config_summary: Self::config_summary(&t.config),
-                }
+                Self::registered_trigger_summary(
+                    &index,
+                    entry.value(),
+                    RegisteredTriggerStatus::Active,
+                )
             })
-            .collect()
+            .collect();
+        if include_pending {
+            rows.extend(registry.pending_triggers.iter().map(|entry| {
+                Self::registered_trigger_summary(
+                    &index,
+                    entry.value(),
+                    RegisteredTriggerStatus::Pending,
+                )
+            }));
+        }
+        rows
     }
 
     async fn list_worker_summaries(&self, filter_worker_id: Option<&str>) -> Vec<WorkerSummary> {
@@ -1097,12 +1156,14 @@ impl EngineFunctionsWorker {
     }
 
     async fn build_registered_trigger_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
-        let trigger = self
-            .engine
-            .trigger_registry
-            .triggers
-            .get(id)
-            .map(|entry| entry.value().clone())?;
+        let registry = &self.engine.trigger_registry;
+        let (trigger, status) = match registry.triggers.get(id) {
+            Some(entry) => (entry.value().clone(), RegisteredTriggerStatus::Active),
+            None => (
+                registry.pending_triggers.get(id)?.value().clone(),
+                RegisteredTriggerStatus::Pending,
+            ),
+        };
 
         let index = self.function_owner_index().await;
         let worker_name =
@@ -1118,6 +1179,7 @@ impl EngineFunctionsWorker {
             trigger_type: trigger.trigger_type.clone(),
             function_id: trigger.function_id.clone(),
             worker_name,
+            status,
             config: trigger.config.clone(),
             metadata: trigger.metadata.clone(),
             trigger: trigger_detail,
@@ -1341,18 +1403,7 @@ impl EngineFunctionsWorker {
             })
             .map(|entry| {
                 let t = entry.value();
-                RegisteredTriggerSummary {
-                    id: t.id.clone(),
-                    trigger_type: t.trigger_type.clone(),
-                    function_id: t.function_id.clone(),
-                    worker_name: Self::worker_name_for_function_id(
-                        &index,
-                        &t.namespace,
-                        &t.function_id,
-                    ),
-                    config: t.config.clone(),
-                    config_summary: Self::config_summary(&t.config),
-                }
+                Self::registered_trigger_summary(&index, t, RegisteredTriggerStatus::Active)
             })
             .collect();
         registered_triggers.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1811,17 +1862,29 @@ impl EngineFunctionsWorker {
         &self,
         input: TriggerInfoInput,
     ) -> FunctionResult<TriggerTypeDetail, ErrorBody> {
-        let namespace = input
-            .namespace
-            .clone()
-            .unwrap_or_else(crate::protocol::default_namespace);
-        match self.build_trigger_type_detail(&crate::trigger::type_key(&namespace, &input.id)) {
+        // Same order as `TriggerRegistry::resolve_provider_key`: an explicit
+        // namespace is strict; absent tries the caller's home, then `default`.
+        // Answering from `default` alone would report a namespaced worker's own
+        // provider as NOT_FOUND.
+        let mut candidates = match input.namespace.as_deref() {
+            Some(explicit) => vec![explicit.to_string()],
+            None => vec![
+                self.caller_namespace(input.caller_worker_id.as_deref()),
+                crate::protocol::default_namespace(),
+            ],
+        };
+        candidates.dedup();
+        let found = candidates.iter().find_map(|ns| {
+            self.build_trigger_type_detail(&crate::trigger::type_key(ns, &input.id))
+        });
+        match found {
             Some(detail) => FunctionResult::Success(detail),
             None => FunctionResult::Failure(ErrorBody {
                 code: "NOT_FOUND".into(),
                 message: format!(
-                    "Trigger type '{}' is not registered in namespace '{}'.",
-                    input.id, namespace
+                    "Trigger type '{}' is not registered in namespace(s): {}.",
+                    input.id,
+                    candidates.join(", ")
                 ),
                 stacktrace: None,
             }),
@@ -1836,7 +1899,9 @@ impl EngineFunctionsWorker {
         &self,
         input: RegisteredTriggersListInput,
     ) -> FunctionResult<RegisteredTriggersListResult, ErrorBody> {
-        let mut registered_triggers = self.list_registered_trigger_summaries().await;
+        let mut registered_triggers = self
+            .list_registered_trigger_summaries(input.include_pending.unwrap_or(false))
+            .await;
 
         if !input.include_internal.unwrap_or(false) {
             registered_triggers.retain(|t| !t.function_id.starts_with("engine::"));
@@ -2102,6 +2167,15 @@ impl EngineFunctionsWorker {
         // must not reap them. A worker's own lifecycle bindings go through the
         // `Message::RegisterTrigger` path, which keeps connection ownership and
         // the disconnect GC.
+        //
+        // The binding is at home in the caller's connection namespace: that is
+        // where its target function lives and where the provider lookup starts
+        // (falling back to `default`, where the engine's own providers are).
+        // Hardcoding `default` here parked every registration from a namespaced
+        // worker in `pending_triggers` for good — its provider was never looked
+        // for at home, and a fire would have resolved the target in `default`
+        // anyway. In-process callers carry no worker id and stay in `default`.
+        let namespace = self.caller_namespace(input.caller_worker_id.as_deref());
         let trigger = Trigger {
             id: id.clone(),
             trigger_type: input.trigger_type,
@@ -2109,13 +2183,10 @@ impl EngineFunctionsWorker {
             config: input.config,
             worker_id: None,
             metadata: input.metadata,
-            // Function-path (durable) registrations are engine orchestration and
-            // resolve their target in the default namespace, matching the
-            // `fire_triggers` behavior they predate. Their provider resolves
-            // there too — see `Trigger::internal_namespaces`.
-            namespace: crate::protocol::default_namespace(),
+            namespace: namespace.clone(),
             trigger_namespace: input.trigger_namespace,
-            home_namespace: crate::protocol::default_namespace(),
+            home_namespace: namespace,
+            // Written by the registry once it resolves; only the starting value.
             provider_namespace: crate::protocol::default_namespace(),
         };
 
@@ -2386,7 +2457,7 @@ mod tests {
     #[tokio::test]
     async fn list_registered_trigger_summaries_empty() {
         let (_engine, module) = setup_engine_and_module();
-        let triggers = module.list_registered_trigger_summaries().await;
+        let triggers = module.list_registered_trigger_summaries(false).await;
         assert!(triggers.is_empty());
     }
 
@@ -2401,7 +2472,7 @@ mod tests {
             serde_json::json!({"interval": 5}),
         );
 
-        let summaries = module.list_registered_trigger_summaries().await;
+        let summaries = module.list_registered_trigger_summaries(false).await;
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "trig-1");
         assert_eq!(summaries[0].trigger_type, "cron");
@@ -2422,7 +2493,7 @@ mod tests {
             serde_json::json!({"data": huge}),
         );
 
-        let summaries = module.list_registered_trigger_summaries().await;
+        let summaries = module.list_registered_trigger_summaries(false).await;
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0].config_summary;
         let char_count = summary.chars().count();
@@ -3060,6 +3131,7 @@ mod tests {
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
             worker_name: "fn".to_string(),
+            status: RegisteredTriggerStatus::Active,
             config: serde_json::json!({ "x": 1 }),
             config_summary: "{\"x\":1}".to_string(),
         };
@@ -3702,6 +3774,7 @@ mod tests {
             .triggers_info(TriggerInfoInput {
                 id: "cron".to_string(),
                 namespace: None,
+                caller_worker_id: None,
             })
             .await;
         match result {
@@ -3735,6 +3808,7 @@ mod tests {
             .triggers_info(TriggerInfoInput {
                 id: "http".to_string(),
                 namespace: None,
+                caller_worker_id: None,
             })
             .await;
         match result {
@@ -3802,6 +3876,7 @@ mod tests {
             .triggers_info(TriggerInfoInput {
                 id: "nope".to_string(),
                 namespace: None,
+                caller_worker_id: None,
             })
             .await;
         assert!(matches!(result, FunctionResult::Failure(_)));
@@ -4691,5 +4766,204 @@ mod tests {
         register_test_trigger_type(&engine, &module).await;
         assert!(engine.trigger_registry.pending_triggers.is_empty());
         assert!(engine.trigger_registry.triggers.contains_key(&id));
+    }
+
+    /// Registers a WS worker connection whose `engine::workers::register`
+    /// declared `namespace`, returning its id as a `_caller_worker_id`.
+    async fn connect_worker_in_namespace(
+        engine: &Engine,
+        module: &EngineFunctionsWorker,
+        namespace: &str,
+    ) -> String {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_id = worker.id.to_string();
+        engine.worker_registry.register_worker(worker);
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &worker_id,
+                Some(namespace.to_string()),
+            ))
+            .await;
+        worker_id
+    }
+
+    fn register_trigger_input_from(caller_worker_id: &str) -> RegisterTriggerInput {
+        RegisterTriggerInput {
+            trigger_type: "test-type".to_string(),
+            function_id: "test::target".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+            caller_worker_id: Some(caller_worker_id.to_string()),
+            trigger_namespace: None,
+        }
+    }
+
+    /// The reported bug: a worker in `orders` binds a `state`-style trigger
+    /// whose provider is the engine's own, in `default`. The binding must go
+    /// live on that provider with `orders` as target and home — not park in
+    /// `pending_triggers` because `default` was assumed to be its home.
+    #[tokio::test]
+    async fn register_trigger_fn_from_namespaced_caller_falls_back_to_default_provider() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
+
+        let id = match module
+            .register_trigger_fn(register_trigger_input_from(&caller), None)
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        let trig = engine
+            .trigger_registry
+            .triggers
+            .get(&id)
+            .expect("trigger live");
+        assert_eq!(
+            trig.namespace, "orders",
+            "target resolves in the caller's namespace"
+        );
+        assert_eq!(trig.home_namespace, "orders");
+        assert_eq!(trig.provider_namespace, crate::protocol::DEFAULT_NAMESPACE);
+    }
+
+    /// A provider registered in the caller's own namespace wins over the
+    /// engine's fallback, exactly as it does on the `Message::RegisterTrigger`
+    /// path.
+    #[tokio::test]
+    async fn register_trigger_fn_prefers_provider_in_callers_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new_ns(
+                "orders",
+                "test-type",
+                "Orders' own provider",
+                Box::new(module.clone()),
+                None,
+            ))
+            .await
+            .unwrap();
+        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
+
+        let id = match module
+            .register_trigger_fn(register_trigger_input_from(&caller), None)
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+
+        let trig = engine.trigger_registry.triggers.get(&id).expect("live");
+        assert_eq!(trig.provider_namespace, "orders");
+    }
+
+    /// A parked registration is still a registration: `list` shows it as
+    /// `pending` when asked (a bare list stays the set of live bindings), `info`
+    /// always resolves it, and both flip it to `active` once its provider
+    /// registers.
+    #[tokio::test]
+    async fn registered_triggers_list_and_info_include_pending_rows_with_status() {
+        let (engine, module) = setup_engine_and_module();
+        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
+
+        let id = match module
+            .register_trigger_fn(register_trigger_input_from(&caller), None)
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected deferred register success"),
+        };
+        assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
+
+        let bare = match module
+            .registered_triggers_list(RegisteredTriggersListInput::default())
+            .await
+        {
+            FunctionResult::Success(r) => r.registered_triggers,
+            _ => panic!("expected list success"),
+        };
+        assert!(bare.is_empty(), "a bare list is live bindings only");
+
+        let listed = match module
+            .registered_triggers_list(RegisteredTriggersListInput {
+                include_pending: Some(true),
+                ..Default::default()
+            })
+            .await
+        {
+            FunctionResult::Success(r) => r.registered_triggers,
+            _ => panic!("expected list success"),
+        };
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].status, RegisteredTriggerStatus::Pending);
+
+        let detail = match module
+            .registered_triggers_info(RegisteredTriggerInfoInput { id: id.clone() })
+            .await
+        {
+            FunctionResult::Success(d) => d,
+            _ => panic!("pending row must be inspectable"),
+        };
+        assert_eq!(detail.status, RegisteredTriggerStatus::Pending);
+        assert_eq!(detail.function_id, "test::target");
+
+        register_test_trigger_type(&engine, &module).await;
+        let detail = match module
+            .registered_triggers_info(RegisteredTriggerInfoInput { id })
+            .await
+        {
+            FunctionResult::Success(d) => d,
+            _ => panic!("expected info success"),
+        };
+        assert_eq!(detail.status, RegisteredTriggerStatus::Active);
+    }
+
+    /// `engine::triggers::info` without a namespace answers for the caller's
+    /// own provider first, then `default` — not `default` alone, which reported
+    /// a namespaced worker's provider as NOT_FOUND.
+    #[tokio::test]
+    async fn triggers_info_resolves_callers_namespace_before_default() {
+        let (engine, module) = setup_engine_and_module();
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new_ns(
+                "orders",
+                "test-type",
+                "Orders' own provider",
+                Box::new(module.clone()),
+                None,
+            ))
+            .await
+            .unwrap();
+        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
+
+        let from_orders = module
+            .triggers_info(TriggerInfoInput {
+                id: "test-type".to_string(),
+                namespace: None,
+                caller_worker_id: Some(caller),
+            })
+            .await;
+        match from_orders {
+            FunctionResult::Success(detail) => assert_eq!(detail.namespace, "orders"),
+            _ => panic!("caller's own provider must resolve"),
+        }
+
+        // An in-process caller is at home in `default`, where nothing provides it.
+        let from_default = module
+            .triggers_info(TriggerInfoInput {
+                id: "test-type".to_string(),
+                namespace: None,
+                caller_worker_id: None,
+            })
+            .await;
+        assert!(matches!(from_default, FunctionResult::Failure(_)));
     }
 }

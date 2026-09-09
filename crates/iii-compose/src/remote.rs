@@ -59,7 +59,8 @@ pub struct ComposeRequest {
     pub frozen: Option<bool>,
     /// The worker a call is about.
     ///
-    /// `compose::update` reads a spec: `name`, `name@version`, or a path.
+    /// `compose::update` reads a spec: `name` or `name@version`. Omit both
+    /// worker fields to update every declared package worker to latest.
     /// `compose::remove` and `compose::restart` read a container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
     /// have to know which of the two words this call wanted. `compose::add`,
@@ -502,20 +503,26 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Update => {
-            let workers = requested_specs(request.workers, request.worker)?;
-            if workers.is_empty() {
-                return daemon
-                    .update(file.as_deref(), &[], operation_id())
-                    .await
-                    .map(|outcome| to_value(&outcome))
-                    .map_err(|err| compose_error(&err));
+            if request.workers.as_ref().is_some_and(Vec::is_empty) {
+                return Err(compose_error(&ComposeError::InvalidWorkerSpec {
+                    spec: String::new(),
+                    reason:
+                        "workers cannot be empty. Omit worker and workers to update all packages"
+                            .to_string(),
+                }));
             }
+            let workers = requested_specs(request.workers, request.worker)?;
             let requested = workers.len();
+            let selection = if workers.is_empty() {
+                "all declared package workers".to_string()
+            } else {
+                format!("{requested} requested workers")
+            };
             let (operation, accepted) = admit_mutation(
                 &daemon,
                 request.operation_id,
                 requested,
-                format!("updating {requested} requested workers"),
+                format!("updating {selection}"),
             )
             .await?;
 
@@ -527,7 +534,7 @@ async fn dispatch(
                     .emit(
                         None,
                         "resolving",
-                        format!("resolving updates for {requested} workers"),
+                        format!("resolving updates for {selection}"),
                     )
                     .await;
                 daemon_task
@@ -782,6 +789,16 @@ fn batch_worker_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// Update defaults to all packages, but explicit inputs must still be valid.
+fn update_worker_options_schema() -> Option<Value> {
+    let mut schema = batch_worker_options_schema()?;
+    schema.as_object_mut()?.remove("anyOf");
+    schema["description"] = json!(
+        "Omit worker and workers to update all declared package workers to latest. Path workers are skipped."
+    );
+    Some(schema)
+}
+
 /// Extend the batch contract with the container object form accepted by add.
 fn add_worker_options_schema() -> Option<Value> {
     let mut schema = batch_worker_options_schema()?;
@@ -838,7 +855,9 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::update" => {
             "Accept an observable operation that refreshes declared package selectors or moves \
-             workers to requested versions. It restarts the project when package content changes."
+             workers to requested versions, including their dependency graphs. Omit worker and \
+             workers to move all declared packages to latest; path workers are skipped. The \
+             project restarts only when runtime content or topology changes."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -936,7 +955,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::update",
-                batch_worker_options_schema(),
+                update_worker_options_schema(),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
@@ -1030,6 +1049,76 @@ fn operation_id() -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn update_without_worker_fields_returns_an_observable_operation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: ./api\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "update-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let accepted = dispatch(
+            Arc::clone(&daemon),
+            Operation::Update,
+            "update".to_string(),
+            ComposeRequest {
+                file: Some(file.to_string_lossy().into_owned()),
+                operation_id: Some("update-all".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["operation_id"], "update-all");
+        let operation = daemon.operations.get("update-all").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status == crate::operation::OperationStatus::Succeeded {
+                    break;
+                }
+                assert_ne!(snapshot.status, crate::operation::OperationStatus::Failed);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("update all should complete without starting a path worker");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_an_explicit_empty_list_even_with_a_singular_worker() {
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "update-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        for worker in [None, Some("state".to_string())] {
+            let error = dispatch(
+                Arc::clone(&daemon),
+                Operation::Update,
+                "update".to_string(),
+                ComposeRequest {
+                    workers: Some(Vec::new()),
+                    worker,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, Error::Remote { code, .. } if code == "INVALID_WORKER_SPEC"));
+        }
+    }
+
     fn schema_entry(id: &str) -> &'static SchemaTriple {
         schema_table()
             .iter()
@@ -1118,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_worker_schemas_require_one_non_null_non_empty_worker_form() {
+    fn batch_worker_schemas_validate_explicit_worker_forms() {
         for function_id in ["compose::add", "compose::update", "compose::remove"] {
             let schema = schema_entry(function_id).1.as_ref().unwrap();
             let validator = jsonschema::Validator::new(schema)
@@ -1139,7 +1228,6 @@ mod tests {
             }
 
             for invalid in [
-                json!({}),
                 json!({ "workers": [] }),
                 json!({ "workers": null }),
                 json!({ "worker": null }),
@@ -1152,6 +1240,21 @@ mod tests {
                 assert!(
                     !validator.is_valid(&invalid),
                     "{function_id} should reject {invalid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_update_allows_omitting_both_worker_fields() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema).unwrap();
+            for payload in [json!({}), json!({"file": "worker-compose.yaml"})] {
+                assert_eq!(
+                    validator.is_valid(&payload),
+                    function_id == "compose::update",
+                    "{function_id}: {payload}"
                 );
             }
         }
@@ -1178,6 +1281,10 @@ mod tests {
             }
             assert!(!properties.contains_key("container"));
             assert_eq!(properties["workers"]["minItems"], 1);
+            if function_id == "compose::update" {
+                assert!(request.as_ref().unwrap().get("anyOf").is_none());
+                continue;
+            }
             let alternatives = request.as_ref().unwrap()["anyOf"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{function_id} should require either request form"));

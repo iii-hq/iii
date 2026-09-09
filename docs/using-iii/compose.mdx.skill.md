@@ -315,7 +315,15 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 | `file`   | The project to restart. |
 | `worker` | The worker to restart.  |
 
-### Updating a worker
+### Updating workers
+
+`compose::update` without `worker` or `workers` updates every declared `package://` worker to its
+registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
+
+```bash
+iii trigger compose::update
+iii trigger compose::update file=worker-compose.yaml
+```
 
 `compose::update worker=state` resolves the selector already in the compose file. A tag such as
 `next`, a range, and an exact version all remain unchanged in the file. Use
@@ -331,10 +339,14 @@ failed resolve or download leaves the prior lock and running workers unchanged. 
 artifact and default configuration did not change, Compose updates lock metadata when needed and
 does not restart the project.
 
-| Field    | Description                                |
-| -------- | ------------------------------------------ |
-| `file`   | The project to edit.                       |
-| `worker` | The worker spec: `name` or `name@version`. |
+If all selected workers already use the requested versions, the operation leaves the file and
+running processes unchanged. A project with only `path://` workers also stays unchanged.
+
+| Field     | Description                                                   |
+| --------- | ------------------------------------------------------------- |
+| `file`    | The project to edit.                                          |
+| `worker`  | Optional worker spec: `name` or `name@version`.                 |
+| `workers` | Optional non-empty list of specs. Takes precedence over `worker`. |
 
 ```text
 worker=state            resolve the selector already declared in the compose file
@@ -349,7 +361,7 @@ The worker has to be declared already in order to be updated, and it has to be a
 Workers specified with `path://` are not versioned, any updates to these workers will be reflected
 the next time the worker is restarted.
 
-<Note>An update that changes package content restarts the whole project.</Note>
+<Note>An update that changes package content or graph topology restarts the whole project once.</Note>
 
 ### Checking status
 

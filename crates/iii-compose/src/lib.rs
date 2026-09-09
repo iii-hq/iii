@@ -410,6 +410,11 @@ async fn serve(
     // each child itself.
     let shutdown = shutdown::ShutdownSignal::install()?;
 
+    let mut start_project = start.then(|| InitialProject {
+        file,
+        frozen,
+        progress: report::StartupProgress::start(matches!(engine_mode, EngineMode::Managed { .. })),
+    });
     let managed_engine = match engine_mode {
         EngineMode::Managed { .. } => {
             let Some(owner) = initial_file.as_ref() else {
@@ -419,31 +424,43 @@ async fn serve(
                 unreachable!("managed mode is selected only from an engine section");
             };
             let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
-            println!("engine {}", "started".green());
-            println!("  {} {}", "pid:".dimmed(), engine.pid());
-            println!("  {} {}", "owner:".dimmed(), owner.path.display());
-            println!(
+            if let Some(project) = &start_project {
+                project.progress.engine_waiting();
+            }
+            report::line(&format!("  {} {}", "pid:".dimmed(), engine.pid()));
+            report::line(&format!("  {} {}", "owner:".dimmed(), owner.path.display()));
+            report::line(&format!(
                 "  {} {}",
                 "config:".dimmed(),
                 engine.config_path().display()
-            );
-            println!("  {} {}", "logs:".dimmed(), engine.log_path().display());
-            println!("  {} {}", "follow logs:".dimmed(), engine.follow_command());
-            println!();
+            ));
+            report::line(&format!(
+                "  {} {}",
+                "logs:".dimmed(),
+                engine.log_path().display()
+            ));
+            report::line(&format!(
+                "  {} {}",
+                "follow logs:".dimmed(),
+                engine.follow_command()
+            ));
+            report::line("");
             Some(engine)
         }
         EngineMode::External { .. } => None,
     };
 
     let result = if shutdown.requested() {
+        if let Some(project) = &mut start_project {
+            project.progress.finish(false, "Cancelled");
+        }
         Ok(())
     } else {
-        let start_file = start.then_some(InitialStart { file, frozen });
         serve_daemon(
             engine_url,
             daemon_namespace,
             explicit_daemon_namespace,
-            start_file,
+            start_project,
             managed_engine.as_ref(),
             engine_policy,
             shutdown,
@@ -452,7 +469,7 @@ async fn serve(
     };
 
     if let Some(engine) = &managed_engine {
-        println!("{}", "stopping engine...".dimmed());
+        report::line(&"stopping engine...".dimmed().to_string());
         engine.stop_with_default_grace().await;
     }
 
@@ -500,16 +517,17 @@ fn load_invocation_file(file: &std::path::Path, required: bool) -> Result<Option
     }
 }
 
-struct InitialStart {
+struct InitialProject {
     file: std::path::PathBuf,
     frozen: bool,
+    progress: report::StartupProgress,
 }
 
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
     project_namespace_override: Option<String>,
-    start: Option<InitialStart>,
+    mut start: Option<InitialProject>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
     shutdown: shutdown::ShutdownSignal,
@@ -555,6 +573,9 @@ async fn serve_daemon(
         let mut interrupted = shutdown.clone();
         tokio::select! {
             _ = interrupted.wait() => {
+                if let Some(project) = &mut start {
+                    project.progress.finish(false, "Cancelled");
+                }
                 daemon.shutdown().await;
                 return Ok(());
             }
@@ -565,6 +586,9 @@ async fn serve_daemon(
     if let Some(engine) = managed_engine
         && !daemon.engine().is_connected()
     {
+        if let Some(project) = &mut start {
+            project.progress.finish(false, "Connection timed out");
+        }
         daemon.shutdown().await;
         return Err(ComposeError::EngineReadinessTimeout {
             engine_url: daemon.engine_url.clone(),
@@ -573,9 +597,18 @@ async fn serve_daemon(
         });
     }
 
-    println!("compose {}", "serving".green());
-    println!("  {} {}", "engine:".dimmed(), daemon.engine_url);
-    println!("  {} {}", "namespace:".dimmed(), daemon.daemon_namespace);
+    if daemon.engine().is_connected()
+        && let Some(project) = &start
+    {
+        project.progress.engine_ready();
+    }
+    report::line(&format!("compose {}", "serving".green()));
+    report::line(&format!("  {} {}", "engine:".dimmed(), daemon.engine_url));
+    report::line(&format!(
+        "  {} {}",
+        "namespace:".dimmed(),
+        daemon.daemon_namespace
+    ));
     // Printed with this daemon's own address already in it. Several daemons
     // can share an engine, and which one a call reaches is a flag an operator
     // should not have to work out.
@@ -583,11 +616,11 @@ async fn serve_daemon(
     // Not printed when a project was named: the operator already started one,
     // and the line would be telling them to do what they just did.
     if start.is_none() {
-        println!(
+        report::line(&format!(
             "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
             "start a project:".dimmed(),
             daemon.daemon_namespace
-        );
+        ));
     }
 
     let startup_operation = if start.is_some() {
@@ -601,23 +634,43 @@ async fn serve_daemon(
 
     // A failed initial project still ends the command. Cancellation rolls its
     // partial startup back but leaves the daemon available for later calls.
-    if let (Some(start), Some(operation)) = (&start, startup_operation) {
-        println!();
+    if let (Some(project), Some(operation)) = (&mut start, startup_operation) {
+        let file = &project.file;
+        report::line("");
+        project.progress.containers_starting();
         let operation_id = operation.id().to_string();
         let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
             operation.cancellation(),
         ));
-        let result = daemon
-            .up_until_shutdown(
-                Some(&start.file),
-                None,
-                operation_id,
-                startup_shutdown,
-                start.frozen,
-            )
-            .await;
+        let up = daemon.up_until_shutdown(
+            Some(file),
+            None,
+            operation_id,
+            startup_shutdown,
+            project.frozen,
+        );
+        tokio::pin!(up);
+        let mut connected = daemon.engine().is_connected();
+        if connected {
+            project.progress.engine_ready();
+        }
+        let result = loop {
+            tokio::select! {
+                result = &mut up => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if !connected => {
+                    connected = daemon.engine().is_connected();
+                    if connected {
+                        project.progress.engine_ready();
+                    }
+                }
+            }
+        };
+        if daemon.engine().is_connected() {
+            project.progress.engine_ready();
+        }
         match result {
             Ok(None) => {
+                project.progress.finish(false, "Cancelled");
                 operation
                     .finish(
                         operation::OperationStatus::Cancelled,
@@ -635,9 +688,8 @@ async fn serve_daemon(
                 println!("{}", "startup cancelled; daemon remains available".dimmed());
             }
             Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
-                let error = ComposeError::ProjectDidNotStart {
-                    path: start.file.clone(),
-                };
+                project.progress.finish(false, "Failed");
+                let error = ComposeError::ProjectDidNotStart { path: file.clone() };
                 operation
                     .finish(operation::OperationStatus::Failed, error.to_string())
                     .await;
@@ -645,6 +697,7 @@ async fn serve_daemon(
                 return Err(error);
             }
             Ok(Some(_)) => {
+                project.progress.finish(true, "Ready");
                 operation
                     .finish(
                         operation::OperationStatus::Succeeded,
@@ -653,6 +706,7 @@ async fn serve_daemon(
                     .await;
             }
             Err(err) => {
+                project.progress.finish(false, "Failed");
                 operation
                     .finish(operation::OperationStatus::Failed, err.to_string())
                     .await;

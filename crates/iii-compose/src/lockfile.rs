@@ -538,10 +538,7 @@ mod tests {
                     },
                 },
             )]),
-            graphs: BTreeMap::from([(
-                "state".to_string(),
-                BTreeSet::from(["state".to_string()]),
-            )]),
+            graphs: BTreeMap::from([("state".to_string(), BTreeSet::from(["state".to_string()]))]),
         }
     }
 
