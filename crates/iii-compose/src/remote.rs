@@ -325,6 +325,17 @@ impl Operation {
     }
 }
 
+/// The container a `compose::stop` request names, if any. Both fields are
+/// checked in turn: a blank `container` must not hide a `worker`, or
+/// `{"container": " ", "worker": "api"}` would stop the whole daemon.
+fn stop_target(request: &ComposeRequest) -> Option<&str> {
+    [request.container.as_deref(), request.worker.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
 /// Canonical list of functions exposed by the compose daemon.
 const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("up", Operation::Up),
@@ -579,8 +590,14 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         // Answers first, exits after: the serve loop picks the request up and
-        // runs the same teardown a signal would.
-        Operation::Stop => Ok(daemon.request_stop().await),
+        // runs the same teardown a signal would. Stop takes the whole daemon
+        // down, so a request that names a container is refused, not ignored.
+        Operation::Stop => match stop_target(&request) {
+            Some(container) => Err(compose_error(&ComposeError::StopTakesNoContainer {
+                container: container.to_string(),
+            })),
+            None => Ok(daemon.request_stop().await),
+        },
         // Validation is a question about a file, so it holds nothing: naming a
         // file here must not leave the daemon owning a project, and must not
         // write the durable state that would bind that id to it.
@@ -1087,6 +1104,36 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, Error::Remote { code, .. } if code == "INVALID_WORKER_SPEC"));
         }
+    }
+
+    #[test]
+    fn stop_target_checks_both_fields_and_ignores_blanks() {
+        let bare = ComposeRequest::default();
+        assert_eq!(stop_target(&bare), None);
+
+        let blank = ComposeRequest {
+            container: Some("   ".to_string()),
+            worker: Some("".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(stop_target(&blank), None, "blanks are no target");
+
+        let hidden = ComposeRequest {
+            container: Some(" ".to_string()),
+            worker: Some("api".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(
+            stop_target(&hidden),
+            Some("api"),
+            "a blank container must not hide the worker"
+        );
+
+        let container = ComposeRequest {
+            container: Some(" harness ".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(stop_target(&container), Some("harness"));
     }
 
     fn schema_entry(id: &str) -> &'static SchemaTriple {

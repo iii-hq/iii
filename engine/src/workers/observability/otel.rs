@@ -31,10 +31,10 @@ use opentelemetry_sdk::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -45,6 +45,9 @@ use tracing_subscriber::registry::LookupSpan;
 /// Default maximum number of spans to keep in memory.
 const DEFAULT_MEMORY_MAX_SPANS: usize = 1000;
 const DEFAULT_MEMORY_MAX_BYTES: u64 = 268_435_456;
+/// Engine-side cap on one attribute value at ingest; see
+/// `TraceStorageConfig::max_attribute_bytes`.
+const DEFAULT_MAX_ATTRIBUTE_BYTES: u64 = super::config::TRACE_STORAGE_DEFAULT_MAX_ATTRIBUTE_BYTES;
 
 /// Global OTEL configuration. Seeded from YAML config (or the persisted
 /// configuration entry) at boot, and swappable at runtime by the
@@ -539,10 +542,45 @@ pub fn now_unix_nanos() -> u64 {
         .as_nanos() as u64
 }
 
+/// Approximate heap footprint of a span: the sum of its string lengths plus
+/// the fixed size of every record. This is an RSS estimate for the hot-cache
+/// byte cap, not a serialized length — the archive measures the JSON it writes
+/// itself. It allocates nothing and never serializes: it runs on the ingest
+/// path for every span.
 fn approx_span_size(span: &StoredSpan) -> u64 {
-    serde_json::to_vec(span)
-        .map(|payload| payload.len() as u64)
-        .unwrap_or(0)
+    fn opt_len(value: &Option<String>) -> usize {
+        value.as_ref().map_or(0, String::len)
+    }
+    fn pairs(attributes: &[(String, String)]) -> usize {
+        attributes
+            .iter()
+            .map(|(key, value)| std::mem::size_of::<(String, String)>() + key.len() + value.len())
+            .sum()
+    }
+    let mut total = std::mem::size_of::<StoredSpan>()
+        + span.trace_id.len()
+        + span.span_id.len()
+        + opt_len(&span.parent_span_id)
+        + span.name.len()
+        + span.status.len()
+        + opt_len(&span.status_description)
+        + span.service_name.len()
+        + opt_len(&span.instrumentation_scope_name)
+        + opt_len(&span.instrumentation_scope_version)
+        + opt_len(&span.trace_state)
+        + pairs(&span.attributes);
+    for event in &span.events {
+        total +=
+            std::mem::size_of::<StoredSpanEvent>() + event.name.len() + pairs(&event.attributes);
+    }
+    for link in &span.links {
+        total += std::mem::size_of::<StoredSpanLink>()
+            + link.trace_id.len()
+            + link.span_id.len()
+            + opt_len(&link.trace_state)
+            + pairs(&link.attributes);
+    }
+    total as u64
 }
 
 fn sensitive_attribute_key(key: &str) -> bool {
@@ -571,116 +609,239 @@ fn sanitize_attributes(attributes: &mut [(String, String)]) {
     }
 }
 
-fn sanitize_span(span: &mut StoredSpan) {
-    sanitize_attributes(&mut span.attributes);
-    for event in &mut span.events {
-        sanitize_attributes(&mut event.attributes);
+/// Attribute the SDKs use for a captured invocation payload, and the flag they
+/// set when they truncated it themselves. The engine raises the same flag when
+/// its own cap cuts the payload, so readers see one signal either way.
+const PAYLOAD_ATTRIBUTE_KEY: &str = "iii.payload.json";
+const PAYLOAD_TRUNCATED_KEY: &str = "iii.payload.truncated";
+
+/// Cut `value` down to `max_bytes` on a char boundary and say how much went.
+/// Returns whether anything was cut. Zero disables the cap.
+fn truncate_attribute_value(value: &mut String, max_bytes: usize) -> bool {
+    if max_bytes == 0 || value.len() <= max_bytes {
+        return false;
     }
-    for link in &mut span.links {
-        sanitize_attributes(&mut link.attributes);
+    let mut cut = max_bytes;
+    while !value.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let removed = value.len() - cut;
+    value.truncate(cut);
+    value.push_str(&format!("…[truncated {removed} bytes]"));
+    true
+}
+
+fn truncate_attributes(attributes: &mut Vec<(String, String)>, max_bytes: usize) {
+    if max_bytes == 0 {
+        return;
+    }
+    let mut payload_cut = false;
+    for (key, value) in attributes.iter_mut() {
+        if truncate_attribute_value(value, max_bytes) && key == PAYLOAD_ATTRIBUTE_KEY {
+            payload_cut = true;
+        }
+    }
+    if payload_cut {
+        match attributes
+            .iter_mut()
+            .find(|(key, _)| key == PAYLOAD_TRUNCATED_KEY)
+        {
+            Some((_, flag)) => *flag = "true".to_string(),
+            None => attributes.push((PAYLOAD_TRUNCATED_KEY.to_string(), "true".to_string())),
+        }
     }
 }
 
-/// In-memory span storage with circular buffer and broadcast channel.
+/// Redact sensitive attributes and cap every attribute value at
+/// `max_attribute_bytes` (zero = uncapped). Runs once per span at ingest,
+/// before the span is measured or stored.
+fn sanitize_span(span: &mut StoredSpan, max_attribute_bytes: usize) {
+    sanitize_attributes(&mut span.attributes);
+    truncate_attributes(&mut span.attributes, max_attribute_bytes);
+    for event in &mut span.events {
+        sanitize_attributes(&mut event.attributes);
+        truncate_attributes(&mut event.attributes, max_attribute_bytes);
+    }
+    for link in &mut span.links {
+        sanitize_attributes(&mut link.attributes);
+        truncate_attributes(&mut link.attributes, max_attribute_bytes);
+    }
+}
+
+struct Slot {
+    bytes: u64,
+    span: StoredSpan,
+}
+
+/// The hot cache proper: a bounded FIFO of spans keyed by a monotonic sequence
+/// number, plus the indexes every operation needs, all O(log n).
+///
+/// Every mutation adjusts `hot_bytes` by the slot's cached size, so the byte
+/// account never drifts and never needs a recount. `next_seq` only grows —
+/// `clear` keeps it — so a sequence the writer thread holds from an earlier
+/// `dirty_spans` snapshot can never alias a newer span.
+#[derive(Default)]
+struct HotCache {
+    /// seq -> slot; iteration order is insertion order.
+    slots: BTreeMap<u64, Slot>,
+    next_seq: u64,
+    /// Ascending seqs per trace, for the trace lookups.
+    by_trace: HashMap<String, VecDeque<u64>>,
+    /// Live snapshots awaiting their final span, `(trace_id, span_id)` -> seq.
+    /// Span ids are only unique within a trace, so both ids key the map.
+    pending: HashMap<(String, String), u64>,
+    /// Finalized spans the archive writer has not acknowledged yet, oldest first.
+    dirty: BTreeSet<u64>,
+    hot_bytes: u64,
+}
+
+impl HotCache {
+    fn push(&mut self, bytes: u64, span: StoredSpan, pending: bool) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.by_trace
+            .entry(span.trace_id.clone())
+            .or_default()
+            .push_back(seq);
+        if pending {
+            self.pending
+                .insert((span.trace_id.clone(), span.span_id.clone()), seq);
+        } else {
+            self.dirty.insert(seq);
+        }
+        self.hot_bytes = self.hot_bytes.saturating_add(bytes);
+        self.slots.insert(seq, Slot { bytes, span });
+        seq
+    }
+
+    /// A final span replacing its live snapshot overwrites in place: same seq,
+    /// same trace, so neither index moves. `Err` hands the span back when no
+    /// snapshot is tracked (never pending, or its slot already left the cache)
+    /// and the caller appends it as a fresh span.
+    fn replace_pending(&mut self, bytes: u64, span: StoredSpan) -> Result<(), StoredSpan> {
+        if self.pending.is_empty() {
+            return Err(span);
+        }
+        let key = (span.trace_id.clone(), span.span_id.clone());
+        let Some(seq) = self.pending.remove(&key) else {
+            return Err(span);
+        };
+        let Some(slot) = self.slots.get_mut(&seq) else {
+            return Err(span);
+        };
+        self.hot_bytes = self
+            .hot_bytes
+            .saturating_sub(slot.bytes)
+            .saturating_add(bytes);
+        slot.bytes = bytes;
+        slot.span = span;
+        self.dirty.insert(seq);
+        Ok(())
+    }
+
+    /// Drop `seq` from the cache and every index. `Some(true)` when the span
+    /// was finalized but not yet acknowledged by the archive.
+    fn remove(&mut self, seq: u64) -> Option<bool> {
+        let slot = self.slots.remove(&seq)?;
+        Some(self.detach(seq, slot))
+    }
+
+    fn detach(&mut self, seq: u64, slot: Slot) -> bool {
+        self.hot_bytes = self.hot_bytes.saturating_sub(slot.bytes);
+        let trace_emptied = match self.by_trace.get_mut(&slot.span.trace_id) {
+            Some(seqs) => {
+                if seqs.front() == Some(&seq) {
+                    seqs.pop_front();
+                } else {
+                    seqs.retain(|candidate| *candidate != seq);
+                }
+                seqs.is_empty()
+            }
+            None => false,
+        };
+        if trace_emptied {
+            self.by_trace.remove(&slot.span.trace_id);
+        }
+        if slot.span.pending {
+            // A newer snapshot for the same ids may own the map entry by now.
+            let key = (slot.span.trace_id, slot.span.span_id);
+            if self.pending.get(&key) == Some(&seq) {
+                self.pending.remove(&key);
+            }
+        }
+        self.dirty.remove(&seq)
+    }
+
+    /// Evict oldest-first until both limits hold with `incoming_spans` /
+    /// `incoming_bytes` about to land. Under byte pressure the cache shrinks
+    /// to the low watermark so it does not evict on every insert. Returns how
+    /// many finalized spans left before the archive acknowledged them — the
+    /// caller reports those as dropped.
+    fn evict_for(
+        &mut self,
+        incoming_spans: usize,
+        incoming_bytes: u64,
+        max_spans: usize,
+        max_bytes: u64,
+        low_watermark_ratio: f64,
+    ) -> u64 {
+        let byte_pressure =
+            max_bytes > 0 && self.hot_bytes.saturating_add(incoming_bytes) > max_bytes;
+        let byte_target = if byte_pressure {
+            ((max_bytes as f64) * low_watermark_ratio.clamp(0.5, 0.95)) as u64
+        } else {
+            max_bytes
+        };
+        let mut dropped = 0;
+        while self.slots.len() + incoming_spans > max_spans
+            || (max_bytes > 0 && self.hot_bytes.saturating_add(incoming_bytes) > byte_target)
+        {
+            let Some((seq, slot)) = self.slots.pop_first() else {
+                break;
+            };
+            if self.detach(seq, slot) {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+}
+
+/// In-memory span storage: a bounded FIFO hot cache plus a broadcast channel.
+///
+/// Memory is the hard limit. Finalized spans the archive has not written yet
+/// are evicted like any other once `memory_max_bytes` / `max_spans` is hit;
+/// they are counted on the archive as dropped (`known_dropped_spans`,
+/// `completeness: "partial"`) instead of pinning the cache. The critical
+/// section takes no other lock and does no size-proportional work: sanitizing,
+/// measuring and broadcasting happen before it, archive notifications after.
+/// This code runs inside tracing-layer callbacks on whichever runtime thread
+/// closes a span, so anything slow here parks that thread.
 pub struct InMemorySpanStorage {
-    spans: RwLock<VecDeque<StoredSpan>>,
+    cache: RwLock<HotCache>,
     /// Capacity limit. Atomic so the configuration-worker apply path can
     /// retune it at runtime; enforcement happens on every insert.
-    max_spans: std::sync::atomic::AtomicUsize,
+    max_spans: AtomicUsize,
     /// Byte limit for the hot cache. `memory_max_spans` remains as a
     /// compatibility guard, but bytes are the primary RSS protection.
     max_bytes: AtomicU64,
     low_watermark_ratio: AtomicU64,
-    hot_bytes: AtomicU64,
-    /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
-    spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
-    /// `(trace_id, span_id)` pairs currently stored as pending (live
-    /// snapshots awaiting their final span). Keyed by both ids — span ids
-    /// are only unique within a trace, so a colliding final from another
-    /// trace must not replace the wrong snapshot. Gates the replace-scan in
-    /// `add_spans` so the hot append path (OTLP ingest, exporters) stays
-    /// O(1) when no pending predecessor exists. Lock order everywhere:
-    /// `spans` → `spans_by_trace_id` → this.
-    pending_span_ids: RwLock<HashSet<(String, String)>>,
-    /// Finalized spans waiting for the asynchronous disk writer.
-    dirty_span_ids: RwLock<HashSet<(String, String)>>,
+    /// Cap on a single attribute value at ingest; zero = uncapped.
+    max_attribute_bytes: AtomicU64,
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
 }
 
-/// Evict oldest spans until `len < max_spans`, maintaining the trace index
-/// (shift-down on every pop) and purging evicted ids from the pending set.
-/// Callers hold all three storage locks (see the lock-order note above).
-fn evict_to_capacity(
-    spans: &mut VecDeque<StoredSpan>,
-    index: &mut HashMap<String, HashSet<usize>>,
-    pending: &mut HashSet<(String, String)>,
-    dirty: &mut HashSet<(String, String)>,
-    max_spans: usize,
-    max_bytes: u64,
-    low_watermark_ratio: f64,
-    incoming_bytes: u64,
-    hot_bytes: &AtomicU64,
-) {
-    let archive = get_trace_disk_storage();
-    let protect_pending = archive.is_some();
-    let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
-    let current = hot_bytes.load(Ordering::Relaxed);
-    let byte_pressure = max_bytes > 0 && current.saturating_add(incoming_bytes) > max_bytes;
-    let byte_target = if byte_pressure {
-        ((max_bytes as f64) * low_watermark_ratio.clamp(0.5, 0.95)) as u64
-    } else {
-        max_bytes
-    };
-
-    // Loop converges after a shrink. Pending snapshots and finalized spans
-    // that have not reached SQLite are protected. If every resident span is
-    // protected, retaining correctness wins over forcing the hot cache below
-    // its configured limit; the archive health surface reports the eventual
-    // write failure instead of silently losing data.
-    while spans.len() >= max_spans
-        || (max_bytes > 0
-            && hot_bytes
-                .load(Ordering::Relaxed)
-                .saturating_add(incoming_bytes)
-                > byte_target)
-    {
-        let Some(index_to_remove) = spans.iter().position(|old| {
-            let key = (old.trace_id.clone(), old.span_id.clone());
-            (!protect_pending || !pending.contains(&key))
-                && (!protect_dirty || !dirty.contains(&key))
-        }) else {
-            break;
-        };
-        let Some(old) = spans.remove(index_to_remove) else {
-            break;
-        };
-        pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
-        let was_dirty = dirty.remove(&(old.trace_id.clone(), old.span_id.clone()));
-        if was_dirty
-            && let Some(archive) = &archive
-            && archive.is_degraded()
-        {
-            archive.record_dropped_spans(1);
-        }
-        hot_bytes.fetch_sub(approx_span_size(&old), Ordering::Relaxed);
-        index.clear();
-        for (idx, span) in spans.iter().enumerate() {
-            index.entry(span.trace_id.clone()).or_default().insert(idx);
-        }
-    }
-}
-
 impl std::fmt::Debug for InMemorySpanStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cache = self.read();
         f.debug_struct("InMemorySpanStorage")
-            .field("spans", &self.spans)
-            .field(
-                "max_spans",
-                &self.max_spans.load(std::sync::atomic::Ordering::Relaxed),
-            )
-            .field("spans_by_trace_id", &self.spans_by_trace_id)
+            .field("spans", &cache.slots.len())
+            .field("hot_bytes", &cache.hot_bytes)
+            .field("dirty", &cache.dirty.len())
+            .field("max_spans", &self.max_spans.load(Ordering::Relaxed))
+            .field("max_bytes", &self.max_bytes.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -701,101 +862,124 @@ impl InMemorySpanStorage {
     ) -> Self {
         let (tx, _) = broadcast::channel(1024);
         Self {
-            // Do not reserve the configured span count up front: legacy
-            // configurations can contain very large values.
-            spans: RwLock::new(VecDeque::new()),
-            max_spans: std::sync::atomic::AtomicUsize::new(max_spans),
+            cache: RwLock::new(HotCache::default()),
+            max_spans: AtomicUsize::new(max_spans),
             max_bytes: AtomicU64::new(max_bytes),
             low_watermark_ratio: AtomicU64::new(low_watermark_ratio.clamp(0.5, 0.95).to_bits()),
-            hot_bytes: AtomicU64::new(0),
-            spans_by_trace_id: RwLock::new(HashMap::new()),
-            pending_span_ids: RwLock::new(HashSet::new()),
-            dirty_span_ids: RwLock::new(HashSet::new()),
+            max_attribute_bytes: AtomicU64::new(DEFAULT_MAX_ATTRIBUTE_BYTES),
             tx,
         }
     }
 
-    /// Retune the capacity at runtime. A shrink evicts oldest spans in one
-    /// O(n) pass (drain + index rebuild) under the same lock order as
-    /// `add_spans` (spans, then index) to avoid lock-order inversion.
-    pub fn set_max_spans(&self, max: usize) {
-        let max = max.max(1);
-        self.max_spans
-            .store(max, std::sync::atomic::Ordering::Relaxed);
-        let mut spans = self.spans.write().unwrap();
-        if spans.len() > max {
-            let mut index = self.spans_by_trace_id.write().unwrap();
-            let mut pending = self.pending_span_ids.write().unwrap();
-            let mut dirty = self.dirty_span_ids.write().unwrap();
-            let archive = get_trace_disk_storage();
-            let protect_pending = archive.is_some();
-            let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
-            while spans.len() > max {
-                let Some(index_to_remove) = spans.iter().position(|old| {
-                    let key = (old.trace_id.clone(), old.span_id.clone());
-                    (!protect_pending || !pending.contains(&key))
-                        && (!protect_dirty || !dirty.contains(&key))
-                }) else {
-                    break;
-                };
-                let Some(old) = spans.remove(index_to_remove) else {
-                    break;
-                };
-                pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
-                let was_dirty = dirty.remove(&(old.trace_id, old.span_id));
-                if was_dirty
-                    && let Some(archive) = &archive
-                    && archive.is_degraded()
-                {
-                    archive.record_dropped_spans(1);
-                }
-            }
-            index.clear();
-            for (idx, span) in spans.iter().enumerate() {
-                index.entry(span.trace_id.clone()).or_default().insert(idx);
-            }
-            self.hot_bytes
-                .store(spans.iter().map(approx_span_size).sum(), Ordering::Relaxed);
+    fn read(&self) -> RwLockReadGuard<'_, HotCache> {
+        self.cache
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, HotCache> {
+        self.cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn limits(&self) -> (usize, u64, f64) {
+        (
+            self.max_spans.load(Ordering::Relaxed).max(1),
+            self.max_bytes.load(Ordering::Relaxed),
+            self.low_watermark_ratio(),
+        )
+    }
+
+    /// The one ingest path. Pending snapshots and finals differ only in how
+    /// they are indexed and in whether the archive is woken.
+    fn insert(&self, spans: Vec<StoredSpan>, pending: bool) {
+        if spans.is_empty() {
+            return;
         }
+        let archive = get_trace_disk_storage();
+        let (max_spans, max_bytes, ratio) = self.limits();
+        let max_attribute_bytes = self.max_attribute_bytes.load(Ordering::Relaxed) as usize;
+        let broadcast = self.tx.receiver_count() > 0;
+        // Everything proportional to the span's size happens before the lock.
+        let prepared: Vec<(u64, StoredSpan)> = spans
+            .into_iter()
+            .map(|mut span| {
+                sanitize_span(&mut span, max_attribute_bytes);
+                let bytes = approx_span_size(&span);
+                if broadcast {
+                    let _ = self.tx.send(span.clone());
+                }
+                (bytes, span)
+            })
+            .collect();
+
+        let mut dropped = 0u64;
+        {
+            let mut cache = self.write();
+            for (bytes, span) in prepared {
+                // A final replacing its live snapshot overwrites in place and
+                // needs no room. The reverse never happens: `on_start` always
+                // precedes `on_end`, and a worker's start snapshot ingests
+                // before its final on the same FIFO telemetry connection.
+                let span = if pending {
+                    span
+                } else {
+                    match cache.replace_pending(bytes, span) {
+                        Ok(()) => continue,
+                        Err(span) => span,
+                    }
+                };
+                dropped += cache.evict_for(1, bytes, max_spans, max_bytes, ratio);
+                cache.push(bytes, span, pending);
+            }
+        }
+
+        if let Some(archive) = archive {
+            if dropped > 0 {
+                archive.record_dropped_spans(dropped);
+            }
+            if !pending {
+                archive.notify();
+            }
+        }
+    }
+
+    pub fn add_spans(&self, new_spans: Vec<StoredSpan>) {
+        self.insert(new_spans, false);
+    }
+
+    /// Record an in-progress span snapshot (`LiveSpanProcessor::on_start`).
+    /// Appends + broadcasts exactly like `add_spans` and marks the
+    /// `(trace_id, span_id)` pair pending so the final span replaces it in
+    /// place when it closes. Pending spans live ONLY in this store and the
+    /// streams fed from it — the OTLP export path never sees them.
+    pub fn add_pending_span(&self, span: StoredSpan) {
+        debug_assert!(span.pending && span.end_time_unix_nano == 0);
+        self.insert(vec![span], true);
+    }
+
+    /// Enforce the current limits without an insert (after a retune).
+    fn shrink_to_limits(&self) {
+        let archive = get_trace_disk_storage();
+        let (max_spans, max_bytes, ratio) = self.limits();
+        let dropped = self.write().evict_for(0, 0, max_spans, max_bytes, ratio);
+        if dropped > 0
+            && let Some(archive) = archive
+        {
+            archive.record_dropped_spans(dropped);
+        }
+    }
+
+    /// Retune the capacity at runtime; a shrink evicts oldest spans.
+    pub fn set_max_spans(&self, max: usize) {
+        self.max_spans.store(max.max(1), Ordering::Relaxed);
+        self.shrink_to_limits();
     }
 
     pub fn set_max_bytes(&self, max: u64) {
         self.max_bytes.store(max, Ordering::Relaxed);
-        let mut spans = self.spans.write().unwrap();
-        let mut index = self.spans_by_trace_id.write().unwrap();
-        let mut pending = self.pending_span_ids.write().unwrap();
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-        let archive = get_trace_disk_storage();
-        let protect_pending = archive.is_some();
-        let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
-        let mut current = self.hot_bytes.load(Ordering::Relaxed);
-        let target = ((max as f64) * self.low_watermark_ratio()).round() as u64;
-        while current > target {
-            let Some(index_to_remove) = spans.iter().position(|old| {
-                let key = (old.trace_id.clone(), old.span_id.clone());
-                (!protect_pending || !pending.contains(&key))
-                    && (!protect_dirty || !dirty.contains(&key))
-            }) else {
-                break;
-            };
-            let Some(old) = spans.remove(index_to_remove) else {
-                break;
-            };
-            pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
-            let was_dirty = dirty.remove(&(old.trace_id.clone(), old.span_id.clone()));
-            if was_dirty
-                && let Some(archive) = &archive
-                && archive.is_degraded()
-            {
-                archive.record_dropped_spans(1);
-            }
-            current = current.saturating_sub(approx_span_size(&old));
-        }
-        index.clear();
-        for (idx, span) in spans.iter().enumerate() {
-            index.entry(span.trace_id.clone()).or_default().insert(idx);
-        }
-        self.hot_bytes.store(current, Ordering::Relaxed);
+        self.shrink_to_limits();
     }
 
     pub fn set_low_watermark_ratio(&self, ratio: f64) {
@@ -807,151 +991,41 @@ impl InMemorySpanStorage {
         f64::from_bits(self.low_watermark_ratio.load(Ordering::Relaxed))
     }
 
-    pub fn add_spans(&self, new_spans: Vec<StoredSpan>) {
-        let mut spans = self.spans.write().unwrap();
-        let mut index = self.spans_by_trace_id.write().unwrap();
-        let mut pending = self.pending_span_ids.write().unwrap();
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-
-        let max_spans = self
-            .max_spans
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .max(1);
-        for mut span in new_spans {
-            sanitize_span(&mut span);
-            let incoming_bytes = approx_span_size(&span);
-            // A final span replacing its live (pending) snapshot overwrites in
-            // place: same idx, same trace_id, so neither index changes. Keys
-            // are `(trace_id, span_id)` — span ids are only unique within a
-            // trace, so a colliding final from another trace must not steal
-            // the snapshot. The emptiness gate keeps the key clone + scan off
-            // the hot append path, and pending spans are by construction
-            // recent, so scan from the back. The reverse never happens — a
-            // pending snapshot must not overwrite a final (`on_start` always
-            // precedes `on_end`, and a worker's start snapshot always ingests
-            // before its final: same FIFO telemetry connection, see
-            // `ingest_otlp_json`).
-            if !pending.is_empty()
-                && pending.remove(&(span.trace_id.clone(), span.span_id.clone()))
-                && let Some(slot) = spans
-                    .iter_mut()
-                    .rev()
-                    .find(|s| s.span_id == span.span_id && s.trace_id == span.trace_id)
-            {
-                let _ = self.tx.send(span.clone());
-                self.hot_bytes
-                    .fetch_sub(approx_span_size(slot), Ordering::Relaxed);
-                let key = (span.trace_id.clone(), span.span_id.clone());
-                *slot = span;
-                self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
-                dirty.insert(key);
-                if let Some(archive) = get_trace_disk_storage() {
-                    archive.notify();
-                }
-                continue;
-            }
-            // A tracked pending whose slot was already evicted falls through
-            // and appends as a fresh span.
-
-            evict_to_capacity(
-                &mut spans,
-                &mut index,
-                &mut pending,
-                &mut dirty,
-                max_spans,
-                self.max_bytes.load(Ordering::Relaxed),
-                self.low_watermark_ratio(),
-                incoming_bytes,
-                &self.hot_bytes,
-            );
-
-            let idx = spans.len();
-            let trace_id = span.trace_id.clone();
-
-            // Broadcast to any listeners (ignore send errors if no receivers).
-            // Mirrors InMemoryLogStorage::add_logs so the `trace` trigger fans
-            // out uniformly across every ingestion path (OTLP ingest, the
-            // in-memory exporter, and the tee exporter all funnel through here).
-            let _ = self.tx.send(span.clone());
-
-            let key = (span.trace_id.clone(), span.span_id.clone());
-            spans.push_back(span);
-            self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
-            dirty.insert(key);
-            index.entry(trace_id).or_default().insert(idx);
-            if let Some(archive) = get_trace_disk_storage() {
-                archive.notify();
-            }
-        }
-    }
-
-    /// Record an in-progress span snapshot (`LiveSpanProcessor::on_start`).
-    /// Appends + broadcasts exactly like `add_spans` and marks the
-    /// `(trace_id, span_id)` pair pending so the final span replaces it in
-    /// place when it closes. Pending spans live ONLY in this store and the
-    /// streams fed from it — the OTLP export path never sees them.
-    pub fn add_pending_span(&self, span: StoredSpan) {
-        debug_assert!(span.pending && span.end_time_unix_nano == 0);
-        let mut span = span;
-        sanitize_span(&mut span);
-        let incoming_bytes = approx_span_size(&span);
-        let mut spans = self.spans.write().unwrap();
-        let mut index = self.spans_by_trace_id.write().unwrap();
-        let mut pending = self.pending_span_ids.write().unwrap();
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-
-        let max_spans = self
-            .max_spans
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .max(1);
-        evict_to_capacity(
-            &mut spans,
-            &mut index,
-            &mut pending,
-            &mut dirty,
-            max_spans,
-            self.max_bytes.load(Ordering::Relaxed),
-            self.low_watermark_ratio(),
-            incoming_bytes,
-            &self.hot_bytes,
-        );
-
-        let idx = spans.len();
-        let trace_id = span.trace_id.clone();
-        pending.insert((trace_id.clone(), span.span_id.clone()));
-        let _ = self.tx.send(span.clone());
-        spans.push_back(span);
-        self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
-        index.entry(trace_id).or_default().insert(idx);
+    /// Cap on a single attribute value at ingest; zero disables it. Applies to
+    /// spans ingested from now on.
+    pub fn set_max_attribute_bytes(&self, max: u64) {
+        self.max_attribute_bytes.store(max, Ordering::Relaxed);
     }
 
     pub fn get_spans(&self) -> Vec<StoredSpan> {
-        self.spans.read().unwrap().iter().cloned().collect()
+        self.read()
+            .slots
+            .values()
+            .map(|slot| slot.span.clone())
+            .collect()
     }
 
     pub fn get_spans_by_trace_id(&self, trace_id: &str) -> Vec<StoredSpan> {
-        let spans = self.spans.read().unwrap();
-        let index = self.spans_by_trace_id.read().unwrap();
-
-        match index.get(trace_id) {
-            Some(indices) => indices
+        let cache = self.read();
+        match cache.by_trace.get(trace_id) {
+            Some(seqs) => seqs
                 .iter()
-                .filter_map(|&i| spans.get(i).cloned())
+                .filter_map(|seq| cache.slots.get(seq))
+                .map(|slot| slot.span.clone())
                 .collect(),
             None => Vec::new(),
         }
     }
 
+    /// Drop every span. Sequence numbers keep counting so a writer batch
+    /// snapshotted before the clear can never acknowledge a later span.
     pub fn clear(&self) {
-        let mut spans = self.spans.write().unwrap();
-        let mut index = self.spans_by_trace_id.write().unwrap();
-        let mut pending = self.pending_span_ids.write().unwrap();
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-        spans.clear();
-        index.clear();
-        pending.clear();
-        dirty.clear();
-        self.hot_bytes.store(0, Ordering::Relaxed);
+        let mut cache = self.write();
+        cache.slots.clear();
+        cache.by_trace.clear();
+        cache.pending.clear();
+        cache.dirty.clear();
+        cache.hot_bytes = 0;
     }
 
     /// Subscribe to a broadcast of every span as it lands in storage. Drives
@@ -961,44 +1035,49 @@ impl InMemorySpanStorage {
     }
 
     pub fn len(&self) -> usize {
-        self.spans.read().unwrap().len()
+        self.read().slots.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.spans.read().unwrap().is_empty()
+        self.read().slots.is_empty()
     }
 
     pub fn hot_bytes(&self) -> u64 {
-        self.hot_bytes.load(Ordering::Relaxed)
+        self.read().hot_bytes
     }
 
-    /// Snapshot dirty spans without removing them. The writer acknowledges
-    /// them only after a committed SQLite transaction.
-    pub fn dirty_spans(&self, limit: usize, max_bytes: u64) -> Vec<StoredSpan> {
-        let spans = self.spans.read().unwrap();
-        let dirty = self.dirty_span_ids.read().unwrap();
+    /// Finalized spans the archive has not acknowledged yet.
+    pub fn dirty_len(&self) -> usize {
+        self.read().dirty.len()
+    }
+
+    /// Snapshot the oldest dirty spans without removing them, as `(seq, span)`
+    /// pairs. The writer acknowledges them by sequence only after a committed
+    /// SQLite transaction; a span evicted in between is simply not there
+    /// anymore and its sequence acknowledges nothing.
+    pub fn dirty_spans(&self, limit: usize, max_bytes: u64) -> Vec<(u64, StoredSpan)> {
+        let cache = self.read();
         let mut bytes = 0u64;
         let mut result = Vec::new();
-        for span in spans.iter() {
-            if !dirty.contains(&(span.trace_id.clone(), span.span_id.clone())) {
+        for seq in &cache.dirty {
+            let Some(slot) = cache.slots.get(seq) else {
                 continue;
-            }
-            let span_bytes = approx_span_size(span);
+            };
             if !result.is_empty()
-                && (result.len() >= limit || bytes.saturating_add(span_bytes) > max_bytes)
+                && (result.len() >= limit || bytes.saturating_add(slot.bytes) > max_bytes)
             {
                 break;
             }
-            bytes = bytes.saturating_add(span_bytes);
-            result.push(span.clone());
+            bytes = bytes.saturating_add(slot.bytes);
+            result.push((*seq, slot.span.clone()));
         }
         result
     }
 
-    pub fn mark_durable(&self, keys: &[(String, String)]) {
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-        for key in keys {
-            dirty.remove(key);
+    pub fn mark_durable(&self, seqs: &[u64]) {
+        let mut cache = self.write();
+        for seq in seqs {
+            cache.dirty.remove(seq);
         }
     }
 
@@ -1009,70 +1088,66 @@ impl InMemorySpanStorage {
     /// upsert on `(epoch, trace_id, span_id)`, so re-marking already-durable
     /// spans against the same directory is safe.
     pub fn mark_all_dirty(&self) {
-        let spans = self.spans.read().unwrap();
-        let mut dirty = self.dirty_span_ids.write().unwrap();
-        for span in spans.iter() {
-            if !span.pending {
-                dirty.insert((span.trace_id.clone(), span.span_id.clone()));
-            }
-        }
+        let mut cache = self.write();
+        let finals: Vec<u64> = cache
+            .slots
+            .iter()
+            .filter(|(_, slot)| !slot.span.pending)
+            .map(|(seq, _)| *seq)
+            .collect();
+        cache.dirty.extend(finals);
     }
 
     pub fn pending_trace_ids(&self) -> HashSet<String> {
-        self.pending_span_ids
-            .read()
-            .unwrap()
-            .iter()
+        self.read()
+            .pending
+            .keys()
             .map(|(trace_id, _)| trace_id.clone())
             .collect()
     }
 
     /// Remove live snapshots that never received a final span. These records
-    /// are intentionally not written to the durable archive, but they must
-    /// not pin the hot cache forever when a worker crashes or a producer
-    /// abandons a span.
+    /// are intentionally not written to the durable archive, and a worker
+    /// that crashed or abandoned a span must not leave them rendering as
+    /// in-progress forever.
     pub fn expire_pending(&self, max_age_seconds: u64) -> usize {
         if max_age_seconds == 0 {
             return 0;
         }
         let cutoff = now_unix_nanos().saturating_sub(max_age_seconds.saturating_mul(1_000_000_000));
-        let mut spans = self.spans.write().unwrap();
-        let mut index = self.spans_by_trace_id.write().unwrap();
-        let mut pending = self.pending_span_ids.write().unwrap();
-        let mut removed = 0;
-        spans.retain(|span| {
-            let expired = span.pending && span.start_time_unix_nano < cutoff;
-            if expired {
-                pending.remove(&(span.trace_id.clone(), span.span_id.clone()));
-                removed += 1;
-            }
-            !expired
-        });
-        if removed > 0 {
-            index.clear();
-            for (idx, span) in spans.iter().enumerate() {
-                index.entry(span.trace_id.clone()).or_default().insert(idx);
-            }
-            self.hot_bytes
-                .store(spans.iter().map(approx_span_size).sum(), Ordering::Relaxed);
+        let mut cache = self.write();
+        let expired: Vec<u64> = cache
+            .pending
+            .values()
+            .copied()
+            .filter(|seq| {
+                cache.slots.get(seq).is_some_and(|slot| {
+                    slot.span.pending && slot.span.start_time_unix_nano < cutoff
+                })
+            })
+            .collect();
+        for seq in &expired {
+            cache.remove(*seq);
         }
-        removed
+        expired.len()
     }
 
     /// Calculate performance metrics (duration statistics) from stored spans.
     /// Returns (avg_ms, p50_ms, p95_ms, p99_ms, min_ms, max_ms).
     pub fn calculate_performance_metrics(&self) -> (f64, f64, f64, f64, f64, f64) {
-        let spans = self.spans.read().unwrap();
+        let cache = self.read();
 
-        if spans.is_empty() {
+        if cache.slots.is_empty() {
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         }
 
         // Calculate duration in milliseconds for each span. In-flight
         // (pending) spans are excluded — their duration isn't known yet, and
         // counting them as 0/partial would drag down min/percentiles.
-        let mut durations: Vec<f64> = spans
-            .iter()
+        let mut durations: Vec<f64> = cache
+            .slots
+            .values()
+            .map(|slot| &slot.span)
             .filter(|span| !span.pending)
             .map(|span| {
                 let duration_nanos = span
@@ -2183,6 +2258,12 @@ where
 
     let resource = resource_builder.build();
 
+    let attribute_cap = config
+        .trace_storage
+        .as_ref()
+        .map(|storage| storage.max_attribute_bytes)
+        .unwrap_or(DEFAULT_MAX_ATTRIBUTE_BYTES);
+
     // Build tracer provider based on exporter type
     let provider = match config.exporter {
         ExporterType::Otlp => {
@@ -2205,6 +2286,7 @@ where
                                 .map(|storage| storage.memory_low_watermark_ratio)
                                 .unwrap_or(0.75),
                         ));
+                    memory_storage.set_max_attribute_bytes(attribute_cap);
                     attach_trace_disk_storage(&memory_storage);
                     let _ = IN_MEMORY_STORAGE.set(memory_storage);
 
@@ -2240,6 +2322,7 @@ where
                                 .map(|storage| storage.memory_low_watermark_ratio)
                                 .unwrap_or(0.75),
                         ));
+                    memory_storage.set_max_attribute_bytes(attribute_cap);
                     attach_trace_disk_storage(&memory_storage);
                     if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                         tracing::debug!("In-memory span storage already initialized");
@@ -2283,6 +2366,7 @@ where
                     .map(|storage| storage.memory_low_watermark_ratio)
                     .unwrap_or(0.75),
             ));
+            memory_storage.set_max_attribute_bytes(attribute_cap);
             attach_trace_disk_storage(&memory_storage);
             if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                 tracing::debug!("In-memory span storage already initialized");
@@ -2324,6 +2408,7 @@ where
                     .map(|storage| storage.memory_low_watermark_ratio)
                     .unwrap_or(0.75),
             ));
+            memory_storage.set_max_attribute_bytes(attribute_cap);
             attach_trace_disk_storage(&memory_storage);
             if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                 tracing::debug!("In-memory span storage already initialized");
@@ -6093,7 +6178,7 @@ mod tests {
         storage.add_spans(vec![make_stored_span("t1", "a", "op-a", 1_000, 2_000)]);
         storage.add_pending_span(make_pending_span("t1", "p", "op-p", 3_000));
         storage.add_spans(vec![make_stored_span("t1", "b", "op-b", 4_000, 5_000)]);
-        assert_eq!(storage.pending_span_ids.read().unwrap().len(), 1);
+        assert_eq!(storage.pending_trace_ids().len(), 1);
 
         // Final arrives: replaces the pending snapshot at its original position.
         storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 3_000, 9_000)]);
@@ -6103,7 +6188,7 @@ mod tests {
         assert_eq!(spans[1].span_id, "p", "position preserved");
         assert!(!spans[1].pending);
         assert_eq!(spans[1].end_time_unix_nano, 9_000);
-        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+        assert!(storage.pending_trace_ids().is_empty());
         assert_eq!(storage.get_spans_by_trace_id("t1").len(), 3);
 
         // The id is no longer pending-tracked: a duplicate final appends
@@ -6127,7 +6212,7 @@ mod tests {
         assert_eq!(spans[0].trace_id, "t1");
         assert!(spans[0].pending, "t1's snapshot untouched");
         assert_eq!(storage.get_spans_by_trace_id("t2").len(), 1);
-        assert_eq!(storage.pending_span_ids.read().unwrap().len(), 1);
+        assert_eq!(storage.pending_trace_ids().len(), 1);
 
         // t1's own final still replaces its snapshot in place.
         storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1_000, 4_000)]);
@@ -6136,7 +6221,7 @@ mod tests {
         assert_eq!(spans[0].trace_id, "t1");
         assert!(!spans[0].pending);
         assert_eq!(spans[0].end_time_unix_nano, 4_000);
-        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+        assert!(storage.pending_trace_ids().is_empty());
     }
 
     #[test]
@@ -6149,7 +6234,7 @@ mod tests {
             // Third insert evicts the oldest (the pending snapshot).
             make_stored_span("t3", "b", "op-b", 4_000, 5_000),
         ]);
-        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+        assert!(storage.pending_trace_ids().is_empty());
 
         // The late final no longer has a pending predecessor — plain append.
         storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1_000, 6_000)]);
@@ -6169,17 +6254,152 @@ mod tests {
 
         storage.set_max_spans(1); // drains p1
         assert_eq!(storage.len(), 1);
-        let pending: Vec<(String, String)> = storage
-            .pending_span_ids
-            .read()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect();
-        assert_eq!(pending, vec![("t2".to_string(), "p2".to_string())]);
+        assert_eq!(
+            storage.pending_trace_ids(),
+            std::collections::HashSet::from(["t2".to_string()])
+        );
 
         storage.clear();
-        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+        assert!(storage.pending_trace_ids().is_empty());
+    }
+
+    #[test]
+    fn hot_cache_stays_bounded_and_fast_when_nothing_is_marked_durable() {
+        // Nothing acknowledges these spans (no archive attached), so before
+        // the FIFO rewrite every insert rescanned the whole cache. 50k inserts
+        // must stay bounded by bytes and finish in linear time.
+        let cap = 256 * 1024;
+        let storage = InMemorySpanStorage::new_with_limits_and_watermark(1_000_000, cap, 0.75);
+        let started = std::time::Instant::now();
+        for index in 0..50_000u64 {
+            let mut span =
+                make_stored_span("t-bounded", &format!("s{index}"), "op", index, index + 1);
+            span.attributes
+                .push(("payload".to_string(), "x".repeat(1024)));
+            storage.add_spans(vec![span]);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            storage.hot_bytes() <= cap + 2048,
+            "hot bytes {} over the cap {cap}",
+            storage.hot_bytes()
+        );
+        assert!(storage.len() < 50_000);
+        assert!(!storage.is_empty());
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "50k inserts took {elapsed:?}"
+        );
+        // Every resident span is still reachable through the trace index.
+        assert_eq!(
+            storage.get_spans_by_trace_id("t-bounded").len(),
+            storage.len()
+        );
+    }
+
+    #[test]
+    fn expired_pending_then_final_appends_fresh_and_sequences_survive_clear() {
+        let storage = InMemorySpanStorage::new(10);
+        // A start time of 1 ns is older than any cutoff.
+        storage.add_pending_span(make_pending_span("t1", "p", "op-p", 1));
+        storage.add_spans(vec![make_stored_span("t1", "a", "op-a", 5_000, 6_000)]);
+        assert_eq!(storage.len(), 2);
+        let bytes_with_pending = storage.hot_bytes();
+
+        assert_eq!(storage.expire_pending(1), 1);
+        assert_eq!(storage.len(), 1);
+        assert!(storage.hot_bytes() < bytes_with_pending);
+        assert!(storage.pending_trace_ids().is_empty());
+        assert_eq!(
+            storage.get_spans_by_trace_id("t1").len(),
+            1,
+            "the expired snapshot left the trace index"
+        );
+
+        // Its late final has no snapshot to replace: plain append.
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1, 9_000)]);
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2);
+        assert!(!spans[1].pending);
+        assert_eq!(spans[1].span_id, "p");
+
+        // clear() keeps counting sequences: a writer batch snapshotted before
+        // the clear cannot acknowledge spans inserted after it.
+        let stale: Vec<u64> = storage
+            .dirty_spans(16, u64::MAX)
+            .into_iter()
+            .map(|(seq, _)| seq)
+            .collect();
+        assert_eq!(stale.len(), 2);
+        storage.clear();
+        storage.add_spans(vec![make_stored_span("t2", "b", "op-b", 1, 2)]);
+        storage.mark_durable(&stale);
+        assert_eq!(storage.dirty_len(), 1, "the post-clear span is still dirty");
+    }
+
+    #[test]
+    fn long_attribute_values_are_truncated_and_flagged() {
+        let storage = InMemorySpanStorage::new(10);
+        storage.set_max_attribute_bytes(64 * 1024);
+        let mut span = make_stored_span("t1", "a", "op", 1, 2);
+        // Two-byte chars: the cut must land on a char boundary.
+        span.attributes
+            .push(("big".to_string(), "é".repeat(100 * 1024)));
+        span.events.push(StoredSpanEvent {
+            name: "iii.invocation.input".to_string(),
+            timestamp_unix_nano: 1,
+            attributes: vec![
+                ("iii.payload.json".to_string(), "x".repeat(200 * 1024)),
+                ("iii.payload.truncated".to_string(), "false".to_string()),
+            ],
+        });
+        storage.add_spans(vec![span]);
+
+        let stored = &storage.get_spans()[0];
+        let big = &stored
+            .attributes
+            .iter()
+            .find(|(key, _)| key == "big")
+            .expect("big attribute")
+            .1;
+        assert!(big.len() <= 64 * 1024 + 40, "{} bytes", big.len());
+        assert!(big.ends_with("bytes]"), "{}", &big[big.len() - 40..]);
+        let event = &stored.events[0];
+        let payload = &event
+            .attributes
+            .iter()
+            .find(|(key, _)| key == "iii.payload.json")
+            .expect("payload attribute")
+            .1;
+        assert!(payload.len() <= 64 * 1024 + 40);
+        assert!(payload.contains("…[truncated"));
+        assert_eq!(
+            event
+                .attributes
+                .iter()
+                .find(|(key, _)| key == "iii.payload.truncated")
+                .expect("truncated flag")
+                .1,
+            "true"
+        );
+
+        // Zero disables the cap.
+        let uncapped = InMemorySpanStorage::new(10);
+        uncapped.set_max_attribute_bytes(0);
+        let mut span = make_stored_span("t1", "b", "op", 1, 2);
+        span.attributes
+            .push(("big".to_string(), "x".repeat(200 * 1024)));
+        uncapped.add_spans(vec![span]);
+        assert_eq!(
+            uncapped.get_spans()[0]
+                .attributes
+                .iter()
+                .find(|(key, _)| key == "big")
+                .expect("big attribute")
+                .1
+                .len(),
+            200 * 1024
+        );
     }
 
     #[test]

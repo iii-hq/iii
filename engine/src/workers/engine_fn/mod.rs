@@ -76,6 +76,17 @@ pub struct CreateChannelOutput {
     pub reader: StreamChannelRef,
 }
 
+/// Read-only observability builtins that stay in the default
+/// `engine::functions::list` alongside `engine::queue::*`. The `*::clear`
+/// siblings and the rest of `engine::` remain `include_internal`-only.
+const DISCOVERABLE_ENGINE_FUNCTIONS: [&str; 5] = [
+    "engine::traces::list",
+    "engine::traces::spans",
+    "engine::traces::tree",
+    "engine::traces::group_by",
+    "engine::logs::list",
+];
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct FunctionsListInput {
     /// Case-insensitive substring matched against `function_id` and
@@ -1632,16 +1643,20 @@ impl EngineFunctionsWorker {
         if !input.include_internal.unwrap_or(false) {
             // Hide engine-internal builtins by default, EXCEPT the caller-facing
             // queue ops (`engine::queue::*`: list_topics / topic_stats /
-            // dlq_topics / dlq_messages). Those are a public queue/DLQ API a
-            // client legitimately needs to discover — keeping them out of the
-            // default list left agents unable to find the DLQ-inspection surface.
+            // dlq_topics / dlq_messages) and the read side of observability
+            // (`DISCOVERABLE_ENGINE_FUNCTIONS`). Those are public APIs a client
+            // legitimately needs to discover — keeping them out of the default
+            // list left agents unable to find the DLQ-inspection surface, and
+            // shelling out to the CLI to read traces `functions::info` would
+            // happily describe.
             // Also hide any handler explicitly tagged `metadata.internal == true`
             // (e.g. `iii-observability::on-config-change`,
             // `iii-http::on-config-change`). These are configuration-trigger
             // fan-out targets, invoked by id — never meant for discovery.
             functions.retain(|f| {
                 let is_engine_internal = f.function_id.starts_with("engine::")
-                    && !f.function_id.starts_with("engine::queue::");
+                    && !f.function_id.starts_with("engine::queue::")
+                    && !DISCOVERABLE_ENGINE_FUNCTIONS.contains(&f.function_id.as_str());
                 let is_tagged_internal = f
                     .metadata
                     .as_ref()
@@ -3325,6 +3340,52 @@ mod tests {
         match all {
             FunctionResult::Success(result) => {
                 assert_eq!(result.functions.len(), 2);
+            }
+            _ => panic!("expected functions_list success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_list_keeps_read_only_observability_discoverable() {
+        let (engine, module) = setup_engine_and_module();
+
+        for function_id in [
+            "engine::traces::list",
+            "engine::traces::tree",
+            "engine::logs::list",
+            "engine::traces::clear",
+            "engine::logs::clear",
+            "engine::functions::list",
+        ] {
+            register_simple_function(&engine, function_id, None);
+        }
+
+        let filtered = module
+            .functions_list(
+                FunctionsListInput {
+                    include_internal: None,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match filtered {
+            FunctionResult::Success(result) => {
+                let mut ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                ids.sort_unstable();
+                assert_eq!(
+                    ids,
+                    vec![
+                        "engine::logs::list",
+                        "engine::traces::list",
+                        "engine::traces::tree"
+                    ],
+                    "read side visible, clear + plumbing hidden"
+                );
             }
             _ => panic!("expected functions_list success"),
         }

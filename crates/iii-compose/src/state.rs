@@ -150,11 +150,18 @@ pub enum Reconciliation {
     /// A live PID that is not provably the recorded process — a recycled PID, or
     /// a platform that cannot fingerprint. Never signalled; reported instead.
     Unverifiable,
+    /// This daemon stopped it on purpose and recorded that: nothing to adopt,
+    /// nothing to report. `down` leaves the record behind and `restart`
+    /// re-opens the project right after it.
+    Stopped,
 }
 
 /// Read-only: inspects the recorded child and returns what to do. Signals
 /// nothing, kills nothing.
 pub fn reconcile(record: &ChildRecord) -> Reconciliation {
+    if record.status == ChildStatus::Stopped {
+        return Reconciliation::Stopped;
+    }
     if !crate::process::is_running(record.pid) {
         return Reconciliation::Gone;
     }
@@ -307,4 +314,31 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::{ChildRecord, ChildStatus, Reconciliation, reconcile};
+    use crate::process::BirthIdentity;
+
+    #[test]
+    fn a_record_this_daemon_stopped_is_neither_gone_nor_adoptable() {
+        let dead = ChildRecord::new(
+            u32::MAX - 7,
+            BirthIdentity::Unavailable,
+            ChildStatus::Stopped,
+        );
+        assert_eq!(reconcile(&dead), Reconciliation::Stopped);
+        // A live, even verifiable-looking pid does not turn a deliberate stop
+        // back into an adoption.
+        let alive = ChildRecord::new(
+            std::process::id(),
+            BirthIdentity::Unavailable,
+            ChildStatus::Stopped,
+        );
+        assert_eq!(reconcile(&alive), Reconciliation::Stopped);
+        // Anything else still goes through the liveness check.
+        let failed = ChildRecord::new(u32::MAX - 7, BirthIdentity::Unavailable, ChildStatus::Ready);
+        assert_eq!(reconcile(&failed), Reconciliation::Gone);
+    }
 }
