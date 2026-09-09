@@ -4047,6 +4047,21 @@ impl Worker for ObservabilityWorker {
                                 archive.mark_degraded(error);
                             }
                         }
+                        // The hot cache is bounded, but glibc keeps the pages
+                        // its churn freed. Hand them back so RSS follows the
+                        // cache instead of the last burst (MOT-4733).
+                        if let Ok(Some((before, after))) =
+                            tokio::task::spawn_blocking(crate::memory::release_freed_memory).await
+                        {
+                            let released = before.saturating_sub(after);
+                            if released >= 64 << 20 {
+                                tracing::info!(
+                                    released_mb = released >> 20,
+                                    rss_mb = after >> 20,
+                                    "returned freed heap to the OS"
+                                );
+                            }
+                        }
                     }
                 }
             }
