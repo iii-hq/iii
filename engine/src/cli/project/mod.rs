@@ -75,6 +75,13 @@ pub struct InitArgs {
     /// `.iii/project.ini` is always allowed (idempotent re-init).
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
+
+    /// Take the 5-minute tour of iii: scaffold the "harness" template into
+    /// ./learn-iii (or learn-iii-1, learn-iii-2, ... when taken) and start
+    /// `iii compose --up` inside it. Cannot be combined with any other
+    /// scaffolding option.
+    #[arg(long = "learn-iii", conflicts_with_all = ["name", "directory", "template", "docker", "template_dir"])]
+    pub learn_iii: bool,
 }
 
 impl InitArgs {
@@ -111,6 +118,9 @@ pub async fn run(args: ProjectArgs) -> i32 {
 }
 
 async fn run_init(args: InitArgs) -> i32 {
+    if args.learn_iii {
+        return run_learn_iii(args).await;
+    }
     if template_flow_requested(&args) {
         return run_init_with_template(args).await;
     }
@@ -225,7 +235,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         languages: None,
         skip_tool_check: args.skip_iii,
         skip_install: false,
-        skip_next_steps: false,
+        // --learn-iii prints its own "starting the tour" line right after.
+        skip_next_steps: args.learn_iii,
         yes: false,
     };
 
@@ -287,6 +298,61 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 
     crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id_for_event);
     0
+}
+
+const LEARN_III_TEMPLATE: &str = "harness";
+const LEARN_III_DIR: &str = "learn-iii";
+
+/// `iii project init --learn-iii`: same as `iii project init -t harness
+/// learn-iii`, then `iii compose --up` from inside the new directory.
+async fn run_learn_iii(mut args: InitArgs) -> i32 {
+    let dir = next_free_dir(Path::new(""), LEARN_III_DIR);
+    args.template = Some(LEARN_III_TEMPLATE.to_string());
+    args.directory = Some(dir.to_string_lossy().into_owned());
+
+    let code = run_init_with_template(args).await;
+    if code != 0 {
+        return code;
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            return print_err(
+                "could not locate the iii binary",
+                &e.to_string(),
+                &format!("cd {} && iii compose --up", dir.display()),
+            );
+        }
+    };
+
+    let hint = format!("cd {} && iii compose --up", dir.display());
+    eprintln!();
+    eprintln!("  {} starting the tour: {}", "▶".green(), hint.bold());
+    eprintln!();
+
+    match tokio::process::Command::new(exe)
+        .args(["compose", "--up"])
+        .current_dir(&dir)
+        .status()
+        .await
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => print_err("could not start `iii compose --up`", &e.to_string(), &hint),
+    }
+}
+
+/// `base` if it does not exist under `parent`, else the first free
+/// `base-1`, `base-2`, ...
+fn next_free_dir(parent: &Path, base: &str) -> PathBuf {
+    let first = parent.join(base);
+    if !first.exists() {
+        return first;
+    }
+    (1u32..)
+        .map(|i| parent.join(format!("{base}-{i}")))
+        .find(|p| !p.exists())
+        .expect("unbounded range always yields a free name")
 }
 
 async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
@@ -506,4 +572,62 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
     }
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        action: ProjectAction,
+    }
+
+    #[test]
+    fn learn_iii_parses_alone() {
+        let cli = Cli::try_parse_from(["project", "init", "--learn-iii"]).unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert!(init.learn_iii);
+    }
+
+    #[test]
+    fn learn_iii_rejects_template_name_and_directory() {
+        for extra in [
+            &["-t", "quickstart"][..],
+            &["my-app"],
+            &["-d", "x"],
+            &["--docker"],
+            &["--template-dir", "x"],
+        ] {
+            let mut argv = vec!["project", "init", "--learn-iii"];
+            argv.extend_from_slice(extra);
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "--learn-iii should conflict with {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_free_dir_skips_taken_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii")
+        );
+        std::fs::create_dir(tmp.path().join("learn-iii")).unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii-1")
+        );
+        std::fs::create_dir(tmp.path().join("learn-iii-1")).unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii-2")
+        );
+    }
 }

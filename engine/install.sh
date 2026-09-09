@@ -850,5 +850,31 @@ case ":$PATH:" in
     ;;
 esac
 
-echo ""
-echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"
+# ---------------------------------------------------------------------------
+# Onboarding: offer a 5-minute tour.
+# stdin is the script itself under `curl ... | sh`, so read the answer from
+# /dev/tty. Skip silently when no terminal is attached (CI, Dockerfiles).
+# ---------------------------------------------------------------------------
+
+tour_url="https://iii.dev/docs/quickstart"
+
+if [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  echo ""
+  printf 'Would you like a 5 minute tour of iii? [Y/n] ' >/dev/tty
+  read -r _tour_answer </dev/tty || _tour_answer="n"
+  case "$_tour_answer" in
+    ""|[Yy]|[Yy][Ee][Ss])
+      # Older binaries lack --learn-iii; fall back to the quickstart URL.
+      if "$bin_dir/$BIN_NAME" project init --help 2>/dev/null | grep -q -- '--learn-iii'; then
+        exec "$bin_dir/$BIN_NAME" project init --learn-iii
+      fi
+      echo "Tour: $tour_url"
+      ;;
+    *)
+      echo "No problem. Start anytime: $tour_url"
+      ;;
+  esac
+else
+  echo ""
+  echo "If you're new to iii, get started quickly here: $tour_url"
+fi
