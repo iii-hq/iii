@@ -672,10 +672,7 @@ impl Daemon {
             ));
         }
 
-        if yaml_changed {
-            write_atomically(path, &edited)?;
-        }
-        prepared.write_if_changed()?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
         let root_operation_id = operation_id.clone();
@@ -953,10 +950,7 @@ impl Daemon {
             ));
         }
 
-        if yaml_changed {
-            write_atomically(path, &edited)?;
-        }
-        prepared.write_if_changed()?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
             return Ok(MutationOutcome::from_operations(
@@ -1031,7 +1025,7 @@ impl Daemon {
             .rev()
             .filter(|worker| requested.contains(worker.as_str()))
             .collect::<Vec<_>>();
-        let mut edited = text;
+        let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
                 return Err(ComposeError::UnknownContainer {
@@ -1050,8 +1044,7 @@ impl Daemon {
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
-        write_atomically(path, &edited)?;
-        prepared.write_if_changed()?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
             .reconcile_removals(current, &removal_order, operation_id)
@@ -1470,6 +1463,33 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
             source,
         }
     })
+}
+
+/// Persists one compose mutation while keeping its YAML and lock consistent.
+///
+/// The lock writer is atomic by itself. If it fails after the compose file was
+/// replaced, restore the previous compose text while the mutation lock is held.
+fn persist_mutation(
+    path: &Path,
+    previous: &str,
+    edited: &str,
+    prepared: &crate::lockfile::PreparedLock,
+) -> Result<()> {
+    let compose_changed = previous != edited;
+    if compose_changed {
+        write_atomically(path, edited)?;
+    }
+    if let Err(lock_error) = prepared.write_if_changed() {
+        if compose_changed && let Err(rollback_error) = write_atomically(path, previous) {
+            return Err(ComposeError::MutationRollbackFailed {
+                path: path.to_path_buf(),
+                lock_error: lock_error.to_string(),
+                rollback_error: rollback_error.to_string(),
+            });
+        }
+        return Err(lock_error);
+    }
+    Ok(())
 }
 
 /// Creates an empty, collision-safe staging file, with mode 0600 on Unix.
@@ -2173,6 +2193,27 @@ containers:
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[tokio::test]
+    async fn failed_lock_write_restores_the_previous_compose_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let previous = "containers:\n  api:\n    worker: path://.\n";
+        let edited = "namespace: changed\ncontainers:\n  api:\n    worker: path://.\n";
+        std::fs::write(&path, previous).unwrap();
+
+        let mut compose = crate::ComposeFile::parse(edited, &path).unwrap();
+        let prepared = crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new())
+            .await
+            .unwrap();
+        std::fs::create_dir(crate::lockfile::lock_path(&path)).unwrap();
+
+        let error = persist_mutation(&path, previous, edited, &prepared)
+            .expect_err("the lock path is a directory");
+
+        assert_eq!(error.code(), "IO_ERROR");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), previous);
     }
 
     #[cfg(unix)]

@@ -21,6 +21,13 @@ pub enum ComposeError {
         source: std::io::Error,
     },
 
+    #[error("cannot restore {path} after its lock update failed ({lock_error}): {rollback_error}")]
+    MutationRollbackFailed {
+        path: PathBuf,
+        lock_error: String,
+        rollback_error: String,
+    },
+
     #[error("{path} is not valid compose YAML: {message}")]
     Yaml { path: PathBuf, message: String },
 
@@ -508,6 +515,7 @@ impl ComposeError {
             // Any read or write compose attempted. `RelativeFileMissing` is
             // the one that really is about a compose file.
             Self::Io { .. } => "IO_ERROR",
+            Self::MutationRollbackFailed { .. } => "COMPOSE_MUTATION_ROLLBACK_FAILED",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
             Self::InvalidLock { .. } => "INVALID_COMPOSE_LOCK",
             Self::FrozenLockMissing { .. } => "COMPOSE_LOCK_REQUIRED",
