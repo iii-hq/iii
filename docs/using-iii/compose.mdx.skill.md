@@ -64,9 +64,10 @@ systems, process names retain their previous behavior.
 
 ### Compose logs
 
-Compose logs stdout and stderr output from started workers to
-`<project-dir>/.iii/compose/<namespace>/logs/`. The managed engine writes to `engine.log` in the
-same namespace directory.
+Compose logs stdout and stderr output from started workers to `logs/` in the state directory.
+The default state directory is `<project-dir>/.iii/compose/<namespace>/`. When `III_COMPOSE_STATE_DIR`
+is set, it is `$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The managed engine writes to
+`engine.log` in that same state directory.
 
 Logs are rotated every 10 MiB. Compose keeps up to 40 MiB of logs. Compose strips terminal control
 sequences before persisting the engine output.
@@ -710,15 +711,18 @@ directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces.
-Two compose files in the same directory must also use different namespaces.
+With the default state layout, two compose files in the same directory must also use different
+namespaces.
 
 For a read-only project directory, set `III_COMPOSE_STATE_DIR` to a writable directory. Project state
 is then stored at `$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug combines the project
 directory name with a hash of the canonical compose file path, keeping projects with the same
-directory name separate.
+directory name separate. With this override, two compose files in the same directory have separate
+state directories and can use the same namespace on separate engines.
 
 The package cache stays shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
-Add `.iii/compose/` to the project's `.gitignore` to exclude generated state from version control.
+Add `**/.iii/compose/` to the repository's `.gitignore` to exclude generated state, including state
+from nested projects, from version control.
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml

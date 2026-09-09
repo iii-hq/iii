@@ -12,7 +12,7 @@ target/
 .bin/
 
 # Runtime data
-.iii/compose/
+**/.iii/compose/
 tmp/
 data/
 *.log
