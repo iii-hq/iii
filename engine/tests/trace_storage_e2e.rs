@@ -91,6 +91,9 @@ fn start_archive(config: TraceStorageConfig) -> Arc<InMemorySpanStorage> {
         10_000,
         128 * MIB as u64,
     ));
+    // These tests size spans in MiB to exercise the disk cap; keep the
+    // ingest-time attribute cap out of the way.
+    hot.set_max_attribute_bytes(0);
     trace_store::attach(&hot);
     hot
 }
@@ -526,4 +529,51 @@ fn disk_full_degrades_without_partial_commit_and_keeps_committed_data() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Memory is the hard limit: a burst larger than the hot cache evicts
+/// finalized spans the archive never saw, and says so.
+#[test]
+#[serial]
+fn burst_above_memory_cap_stays_bounded_and_reports_partial() {
+    let _reset = ResetTraceStorage;
+    trace_store::reset();
+    let root = tempfile::tempdir().expect("temp root");
+    trace_store::configure(Some(config(root.path())));
+    assert_eq!(trace_store::status()["archive"], "healthy");
+    let hot = Arc::new(InMemorySpanStorage::new_with_limits(
+        10_000,
+        16 * MIB as u64,
+    ));
+    hot.set_max_attribute_bytes(0);
+    trace_store::attach(&hot);
+
+    // One call holds the lock for the whole burst, so the writer cannot
+    // interleave: most of these 40 MiB-sized spans leave before the archive
+    // ever sees them.
+    let burst: Vec<StoredSpan> = (0..40)
+        .map(|index| {
+            span(
+                &format!("burst-{index:02}"),
+                "span-1",
+                index as u64 + 1,
+                MIB,
+            )
+        })
+        .collect();
+    hot.add_spans(burst);
+
+    assert!(
+        hot.hot_bytes() <= 16 * MIB as u64 + (MIB as u64 * 11 / 10),
+        "hot cache above its cap: {}",
+        hot.hot_bytes()
+    );
+    assert!(hot.len() < 40, "{} spans resident", hot.len());
+    let status = trace_store::status();
+    assert!(
+        status["known_dropped_spans"].as_u64().unwrap_or(0) > 0,
+        "{status}"
+    );
+    assert_eq!(status["completeness"], "partial");
+    trace_store::flush().expect("the survivors still persist");
 }
