@@ -390,6 +390,49 @@ async fn update_rejects_an_engine_change_before_editing_the_file() {
 }
 
 #[tokio::test]
+async fn update_without_workers_is_unchanged_when_only_path_workers_are_declared() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, COMPOSE).unwrap();
+    let daemon = daemon();
+
+    let outcome = daemon
+        .update(Some(&file), &[], "update-all-path-workers".to_string())
+        .await
+        .expect("a project with no package workers has nothing to update");
+
+    assert_eq!(
+        serde_json::to_value(outcome).unwrap(),
+        serde_json::json!({"status": "ok", "changed": false})
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), COMPOSE);
+    assert!(
+        daemon.list().await.is_empty(),
+        "no project should be started"
+    );
+}
+
+#[tokio::test]
+async fn update_without_workers_rejects_an_engine_change_before_editing() {
+    let containers =
+        "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n";
+    let (_tmp, file, daemon) = managed_mutation_fixture(containers);
+    let changed = change_managed_engine(&file, containers);
+
+    let err = daemon
+        .update(
+            Some(&file),
+            &[],
+            "update-all-after-engine-change".to_string(),
+        )
+        .await
+        .expect_err("update all must reject the changed managed engine");
+
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+#[tokio::test]
 async fn update_accepts_multiple_unchanged_package_workers() {
     let containers = concat!(
         "  state:\n    worker: package://api.workers.iii.dev/state\n    version: '1.0.0'\n",

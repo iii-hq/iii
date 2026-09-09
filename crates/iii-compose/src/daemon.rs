@@ -126,7 +126,7 @@ impl EnginePolicy {
 ///
 /// Registry graphs and direct request lists can contain the same container
 /// more than once. Identical declarations collapse into one edit. Conflicting
-/// declarations reject the batch before the file is read or edited, so
+/// declarations reject the batch before the file is edited, so
 /// argument order cannot select the winning declaration.
 fn coalesce_containers(
     containers: Vec<crate::edit::NewContainer>,
@@ -154,6 +154,36 @@ fn coalesce_containers(
     }
 
     Ok(unique)
+}
+
+/// Select declared packages when no worker specs were supplied.
+fn workers_to_update(
+    compose: &crate::ComposeFile,
+    workers: &[String],
+) -> Result<Vec<crate::edit::NewContainer>> {
+    if !workers.is_empty() {
+        return workers
+            .iter()
+            .map(|worker| crate::edit::parse_worker(worker))
+            .collect();
+    }
+
+    Ok(compose
+        .containers
+        .iter()
+        .filter_map(|(key, container)| match &container.worker {
+            crate::config::WorkerSource::Package { reference } => Some(crate::edit::NewContainer {
+                key: key.clone(),
+                source: crate::edit::Source::Package {
+                    reference: reference.clone(),
+                    version: None,
+                },
+                start_after: container.start_after.clone(),
+                fields: serde_yaml::Mapping::new(),
+            }),
+            crate::config::WorkerSource::Path { .. } => None,
+        })
+        .collect())
 }
 
 pub struct Daemon {
@@ -646,6 +676,8 @@ impl Daemon {
     ///
     /// `worker=state` takes whatever the registry calls latest;
     /// `worker=state@1.2.3` takes that one, which is how a downgrade is spelled.
+    /// An empty worker list selects every declared package at its latest
+    /// version, using its existing registry reference. Path workers are skipped.
     /// Every container has to be declared already. This edits existing lines;
     /// `compose::add` is the call that adds them.
     ///
@@ -657,25 +689,6 @@ impl Daemon {
         workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        if workers.is_empty() {
-            return Err(ComposeError::InvalidWorkerSpec {
-                spec: String::new(),
-                reason: "no worker was named. Pass worker=<name>, worker=<name@version>, or a workers list"
-                    .to_string(),
-            });
-        }
-
-        let asked = workers
-            .iter()
-            .map(|worker| crate::edit::parse_worker(worker))
-            .collect::<Result<Vec<_>>>()?;
-        let requested = asked
-            .iter()
-            .map(|worker| worker.key.clone())
-            .collect::<Vec<_>>();
-        let primary = requested[0].clone();
-        let asked = coalesce_containers(asked)?;
-
         let path = self.resolve_file(file)?;
         let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
@@ -684,6 +697,13 @@ impl Daemon {
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
+        let asked = workers_to_update(&compose, workers)?;
+        let requested = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        let primary = requested.first().map(String::as_str);
+        let asked = coalesce_containers(asked)?;
         let mut wanted = Vec::with_capacity(asked.len());
         for worker in &asked {
             let crate::edit::Source::Package { reference, version } = &worker.source else {
@@ -728,7 +748,7 @@ impl Daemon {
 
         let version = wanted
             .iter()
-            .find(|worker| worker.key == primary)
+            .find(|worker| Some(worker.key.as_str()) == primary)
             .and_then(|worker| match &worker.source {
                 crate::edit::Source::Package { version, .. } => version.clone(),
                 crate::edit::Source::Path { .. } => None,
@@ -749,7 +769,7 @@ impl Daemon {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
-                Some(&primary),
+                primary,
                 Some(&requested),
                 version,
                 std::iter::empty::<&OpResult>(),
@@ -770,7 +790,7 @@ impl Daemon {
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
-            Some(&primary),
+            primary,
             Some(&requested),
             version,
             [&down, &up].into_iter(),
@@ -1464,6 +1484,71 @@ fn expand_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_without_workers_selects_packages_with_their_declared_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = crate::ComposeFile::parse(
+            r#"
+containers:
+  database:
+    worker: package://private.example/team/state
+    version: '1.0.0'
+  api:
+    worker: path://.
+    scripts:
+      run: ./api
+  cache:
+    worker: package://api.workers.iii.dev/cache
+    version: '2.0.0'
+    start_after: [database]
+"#,
+            tmp.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+
+        let selected = workers_to_update(&compose, &[]).unwrap();
+
+        assert_eq!(
+            selected,
+            vec![
+                crate::edit::NewContainer {
+                    key: "database".to_string(),
+                    source: crate::edit::Source::Package {
+                        reference: "private.example/team/state".to_string(),
+                        version: None,
+                    },
+                    start_after: Vec::new(),
+                    fields: serde_yaml::Mapping::new(),
+                },
+                crate::edit::NewContainer {
+                    key: "cache".to_string(),
+                    source: crate::edit::Source::Package {
+                        reference: "api.workers.iii.dev/cache".to_string(),
+                        version: None,
+                    },
+                    start_after: vec!["database".to_string()],
+                    fields: serde_yaml::Mapping::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn update_with_a_worker_keeps_the_explicit_selection_and_version() {
+        let compose = crate::ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://state\n    version: '1.0.0'\n  cache:\n    worker: package://cache\n    version: '2.0.0'\n",
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+
+        let selected = workers_to_update(&compose, &["state@1.2.3".to_string()]).unwrap();
+
+        assert_eq!(
+            selected,
+            vec![crate::edit::parse_worker("state@1.2.3").unwrap()]
+        );
+    }
 
     fn package(name: &str) -> crate::edit::NewContainer {
         crate::edit::NewContainer {
