@@ -72,6 +72,16 @@ pub struct ComposeCli {
     #[arg(short = 'f', long, value_name = "PATH", requires = "up")]
     pub file: Option<PathBuf>,
 
+    /// Print every project worker's stdout and stderr as it arrives, each
+    /// line prefixed `[worker:stream]`. Works for a bare daemon and with
+    /// `--up`; the same output stays retained for `iii compose logs`.
+    #[arg(short = 'F', long)]
+    pub follow: bool,
+
+    /// With `--follow`, print only one process stream.
+    #[arg(long, value_enum, requires = "follow")]
+    pub stream: Option<LogStream>,
+
     #[command(subcommand)]
     pub command: Option<ComposeSubcommand>,
 }
@@ -158,6 +168,10 @@ pub enum ComposeCommand {
         file: PathBuf,
         /// Whether to bring `file` up before the first call arrives.
         start: bool,
+        /// Print worker output to the terminal while serving.
+        follow: bool,
+        /// With `follow`, only this process stream.
+        stream: Option<LogStream>,
     },
     /// Read process output through the already-running daemon.
     Logs {
@@ -177,7 +191,12 @@ impl ComposeCli {
         if let Some(command) = &self.command {
             return match command {
                 ComposeSubcommand::Build(args) => {
-                    if self.engine.is_some() || self.ns.is_some() || self.up || self.file.is_some()
+                    if self.engine.is_some()
+                        || self.ns.is_some()
+                        || self.up
+                        || self.file.is_some()
+                        || self.follow
+                        || self.stream.is_some()
                     {
                         return Err(ComposeError::BuildConflictsWithServeOptions);
                     }
@@ -217,6 +236,8 @@ impl ComposeCli {
             explicit_daemon_namespace,
             file,
             start: self.up,
+            follow: self.follow,
+            stream: self.stream,
         })
     }
 

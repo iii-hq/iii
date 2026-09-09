@@ -332,7 +332,7 @@ impl Daemon {
     /// Every project that finished loading. A cell still being filled has no
     /// project to act on yet, so it is skipped rather than waited for: the
     /// caller asking for a list must not block on somebody else's `up`.
-    async fn loaded(&self) -> Vec<Arc<Project>> {
+    pub(crate) async fn loaded(&self) -> Vec<Arc<Project>> {
         self.projects
             .lock()
             .await

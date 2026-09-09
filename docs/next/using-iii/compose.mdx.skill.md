@@ -91,6 +91,16 @@ iii compose logs queue --namespace dev --engine ws://127.0.0.1:49134
 
 Each line is prefixed with the worker name, and stderr uses a bold prefix on a terminal.
 
+To see the same output live in the daemon's own terminal, pass `--follow` to `iii compose`:
+
+```bash
+iii compose --up --follow            # start the project and print every worker's output
+iii compose -F --stream stderr       # bare daemon, stderr only
+```
+
+Each line is prefixed `[worker:stdout]` or `[worker:stderr]`, colored per worker, with stderr in
+bold. The output stays retained, so `iii compose logs` still works alongside it.
+
 ### Running it in the background
 
 Compose does not background or daemonize itself.

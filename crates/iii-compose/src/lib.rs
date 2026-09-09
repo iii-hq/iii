@@ -122,7 +122,17 @@ pub async fn run(cli: ComposeCli) -> i32 {
             explicit_daemon_namespace,
             file,
             start,
-        } => match serve(explicit_engine_url, explicit_daemon_namespace, file, start).await {
+            follow,
+            stream,
+        } => match serve(
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            start,
+            follow.then_some(FollowOutput { stream }),
+        )
+        .await
+        {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -338,6 +348,12 @@ fn print_worker_logs(
     stdout.flush()
 }
 
+/// `--follow`: worker output is echoed to the terminal while the daemon serves.
+#[derive(Debug, Clone, Copy)]
+struct FollowOutput {
+    stream: Option<logs::LogStream>,
+}
+
 /// Serves `compose::*` until asked to stop.
 ///
 /// `file` configures the daemon when it exists. `start` controls only whether
@@ -347,6 +363,7 @@ async fn serve(
     explicit_daemon_namespace: Option<String>,
     file: std::path::PathBuf,
     start: bool,
+    follow: Option<FollowOutput>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -448,6 +465,7 @@ async fn serve(
             managed_engine.as_ref(),
             engine_policy,
             shutdown,
+            follow,
         )
         .await
     };
@@ -506,6 +524,7 @@ struct InitialProject {
     progress: report::StartupProgress,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
@@ -514,6 +533,7 @@ async fn serve_daemon(
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
     shutdown: shutdown::ShutdownSignal,
+    follow: Option<FollowOutput>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -698,9 +718,18 @@ async fn serve_daemon(
     // two operations' cursor movement.
     remote::register_mutations(&daemon);
 
+    // Started only now: the startup tree above owns the terminal until it is
+    // complete, and worker lines drawn through it would tear the block.
+    let follower = follow.map(|follow| {
+        tokio::spawn(follow_project_output(
+            std::sync::Arc::clone(&daemon),
+            follow.stream,
+        ))
+    });
+
     // Serve until asked to stop, or until the engine refuses this identity.
     //
-    loop {
+    let result = loop {
         let mut interrupted = shutdown.clone();
         let stop = tokio::select! {
             _ = interrupted.wait() => true,
@@ -710,7 +739,7 @@ async fn serve_daemon(
         // `compose::stop` answered its caller a moment ago; leaving now is
         // what makes that answer true.
         if stop || daemon.stop_requested() {
-            break;
+            break Ok(());
         }
 
         if let Some(engine) = managed_engine
@@ -721,20 +750,85 @@ async fn serve_daemon(
                 "managed engine exited; stopping every project...".dimmed()
             );
             daemon.shutdown().await;
-            return Err(engine_exited(engine, status).await);
+            break Err(engine_exited(engine, status).await);
         }
 
         if let Some(error) = daemon.fatal_error() {
             // Not `shutdown`: children recorded under these ids may belong to
             // the daemon that already holds them.
             daemon.abandon().await;
-            return Err(rejected(&daemon, &error));
+            break Err(rejected(&daemon, &error));
         }
+    };
+    if let Some(follower) = follower {
+        follower.abort();
     }
+    result?;
 
     println!("{}", "stopping every project...".dimmed());
     daemon.shutdown().await;
     Ok(())
+}
+
+/// Echoes worker output for every project this daemon has loaded, through the
+/// same retained log store `iii compose logs` reads. Each project is polled
+/// with a short wait so one silent project cannot hold back another's lines.
+async fn follow_project_output(
+    daemon: std::sync::Arc<daemon::Daemon>,
+    stream: Option<logs::LogStream>,
+) {
+    use std::collections::BTreeMap;
+
+    const POLL_WAIT_MS: u64 = 1_000;
+    let mut cursors: BTreeMap<std::path::PathBuf, BTreeMap<String, logs::LogCursor>> =
+        BTreeMap::new();
+    loop {
+        let projects = daemon.loaded().await;
+        if projects.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(POLL_WAIT_MS)).await;
+            continue;
+        }
+        for project in projects {
+            let entry = cursors
+                .entry(project.file_path().to_path_buf())
+                .or_default();
+            // First read of a project shows what its workers printed while
+            // starting; after that only new lines.
+            let tail = if entry.is_empty() {
+                logs::DEFAULT_TAIL_LINES
+            } else {
+                0
+            };
+            if let Ok(outcome) = project
+                .logs(None, entry.clone(), tail, stream, POLL_WAIT_MS)
+                .await
+            {
+                print_followed_output(outcome, entry);
+            }
+        }
+    }
+}
+
+fn print_followed_output(
+    outcome: logs::LogsOutcome,
+    cursors: &mut std::collections::BTreeMap<String, logs::LogCursor>,
+) {
+    use colored::Colorize;
+
+    for batch in outcome.containers {
+        let color = report::container_color(&batch.container);
+        for entry in batch.entries {
+            let tag = format!("[{}:{}]", batch.container, entry.stream.as_str()).color(color);
+            let tag = match entry.stream {
+                logs::LogStream::Stdout => tag,
+                logs::LogStream::Stderr => tag.bold(),
+            };
+            report::line(&format!("{tag} {}", entry.message));
+        }
+        if let Some(cursor) = batch.cursor {
+            cursors.insert(batch.container, cursor);
+        }
+    }
 }
 
 async fn engine_exited(
