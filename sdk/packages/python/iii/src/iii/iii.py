@@ -422,6 +422,7 @@ class III:
             self._ws = await websockets.connect(
                 self._address,
                 additional_headers=self._options.headers,
+                max_size=16 * 1024 * 1024,  # Bounded engine-message envelope, not library 1 MiB default.
             )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
