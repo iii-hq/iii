@@ -344,6 +344,21 @@ iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_
 { "rows": [{ "day": "2026-05-27", "count": 5 }], "row_count": 1 }
 ```
 
+Now follow one of them a few times (each click goes through the queue instead of a blocking write),
+then change its target. `PUT /links/:code` publishes `link.updated` durably and the subscriber refreshes
+the cache, so `link::resolve` returns the new URL right away:
+
+```bash
+for _ in 1 2 3; do curl -s -o /dev/null http://127.0.0.1:3111/s/analyticslink1; done
+curl -s -X PUT http://127.0.0.1:3111/links/analyticslink1 \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev/updated"}'
+iii trigger link::resolve code=analyticslink1
+```
+
+```json
+{ "url": "https://iii.dev/updated" }
+```
+
 ## Conclusion
 
 Redirects no longer wait on a database write: click rows ride a queue, drained in the background.

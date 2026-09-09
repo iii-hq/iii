@@ -181,8 +181,8 @@ npm create vite@latest frontend -- --template react-ts
 ```
 
 <Note>
-  Vite may ask you to "Install with npm and start now", answer no here as we first need to install
-  `iii-browser-sdk`
+  `create-vite` asks a few questions: answer yes to "Ok to proceed?", pick a linter or none, and
+  answer no to "Install with npm and start now?", since `iii-browser-sdk` has to be installed first.
 </Note>
 
 Now install the dependencies:
