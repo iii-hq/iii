@@ -48,6 +48,7 @@ iii compose <COMMAND>
 | `--engine <URL>` | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
+| `--frozen` | Require worker-compose.lock to match the compose file and use only its exact package resolutions. Missing cache artifacts are downloaded from the URLs in the lock |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
 
 #### `iii compose build`
@@ -61,6 +62,7 @@ iii compose build [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
+| `--frozen` | Require an existing, current lock and do not resolve package selectors |
 
 #### `iii compose logs`
 
