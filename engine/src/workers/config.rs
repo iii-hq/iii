@@ -2350,6 +2350,54 @@ modules:
     }
 
     #[tokio::test]
+    async fn worker_manager_moves_to_a_free_port_only_when_allowed() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+
+        for (allow, expect_ok) in [(false, false), (true, true)] {
+            let builder = EngineBuilder::new()
+                .add_worker(
+                    "iii-worker-manager",
+                    Some(serde_json::json!({
+                        "host": "127.0.0.1",
+                        "port": port,
+                        "allow_dynamic_port": allow,
+                    })),
+                )
+                .build()
+                .await
+                .expect("build should succeed");
+
+            let manager = builder
+                .running()
+                .iter()
+                .find(|rw| rw.entry.name == "iii-worker-manager")
+                .expect("iii-worker-manager should be running");
+
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let result = manager
+                .worker
+                .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+                .await;
+            let _ = shutdown_tx.send(true);
+            std::mem::forget(shutdown_tx);
+
+            assert_eq!(
+                result.is_ok(),
+                expect_ok,
+                "allow_dynamic_port={allow}: {result:?}"
+            );
+            if !expect_ok {
+                let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+                assert!(
+                    message.contains(&format!("127.0.0.1:{port}")),
+                    "unexpected error message: {message}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn engine_builder_reports_worker_name_on_stream_bind_failure() {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();

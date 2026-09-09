@@ -77,6 +77,13 @@ pub struct WorkerManagerConfig {
     /// are closed and logged instead of leaking the fd (MOT-3967).
     #[serde(default = "default_handshake_timeout_ms")]
     pub handshake_timeout_ms: u64,
+    /// When `port` is already in use, bind an OS-assigned free port instead
+    /// of failing. The chosen address is logged at warn level; nothing else
+    /// is told, so anything that connects must read it from the log. Off by
+    /// default: a listener that silently moves breaks every `III_URL` that
+    /// points at the declared port.
+    #[serde(default)]
+    pub allow_dynamic_port: bool,
 }
 
 fn default_port() -> u16 {
@@ -99,6 +106,7 @@ impl Default for WorkerManagerConfig {
             middleware_function_id: None,
             rbac: None,
             handshake_timeout_ms: default_handshake_timeout_ms(),
+            allow_dynamic_port: false,
         }
     }
 }
@@ -142,9 +150,27 @@ impl Worker for WorkerManager {
         };
 
         let addr = format!("{}:{}", config.host, config.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|err| crate::workers::traits::bind_address_error(&addr, err))?;
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(listener) => listener,
+            Err(err)
+                if config.allow_dynamic_port && err.kind() == std::io::ErrorKind::AddrInUse =>
+            {
+                let dynamic = format!("{}:0", config.host);
+                let listener = TcpListener::bind(&dynamic)
+                    .await
+                    .map_err(|err| crate::workers::traits::bind_address_error(&dynamic, err))?;
+                let chosen = listener.local_addr()?;
+                tracing::warn!(
+                    declared = %addr,
+                    chosen = %chosen,
+                    "declared address is in use; allow_dynamic_port moved the listener. \
+                     Point III_URL and `iii trigger --engine` at the chosen address"
+                );
+                listener
+            }
+            Err(err) => return Err(crate::workers::traits::bind_address_error(&addr, err)),
+        };
+        let addr = listener.local_addr()?.to_string();
         tracing::info!("Engine listening on address: {}", addr.purple());
 
         let app = Router::new()
@@ -397,6 +423,14 @@ mod tests {
         assert!(config.middleware_function_id.is_none());
         assert!(config.rbac.is_none());
         assert_eq!(config.handshake_timeout_ms, DEFAULT_HANDSHAKE_TIMEOUT_MS);
+        assert!(!config.allow_dynamic_port);
+    }
+
+    #[test]
+    fn worker_config_allow_dynamic_port_is_opt_in() {
+        let config: WorkerManagerConfig =
+            serde_json::from_str(r#"{"allow_dynamic_port":true}"#).unwrap();
+        assert!(config.allow_dynamic_port);
     }
 
     #[test]
