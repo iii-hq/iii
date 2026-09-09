@@ -220,7 +220,14 @@ fn managed_engine_has_its_own_role_and_stops_with_the_named_compose() {
             "iii:e:orders".to_string(),
             "--config".to_string(),
             dir.path()
-                .join("state/orders/engine-config.yaml")
+                .join("state")
+                .join(iii_compose::state::project_slug(
+                    &dir.path()
+                        .join("worker-compose.yaml")
+                        .canonicalize()
+                        .unwrap(),
+                ))
+                .join("orders/engine-config.yaml")
                 .display()
                 .to_string(),
         ]

@@ -63,7 +63,7 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
 #[test]
 fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
     // It is both the namespace the engine routes on and a directory under
-    // ~/.iii/compose, so a separator or an empty string would be a broken
+    // the project's compose state, so a separator or an empty string would be a broken
     // daemon discovered later, at the first write.
     for bad in ["", "   ", "a/b", "a\\b", ".."] {
         let err = parse(&["iii", "compose", "--namespace", bad])

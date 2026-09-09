@@ -51,7 +51,8 @@ iii compose --namespace orders-daemon --up --file worker-compose.yaml
 `engine.url` defaults to `ws://127.0.0.1:49134` and uses Compose's `${VAR:-default}` expansion.
 `engine.workers` stays opaque until the engine reads the generated YAML, so its values use
 `${VAR:default}` and retain numeric types. Compose materializes an owner-only config under
-`~/.iii/compose/<daemon-namespace>/` and removes it after clean shutdown. Changing `engine:`
+`<project-dir>/.iii/compose/<daemon-namespace>/` and removes it after clean shutdown. With
+`III_COMPOSE_STATE_DIR`, it uses `<state-root>/<project-slug>/<daemon-namespace>/`. Changing `engine:`
 requires restarting Compose. Do not combine a managed file with explicit `--engine`.
 
 Allowed engine worker base names are:

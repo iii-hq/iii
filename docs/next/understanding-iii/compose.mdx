@@ -105,34 +105,25 @@ namespace is declared per file, and a project is its file, so a container that r
 else is describing a different project. Declaring it in a second compose file says exactly that, and
 keeps the property that reading one file tells you where everything in it lands.
 
-## Why state is kept in one place per machine
+## Why state belongs to the project
 
-A project's records, its resolved configuration and each container's output all sit under
-`~/.iii/compose`, keyed by the daemon's namespace and by a slug derived from the compose file's
-canonical path. Putting them in a `.iii/` directory beside the compose file would make them easier
-to find, and that is a real cost of the current layout: locating a container's log means asking
-`compose::status` for `state_dir` rather than listing a directory you are already standing in.
+A project's process records, resolved configuration, worker output and VM state are stored in
+`<project-dir>/.iii/compose/<namespace>/`. Its managed engine uses the same directory for its lock,
+generated configuration and log. The project directory comes from the canonical compose file path,
+so running `iii compose --up --file` from another directory keeps state beside that file.
 
-Three things outweigh it.
+The engine lock belongs to the project and namespace together. Two checkouts can each use `default`
+with engines on different ports. A second managed invocation for the same project and namespace is
+refused. Within one engine, each Compose daemon still needs its own namespace.
 
-A checkout is not always writable. A CI runner that mounts the repository read-only, or a container
-image built without a writable working tree, would be unable to start a project at all. State that
-sits outside the checkout keeps starting a project independent of how the checkout was obtained.
+For read-only checkouts, `III_COMPOSE_STATE_DIR` moves project state to
+`$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug includes a hash of the canonical
+compose path so different checkouts remain separate under a shared root. `compose::status` reports
+the resolved `state_dir` for either layout. The default layout requires a `.iii/compose/` entry in
+the project's ignore rules to exclude generated state from version control.
 
-State written into a project directory becomes the project's problem to ignore. Every user would
-have to keep a `.iii/` entry in version control ignore rules, and every generated file that lands
-there is one an ordinary `git add` sweeps up. That is a recurring cost paid by everyone who runs
-compose, in exchange for a shorter path.
-
-Installed packages are shared on purpose. `packages/` is keyed by name, version and target so two
-projects asking for the same worker download it once. Moving project state in-tree would split the
-layout across two locations without removing the machine-global one.
-
-The identity concern that motivates in-tree state is already handled. A project is its compose file,
-and the slug is derived from that file's canonical path, so a state directory cannot be pointed at a
-different project and two checkouts of one repository are two projects without anything to
-configure. `$III_COMPOSE_STATE_DIR` relocates the whole tree for anyone whose home directory is the
-wrong place for it.
+Installed packages remain shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
+The cache is keyed by name, version and target, so projects can reuse downloaded workers.
 
 ## Engine observed readiness
 

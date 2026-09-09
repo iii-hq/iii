@@ -64,7 +64,9 @@ systems, process names retain their previous behavior.
 
 ### Compose logs
 
-Compose logs stdout and stderr output from started workers to `$HOME/.iii/compose/namespace/`.
+Compose logs stdout and stderr output from started workers to
+`<project-dir>/.iii/compose/<namespace>/logs/`. The managed engine writes to `engine.log` in the
+same namespace directory.
 
 Logs are rotated every 10 MiB. Compose keeps up to 40 MiB of logs. Compose strips terminal control
 sequences before persisting the engine output.
@@ -661,7 +663,7 @@ iii compose build --file worker-compose.yaml
 iii compose --up --file worker-compose.yaml
 ```
 
-The cache is shared under `~/.iii/compose/packages`, or under `III_COMPOSE_STATE_DIR` when that
+The cache is shared under `~/.iii/compose/packages`, or under `$III_COMPOSE_STATE_DIR/packages` when that
 variable is set. A later `compose::up` reuses a valid cached artifact if it exists.
 
 ## Readiness
@@ -692,24 +694,42 @@ Dependency shutdown is dependent upon when a shutdown happens:
 
 ## Where compose keeps state
 
-Compose state is stored under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when that is set.
+Compose state is stored in `<project-dir>/.iii/compose/<namespace>/`. `<project-dir>` is the directory
+containing the canonical compose file, including when `--file` points outside the current working
+directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 
-| Path                        | Contents                                                                                                            |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `<ns>/<project>/state.json` | One project's child records. Owner-only.                                                                            |
-| `<ns>/<project>/config/`    | Resolved configuration files.                                                                                       |
-| `<ns>/<project>/logs/`      | Rotating stdout and stderr for every project worker.                                                                |
-| `<ns>/<project>/vm/`        | VM state for bundle and local-image workers, one directory each, plus the config each one publishes into its guest. |
-| `packages/`                 | Installed `package://` artefacts, shared by projects.                                                               |
+| Path                 | Contents                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| `engine.lock`        | Lock for the managed engine in this project and namespace.                                     |
+| `engine-config.yaml` | Generated engine configuration, removed after clean shutdown.                                  |
+| `engine.log`         | Rotating stdout and stderr for the managed engine.                                             |
+| `state.json`         | Child process records for the project. Owner-only.                                             |
+| `config/`            | Resolved worker configuration files.                                                          |
+| `logs/`              | Rotating stdout and stderr for project workers.                                                |
+| `vm/`                | VM state for bundle and local-image workers, including rootfs, boot scripts and guest configs. |
 
-`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path + a
-short hash to prevent project name collisions.
+Two projects can use `default` with separate engines on different ports. Starting the same project
+and namespace twice is refused. Two daemons on the same engine must use different namespaces.
+Two compose files in the same directory must also use different namespaces.
+
+For a read-only project directory, set `III_COMPOSE_STATE_DIR` to a writable directory. Project state
+is then stored at `$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug combines the project
+directory name with a hash of the canonical compose file path, keeping projects with the same
+directory name separate.
+
+The package cache stays shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
+Add `.iii/compose/` to the project's `.gitignore` to exclude generated state from version control.
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
-# ... "state_dir": "/home/you/.iii/compose/dev/shop-3f2a1b9c"
-ls /home/you/.iii/compose/dev/shop-3f2a1b9c/logs/
+# ... "state_dir": "/home/you/shop/.iii/compose/dev"
+ls /home/you/shop/.iii/compose/dev/logs/
 ```
+
+Before upgrading from the shared namespace layout, stop existing Compose daemons with the old
+version and confirm that their engines and workers have stopped. The new version does not migrate
+old process records or logs. Previous state remains under `~/.iii/compose/<namespace>/` (or the old
+`III_COMPOSE_STATE_DIR` layout); keep any logs or VM data you need before removing it.
 
 ## Error codes
 
