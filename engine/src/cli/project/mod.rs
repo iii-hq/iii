@@ -20,7 +20,9 @@ use scaffolder_core::cli::{
     apply_template_idempotent, build_fetcher, check_directory_state, print_err, resolve_root,
 };
 use scaffolder_core::{IiiConfig, TemplateFetcher};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Args, Debug, Clone)]
 pub struct ProjectArgs {
@@ -77,10 +79,10 @@ pub struct InitArgs {
     pub allow_non_empty: bool,
 
     /// Take the 5-minute tour of iii: scaffold the "harness" template into
-    /// ./learn-iii (or learn-iii-1, learn-iii-2, ... when taken) and start
-    /// `iii compose --up` inside it. Cannot be combined with any other
-    /// scaffolding option.
-    #[arg(long = "learn-iii", conflicts_with_all = ["name", "directory", "template", "docker", "template_dir"])]
+    /// NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken)
+    /// if no NAME is given, then start `iii compose --up` inside it. Cannot
+    /// be combined with any other scaffolding option.
+    #[arg(long = "learn-iii", conflicts_with_all = ["directory", "template", "docker", "template_dir"])]
     pub learn_iii: bool,
 }
 
@@ -224,6 +226,14 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
     }));
     let _ = ctrlc::set_handler(move || {
         let _ = console::Term::stderr().show_cursor();
+        // `--learn-iii` runs `iii compose --up` as a child, and Ctrl+C reaches
+        // every process in the foreground group. Compose stops the project
+        // itself; exiting here would hand the shell a prompt while that
+        // teardown still writes to the terminal, which reads as a hang and
+        // takes a second Ctrl+C to finish.
+        if CHILD_OWNS_TERMINAL.load(Ordering::Relaxed) {
+            return;
+        }
         std::process::exit(130);
     });
 
@@ -303,10 +313,15 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 const LEARN_III_TEMPLATE: &str = "harness";
 const LEARN_III_DIR: &str = "learn-iii";
 
-/// `iii project init --learn-iii`: same as `iii project init -t harness
-/// learn-iii`, then `iii compose --up` from inside the new directory.
+/// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
+/// <NAME>`, then `iii compose --up` from inside the new directory. Without
+/// NAME the directory is the first free `learn-iii` name; a given NAME is
+/// used as-is, so a taken one fails the same way plain init does.
 async fn run_learn_iii(mut args: InitArgs) -> i32 {
-    let dir = next_free_dir(Path::new(""), LEARN_III_DIR);
+    let dir = match args.name.as_deref() {
+        Some(name) => PathBuf::from(name),
+        None => next_free_dir(Path::new(""), LEARN_III_DIR),
+    };
     args.template = Some(LEARN_III_TEMPLATE.to_string());
     args.directory = Some(dir.to_string_lossy().into_owned());
 
@@ -326,12 +341,19 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         }
     };
 
-    let hint = format!("cd {} && iii compose --up", dir.display());
+    prompt_provider_key(&dir);
+
+    let hint = format!("cd ./{} && iii compose --up", dir.display());
     eprintln!();
     eprintln!("  {} starting the tour: {}", "▶".green(), hint.bold());
     eprintln!();
 
-    match tokio::process::Command::new(exe)
+    // Aborted when compose exits, so the poll inside needs no deadline of its
+    // own: the tour's life is the deadline.
+    let announcer = tokio::spawn(announce_console_when_ready(dir.join("worker-compose.yaml")));
+    CHILD_OWNS_TERMINAL.store(true, Ordering::Relaxed);
+
+    let code = match tokio::process::Command::new(exe)
         .args(["compose", "--up"])
         .current_dir(&dir)
         .status()
@@ -339,6 +361,186 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => print_err("could not start `iii compose --up`", &e.to_string(), &hint),
+    };
+
+    CHILD_OWNS_TERMINAL.store(false, Ordering::Relaxed);
+    announcer.abort();
+    // The key reader may still be parked on stdin in cbreak mode; the shell
+    // must not get its terminal back with ECHO off.
+    restore_terminal_mode();
+    code
+}
+
+/// Set while `iii compose --up` runs as our child, so the Ctrl+C handler above
+/// leaves the interrupt to compose.
+static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
+
+/// The console worker's own default, used when its configuration has no
+/// `http_port` yet.
+const DEFAULT_CONSOLE_PORT: u16 = 3113;
+const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Waits for the tour's project to serve, then points the user at the console
+/// and opens it on request.
+///
+/// Readiness is the same fact compose waits on — the worker registered in the
+/// project's namespace — for `harness` and for the console, and then a
+/// connection to the console's HTTP port, because a registered console has not
+/// necessarily bound its listener yet.
+async fn announce_console_when_ready(compose_path: PathBuf) {
+    let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
+        return;
+    };
+    let namespace = file
+        .namespace
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let Some(engine) = file.engine.as_ref() else {
+        return;
+    };
+    let console = console_container(&file);
+
+    let client =
+        iii_compose::engine::EngineClient::connect(&engine.url, "iii-learn-iii", &namespace);
+
+    for container in ["harness", console.as_str()] {
+        loop {
+            // An error here is the engine not up yet, not a verdict: keep polling.
+            if client
+                .is_registered(&namespace, container)
+                .await
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+        }
+    }
+
+    let port = client
+        .fetch_config(&console)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|config| {
+            config
+                .get("http_port")
+                .and_then(|port| port.as_u64())
+                .and_then(|port| u16::try_from(port).ok())
+        })
+        .unwrap_or(DEFAULT_CONSOLE_PORT);
+
+    while tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err()
+    {
+        tokio::time::sleep(READY_POLL_INTERVAL).await;
+    }
+
+    let url = format!("http://127.0.0.1:{port}");
+    eprintln!();
+    eprintln!(
+        "  {} Open your browser to continue: {}",
+        "▶".green(),
+        url.bold()
+    );
+    eprintln!("    Press {} to open it here.", "b".bold());
+    eprintln!();
+
+    // A blocking read on its own thread, not a blocking task: the process must
+    // be free to exit with compose while this is still parked on stdin.
+    std::thread::spawn(move || open_console_on_request(&url));
+}
+
+/// The container that runs the console worker, and so owns the configuration
+/// entry the port lives in. Named for the worker, not for the container key,
+/// which a project is free to spell differently.
+fn console_container(file: &iii_compose::config::ComposeFile) -> String {
+    file.containers
+        .iter()
+        .find(|(key, container)| {
+            let reference = match &container.worker {
+                iii_compose::config::WorkerSource::Package { reference } => reference.as_str(),
+                iii_compose::config::WorkerSource::Path { declared, .. } => declared.as_str(),
+            };
+            reference.rsplit('/').next() == Some("console") || key.as_str() == "console"
+        })
+        .map(|(key, _)| key.clone())
+        .unwrap_or_else(|| "console".to_string())
+}
+
+/// Waits for a bare `b` and opens `url` on it.
+///
+/// Cbreak, not raw: only `ICANON` and `ECHO` come off, so the keypress arrives
+/// without Enter while the terminal keeps translating the newlines compose
+/// writes for the rest of the tour, and keeps turning Ctrl+C into SIGINT. A
+/// raw-mode read drops both.
+#[cfg(unix)]
+fn open_console_on_request(url: &str) {
+    use nix::sys::termios::{LocalFlags, SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
+    use std::io::Read;
+
+    let stdin = std::io::stdin();
+    if let Ok(saved) = tcgetattr(&stdin) {
+        let mut cbreak = saved.clone();
+        cbreak.local_flags &= !(LocalFlags::ICANON | LocalFlags::ECHO);
+        // Canonical mode ignores these two, so they carry whatever the shell
+        // left behind: one byte, no timer, or the read returns immediately and
+        // spins.
+        cbreak.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+        cbreak.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+        if tcsetattr(&stdin, SetArg::TCSANOW, &cbreak).is_err() {
+            return;
+        }
+        // Ctrl+C ends the tour with this thread still parked below, so the
+        // restore cannot live only at the end of this function.
+        let _ = SAVED_TERMIOS.set(saved.into());
+    }
+
+    let mut key = [0u8; 1];
+    while let Ok(1) = stdin.lock().read(&mut key) {
+        if !key[0].eq_ignore_ascii_case(&b'b') {
+            continue;
+        }
+        if open::that(url).is_err() {
+            eprintln!("  could not open a browser, open {url} yourself\r");
+        }
+        break;
+    }
+    restore_terminal_mode();
+}
+
+#[cfg(not(unix))]
+fn open_console_on_request(url: &str) {
+    // Windows reads console input events, so there is no output mode to
+    // protect and no termios to put back.
+    let term = console::Term::stdout();
+    while let Ok(key) = term.read_char() {
+        if key.eq_ignore_ascii_case(&'b') {
+            if open::that(url).is_err() {
+                eprintln!("  could not open a browser, open {url} yourself");
+            }
+            break;
+        }
+    }
+}
+
+/// The caller's terminal settings, saved when [`open_console_on_request`] puts
+/// stdin in cbreak mode. Held as the raw struct because nix's `Termios` wraps
+/// it in a `RefCell` and so is not `Sync`.
+#[cfg(unix)]
+static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
+
+/// Puts the terminal back the way the shell handed it over. Safe to call when
+/// nothing changed it, and safe to call twice.
+fn restore_terminal_mode() {
+    #[cfg(unix)]
+    if let Some(saved) = SAVED_TERMIOS.get() {
+        let _ = nix::sys::termios::tcsetattr(
+            std::io::stdin(),
+            nix::sys::termios::SetArg::TCSANOW,
+            &nix::sys::termios::Termios::from(*saved),
+        );
     }
 }
 
@@ -353,6 +555,142 @@ fn next_free_dir(parent: &Path, base: &str) -> PathBuf {
         .map(|i| parent.join(format!("{base}-{i}")))
         .find(|p| !p.exists())
         .expect("unbounded range always yields a free name")
+}
+
+/// The inference providers the harness template ships a key line for, in
+/// `.env` order. `container` is the commented `worker-compose.yaml` block to
+/// uncomment; the first two are enabled by the template already.
+const PROVIDERS: &[(&str, &str, Option<&str>)] = &[
+    ("Anthropic", "ANTHROPIC_API_KEY", None),
+    ("OpenAI", "OPENAI_API_KEY", None),
+    ("DeepSeek", "DEEPSEEK_API_KEY", Some("provider-deepseek")),
+    ("Kimi (Moonshot)", "MOONSHOT_API_KEY", Some("provider-kimi")),
+    ("xAI", "XAI_API_KEY", Some("provider-xai")),
+    ("Z.ai", "ZAI_API_KEY", Some("provider-zai")),
+    (
+        "OpenRouter",
+        "OPENROUTER_API_KEY",
+        Some("provider-openrouter"),
+    ),
+    ("llama.cpp", "LLAMACPP_API_KEY", Some("provider-llamacpp")),
+];
+
+const PROVIDER_KEY_NOTE: &str = "Before we begin, if you want to use the iii harness you'll need to \
+provide an API Key for an inference provider (ex. OpenAI, Anthropic). You can provide that now or \
+manually edit the .env that is at the root of this project's directory.\n\nNote: If you provide the \
+key after the project has started you'll need to manually restart the llm-router by running \
+`iii trigger compose::restart worker=llm-router`.";
+
+/// Ask for one provider API key and record it in the new project's `.env`.
+/// A provider the template ships commented out also gets its
+/// `worker-compose.yaml` block uncommented, so the router can reach it.
+///
+/// Every failure here is non-fatal: the tour still starts, and the note tells
+/// the user how to add the key by hand.
+fn prompt_provider_key(dir: &Path) {
+    let env_path = dir.join(".env");
+    if !std::io::stdin().is_terminal() || !env_path.exists() {
+        return;
+    }
+
+    eprintln!();
+    if cliclack::log::info(PROVIDER_KEY_NOTE).is_err() {
+        return;
+    }
+
+    let mut select = cliclack::select("Which inference provider?");
+    for (label, var, _) in PROVIDERS {
+        select = select.item(Some(*var), *label, *var);
+    }
+    select = select.item(None, "Skip for now", "edit .env yourself");
+
+    let Ok(Some(var)) = select.interact() else {
+        return;
+    };
+    let Ok(key) = cliclack::password(var).mask('•').interact() else {
+        return;
+    };
+    // Terminals and password managers pad pasted keys; a stray space breaks auth.
+    let key = key.trim();
+    if key.is_empty() {
+        let _ = cliclack::log::warning("No key entered, leaving .env unchanged.");
+        return;
+    }
+
+    if let Err(e) = set_env_var(&env_path, var, key) {
+        let _ = cliclack::log::warning(format!("could not write {}: {e}", env_path.display()));
+        return;
+    }
+
+    let container = PROVIDERS
+        .iter()
+        .find(|(_, v, _)| *v == var)
+        .and_then(|(_, _, c)| *c);
+    if let Some(container) = container
+        && let Err(e) = uncomment_container(&dir.join("worker-compose.yaml"), container)
+    {
+        let _ = cliclack::log::warning(format!("could not enable {container}: {e}"));
+    }
+
+    let _ = cliclack::log::success(format!("{var} written to {}", env_path.display()));
+}
+
+/// Set `var` in a `.env` file, replacing the existing line even when the
+/// template ships it commented out. Appends when the file has no such line.
+fn set_env_var(path: &Path, var: &str, value: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let assignment = format!("{var}=");
+    let mut out = String::with_capacity(text.len() + value.len());
+    let mut written = false;
+
+    for line in text.lines() {
+        let bare = line.trim_start().trim_start_matches('#').trim_start();
+        if !written && bare.starts_with(&assignment) {
+            out.push_str(&format!("{var}={value}\n"));
+            written = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !written {
+        out.push_str(&format!("{var}={value}\n"));
+    }
+    std::fs::write(path, out)
+}
+
+/// Uncomment the commented-out `worker-compose.yaml` container block whose
+/// first line names `container`. The block ends at the first blank line.
+fn uncomment_container(path: &Path, container: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let header = format!("{container}:");
+    let mut out = String::with_capacity(text.len());
+    let mut inside = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') && trimmed.contains(&header) {
+            inside = true;
+        } else if line.trim().is_empty() || !trimmed.starts_with('#') {
+            inside = false;
+        }
+        out.push_str(&if inside {
+            uncomment_line(line)
+        } else {
+            line.to_string()
+        });
+        out.push('\n');
+    }
+    std::fs::write(path, out)
+}
+
+/// `  #    worker: x` -> `    worker: x`: drop the first `#` and the two
+/// spaces after it, which puts the YAML back on its original column.
+fn uncomment_line(line: &str) -> String {
+    match line.split_once('#') {
+        Some((indent, rest)) => format!("{indent}{}", rest.strip_prefix("  ").unwrap_or(rest)),
+        None => line.to_string(),
+    }
 }
 
 async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
@@ -595,10 +933,19 @@ mod tests {
     }
 
     #[test]
-    fn learn_iii_rejects_template_name_and_directory() {
+    fn learn_iii_accepts_a_name() {
+        let cli = Cli::try_parse_from(["project", "init", "--learn-iii", "my-tour"]).unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert!(init.learn_iii);
+        assert_eq!(init.name.as_deref(), Some("my-tour"));
+    }
+
+    #[test]
+    fn learn_iii_rejects_template_and_directory() {
         for extra in [
             &["-t", "quickstart"][..],
-            &["my-app"],
             &["-d", "x"],
             &["--docker"],
             &["--template-dir", "x"],
@@ -610,6 +957,72 @@ mod tests {
                 "--learn-iii should conflict with {extra:?}"
             );
         }
+    }
+
+    #[test]
+    fn set_env_var_replaces_active_and_commented_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = tmp.path().join(".env");
+        std::fs::write(
+            &env,
+            "# comment\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=old\n# XAI_API_KEY=\n",
+        )
+        .unwrap();
+
+        set_env_var(&env, "OPENAI_API_KEY", "sk-new").unwrap();
+        set_env_var(&env, "XAI_API_KEY", "xai-new").unwrap();
+        set_env_var(&env, "ZAI_API_KEY", "zai-new").unwrap();
+
+        let text = std::fs::read_to_string(&env).unwrap();
+        assert_eq!(
+            text,
+            "# comment\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=sk-new\nXAI_API_KEY=xai-new\nZAI_API_KEY=zai-new\n"
+        );
+    }
+
+    #[test]
+    fn uncomment_container_touches_only_its_own_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose,
+            "containers:\n  queue:\n    worker: package://queue\n\n  #  provider-xai:                # XAI_API_KEY\n  #    worker: package://provider-xai\n  #    start_after:\n  #      - llm-router\n\n  #  provider-zai:\n  #    worker: package://provider-zai\n",
+        )
+        .unwrap();
+
+        uncomment_container(&compose, "provider-xai").unwrap();
+
+        let text = std::fs::read_to_string(&compose).unwrap();
+        assert!(text.contains("\n  provider-xai:                # XAI_API_KEY\n"));
+        assert!(text.contains("\n    worker: package://provider-xai\n"));
+        assert!(text.contains("\n      - llm-router\n"));
+        // The next block stays commented out.
+        assert!(text.contains("\n  #  provider-zai:\n"));
+    }
+
+    #[test]
+    fn every_provider_env_var_is_unique() {
+        let mut vars: Vec<_> = PROVIDERS.iter().map(|(_, v, _)| *v).collect();
+        vars.sort_unstable();
+        let count = vars.len();
+        vars.dedup();
+        assert_eq!(vars.len(), count);
+    }
+
+    #[test]
+    fn console_container_is_found_by_its_worker_not_its_key() {
+        let text = "namespace: default\nengine:\n  url: ws://127.0.0.1:49134\ncontainers:\n  ui:\n    worker: package://console\n    version: \"1.9.26\"\n  harness:\n    worker: package://harness\n    version: \"1.8.20\"\n";
+        let file = iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml")
+            .expect("compose file should parse");
+        assert_eq!(console_container(&file), "ui");
+    }
+
+    #[test]
+    fn console_container_falls_back_to_the_conventional_name() {
+        let text = "namespace: default\nengine:\n  url: ws://127.0.0.1:49134\ncontainers:\n  harness:\n    worker: package://harness\n    version: \"1.8.20\"\n";
+        let file = iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml")
+            .expect("compose file should parse");
+        assert_eq!(console_container(&file), "console");
     }
 
     #[test]
