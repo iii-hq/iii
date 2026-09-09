@@ -529,17 +529,11 @@ iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
-## Namespaces
+## Configure a namespace
 
-Namespaces are used to allow advanced architectures that require more than one running copy of a
-given worker, multi-tenancy, some multi-agent workflows, and various isolation schemes between
-different parts of a iii application.
-
-Namespaces are arbitrary and their usage depends largely on the given usecase. They do not prescribe
-a specific way of constructing your iii application.
-
-The two primary points where Namespaces are used are during Worker registration via Compose and
-during Trigger and Function interactions. All have ways of declaring which namespace to use.
+Set the namespace in `worker-compose.yaml` or pass `--namespace` when starting Compose. Use the same
+namespace in Trigger and Function calls that target the project's workers. For the daemon namespace,
+project namespace, and routing model, see [Compose architecture](../understanding-iii/compose).
 
 ### Precedence
 
@@ -549,7 +543,7 @@ during Trigger and Function interactions. All have ways of declaring which names
 | `namespace:` in the file | The daemon namespace when `--namespace` is absent, and the project namespace. |
 | Neither                  | `default`.                                                                    |
 
-`namespace` is commonly defined in `worker-compose.yaml` but can be overriden on compose daemon
+`namespace` is commonly defined in `worker-compose.yaml` but can be overridden on compose daemon
 startup with the `--namespace` flag.
 
 Likewise, compose's own `compose::*` functions will exist within the same declared namespace.
