@@ -80,7 +80,10 @@ describe('State Operations', () => {
         payload: { scope, key: 'non-existent-item' },
       })
 
-      expect(result).toBeUndefined()
+      // The state worker answers `null` for a miss and the engine forwards it
+      // as-is (MOT-4732); `undefined` is reserved for functions that return
+      // nothing.
+      expect(result).toBeNull()
     })
   })
 
@@ -93,7 +96,7 @@ describe('State Operations', () => {
       await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
       await expect(
         iii.trigger({ function_id: 'state::get', payload: { scope, key } }),
-      ).resolves.toBeUndefined()
+      ).resolves.toBeNull()
     })
 
     it('should handle deleting non-existent item gracefully', async () => {
