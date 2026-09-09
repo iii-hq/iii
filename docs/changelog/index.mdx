@@ -34,6 +34,12 @@ type: "reference"
   - The Console adds observability configuration and live trace updates.
   - `engine::traces::list` now returns compact trace summaries. Use `engine::traces::spans` for full
     span details.
+  - The in-memory span cache is a hard-bounded FIFO: a burst of traced invocations can no longer
+    grow it without limit or stall the engine's WebSocket accept loop. Finalized spans evicted
+    before the archive wrote them are reported in `known_dropped_spans` (`completeness: partial`),
+    and the health check exposes `dirty_backlog_spans`.
+  - Attribute values are capped at ingest (`trace_storage.max_attribute_bytes`, default 64 KiB);
+    a cut `iii.payload.json` sets `iii.payload.truncated`.
 
   ## Reliability
 

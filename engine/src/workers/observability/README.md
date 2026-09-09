@@ -112,6 +112,14 @@ engine restart. Memory-backed stores are unaffected.
 | `level`                     | string      | Minimum log level: `trace`, `debug`, `info`, `warn`, `error`. Defaults to `info`.                                                                                            |
 | `format`                    | string      | Log output format: `default` or `json`. Defaults to `default`.                                                                                                               |
 | `alerts`                    | AlertRule[] | Alert rules evaluated against metrics.                                                                                                                                       |
+| `trace_storage.enabled`     | boolean     | Persist completed spans to SQLite (`traces.sqlite3`). Defaults to `true`.                                                                                                     |
+| `trace_storage.directory`   | string      | Directory for the archive and its WAL sidecars. Defaults to `./data/observability/traces`.                                                                                    |
+| `trace_storage.max_disk_bytes` | number   | Physical cap on the archive directory; oldest traces are evicted at 90% and the file shrunk to 80%. Defaults to `1073741824` (1 GiB), minimum 64 MiB.                         |
+| `trace_storage.retention_seconds` | number | Age limit for archived traces; `0` disables it. Defaults to `2592000` (30 days).                                                                                             |
+| `trace_storage.memory_max_bytes` | number | Hard cap on the in-memory hot cache (an RSS estimate). Oldest spans are evicted first — including finalized spans the archive has not written yet, which are counted in `known_dropped_spans` and turn `completeness` to `partial`. Defaults to `268435456` (256 MiB), minimum 16 MiB. |
+| `trace_storage.memory_low_watermark_ratio` | number | Fraction of `memory_max_bytes` the cache shrinks to under pressure (`0.5`–`0.95`). Defaults to `0.75`.                                                                  |
+| `trace_storage.pending_max_age_seconds` | number | Age after which a live (pending) snapshot that never closed is dropped from the hot cache. Defaults to `3600`.                                                            |
+| `trace_storage.max_attribute_bytes` | number | Cap on one attribute value (span, event or link) at ingest. Longer values are cut on a char boundary and end in `…[truncated N bytes]`; a cut `iii.payload.json` also sets `iii.payload.truncated`. `0` disables. Defaults to `65536`. |
 
 ### OTLP Transport
 
