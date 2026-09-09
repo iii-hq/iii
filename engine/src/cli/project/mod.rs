@@ -375,18 +375,24 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
 /// leaves the interrupt to compose.
 static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 
-/// The console worker's own default, used when its configuration has no
-/// `http_port` yet.
+/// The console worker's configuration entry, and its own default port for
+/// when that entry has no `http_port` yet.
+const CONSOLE_CONFIG: &str = "console";
 const DEFAULT_CONSOLE_PORT: u16 = 3113;
 const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Room for compose's startup renderer to print its closing line and stop
+/// repainting before anything else writes to the terminal.
+const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
 
 /// Waits for the tour's project to serve, then points the user at the console
 /// and opens it on request.
 ///
-/// Readiness is the same fact compose waits on — the worker registered in the
-/// project's namespace — for `harness` and for the console, and then a
-/// connection to the console's HTTP port, because a registered console has not
-/// necessarily bound its listener yet.
+/// The gate is every declared container reporting `ready` through
+/// `compose::status`, which is also when compose's startup renderer lets go of
+/// the terminal: it owns one global in-place block for the whole of `--up` and
+/// repaints it, so a banner printed before then is overwritten and the user
+/// never sees it. A ready console has not necessarily bound its listener yet,
+/// so the port is checked too.
 async fn announce_console_when_ready(compose_path: PathBuf) {
     let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
         return;
@@ -398,27 +404,16 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     let Some(engine) = file.engine.as_ref() else {
         return;
     };
-    let console = console_container(&file);
 
     let client =
-        iii_compose::engine::EngineClient::connect(&engine.url, "iii-learn-iii", &namespace);
+        iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
 
-    for container in ["harness", console.as_str()] {
-        loop {
-            // An error here is the engine not up yet, not a verdict: keep polling.
-            if client
-                .is_registered(&namespace, container)
-                .await
-                .unwrap_or(false)
-            {
-                break;
-            }
-            tokio::time::sleep(READY_POLL_INTERVAL).await;
-        }
+    while !project_is_ready(&client, &file.path, &namespace).await {
+        tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
 
     let port = client
-        .fetch_config(&console)
+        .fetch_config(CONSOLE_CONFIG)
         .await
         .ok()
         .flatten()
@@ -437,6 +432,12 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
         tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
 
+    // ponytail: fixed settle delay. The renderer prints its closing line just
+    // after the last container flips ready, and compose publishes no "startup
+    // block finished" event to wait on instead. Swap this for that event if
+    // compose ever grows one.
+    tokio::time::sleep(BLOCK_SETTLE).await;
+
     let url = format!("http://127.0.0.1:{port}");
     eprintln!();
     eprintln!(
@@ -452,21 +453,33 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     std::thread::spawn(move || open_console_on_request(&url));
 }
 
-/// The container that runs the console worker, and so owns the configuration
-/// entry the port lives in. Named for the worker, not for the container key,
-/// which a project is free to spell differently.
-fn console_container(file: &iii_compose::config::ComposeFile) -> String {
-    file.containers
-        .iter()
-        .find(|(key, container)| {
-            let reference = match &container.worker {
-                iii_compose::config::WorkerSource::Package { reference } => reference.as_str(),
-                iii_compose::config::WorkerSource::Path { declared, .. } => declared.as_str(),
-            };
-            reference.rsplit('/').next() == Some("console") || key.as_str() == "console"
-        })
-        .map(|(key, _)| key.clone())
-        .unwrap_or_else(|| "console".to_string())
+/// Whether every container the compose file declares reports `ready`.
+///
+/// A call that fails is the daemon not serving `compose::status` yet, which is
+/// indistinguishable here from a project still starting: both mean "not yet".
+async fn project_is_ready(
+    client: &iii_compose::engine::EngineClient,
+    compose_path: &Path,
+    namespace: &str,
+) -> bool {
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "compose::status".to_string(),
+        payload: serde_json::json!({ "file": compose_path }),
+        action: None,
+        timeout_ms: Some(10_000),
+    }
+    .namespace(namespace);
+
+    let Ok(value) = client.client().trigger(request).await else {
+        return false;
+    };
+    let Some(containers) = value.get("containers").and_then(|list| list.as_array()) else {
+        return false;
+    };
+    !containers.is_empty()
+        && containers
+            .iter()
+            .all(|container| container.get("state").and_then(|s| s.as_str()) == Some("ready"))
 }
 
 /// Waits for a bare `b` and opens `url` on it.
@@ -1007,22 +1020,6 @@ mod tests {
         let count = vars.len();
         vars.dedup();
         assert_eq!(vars.len(), count);
-    }
-
-    #[test]
-    fn console_container_is_found_by_its_worker_not_its_key() {
-        let text = "namespace: default\nengine:\n  url: ws://127.0.0.1:49134\ncontainers:\n  ui:\n    worker: package://console\n    version: \"1.9.26\"\n  harness:\n    worker: package://harness\n    version: \"1.8.20\"\n";
-        let file = iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml")
-            .expect("compose file should parse");
-        assert_eq!(console_container(&file), "ui");
-    }
-
-    #[test]
-    fn console_container_falls_back_to_the_conventional_name() {
-        let text = "namespace: default\nengine:\n  url: ws://127.0.0.1:49134\ncontainers:\n  harness:\n    worker: package://harness\n    version: \"1.8.20\"\n";
-        let file = iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml")
-            .expect("compose file should parse");
-        assert_eq!(console_container(&file), "console");
     }
 
     #[test]
