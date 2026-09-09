@@ -31,6 +31,7 @@ iii compose [OPTIONS]
 | `--engine <URL>`       | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL                    |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up`                 | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one                                          |
+| `--frozen`             | With `--up`, require the compose file and existing lock to match and skip package resolution                                                              |
 | `-f, --file <PATH>`    | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file            |
 
 `Ctrl^C`, `SIGINT` and `SIGTERM` all gracefully stop the daemon, every worker run by the daemon, and
@@ -131,7 +132,7 @@ with it and making basic changes to the `worker-compose.yaml` file.
 
 | Function            | Takes                                                       | Returns                                                                    |
 | ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `compose::up`       | `file`, `container`                                         | An operation result.                                                       |
+| `compose::up`       | `file`, `container`, `frozen`                               | An operation result.                                                       |
 | `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
 | `compose::status`   | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
 | `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
@@ -151,6 +152,7 @@ absolute path as well.
 
 ```bash
 iii trigger compose::up      --namespace dev file=./worker-compose.yaml
+iii trigger compose::up      --namespace dev file=./worker-compose.yaml frozen=true
 iii trigger compose::up      --namespace dev file=./worker-compose.yaml container=api
 iii trigger compose::status  --namespace dev file=./worker-compose.yaml
 iii trigger compose::logs    --namespace dev file=./worker-compose.yaml worker=api tail=100
@@ -168,10 +170,11 @@ iii trigger compose::stop    --namespace dev
 `compose::up` starts every worker in the compose file, in dependency order. Workers that are already
 ready stay as they are.
 
-| Field       | Description                                                         |
-| ----------- | ------------------------------------------------------------------- |
-| `file`      | The project to start.                                               |
-| `container` | Starts that worker and the workers it depends on, and nothing else. |
+| Field       | Description                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `file`      | The project to start.                                                                        |
+| `container` | Starts that worker and the workers it depends on, and nothing else.                          |
+| `frozen`    | Requires a current `worker-compose.lock` and does not resolve package selectors when `true`. |
 
 #### compose::up failures
 
@@ -261,8 +264,8 @@ changes and causes no restart.
 ### Package lock
 
 Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
-requested selector. The lock keeps the resolved version, package type, artifact URLs, SHA-256
-digests, and default configuration returned by the registry.
+requested selector. The lock keeps the resolved dependency graph, versions, package types,
+artifact URLs, SHA-256 digests, and default configuration returned by the registry.
 
 ```text
 worker-compose.yaml: next
@@ -275,8 +278,15 @@ package cache: verified artifact
 ```
 
 Normal starts and restarts use the lock without resolving `next` again. If the cache is empty,
-Compose downloads the URL in the lock and verifies its SHA-256 digest. Commit the lock so local
-development, CI, and deployments use the same package content.
+Compose downloads the URL in the lock and verifies its SHA-256 digest. Compose also verifies the
+extracted cache contents before reuse. A changed cache entry is downloaded again from the locked
+URL.
+
+Use `iii compose build --frozen` in CI to require the compose file and lock to match. Use
+`iii compose --up --frozen` or `compose::up frozen=true` to apply the same rule during startup.
+Frozen mode never resolves selectors or changes the lock. It can download a missing artifact only
+from the URL already in the lock. Commit the lock so development, CI, and deployments use the same
+package content.
 
 ### Removing a worker
 
@@ -307,10 +317,14 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 ### Updating a worker
 
-`compose::update worker=state` refreshes the selector in the compose file. For a tag or range such as
-`next`, it resolves that same selector again. For an exact version, it keeps the existing behavior
-and selects the version that the registry calls `latest`. Use `worker=state@<selector>` to change the
-selector.
+`compose::update worker=state` resolves the selector already in the compose file. A tag such as
+`next`, a range, and an exact version all remain unchanged in the file. Use
+`worker=state@<selector>` to change the selector. For example, use `worker=state@latest` to move an
+exact version to the registry's latest channel.
+
+Update resolves the complete dependency graph. It adds new dependencies, updates changed
+dependencies, and removes stale dependencies that Compose generated and no remaining package root
+uses. Manually declared workers are not removed.
 
 Compose downloads and verifies the new artifact before it changes the lock or stops a worker. A
 failed resolve or download leaves the prior lock and running workers unchanged. If the resolved
@@ -323,9 +337,10 @@ does not restart the project.
 | `worker` | The worker spec: `name` or `name@version`. |
 
 ```text
-worker=state            refresh a declared tag/range, or select latest from an exact version
+worker=state            resolve the selector already declared in the compose file
 worker=state@0.21.4     that version, which is also how a downgrade is spelled
 worker=state@next       the version currently selected by the next tag
+worker=state@latest     the version currently selected by the latest tag
 ```
 
 The worker has to be declared already in order to be updated, and it has to be a `package://`. Use
@@ -661,12 +676,13 @@ config_override:
 ## Build registry packages
 
 ```text
-iii compose build [-f, --file <PATH>]
+iii compose build [-f, --file <PATH>] [--frozen]
 ```
 
 | Option              | Description                                                                              |
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
+| `--frozen`          | Require an existing current lock and skip package selector resolution                     |
 
 `build` reads and validates the compose file, prepares `worker-compose.lock`, then downloads every
 `package://` worker into the same cache used by `compose::up`. The file defaults to
@@ -675,7 +691,8 @@ hooks. Local `path://` workers and engine-managed workers need no registry downl
 
 ```bash
 iii compose build --file worker-compose.yaml
-iii compose --up --file worker-compose.yaml
+iii compose build --file worker-compose.yaml --frozen
+iii compose --up --file worker-compose.yaml --frozen
 ```
 
 The cache is shared under `~/.iii/compose/packages`, or under `III_COMPOSE_STATE_DIR` when that

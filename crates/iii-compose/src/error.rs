@@ -27,6 +27,12 @@ pub enum ComposeError {
     #[error("{path} is not a valid worker compose lock: {message}")]
     InvalidLock { path: PathBuf, message: String },
 
+    #[error("{path} does not exist. Run `iii compose build` or `compose::up` once to create it")]
+    FrozenLockMissing { path: PathBuf },
+
+    #[error("{path} does not match its compose file: {message}")]
+    FrozenLockOutOfDate { path: PathBuf, message: String },
+
     #[error("containers must declare at least one worker")]
     EmptyContainers,
 
@@ -51,6 +57,9 @@ pub enum ComposeError {
 
     #[error("--file requires --up")]
     FileRequiresUp,
+
+    #[error("--frozen requires --up")]
+    FrozenRequiresUp,
 
     #[error("`iii compose build` cannot be combined with daemon options")]
     BuildConflictsWithServeOptions,
@@ -501,12 +510,15 @@ impl ComposeError {
             Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
             Self::InvalidLock { .. } => "INVALID_COMPOSE_LOCK",
+            Self::FrozenLockMissing { .. } => "COMPOSE_LOCK_REQUIRED",
+            Self::FrozenLockOutOfDate { .. } => "COMPOSE_LOCK_OUT_OF_DATE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::FileRequiresUp => "FILE_REQUIRES_UP",
+            Self::FrozenRequiresUp => "FROZEN_REQUIRES_UP",
             Self::BuildConflictsWithServeOptions => "BUILD_CONFLICTS_WITH_SERVE_OPTIONS",
             Self::EngineSectionRequiresManagedStart { .. } => {
                 "ENGINE_SECTION_REQUIRES_MANAGED_START"

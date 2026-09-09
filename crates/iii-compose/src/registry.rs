@@ -20,6 +20,7 @@
 //!    projects.
 
 use std::{
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -47,6 +48,14 @@ const RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Downloads get their own budget: an artefact is megabytes over a link we do
 /// not control.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheIntegrity {
+    archive_sha256: String,
+    tree_sha256: String,
+}
 
 /// What the registry answers to `POST /resolve`.
 #[derive(Debug, Deserialize)]
@@ -390,11 +399,12 @@ async fn install_binary(
         "{}-{}-{}-{digest}",
         resolved.name, resolved.version, target
     ));
-    if let Some(existing) = installed_binary(&install_dir) {
+    if cache_matches(&install_dir, &digest)?
+        && let Some(existing) = installed_binary(&install_dir)
+    {
         return Ok((existing, InstallStatus::Cached));
     }
-    remove_invalid_install(&install_dir)?;
-    download_and_extract(container, artifact, &install_dir).await?;
+    download_and_extract(container, artifact, &install_dir, &digest).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
@@ -452,12 +462,10 @@ async fn install_bundle(
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
-    if install_dir.join(BUNDLE_MANIFEST).is_file() {
+    if cache_matches(&install_dir, &digest)? && install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Ok((install_dir, InstallStatus::Cached));
     }
-    remove_invalid_install(&install_dir)?;
-
-    download_and_extract(container, artifact, &install_dir).await?;
+    download_and_extract(container, artifact, &install_dir, &digest).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Err(ComposeError::PackageArtifactEmpty {
@@ -507,6 +515,119 @@ fn remove_invalid_install(path: &Path) -> Result<()> {
     };
     result.map_err(|source| ComposeError::Io {
         path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Verifies both the archive identity and the extracted files in one cache entry.
+fn cache_matches(install_dir: &Path, archive_sha256: &str) -> Result<bool> {
+    let marker = install_dir.join(INTEGRITY_FILE);
+    let bytes = match std::fs::read(&marker) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(ComposeError::Io {
+                path: marker,
+                source,
+            });
+        }
+    };
+    let integrity: CacheIntegrity = match serde_json::from_slice(&bytes) {
+        Ok(integrity) => integrity,
+        Err(_) => return Ok(false),
+    };
+    if !integrity
+        .archive_sha256
+        .eq_ignore_ascii_case(archive_sha256)
+    {
+        return Ok(false);
+    }
+    Ok(tree_digest(install_dir)? == integrity.tree_sha256)
+}
+
+/// Hashes the extracted tree in stable path order, excluding its own marker.
+fn tree_digest(root: &Path) -> Result<String> {
+    fn visit(root: &Path, directory: &Path, hasher: &mut Sha256) -> Result<()> {
+        let mut entries = std::fs::read_dir(directory)
+            .map_err(|source| ComposeError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|source| ComposeError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+
+        for entry in entries {
+            let path = entry.path();
+            if path == root.join(INTEGRITY_FILE) {
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let name = relative.to_string_lossy().replace('\\', "/");
+            hasher.update((name.len() as u64).to_be_bytes());
+            hasher.update(name.as_bytes());
+            let metadata = std::fs::symlink_metadata(&path).map_err(|source| ComposeError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                hasher.update(metadata.permissions().mode().to_be_bytes());
+            }
+
+            if metadata.file_type().is_dir() {
+                hasher.update(b"directory");
+                visit(root, &path, hasher)?;
+            } else if metadata.file_type().is_file() {
+                hasher.update(b"file");
+                let mut file = std::fs::File::open(&path).map_err(|source| ComposeError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    let read = file.read(&mut buffer).map_err(|source| ComposeError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+            } else if metadata.file_type().is_symlink() {
+                hasher.update(b"symlink");
+                let target = std::fs::read_link(&path).map_err(|source| ComposeError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                hasher.update(target.to_string_lossy().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    let mut hasher = Sha256::new();
+    visit(root, root, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn write_integrity_marker(install_dir: &Path, archive_sha256: &str) -> Result<()> {
+    let marker = install_dir.join(INTEGRITY_FILE);
+    let integrity = CacheIntegrity {
+        archive_sha256: archive_sha256.to_ascii_lowercase(),
+        tree_sha256: tree_digest(install_dir)?,
+    };
+    let bytes = serde_json::to_vec(&integrity).map_err(|source| ComposeError::Io {
+        path: marker.clone(),
+        source: std::io::Error::other(source),
+    })?;
+    std::fs::write(&marker, bytes).map_err(|source| ComposeError::Io {
+        path: marker,
         source,
     })
 }
@@ -695,6 +816,7 @@ async fn download_and_extract(
     container: &str,
     artifact: &RegistryArtifact,
     install_dir: &Path,
+    archive_sha256: &str,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
@@ -744,6 +866,10 @@ async fn download_and_extract(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
+    if let Err(error) = write_integrity_marker(&staging, archive_sha256) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
 
     if let Some(parent) = install_dir.parent()
         && let Err(source) = std::fs::create_dir_all(parent)
@@ -755,7 +881,7 @@ async fn download_and_extract(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    let result = publish(&staging, install_dir);
+    let result = publish(&staging, install_dir, archive_sha256);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -773,25 +899,21 @@ async fn download_and_extract(
 ///
 /// A directory left half-written by an interrupted run is the one case worth
 /// clearing: it is not another writer's, and nothing can start from it.
-fn publish(staging: &Path, install_dir: &Path) -> Result<()> {
+fn publish(staging: &Path, install_dir: &Path, archive_sha256: &str) -> Result<()> {
     match std::fs::rename(staging, install_dir) {
         Ok(()) => return Ok(()),
-        Err(_) if is_populated(install_dir) => {
+        Err(_) if cache_matches(install_dir, archive_sha256)? => {
             let _ = std::fs::remove_dir_all(staging);
             return Ok(());
         }
         Err(_) => {}
     }
 
-    let _ = std::fs::remove_dir_all(install_dir);
+    remove_invalid_install(install_dir)?;
     std::fs::rename(staging, install_dir).map_err(|source| ComposeError::Io {
         path: install_dir.to_path_buf(),
         source,
     })
-}
-
-fn is_populated(dir: &Path) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Finds the executable inside an install directory.
@@ -956,7 +1078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_install_reuses_the_downloaded_artefact() {
+    async fn a_cached_install_is_reused_and_corruption_is_repaired() {
         let server = MockServer::start().await;
         let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
         let digest = hex::encode(Sha256::digest(&archive));
@@ -979,13 +1101,13 @@ mod tests {
                     "config": {"prefix": "state"}
                 }]
             })))
-            .expect(2)
+            .expect(3)
             .mount(&server)
             .await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/artifact"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -996,10 +1118,19 @@ mod tests {
         let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
             .await
             .unwrap();
+        let Payload::Binary(program) = &second.payload else {
+            panic!("state should install as a binary");
+        };
+        std::fs::write(program, b"changed after installation").unwrap();
+        let third = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
 
         assert_eq!(first.status, InstallStatus::Downloaded);
         assert_eq!(second.status, InstallStatus::Cached);
+        assert_eq!(third.status, InstallStatus::Downloaded);
         assert_eq!(first.default_config, second.default_config);
+        assert_eq!(std::fs::read(program).unwrap(), b"#!/bin/sh\nexit 0\n");
     }
 
     #[tokio::test]

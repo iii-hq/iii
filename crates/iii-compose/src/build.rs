@@ -29,6 +29,15 @@ struct PackageRequest {
 /// Lock and download every `package://` container declared by `file` into the
 /// cache shared with `compose::up`.
 pub async fn build(file: &Path) -> Result<BuildReport> {
+    build_with_mode(file, false).await
+}
+
+/// Downloads only the exact artifacts recorded in a matching existing lock.
+pub async fn build_frozen(file: &Path) -> Result<BuildReport> {
+    build_with_mode(file, true).await
+}
+
+async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     let began = Instant::now();
     let mut file = ComposeFile::load(file)?;
     let cache = StateStore::package_cache()?;
@@ -45,16 +54,18 @@ pub async fn build(file: &Path) -> Result<BuildReport> {
         .collect::<Vec<_>>();
     report::plan(&packages);
 
-    let prepared =
-        match crate::lockfile::prepare(&mut file, &cache, &std::collections::BTreeSet::new()).await
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                report::plan_done();
-                report::summary_failed("build", error.code(), began.elapsed());
-                return Err(error);
-            }
-        };
+    let prepared = match if frozen {
+        crate::lockfile::prepare_frozen(&mut file, &cache).await
+    } else {
+        crate::lockfile::prepare(&mut file, &cache, &std::collections::BTreeSet::new()).await
+    } {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            report::plan_done();
+            report::summary_failed("build", error.code(), began.elapsed());
+            return Err(error);
+        }
+    };
     prepared.write_if_changed()?;
 
     let mut downloaded = 0;

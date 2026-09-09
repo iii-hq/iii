@@ -132,6 +132,7 @@ fn a_programmatic_file_without_up_is_refused() {
         engine: None,
         ns: None,
         up: false,
+        frozen: false,
         file: Some("other.yaml".into()),
         command: None,
     }
@@ -184,15 +185,18 @@ fn logs_rejects_an_unbounded_initial_tail() {
 
 #[test]
 fn build_uses_the_default_compose_file() {
-    let ComposeCommand::Build { file } = parse(&["iii", "compose", "build"]).plan().unwrap() else {
+    let ComposeCommand::Build { file, frozen } =
+        parse(&["iii", "compose", "build"]).plan().unwrap()
+    else {
         panic!("expected build command");
     };
     assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
+    assert!(!frozen);
 }
 
 #[test]
 fn build_accepts_its_own_file() {
-    let ComposeCommand::Build { file } =
+    let ComposeCommand::Build { file, frozen } =
         parse(&["iii", "compose", "build", "--file", "other.yaml"])
             .plan()
             .unwrap()
@@ -200,6 +204,18 @@ fn build_accepts_its_own_file() {
         panic!("expected build command");
     };
     assert_eq!(file, std::path::Path::new("other.yaml"));
+    assert!(!frozen);
+}
+
+#[test]
+fn build_accepts_frozen_mode() {
+    let ComposeCommand::Build { frozen, .. } = parse(&["iii", "compose", "build", "--frozen"])
+        .plan()
+        .unwrap()
+    else {
+        panic!("expected build command");
+    };
+    assert!(frozen);
 }
 
 #[test]
@@ -216,9 +232,11 @@ fn build_conflicts_with_daemon_options() {
         engine: None,
         ns: None,
         up: true,
+        frozen: false,
         file: None,
         command: Some(ComposeSubcommand::Build(BuildCli {
             file: "worker-compose.yaml".into(),
+            frozen: false,
         })),
     }
     .plan()
@@ -278,6 +296,20 @@ fn up_names_the_file_in_the_current_directory() {
     };
     assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
     assert!(start);
+}
+
+#[test]
+fn frozen_is_available_only_for_initial_up() {
+    let ComposeCommand::Serve { start, frozen, .. } =
+        parse(&["iii", "compose", "--up", "--frozen"])
+            .plan()
+            .unwrap()
+    else {
+        panic!("expected serve command");
+    };
+    assert!(start);
+    assert!(frozen);
+    assert!(Wrapper::try_parse_from(["iii", "compose", "--frozen"]).is_err());
 }
 
 #[test]

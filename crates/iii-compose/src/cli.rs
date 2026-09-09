@@ -66,6 +66,12 @@ pub struct ComposeCli {
     #[arg(long)]
     pub up: bool,
 
+    /// Require worker-compose.lock to match the compose file and use only its
+    /// exact package resolutions. Missing cache artifacts are downloaded from
+    /// the URLs in the lock.
+    #[arg(long, requires = "up")]
+    pub frozen: bool,
+
     /// The compose file. Only valid with `--up`. Defaults to
     /// `./worker-compose.yaml`, the same fallback `compose::up` uses when a
     /// call names no file.
@@ -94,6 +100,10 @@ pub struct BuildCli {
         default_value = DEFAULT_COMPOSE_FILE
     )]
     pub file: PathBuf,
+
+    /// Require an existing, current lock and do not resolve package selectors.
+    #[arg(long)]
+    pub frozen: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -146,7 +156,7 @@ fn parse_tail(value: &str) -> std::result::Result<usize, String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeCommand {
     /// Download registry packages without starting an engine or a worker.
-    Build { file: PathBuf },
+    Build { file: PathBuf, frozen: bool },
     /// Serve `compose::*` in the foreground.
     Serve {
         explicit_engine_url: Option<String>,
@@ -158,6 +168,8 @@ pub enum ComposeCommand {
         file: PathBuf,
         /// Whether to bring `file` up before the first call arrives.
         start: bool,
+        /// Whether initial startup must use an existing, current lock.
+        frozen: bool,
     },
     /// Read process output through the already-running daemon.
     Logs {
@@ -177,12 +189,17 @@ impl ComposeCli {
         if let Some(command) = &self.command {
             return match command {
                 ComposeSubcommand::Build(args) => {
-                    if self.engine.is_some() || self.ns.is_some() || self.up || self.file.is_some()
+                    if self.engine.is_some()
+                        || self.ns.is_some()
+                        || self.up
+                        || self.frozen
+                        || self.file.is_some()
                     {
                         return Err(ComposeError::BuildConflictsWithServeOptions);
                     }
                     Ok(ComposeCommand::Build {
                         file: args.file.clone(),
+                        frozen: args.frozen,
                     })
                 }
                 ComposeSubcommand::Logs(logs) => Ok(ComposeCommand::Logs {
@@ -199,6 +216,9 @@ impl ComposeCli {
 
         if !self.up && self.file.is_some() {
             return Err(ComposeError::FileRequiresUp);
+        }
+        if !self.up && self.frozen {
+            return Err(ComposeError::FrozenRequiresUp);
         }
 
         let explicit_daemon_namespace = self.validated_namespace()?;
@@ -217,6 +237,7 @@ impl ComposeCli {
             explicit_daemon_namespace,
             file,
             start: self.up,
+            frozen: self.frozen,
         })
     }
 

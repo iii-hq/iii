@@ -114,7 +114,11 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
-        ComposeCommand::Build { file } => match build::build(&file).await {
+        ComposeCommand::Build { file, frozen } => match if frozen {
+            build::build_frozen(&file).await
+        } else {
+            build::build(&file).await
+        } {
             Ok(_) => 0,
             Err(err) => report_error(&err),
         },
@@ -123,7 +127,16 @@ pub async fn run(cli: ComposeCli) -> i32 {
             explicit_daemon_namespace,
             file,
             start,
-        } => match serve(explicit_engine_url, explicit_daemon_namespace, file, start).await {
+            frozen,
+        } => match serve(
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            start,
+            frozen,
+        )
+        .await
+        {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -348,6 +361,7 @@ async fn serve(
     explicit_daemon_namespace: Option<String>,
     file: std::path::PathBuf,
     start: bool,
+    frozen: bool,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -424,7 +438,7 @@ async fn serve(
     let result = if shutdown.requested() {
         Ok(())
     } else {
-        let start_file = start.then_some(file);
+        let start_file = start.then_some(InitialStart { file, frozen });
         serve_daemon(
             engine_url,
             daemon_namespace,
@@ -486,11 +500,16 @@ fn load_invocation_file(file: &std::path::Path, required: bool) -> Result<Option
     }
 }
 
+struct InitialStart {
+    file: std::path::PathBuf,
+    frozen: bool,
+}
+
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
     project_namespace_override: Option<String>,
-    start: Option<std::path::PathBuf>,
+    start: Option<InitialStart>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
     shutdown: shutdown::ShutdownSignal,
@@ -582,14 +601,20 @@ async fn serve_daemon(
 
     // A failed initial project still ends the command. Cancellation rolls its
     // partial startup back but leaves the daemon available for later calls.
-    if let (Some(file), Some(operation)) = (&start, startup_operation) {
+    if let (Some(start), Some(operation)) = (&start, startup_operation) {
         println!();
         let operation_id = operation.id().to_string();
         let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
             operation.cancellation(),
         ));
         let result = daemon
-            .up_until_shutdown(Some(file), None, operation_id, startup_shutdown)
+            .up_until_shutdown(
+                Some(&start.file),
+                None,
+                operation_id,
+                startup_shutdown,
+                start.frozen,
+            )
             .await;
         match result {
             Ok(None) => {
@@ -610,7 +635,9 @@ async fn serve_daemon(
                 println!("{}", "startup cancelled; daemon remains available".dimmed());
             }
             Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
-                let error = ComposeError::ProjectDidNotStart { path: file.clone() };
+                let error = ComposeError::ProjectDidNotStart {
+                    path: start.file.clone(),
+                };
                 operation
                     .finish(operation::OperationStatus::Failed, error.to_string())
                     .await;

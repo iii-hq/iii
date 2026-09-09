@@ -358,6 +358,17 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
     Ok(Some(out))
 }
 
+/// True when Compose created this container block and may remove it as a stale dependency.
+pub(crate) fn is_generated_container(text: &str, key: &str) -> Result<bool> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let containers = find_containers(&lines)?;
+    let indent = entry_indent(&lines, &containers);
+    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
+        return Ok(false);
+    };
+    Ok(lines[entry].iter().any(|line| line.trim() == MARKER))
+}
+
 /// Byte offset of every line boundary, including the end of the document.
 fn line_offsets(lines: &[&str]) -> Vec<usize> {
     let mut offsets = Vec::with_capacity(lines.len() + 1);
@@ -1021,6 +1032,14 @@ containers:
 
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
             .expect("the edited file should still load");
+    }
+
+    #[test]
+    fn generated_marker_distinguishes_compose_dependencies_from_manual_entries() {
+        let out = added(FILE);
+
+        assert!(is_generated_container(&out, "state").unwrap());
+        assert!(!is_generated_container(&out, "todo").unwrap());
     }
 
     #[test]

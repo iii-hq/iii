@@ -33,6 +33,12 @@ const LOCKFILE_VERSION: u8 = 1;
 struct ComposeLock {
     version: u8,
     containers: BTreeMap<String, LockedContainer>,
+    /// Declared graph members selected for each explicit registry root.
+    ///
+    /// This provenance lets update replace one resolved graph and remove only
+    /// generated dependencies that no remaining root owns.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    graphs: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +94,19 @@ impl PreparedLock {
     /// Cache result for each package acquired while preparing this lock.
     pub fn install_statuses(&self) -> &BTreeMap<String, crate::registry::InstallStatus> {
         &self.install_statuses
+    }
+
+    /// Records the complete package graph selected for one explicit root.
+    pub fn replace_graph(&mut self, root: &str, nodes: BTreeSet<String>) {
+        if self.lock.graphs.get(root) == Some(&nodes) {
+            return;
+        }
+        self.changed = true;
+        if nodes.is_empty() {
+            self.lock.graphs.remove(root);
+        } else {
+            self.lock.graphs.insert(root.to_string(), nodes);
+        }
     }
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
@@ -163,6 +182,71 @@ pub async fn prepare_with_versions(
     Ok(prepared)
 }
 
+/// Uses only the exact resolution in an existing lock.
+///
+/// This is the Compose equivalent of `npm ci`: it never resolves a selector
+/// and never changes the lock. A missing cache entry is still downloaded from
+/// the immutable URL and digest already recorded in the lock.
+pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Result<PreparedLock> {
+    let path = lock_path(&compose.path);
+    let lock =
+        load(&path)?.ok_or_else(|| ComposeError::FrozenLockMissing { path: path.clone() })?;
+    let declarations = package_declarations(compose);
+
+    for (key, reference, requested) in &declarations {
+        let worker = format!("package://{reference}");
+        let Some(entry) = lock.containers.get(key) else {
+            return Err(ComposeError::FrozenLockOutOfDate {
+                path,
+                message: format!("container '{key}' is missing from the lock"),
+            });
+        };
+        if entry.worker != worker || entry.requested != *requested {
+            return Err(ComposeError::FrozenLockOutOfDate {
+                path,
+                message: format!(
+                    "container '{key}' changed from {}@{} to package://{reference}@{requested}",
+                    entry.worker, entry.requested,
+                ),
+            });
+        }
+    }
+    if let Some(extra) = lock
+        .containers
+        .keys()
+        .find(|key| !declarations.iter().any(|(declared, _, _)| declared == *key))
+    {
+        return Err(ComposeError::FrozenLockOutOfDate {
+            path,
+            message: format!("container '{extra}' exists only in the lock"),
+        });
+    }
+
+    for (key, _, _) in &declarations {
+        if let (Some(container), Some(entry)) =
+            (compose.containers.get_mut(key), lock.containers.get(key))
+        {
+            container.resolved_package = Some(entry.resolved.clone());
+        }
+    }
+    let mut prepared = PreparedLock {
+        path,
+        lock,
+        changed: false,
+        package_changes: BTreeSet::new(),
+        install_statuses: BTreeMap::new(),
+    };
+    prepared.install(cache_root).await?;
+    Ok(prepared)
+}
+
+/// Returns package graph ownership recorded beside one compose file.
+pub(crate) fn graphs(compose_path: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    Ok(load(&lock_path(compose_path))?
+        .map(|lock| lock.graphs)
+        .unwrap_or_default())
+}
+
 /// Resolves and attaches lock metadata without acquiring package artifacts.
 /// Removal uses this to prune the lock before it stops existing workers.
 pub async fn prepare_metadata(
@@ -184,18 +268,7 @@ async fn prepare_metadata_with_versions(
     let mut containers = BTreeMap::new();
     let mut package_changes = BTreeSet::new();
 
-    let declarations = compose
-        .containers
-        .iter()
-        .filter_map(|(key, container)| match &container.worker {
-            WorkerSource::Package { reference } => Some((
-                key.clone(),
-                reference.clone(),
-                container.version.clone().unwrap_or_else(|| "*".to_string()),
-            )),
-            WorkerSource::Path { .. } => None,
-        })
-        .collect::<Vec<_>>();
+    let declarations = package_declarations(compose);
 
     for (key, reference, requested) in declarations {
         let worker = format!("package://{reference}");
@@ -235,9 +308,28 @@ async fn prepare_metadata_with_versions(
         containers.insert(key, entry);
     }
 
+    let declared = compose.containers.keys().cloned().collect::<BTreeSet<_>>();
+    let graphs = previous
+        .as_ref()
+        .map(|lock| {
+            lock.graphs
+                .iter()
+                .filter(|(root, _)| containers.contains_key(*root))
+                .filter_map(|(root, nodes)| {
+                    let nodes = nodes
+                        .iter()
+                        .filter(|node| declared.contains(*node))
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    (!nodes.is_empty()).then(|| (root.clone(), nodes))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let lock = ComposeLock {
         version: LOCKFILE_VERSION,
         containers,
+        graphs,
     };
     let changed = previous.as_ref() != Some(&lock);
     Ok(PreparedLock {
@@ -247,6 +339,21 @@ async fn prepare_metadata_with_versions(
         package_changes,
         install_statuses: BTreeMap::new(),
     })
+}
+
+fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String)> {
+    compose
+        .containers
+        .iter()
+        .filter_map(|(key, container)| match &container.worker {
+            WorkerSource::Package { reference } => Some((
+                key.clone(),
+                reference.clone(),
+                container.version.clone().unwrap_or_else(|| "*".to_string()),
+            )),
+            WorkerSource::Path { .. } => None,
+        })
+        .collect()
 }
 
 /// Compares the package fields that can change worker runtime behavior.
@@ -359,6 +466,13 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
             }
         }
     }
+    for root in lock.graphs.keys() {
+        if !lock.containers.contains_key(root) {
+            return Err(invalid(format!(
+                "graph root '{root}' is not a locked package container"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -423,6 +537,10 @@ mod tests {
                         default_config: None,
                     },
                 },
+            )]),
+            graphs: BTreeMap::from([(
+                "state".to_string(),
+                BTreeSet::from(["state".to_string()]),
             )]),
         }
     }
@@ -502,6 +620,49 @@ mod tests {
         assert!(!dir.path().join("cache").exists());
     }
 
+    #[tokio::test]
+    async fn frozen_prepare_requires_an_existing_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+        )
+        .unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        let error = match prepare_frozen(&mut compose, &dir.path().join("cache")).await {
+            Ok(_) => panic!("frozen mode must not create a lock"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
+        assert!(!lock_path(&compose_path).exists());
+    }
+
+    #[tokio::test]
+    async fn frozen_prepare_rejects_a_changed_selector_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: latest\n",
+        )
+        .unwrap();
+        let lock_path = lock_path(&compose_path);
+        let before = serde_yaml::to_string(&lock()).unwrap();
+        write_atomically(&lock_path, &before).unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        let error = match prepare_frozen(&mut compose, &dir.path().join("cache")).await {
+            Ok(_) => panic!("frozen mode must reject a stale lock"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), "COMPOSE_LOCK_OUT_OF_DATE");
+        assert_eq!(std::fs::read_to_string(lock_path).unwrap(), before);
+    }
+
     #[test]
     fn a_new_artifact_url_with_the_same_digest_does_not_change_runtime_content() {
         let previous = lock().containers.remove("state").unwrap().resolved;
@@ -514,6 +675,29 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_reuses_a_locked_tag_without_registry_resolution() {
+        let server = MockServer::start().await;
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let body = b"#!/bin/sh\nexit 0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(
+                &mut header,
+                format!("worker{}", std::env::consts::EXE_SUFFIX),
+                &body[..],
+            )
+            .unwrap();
+        let archive = archive.into_inner().unwrap().finish().unwrap();
+        let digest = hex::encode(Sha256::digest(&archive));
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let compose_path = dir.path().join("worker-compose.yaml");
         std::fs::write(
@@ -525,22 +709,15 @@ mod tests {
         let entry = lock.containers.get_mut("state").unwrap();
         entry.worker = "package://api.workers.iii.dev/locked-only".to_string();
         entry.resolved.name = "locked-only".to_string();
+        let artifact = entry.resolved.artifacts.values_mut().next().unwrap();
+        artifact.url = format!("{}/artifact", server.uri());
+        artifact.sha256 = digest;
         write_atomically(
             &lock_path(&compose_path),
             &serde_yaml::to_string(&lock).unwrap(),
         )
         .unwrap();
-        let target = crate::registry::host_target();
         let cache = dir.path().join("cache");
-        let install = cache.join(format!("locked-only-0.22.8-{target}-{}", "a".repeat(64)));
-        std::fs::create_dir_all(&install).unwrap();
-        let program = install.join(format!("worker{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&program, b"worker").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let mut compose = ComposeFile::load(&compose_path).unwrap();
 
         let prepared = prepare(&mut compose, &cache, &BTreeSet::new())
@@ -551,7 +728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_downloads_the_locked_artifact_when_the_cache_is_empty() {
+    async fn frozen_prepare_downloads_the_locked_artifact_when_the_cache_is_empty() {
         let server = MockServer::start().await;
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
@@ -595,16 +772,15 @@ mod tests {
             .unwrap();
         artifact.url = format!("{}/state", server.uri());
         artifact.sha256 = digest;
-        write_atomically(
-            &lock_path(&compose_path),
-            &serde_yaml::to_string(&lock).unwrap(),
-        )
-        .unwrap();
+        let lock_path = lock_path(&compose_path);
+        let before = serde_yaml::to_string(&lock).unwrap();
+        write_atomically(&lock_path, &before).unwrap();
         let mut compose = ComposeFile::load(&compose_path).unwrap();
 
-        prepare(&mut compose, &dir.path().join("cache"), &BTreeSet::new())
+        prepare_frozen(&mut compose, &dir.path().join("cache"))
             .await
             .unwrap();
+        assert_eq!(std::fs::read_to_string(lock_path).unwrap(), before);
     }
 
     #[tokio::test]
