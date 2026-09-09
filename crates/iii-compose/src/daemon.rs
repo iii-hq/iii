@@ -41,8 +41,8 @@ use crate::{
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 /// How many times `add_configured` redoes its unlocked plan because the file
-/// changed before it took the mutation lock. Beyond this it edits anyway,
-/// keeping declared pins; a file that busy is an operator problem, not a loop.
+/// changed before it took the mutation lock. Beyond this it fails with
+/// `AddPlanStale` rather than edit from a plan made against another file.
 const ADD_REPLAN_LIMIT: u32 = 2;
 
 #[derive(Debug, Clone)]
@@ -453,9 +453,9 @@ impl Daemon {
         // underneath — another add declared a dependency of this graph as
         // `path://`, whose own dependencies this plan would now write below an
         // operator-owned boundary — the plan is stale, so it is redone against
-        // the fresh text; the artifact cache makes the second pass cheap.
-        // Bounded: a file that keeps changing falls through to the declared-
-        // dependency filter below, which still keeps every existing pin.
+        // the fresh text; the artifact cache makes the second pass cheap. Only
+        // the file the plan was made against is ever edited: past the replan
+        // limit the add fails instead, and the caller retries.
         let mut replans = 0;
         let (_mutation, text, wanted) = loop {
             let (snapshot, wanted) = self
@@ -472,8 +472,14 @@ impl Daemon {
                 path: path.to_path_buf(),
                 source,
             })?;
-            if text == snapshot || replans == ADD_REPLAN_LIMIT {
+            if text == snapshot {
                 break (mutation, text, wanted);
+            }
+            if replans == ADD_REPLAN_LIMIT {
+                return Err(ComposeError::AddPlanStale {
+                    path: path.to_path_buf(),
+                    replans,
+                });
             }
             replans += 1;
             crate::report::daemon_line(
@@ -485,11 +491,6 @@ impl Daemon {
             );
         };
         self.validate_engine_policy_text(path, &text)?;
-        // Against the declaration this edit lands on, not the snapshot: after
-        // the replan limit the two may still differ, and a dependency another
-        // add declared meanwhile must keep its pin.
-        let current = ComposeFile::parse(&text, path.to_path_buf())?;
-        let wanted = keep_declared_dependencies(wanted, &asked_keys, &current);
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -637,8 +638,9 @@ impl Daemon {
             wanted.extend(graph?);
         }
         let wanted = coalesce_containers(wanted)?;
-        // Against the snapshot read above, so the registry artifacts acquired
-        // below are only the ones this add can actually declare.
+        // Against the snapshot read above, which is also the text the caller
+        // edits, so the registry artifacts acquired below are only the ones
+        // this add actually declares.
         let mut wanted = keep_declared_dependencies(wanted, asked_keys, &declared);
         for worker in &mut wanted {
             if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
@@ -1364,10 +1366,8 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 /// `compose::update worker=<dep>` is how a version moves. Only nodes that are
 /// NOT yet declared are added, plus whatever the caller explicitly asked for.
 /// A declared dependency whose pin differs from what the registry resolved is
-/// logged, never silently rewritten. `add_configured` runs this twice: once on
-/// its pre-lock snapshot to size the artifact fetch, and again under the
-/// mutation lock against the text it is about to edit, which is the call that
-/// decides what gets written.
+/// logged, never silently rewritten. `add_configured` applies this to the
+/// snapshot it plans against, and only ever edits that same text.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
     asked: &BTreeSet<String>,

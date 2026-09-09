@@ -446,6 +446,15 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    /// `compose::add` plans (graph expansion, artifact acquisition) against a
+    /// snapshot of the file, unlocked, and only edits the file it planned
+    /// against. A file that keeps changing underneath is not edited from a
+    /// stale plan; the caller retries.
+    #[error(
+        "{path} changed {replans} times while compose::add was resolving its graph; nothing was          written. Retry the add."
+    )]
+    AddPlanStale { path: PathBuf, replans: u32 },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -569,6 +578,7 @@ impl ComposeError {
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",
