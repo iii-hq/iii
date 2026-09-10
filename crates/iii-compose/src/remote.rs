@@ -54,6 +54,9 @@ pub struct ComposeRequest {
     pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
+    /// Require a matching existing lock and skip package selector resolution.
+    /// Used by `compose::up`.
+    pub frozen: Option<bool>,
     /// The worker a call is about.
     ///
     /// `compose::update` reads a spec: `name` or `name@version`. Omit both
@@ -106,6 +109,22 @@ struct LifecycleOptions {
     file: Option<String>,
     /// Restrict the lifecycle operation to one container.
     container: Option<String>,
+}
+
+/// Request fields used by `compose::up`.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct UpOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
+    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
+    /// the daemon working directory.
+    file: Option<String>,
+    /// Restrict startup to one container and its dependencies.
+    container: Option<String>,
+    /// Require the compose file and existing lock to match. Package selectors
+    /// are not resolved, but missing cached artifacts are downloaded from the lock.
+    frozen: Option<bool>,
 }
 
 /// Request fields used by project read operations.
@@ -380,14 +399,23 @@ async fn dispatch(
     let file = request.file.as_ref().map(std::path::PathBuf::from);
 
     match operation {
-        Operation::Up => match daemon
-            .up(
-                file.as_deref(),
-                request.container.as_deref(),
-                operation_id(),
-            )
-            .await
-        {
+        Operation::Up => match if request.frozen.unwrap_or(false) {
+            daemon
+                .up_frozen(
+                    file.as_deref(),
+                    request.container.as_deref(),
+                    operation_id(),
+                )
+                .await
+        } else {
+            daemon
+                .up(
+                    file.as_deref(),
+                    request.container.as_deref(),
+                    operation_id(),
+                )
+                .await
+        } {
             Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
@@ -804,7 +832,8 @@ fn op_description(function_id: &str) -> &'static str {
     match function_id {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
-             Repeated calls leave ready containers running."
+             Repeated calls leave ready containers running. Frozen mode requires \
+             worker-compose.lock to match and skips package resolution."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
@@ -829,8 +858,8 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::add" => {
             "Accept an observable operation that declares one or more workers and their registry \
-             dependencies in the compose file, pins resolved versions, then reconciles changed \
-             workers once."
+             dependencies in the compose file, locks resolved packages, then reconciles changed \
+             workers once. Explicit selectors remain in the compose file."
         }
         "compose::remove" => {
             "Accept an observable operation that removes one or more declared workers and \
@@ -842,9 +871,10 @@ fn op_description(function_id: &str) -> &'static str {
              changing its dependency graph."
         }
         "compose::update" => {
-            "Accept an observable operation that moves one or more declared package workers to \
-             requested or latest versions, then restarts the project once if versions change. \
-             Omit worker and workers to update all declared package workers; path workers are skipped."
+            "Accept an observable operation that refreshes declared package selectors or moves \
+             workers to requested versions, including their dependency graphs. Omit worker and \
+             workers to move all declared packages to latest; path workers are skipped. The \
+             project restarts only when runtime content or topology changes."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -892,7 +922,7 @@ fn schema_table() -> &'static [SchemaTriple] {
         vec![
             (
                 "compose::up",
-                schema_for_value::<LifecycleOptions>(),
+                schema_for_value::<UpOptions>(),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
@@ -1284,6 +1314,7 @@ mod tests {
         assert!(up.contains_key("namespace"));
         assert!(up.contains_key("file"));
         assert!(up.contains_key("container"));
+        assert!(up.contains_key("frozen"));
         assert!(!up.contains_key("worker"));
 
         for function_id in ["compose::add", "compose::update", "compose::remove"] {

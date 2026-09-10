@@ -49,6 +49,8 @@ pub(crate) struct Alias {
 pub(crate) struct Plan {
     pub containers: Vec<NewContainer>,
     pub aliases: Vec<Alias>,
+    /// Exact registry selections keyed by the final container name.
+    pub selected_versions: BTreeMap<String, String>,
 }
 
 /// Resolve before editing or downloading. Existing package declarations must be
@@ -143,13 +145,18 @@ pub(crate) async fn plan(file: &ComposeFile, asked: &[NewContainer]) -> Result<P
                 reference.clone(),
                 container.version.clone().unwrap_or_else(|| "*".into()),
                 registry,
+                container.resolved_package.clone(),
             ))
         })
         .collect();
     let existing = futures::stream::iter(existing_requests.into_iter().map(
-        |(key, reference, range, registry)| async move {
-            let node = registry::resolve_package(&key, &reference, &range).await?;
-            let exact_version = range == node.version;
+        |(key, reference, range, registry, locked)| async move {
+            let exact_version = locked.is_some();
+            let node = match locked {
+                Some(locked) => Node::from(&locked),
+                None => registry::resolve_node(&key, &reference, &range).await?,
+            };
+            let exact_version = exact_version || range == node.version;
             Ok((
                 key,
                 Package {
@@ -323,6 +330,7 @@ fn plan_resolved(
     let mut containers: BTreeMap<String, NewContainer> = BTreeMap::new();
     let mut order = Vec::new();
     let mut aliases = Vec::new();
+    let mut selected_versions = BTreeMap::new();
     for candidate in expanded {
         let mut declaration = candidate.declaration;
         let explicit = requested.get(declaration.key.as_str()).copied();
@@ -348,6 +356,15 @@ fn plan_resolved(
                 continue;
             }
             declaration.key = key;
+            if let Some(previous) =
+                selected_versions.insert(declaration.key.clone(), package.node.version.clone())
+                && previous != package.node.version
+            {
+                return Err(conflict(
+                    &declaration.key,
+                    "the dependency resolves to conflicting exact versions",
+                ));
+            }
             if explicit.is_none() {
                 declaration.source = Source::Package {
                     reference: format!(
@@ -407,6 +424,7 @@ fn plan_resolved(
     order.retain(|key| reachable.contains(key));
     containers.retain(|key, _| reachable.contains(key));
     aliases.retain(|alias| reachable.contains(&alias.container));
+    selected_versions.retain(|key, _| reachable.contains(key));
     let mut sorted = Vec::new();
     while !order.is_empty() {
         let Some(index) = order.iter().position(|key| {
@@ -427,6 +445,7 @@ fn plan_resolved(
     Ok(Plan {
         containers: sorted,
         aliases,
+        selected_versions,
     })
 }
 
@@ -495,6 +514,21 @@ mod tests {
             ]
         );
         assert_eq!(plan.aliases[0].container, "shell");
+    }
+
+    #[test]
+    fn plan_keeps_a_tag_in_the_declaration_and_an_exact_version_for_the_lock() {
+        let mut state = candidate("state", None, &[]);
+        state.declaration.source = Source::Package {
+            reference: "api.workers.iii.dev/state".into(),
+            version: Some("next".into()),
+        };
+        let asked = vec![state.declaration.clone()];
+
+        let plan = plan_resolved(&asked, vec![state], &BTreeMap::new(), &BTreeSet::new()).unwrap();
+
+        assert_eq!(plan.containers[0].source, asked[0].source);
+        assert_eq!(plan.selected_versions["state"], "1.0.0");
     }
 
     #[test]

@@ -3,15 +3,18 @@
 
 //! Prepare every registry package in a compose file without starting anything.
 
-use std::{collections::BTreeSet, future::Future, path::Path, time::Instant};
+use std::{path::Path, time::Instant};
 
+#[cfg(test)]
+use std::collections::BTreeSet;
+
+#[cfg(test)]
 use futures::StreamExt;
 
 use crate::{
     ComposeFile,
-    config::WorkerSource,
     error::Result,
-    registry::{self, InstallStatus, InstalledPackage},
+    registry::{self, InstallStatus},
     report,
     state::StateStore,
 };
@@ -23,6 +26,7 @@ pub struct BuildReport {
     pub cached: usize,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct PackageRequest {
     index: usize,
@@ -31,23 +35,79 @@ struct PackageRequest {
     version: String,
 }
 
-/// Download every `package://` container declared by `file` into the cache
-/// shared with `compose::up`.
+/// Lock and download every `package://` container declared by `file` into the
+/// cache shared with `compose::up`.
 pub async fn build(file: &Path) -> Result<BuildReport> {
-    let file = ComposeFile::load(file)?;
-    let cache = StateStore::package_cache()?;
-    build_file_with(&file, &cache, |request, cache| async move {
-        registry::install(
-            &request.container,
-            &request.reference,
-            &request.version,
-            &cache,
-        )
-        .await
-    })
-    .await
+    build_with_mode(file, false).await
 }
 
+/// Downloads only the exact artifacts recorded in a matching existing lock.
+pub async fn build_frozen(file: &Path) -> Result<BuildReport> {
+    build_with_mode(file, true).await
+}
+
+async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
+    let began = Instant::now();
+    let mut file = ComposeFile::load(file)?;
+    let cache = StateStore::package_cache()?;
+    let packages = file
+        .containers
+        .iter()
+        .filter(|(_, container)| {
+            matches!(
+                container.worker,
+                crate::config::WorkerSource::Package { .. }
+            )
+        })
+        .map(|(name, _)| (name.clone(), 0))
+        .collect::<Vec<_>>();
+    report::plan(&packages);
+
+    let prepared = match if frozen {
+        crate::lockfile::prepare_frozen(&mut file, &cache).await
+    } else {
+        crate::lockfile::prepare(&mut file, &cache, &std::collections::BTreeSet::new()).await
+    } {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            report::plan_done();
+            report::summary_failed("build", error.code(), began.elapsed());
+            return Err(error);
+        }
+    };
+    for (container, reference, canonical) in prepared.aliases() {
+        registry::warn_alias(container, reference, Some(canonical), None).await;
+    }
+    prepared.write_if_changed()?;
+    if prepared.changed() {
+        report::lock_changed(prepared.path(), !prepared.existed());
+    }
+
+    let mut downloaded = 0;
+    let mut cached = 0;
+    for (container, status) in prepared.install_statuses() {
+        match status {
+            InstallStatus::Downloaded => {
+                downloaded += 1;
+                report::completed(container, "downloaded", began.elapsed());
+            }
+            InstallStatus::Cached => {
+                cached += 1;
+                report::unchanged(container, "already cached");
+            }
+        }
+    }
+    report::plan_done();
+    let packages = downloaded + cached;
+    report::summary_ok("build", downloaded, packages, began.elapsed());
+    Ok(BuildReport {
+        packages,
+        downloaded,
+        cached,
+    })
+}
+
+#[cfg(test)]
 async fn build_file_with<F, Fut>(
     file: &ComposeFile,
     cache: &Path,
@@ -55,7 +115,7 @@ async fn build_file_with<F, Fut>(
 ) -> Result<BuildReport>
 where
     F: Fn(PackageRequest, std::path::PathBuf) -> Fut + Sync,
-    Fut: Future<Output = Result<InstalledPackage>>,
+    Fut: std::future::Future<Output = Result<crate::registry::InstalledPackage>>,
 {
     let began = Instant::now();
     let requests: Vec<_> = file
@@ -63,13 +123,13 @@ where
         .iter()
         .enumerate()
         .filter_map(|(index, (container, spec))| match &spec.worker {
-            WorkerSource::Package { reference } => Some(PackageRequest {
+            crate::config::WorkerSource::Package { reference } => Some(PackageRequest {
                 index,
                 container: container.clone(),
                 reference: reference.clone(),
                 version: spec.version.as_deref().unwrap_or("*").to_string(),
             }),
-            WorkerSource::Path { .. } => None,
+            crate::config::WorkerSource::Path { .. } => None,
         })
         .collect();
 
@@ -151,7 +211,7 @@ mod tests {
 
     use super::*;
     use crate::error::ComposeError;
-    use crate::registry::Payload;
+    use crate::registry::{InstalledPackage, Payload};
 
     fn package(status: InstallStatus) -> InstalledPackage {
         InstalledPackage {

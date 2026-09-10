@@ -45,6 +45,14 @@ const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 /// `AddPlanStale` rather than edit from a plan made against another file.
 const ADD_REPLAN_LIMIT: u32 = 2;
 
+struct AddPlan {
+    snapshot: String,
+    wanted: Vec<crate::edit::NewContainer>,
+    aliases: Vec<crate::dependencies::Alias>,
+    selected_versions: BTreeMap<String, String>,
+    resolved_graphs: BTreeMap<String, BTreeSet<String>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum EnginePolicy {
     Managed {
@@ -160,6 +168,72 @@ fn coalesce_containers(
     Ok(unique)
 }
 
+/// Compares fields that change which workers run or how they depend on each other.
+fn runtime_topology_changed(previous: &ComposeFile, next: &ComposeFile) -> bool {
+    if previous.containers.len() != next.containers.len() {
+        return true;
+    }
+    previous.containers.iter().any(|(key, container)| {
+        next.containers.get(key).is_none_or(|next| {
+            container.worker != next.worker || container.start_after != next.start_after
+        })
+    })
+}
+
+fn update_selector(explicit: Option<&str>, current: &str) -> String {
+    explicit.unwrap_or(current).to_string()
+}
+
+fn graph_members(containers: &[crate::edit::NewContainer]) -> BTreeSet<String> {
+    containers
+        .iter()
+        .flat_map(|container| {
+            std::iter::once(container.key.clone()).chain(container.start_after.iter().cloned())
+        })
+        .collect()
+}
+
+/// Returns one root's reachable declarations after alias and instance reuse.
+fn graph_members_for_root(
+    containers: &[crate::edit::NewContainer],
+    root: &str,
+) -> BTreeSet<String> {
+    let containers = containers
+        .iter()
+        .map(|container| (container.key.as_str(), container))
+        .collect::<BTreeMap<_, _>>();
+    let mut members = BTreeSet::new();
+    let mut visit = vec![root.to_string()];
+    while let Some(key) = visit.pop() {
+        if !members.insert(key.clone()) {
+            continue;
+        }
+        if let Some(container) = containers.get(key.as_str()) {
+            visit.extend(container.start_after.iter().cloned());
+        }
+    }
+    members
+}
+
+fn stale_graph_members(
+    previous: &BTreeMap<String, BTreeSet<String>>,
+    replacements: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut next = previous.clone();
+    for (root, nodes) in replacements {
+        next.insert(root.clone(), nodes.clone());
+    }
+    let retained = next.values().flatten().collect::<BTreeSet<_>>();
+    let roots = next.keys().collect::<BTreeSet<_>>();
+    replacements
+        .keys()
+        .filter_map(|root| previous.get(root))
+        .flatten()
+        .filter(|node| !retained.contains(node) && !roots.contains(node))
+        .cloned()
+        .collect()
+}
+
 /// Select declared packages when no worker specs were supplied.
 fn workers_to_update(
     compose: &crate::ComposeFile,
@@ -180,7 +254,7 @@ fn workers_to_update(
                 key: key.clone(),
                 source: crate::edit::Source::Package {
                     reference: reference.clone(),
-                    version: None,
+                    version: Some("latest".to_string()),
                 },
                 start_after: container.start_after.clone(),
                 fields: serde_yaml::Mapping::new(),
@@ -284,6 +358,29 @@ impl Daemon {
         )
     }
 
+    /// Resolves, acquires, and persists package locks before loading a project.
+    ///
+    /// The caller holds this compose file's mutation lock through this call, so
+    /// another mutation cannot replace the lock between persistence and the
+    /// resolved-package attachment.
+    async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
+        let mut compose = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&compose)?;
+        let namespace = self.project_namespace(&compose);
+        crate::manifest::validate_offline(&compose, &namespace)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        if frozen {
+            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
+        } else {
+            let prepared =
+                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+            prepared.write_if_changed()?;
+        }
+        let project = self.project(file).await?;
+        project.attach_resolved_packages(&compose).await;
+        Ok(project)
+    }
+
     /// The project `file` declares, loading it if this is the first time.
     ///
     /// Loading is idempotent: the same file reached twice is the same project,
@@ -307,12 +404,14 @@ impl Daemon {
         };
 
         cell.get_or_try_init(|| async {
-            let compose = ComposeFile::load(file)?;
+            let mut compose = ComposeFile::load(file)?;
             self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
             let namespace = self.project_namespace(&compose);
             crate::manifest::validate_offline(&compose, &namespace)?;
+
+            crate::lockfile::attach(&mut compose)?;
 
             let project = Project::open(
                 &self.daemon_namespace,
@@ -370,9 +469,21 @@ impl Daemon {
         operation_id: String,
     ) -> Result<OpResult> {
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
-        let project = self.project(file).await?;
+        let _mutation = self.lock_mutation(file).await;
+        let project = self.prepare_start_project(file, false).await?;
+        Ok(project.up(container, operation_id).await)
+    }
+
+    /// Brings a project up using only a matching existing lock.
+    pub async fn up_frozen(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        operation_id: String,
+    ) -> Result<OpResult> {
+        let file = self.resolve_file(file)?;
+        let _mutation = self.lock_mutation(file).await;
+        let project = self.prepare_start_project(file, true).await?;
         Ok(project.up(container, operation_id).await)
     }
 
@@ -385,11 +496,11 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
         shutdown: crate::shutdown::ShutdownSignal,
+        frozen: bool,
     ) -> Result<Option<OpResult>> {
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
-        let project = self.project(file).await?;
+        let _mutation = self.lock_mutation(file).await;
+        let project = self.prepare_start_project(file, frozen).await?;
         if shutdown.requested() {
             return Ok(None);
         }
@@ -401,10 +512,9 @@ impl Daemon {
     /// Adds containers to a project's file, then reconciles the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
-    /// [`crate::edit`]. A version the caller did not pin is resolved once and
-    /// written out, because `compose::add` promising "the latest" and a later
-    /// `up` silently getting a different one is the drift a compose file exists
-    /// to prevent.
+    /// [`crate::edit`]. A request without a selector is pinned to the resolved
+    /// version in the compose file. An explicit selector such as `next` stays
+    /// in that file and its concrete result is recorded in the compose lock.
     ///
     /// Reconciliation leaves unchanged containers running, restarts existing
     /// declarations whose resolved version changed, and starts declarations
@@ -454,8 +564,14 @@ impl Daemon {
         // add declaring one of this graph's dependencies as `path://`, say)
         // is planned again, and past the limit the add fails for a retry.
         let mut replans = 0;
-        let (_mutation, text, plan) = loop {
-            let (snapshot, plan) = self
+        let (_mutation, text, wanted, aliases, selected_versions, resolved_graphs) = loop {
+            let AddPlan {
+                snapshot,
+                wanted,
+                aliases,
+                selected_versions,
+                resolved_graphs,
+            } = self
                 .plan_add(path, &declarations, &asked_keys, &operation_id)
                 .await?;
             let mutation = self.lock_mutation(path).await;
@@ -470,7 +586,14 @@ impl Daemon {
                 source,
             })?;
             if text == snapshot {
-                break (mutation, text, plan);
+                break (
+                    mutation,
+                    text,
+                    wanted,
+                    aliases,
+                    selected_versions,
+                    resolved_graphs,
+                );
             }
             if replans == ADD_REPLAN_LIMIT {
                 return Err(ComposeError::AddPlanStale {
@@ -488,7 +611,8 @@ impl Daemon {
             );
         };
         self.validate_engine_policy_text(path, &text)?;
-        for alias in plan.aliases {
+        let declared = crate::ComposeFile::parse(&text, path)?;
+        for alias in aliases {
             crate::registry::warn_alias(
                 &alias.container,
                 &alias.reference,
@@ -497,7 +621,6 @@ impl Daemon {
             )
             .await;
         }
-        let wanted = plan.containers;
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -523,30 +646,45 @@ impl Daemon {
             .collect::<Vec<_>>();
         let container = requested[0].clone();
 
-        if added.is_empty() && replaced.is_empty() {
+        let yaml_changed = !added.is_empty() || !replaced.is_empty();
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let force = selected_versions.keys().cloned().collect();
+        let mut prepared = crate::lockfile::prepare_with_versions(
+            &mut current,
+            &package_cache,
+            &force,
+            &selected_versions,
+        )
+        .await?;
+        for (root, nodes) in resolved_graphs {
+            prepared.replace_graph(&root, nodes);
+        }
+        restart.retain(|key| {
+            current.containers.get(key).is_some_and(|container| {
+                matches!(container.worker, crate::config::WorkerSource::Path { .. })
+                    || prepared.package_changed(key)
+            })
+        });
+        for key in declared.containers.keys() {
+            if prepared.package_changed(key) && !restart.contains(key) {
+                restart.push(key.clone());
+            }
+        }
+
+        if !yaml_changed && !prepared.changed() {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 Some(&container),
                 Some(&requested),
-                wanted
-                    .iter()
-                    .find(|worker| worker.key == container)
-                    .and_then(|worker| match &worker.source {
-                        crate::edit::Source::Package { version, .. } => version.clone(),
-                        crate::edit::Source::Path { .. } => None,
-                    }),
+                prepared.resolved_version(&container).map(str::to_string),
                 std::iter::empty::<&OpResult>(),
             ));
         }
-        let edited = &edited;
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(edited, path)?;
-        write_atomically(path, edited)?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
-        let current = ComposeFile::load(path)?;
         let project = self.project(path).await?;
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
@@ -566,13 +704,7 @@ impl Daemon {
         } else {
             OpStatus::Ok
         };
-        let version = wanted
-            .iter()
-            .find(|worker| worker.key == container)
-            .and_then(|worker| match &worker.source {
-                crate::edit::Source::Package { version, .. } => version.clone(),
-                crate::edit::Source::Path { .. } => None,
-            });
+        let version = prepared.resolved_version(&container).map(str::to_string);
         let operations = restarted.iter().chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
             status,
@@ -587,7 +719,9 @@ impl Daemon {
     /// Everything `add_configured` does before it takes the mutation lock:
     /// expand the asked workers into their registry graphs against the
     /// declaration as it stands, keep the pins the operator already wrote, and
-    /// acquire the artifacts. Slow (registry calls), so it runs unlocked.
+    /// retain the exact registry selections needed to prepare the lock. Registry
+    /// calls run unlocked; artifact acquisition happens only after the plan is
+    /// confirmed against the same file snapshot.
     /// Returns the text the plan was made against with the plan, so the caller
     /// can tell whether that declaration is still the one it is editing.
     async fn plan_add(
@@ -596,65 +730,32 @@ impl Daemon {
         declarations: &[crate::edit::NewContainer],
         asked_keys: &BTreeSet<String>,
         operation_id: &str,
-    ) -> Result<(String, crate::dependencies::Plan)> {
+    ) -> Result<AddPlan> {
         let snapshot = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        let declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
+        let mut declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
+        crate::lockfile::attach(&mut declared)?;
         let mut plan = crate::dependencies::plan(&declared, declarations).await?;
-        plan.containers = keep_declared_dependencies(plan.containers, asked_keys, &declared);
-        let wanted = &plan.containers;
-
-        // Acquire registry artifacts before taking either the file mutation lock
-        // or the project's runtime lock. `lifecycle::start_one` calls install
-        // again, but that second call is a cheap verified cache hit.
-        let package_cache = crate::state::StateStore::package_cache()?;
-        let operation = crate::operation::active(operation_id);
-        let installs: Vec<(String, String, String)> = wanted
+        let mut selected_versions = std::mem::take(&mut plan.selected_versions);
+        plan.containers = keep_declared_dependencies(
+            plan.containers,
+            asked_keys,
+            &declared,
+            &mut selected_versions,
+        );
+        let resolved_graphs = declarations
             .iter()
-            .filter_map(|worker| match &worker.source {
-                crate::edit::Source::Package {
-                    reference,
-                    version: Some(version),
-                } => Some((worker.key.clone(), reference.clone(), version.clone())),
-                _ => None,
+            .filter(|worker| matches!(worker.source, crate::edit::Source::Package { .. }))
+            .map(|worker| {
+                (
+                    worker.key.clone(),
+                    graph_members_for_root(&plan.containers, &worker.key),
+                )
             })
             .collect();
-        let acquired: Vec<Result<()>> =
-            futures::stream::iter(installs.into_iter().map(|(key, reference, version)| {
-                let package_cache = package_cache.clone();
-                let operation = operation.clone();
-                async move {
-                    if let Some(operation) = &operation {
-                        operation
-                            .emit(
-                                Some(&key),
-                                "installing",
-                                format!("acquiring {reference}@{version}"),
-                            )
-                            .await;
-                    }
-                    let installed =
-                        crate::registry::install(&key, &reference, &version, &package_cache)
-                            .await?;
-                    crate::registry::warn_alias(
-                        &key,
-                        &reference,
-                        installed.alias_of.as_deref(),
-                        operation.as_deref(),
-                    )
-                    .await;
-                    Ok(())
-                }
-            }))
-            .buffer_unordered(4)
-            .collect()
-            .await;
-        for result in acquired {
-            result?;
-        }
-
+        let operation = crate::operation::active(operation_id);
         if operation
             .as_ref()
             .is_some_and(|operation| operation.is_cancelled())
@@ -663,17 +764,67 @@ impl Daemon {
                 operation_id: operation_id.to_string(),
             });
         }
-        Ok((snapshot, plan))
+        Ok(AddPlan {
+            snapshot,
+            wanted: plan.containers,
+            aliases: plan.aliases,
+            selected_versions,
+            resolved_graphs,
+        })
+    }
+
+    /// The worker asked for, plus everything it needs, in start order.
+    ///
+    /// A `path://` worker is taken alone: its dependencies are declared in a
+    /// manifest on disk, and resolving those means asking the registry per name
+    /// rather than reading one answer. That is worth doing, and is not done
+    /// here yet.
+    ///
+    /// A registry dependency already declared as `path://` is also taken as an
+    /// operator-owned boundary. The package keeps its edge to that container,
+    /// but neither the local worker nor the package dependencies below it are
+    /// added from the registry graph.
+    ///
+    /// `engine` workers are skipped. They are compiled into the engine and are
+    /// already serving before compose starts anything; declaring one would
+    /// produce a container with no artefact to install.
+    async fn expand(
+        &self,
+        asked: &crate::edit::NewContainer,
+        path_workers: &BTreeSet<String>,
+    ) -> Result<(Vec<crate::edit::NewContainer>, BTreeMap<String, String>)> {
+        let crate::edit::Source::Package { reference, version } = &asked.source else {
+            return Ok((vec![asked.clone()], BTreeMap::new()));
+        };
+
+        let range = version.clone().unwrap_or_else(|| "*".to_string());
+        let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
+        let selected_versions = graph
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), node.version.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let containers = expand_graph(asked, reference, graph, path_workers)?;
+        let selected_versions = containers
+            .iter()
+            .filter(|container| matches!(&container.source, crate::edit::Source::Package { .. }))
+            .filter_map(|container| {
+                selected_versions
+                    .get(&container.key)
+                    .map(|version| (container.key.clone(), version.clone()))
+            })
+            .collect();
+        Ok((containers, selected_versions))
     }
 
     /// Moves declared containers to other versions of the same packages.
     ///
-    /// `worker=state` takes whatever the registry calls latest;
-    /// `worker=state@1.2.3` takes that one, which is how a downgrade is spelled.
+    /// `worker=state` refreshes the selector already declared in the file,
+    /// including an exact version. `worker=state@latest` explicitly moves it
+    /// to the registry's latest channel. The complete dependency graph is
+    /// resolved again and generated dependencies are reconciled with it.
     /// An empty worker list selects every declared package at its latest
     /// version, using its existing registry reference. Path workers are skipped.
-    /// Every container has to be declared already. This edits existing lines;
-    /// `compose::add` is the call that adds them.
     ///
     /// The complete batch is validated and edited in memory before one atomic
     /// write. A changed batch restarts the project once.
@@ -698,9 +849,24 @@ impl Daemon {
             .collect::<Vec<_>>();
         let primary = requested.first().map(String::as_str);
         let asked = coalesce_containers(asked)?;
-        let mut wanted = Vec::with_capacity(asked.len());
+        let previous_graphs = crate::lockfile::graphs(path)?;
+        let previous_graph_nodes = previous_graphs
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let path_workers = compose
+            .containers
+            .iter()
+            .filter(|(_, container)| {
+                matches!(container.worker, crate::config::WorkerSource::Path { .. })
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<BTreeSet<_>>();
+        let mut roots = Vec::with_capacity(asked.len());
+        let mut all_explicit_exact_unchanged = true;
         for worker in &asked {
-            let crate::edit::Source::Package { reference, version } = &worker.source else {
+            let crate::edit::Source::Package { version, .. } = &worker.source else {
                 return Err(ComposeError::NotAPackageContainer {
                     container: worker.key.clone(),
                     kind: "path".to_string(),
@@ -711,55 +877,137 @@ impl Daemon {
                     container: worker.key.clone(),
                 });
             };
-            if !matches!(
-                container.worker,
-                crate::config::WorkerSource::Package { .. }
-            ) {
+            let crate::config::WorkerSource::Package { reference } = &container.worker else {
                 return Err(ComposeError::NotAPackageContainer {
                     container: worker.key.clone(),
                     kind: "path".to_string(),
                 });
-            }
-
-            // Asked for by version, or whatever the registry calls latest today.
-            let version = match version {
-                Some(version) => version.clone(),
-                None => crate::registry::latest_version(&worker.key, reference).await?,
             };
 
-            // The declared dependencies come along unchanged. An update moves
-            // versions; rewriting graphs is `compose::add`'s job.
-            wanted.push(crate::edit::NewContainer {
+            let current_selector = container.version.as_deref().unwrap_or("*");
+            all_explicit_exact_unchanged &= version.as_deref().is_some_and(|version| {
+                version == current_selector && semver::Version::parse(version).is_ok()
+            });
+            roots.push(crate::edit::NewContainer {
                 key: worker.key.clone(),
                 source: crate::edit::Source::Package {
                     reference: reference.clone(),
-                    version: Some(version),
+                    version: Some(update_selector(version.as_deref(), current_selector)),
                 },
-                start_after: container.start_after.clone(),
+                start_after: Vec::new(),
                 fields: serde_yaml::Mapping::new(),
             });
         }
 
-        let version = wanted
-            .iter()
-            .find(|worker| Some(worker.key.as_str()) == primary)
-            .and_then(|worker| match &worker.source {
-                crate::edit::Source::Package { version, .. } => version.clone(),
-                crate::edit::Source::Path { .. } => None,
-            });
+        if all_explicit_exact_unchanged {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                primary,
+                Some(&requested),
+                primary.and_then(|primary| {
+                    compose
+                        .containers
+                        .get(primary)
+                        .and_then(|container| container.version.clone())
+                }),
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
+
+        let path_workers = &path_workers;
+        let mut expanded = futures::stream::iter(roots.into_iter().enumerate().map(
+            |(index, worker)| async move { (index, self.expand(&worker, path_workers).await) },
+        ))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+        expanded.sort_by_key(|(index, _)| *index);
+
+        let mut wanted = Vec::new();
+        let mut selected_versions = BTreeMap::new();
+        let mut resolved_graphs = BTreeMap::new();
+        for (index, expansion) in expanded {
+            let (containers, versions) = expansion?;
+            let nodes = graph_members(&containers);
+            resolved_graphs.insert(asked[index].key.clone(), nodes);
+            for (container, version) in versions {
+                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
+                    && current != version
+                {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: container.clone(),
+                        reason: format!(
+                            "the requested workers resolve container '{container}' to conflicting \
+                             versions {current} and {version}"
+                        ),
+                    });
+                }
+            }
+            wanted.extend(containers);
+        }
+        let mut wanted = coalesce_containers(wanted)?;
+        for container in &mut wanted {
+            if let Some(existing) = compose.containers.get(&container.key) {
+                container.start_after.extend(
+                    existing
+                        .start_after
+                        .iter()
+                        .filter(|dependency| !previous_graph_nodes.contains(*dependency))
+                        .cloned(),
+                );
+                container.start_after.sort();
+                container.start_after.dedup();
+            }
+        }
+
+        let stale = stale_graph_members(&previous_graphs, &resolved_graphs);
         let mut edited = text.clone();
-        let mut changed = false;
+        let mut yaml_changed = false;
         for worker in &wanted {
             match crate::edit::upsert_container(&edited, worker)? {
                 crate::edit::Outcome::Unchanged => {}
                 crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
                     edited = text;
-                    changed = true;
+                    yaml_changed = true;
                 }
             }
         }
+        for container in stale {
+            let removable = compose.containers.get(&container).is_some_and(|container| {
+                matches!(
+                    container.worker,
+                    crate::config::WorkerSource::Package { .. }
+                )
+            }) && crate::edit::is_generated_container(&edited, &container)?;
+            if removable && let Some(next) = crate::edit::remove_container(&edited, &container)? {
+                edited = next;
+                yaml_changed = true;
+            }
+        }
 
-        if !changed {
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let topology_changed = runtime_topology_changed(&compose, &current);
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let force = selected_versions.keys().cloned().collect();
+        let mut prepared = crate::lockfile::prepare_with_versions(
+            &mut current,
+            &package_cache,
+            &force,
+            &selected_versions,
+        )
+        .await?;
+        for (root, nodes) in resolved_graphs {
+            prepared.replace_graph(&root, nodes);
+        }
+        let package_changed = selected_versions
+            .keys()
+            .any(|container| prepared.package_changed(container));
+        let version = primary
+            .and_then(|primary| prepared.resolved_version(primary))
+            .map(str::to_string);
+
+        if !yaml_changed && !prepared.changed() {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -770,17 +1018,25 @@ impl Daemon {
             ));
         }
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(&edited, path)?;
-        write_atomically(path, &edited)?;
+        persist_mutation(path, &text, &edited, &prepared)?;
+
+        if !package_changed && !topology_changed {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                true,
+                primary,
+                Some(&requested),
+                version,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
 
         // The whole project, not just this container, and deliberately so. A
         // cached project is the file as it was read, so the new version is only
         // picked up once the project is dropped and re-read — and dropping it
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
@@ -837,7 +1093,7 @@ impl Daemon {
             .rev()
             .filter(|worker| requested.contains(worker.as_str()))
             .collect::<Vec<_>>();
-        let mut edited = text;
+        let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
                 return Err(ComposeError::UnknownContainer {
@@ -847,15 +1103,16 @@ impl Daemon {
             edited = next;
         }
 
-        let current = crate::ComposeFile::parse(&edited, path)?;
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
+        let prepared = crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()).await?;
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
-        write_atomically(path, &edited)?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
             .reconcile_removals(current, &removal_order, operation_id)
@@ -900,7 +1157,8 @@ impl Daemon {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
-            let project = self.project(path).await?;
+            let _mutation = self.lock_mutation(path).await;
+            let project = self.prepare_start_project(path, false).await?;
             let result = project.restart_one(key, operation_id).await;
             return Ok(MutationOutcome::from_operations(
                 result.status,
@@ -912,7 +1170,8 @@ impl Daemon {
             ));
         }
 
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let _mutation = self.lock_mutation(path).await;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             down.changed || up.changed,
@@ -930,20 +1189,19 @@ impl Daemon {
     /// supervised by nothing. Re-reading is the point — a project is held as
     /// its file was when it was first loaded, so without this a restart would
     /// start exactly what was already running and report success.
+    /// The caller holds the compose file's mutation lock.
     async fn restart_project(
         &self,
-        file: Option<&Path>,
+        path: &Path,
         container: Option<&str>,
         operation_id: &str,
     ) -> Result<(OpResult, OpResult)> {
-        let path = self.resolve_file(file)?.to_path_buf();
         let down = self
-            .down(file, container, format!("{operation_id}-down"))
+            .down(Some(path), container, format!("{operation_id}-down"))
             .await?;
-        self.forget(&path).await;
-        let up = self
-            .up(file, container, format!("{operation_id}-up"))
-            .await?;
+        self.forget(path).await;
+        let project = self.prepare_start_project(path, false).await?;
+        let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
 
@@ -1275,6 +1533,33 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     })
 }
 
+/// Persists one compose mutation while keeping its YAML and lock consistent.
+///
+/// The lock writer is atomic by itself. If it fails after the compose file was
+/// replaced, restore the previous compose text while the mutation lock is held.
+fn persist_mutation(
+    path: &Path,
+    previous: &str,
+    edited: &str,
+    prepared: &crate::lockfile::PreparedLock,
+) -> Result<()> {
+    let compose_changed = previous != edited;
+    if compose_changed {
+        write_atomically(path, edited)?;
+    }
+    if let Err(lock_error) = prepared.write_if_changed() {
+        if compose_changed && let Err(rollback_error) = write_atomically(path, previous) {
+            return Err(ComposeError::MutationRollbackFailed {
+                path: path.to_path_buf(),
+                lock_error: lock_error.to_string(),
+                rollback_error: rollback_error.to_string(),
+            });
+        }
+        return Err(lock_error);
+    }
+    Ok(())
+}
+
 /// Creates an empty, collision-safe staging file, with mode 0600 on Unix.
 fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
@@ -1293,13 +1578,14 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 /// yet declared are added, plus what the caller explicitly asked for: a pin the
 /// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
 /// version moves. A declared dependency whose pin differs from what the
-/// registry resolved is logged, never rewritten.
+/// registry resolved is logged, never rewritten or forced into the lock.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
     asked: &BTreeSet<String>,
     declared: &ComposeFile,
+    selected_versions: &mut BTreeMap<String, String>,
 ) -> Vec<crate::edit::NewContainer> {
-    wanted
+    let wanted = wanted
         .into_iter()
         .filter(|worker| {
             if asked.contains(&worker.key) {
@@ -1327,7 +1613,13 @@ fn keep_declared_dependencies(
             }
             false
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let wanted_keys = wanted
+        .iter()
+        .map(|worker| worker.key.as_str())
+        .collect::<BTreeSet<_>>();
+    selected_versions.retain(|key, _| wanted_keys.contains(key.as_str()));
+    wanted
 }
 
 /// Turns one registry answer into the declarations Compose can own.
@@ -1500,9 +1792,16 @@ pub(crate) fn expand_graph(
                 let mut root = asked.clone();
                 root.start_after = needs(&asked.key);
                 if let Some(node) = nodes.get(asked.key.as_str()) {
+                    let version = match &root.source {
+                        crate::edit::Source::Package {
+                            version: Some(version),
+                            ..
+                        } => version.clone(),
+                        _ => node.version.clone(),
+                    };
                     root.source = crate::edit::Source::Package {
                         reference: reference.to_string(),
-                        version: Some(node.version.clone()),
+                        version: Some(version),
                     };
                 }
                 Ok(root)
@@ -1553,7 +1852,7 @@ containers:
                     key: "database".to_string(),
                     source: crate::edit::Source::Package {
                         reference: "private.example/team/state".to_string(),
-                        version: None,
+                        version: Some("latest".to_string()),
                     },
                     start_after: Vec::new(),
                     fields: serde_yaml::Mapping::new(),
@@ -1562,7 +1861,7 @@ containers:
                     key: "cache".to_string(),
                     source: crate::edit::Source::Package {
                         reference: "api.workers.iii.dev/cache".to_string(),
-                        version: None,
+                        version: Some("latest".to_string()),
                     },
                     start_after: vec!["database".to_string()],
                     fields: serde_yaml::Mapping::new(),
@@ -1597,6 +1896,83 @@ containers:
             start_after: Vec::new(),
             fields: serde_yaml::Mapping::new(),
         }
+    }
+
+    #[test]
+    fn update_without_a_selector_keeps_the_declared_tag() {
+        assert_eq!(update_selector(None, "next"), "next");
+    }
+
+    #[test]
+    fn graph_update_removes_only_nodes_no_root_still_owns() {
+        let previous = BTreeMap::from([
+            (
+                "api".to_string(),
+                BTreeSet::from(["api".to_string(), "state".to_string(), "queue".to_string()]),
+            ),
+            (
+                "jobs".to_string(),
+                BTreeSet::from(["jobs".to_string(), "queue".to_string()]),
+            ),
+        ]);
+        let replacements = BTreeMap::from([(
+            "api".to_string(),
+            BTreeSet::from(["api".to_string(), "cache".to_string()]),
+        )]);
+
+        assert_eq!(
+            stale_graph_members(&previous, &replacements),
+            BTreeSet::from(["state".to_string()])
+        );
+    }
+
+    #[test]
+    fn graph_members_include_local_dependency_boundaries() {
+        let mut api = package("api");
+        api.start_after = vec!["local-state".to_string()];
+
+        assert_eq!(
+            graph_members(&[api]),
+            BTreeSet::from(["api".to_string(), "local-state".to_string()])
+        );
+    }
+
+    #[test]
+    fn update_without_a_selector_keeps_an_exact_version() {
+        assert_eq!(update_selector(None, "0.22.8"), "0.22.8");
+    }
+
+    #[test]
+    fn update_changes_the_selector_only_when_it_is_explicit() {
+        assert_eq!(update_selector(Some("latest"), "0.22.8"), "latest");
+    }
+
+    #[test]
+    fn expanded_graph_keeps_an_explicit_root_selector() {
+        let mut asked = package("state");
+        let crate::edit::Source::Package { version, .. } = &mut asked.source else {
+            unreachable!();
+        };
+        *version = Some("next".to_string());
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "state".to_string(),
+                version: "0.22.8".to_string(),
+                kind: "binary".to_string(),
+                ..Default::default()
+            }],
+            edges: Vec::new(),
+        };
+
+        let expanded = expand_graph(&asked, "state", graph, &BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            expanded[0].source,
+            crate::edit::Source::Package {
+                reference: "state".to_string(),
+                version: Some("next".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -1957,6 +2333,27 @@ containers:
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
     }
 
+    #[tokio::test]
+    async fn failed_lock_write_restores_the_previous_compose_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let previous = "containers:\n  api:\n    worker: path://.\n";
+        let edited = "namespace: changed\ncontainers:\n  api:\n    worker: path://.\n";
+        std::fs::write(&path, previous).unwrap();
+
+        let mut compose = crate::ComposeFile::parse(edited, &path).unwrap();
+        let prepared = crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new())
+            .await
+            .unwrap();
+        std::fs::create_dir(crate::lockfile::lock_path(&path)).unwrap();
+
+        let error = persist_mutation(&path, previous, edited, &prepared)
+            .expect_err("the lock path is a directory");
+
+        assert_eq!(error.code(), "IO_ERROR");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), previous);
+    }
+
     #[cfg(unix)]
     #[test]
     fn atomic_write_staging_file_is_private_from_creation() {
@@ -2039,7 +2436,7 @@ mod mutation_outcome_tests {
 
 #[cfg(test)]
 mod declared_dependency_tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::keep_declared_dependencies;
     use crate::edit::{NewContainer, Source};
@@ -2069,11 +2466,24 @@ mod declared_dependency_tests {
             resolved("llm-router", "1.4.19"),
             resolved("provider-openai-codex", "0.4.9"),
         ];
+        let mut selected_versions = BTreeMap::from([
+            ("state".to_string(), "0.22.9".to_string()),
+            ("llm-router".to_string(), "1.4.19".to_string()),
+            ("provider-openai-codex".to_string(), "0.4.9".to_string()),
+        ]);
 
-        let kept = keep_declared_dependencies(wanted, &asked, &declared);
+        let kept = keep_declared_dependencies(wanted, &asked, &declared, &mut selected_versions);
         let keys: Vec<&str> = kept.iter().map(|worker| worker.key.as_str()).collect();
 
         assert_eq!(keys, vec!["llm-router", "provider-openai-codex"]);
+        assert_eq!(
+            selected_versions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["llm-router", "provider-openai-codex"],
+            "the lock must not be forced to the dropped dependency version"
+        );
     }
 
     #[test]
@@ -2084,13 +2494,23 @@ mod declared_dependency_tests {
         )
         .unwrap();
         let asked: BTreeSet<String> = ["state".to_string()].into();
+        let mut selected_versions = BTreeMap::from([("state".to_string(), "0.22.9".to_string())]);
 
-        let kept = keep_declared_dependencies(vec![resolved("state", "0.22.9")], &asked, &declared);
+        let kept = keep_declared_dependencies(
+            vec![resolved("state", "0.22.9")],
+            &asked,
+            &declared,
+            &mut selected_versions,
+        );
 
         assert_eq!(
             kept.len(),
             1,
             "compose::add worker=state is the operator moving the pin on purpose"
+        );
+        assert_eq!(
+            selected_versions.get("state").map(String::as_str),
+            Some("0.22.9")
         );
     }
 }

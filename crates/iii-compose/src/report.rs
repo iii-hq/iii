@@ -569,6 +569,16 @@ pub fn unchanged(key: &str, what: &str) {
     ));
 }
 
+pub fn lock_changed(path: &std::path::Path, created: bool) {
+    let change = if created { "created" } else { "updated" };
+    line(&format!(
+        "{} {} {}",
+        OK.green(),
+        path.display().to_string().bold(),
+        change.green()
+    ));
+}
+
 pub fn stopped(key: &str) {
     line(&format!(
         "{} {} {}",

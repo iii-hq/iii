@@ -31,6 +31,7 @@ pub mod error;
 pub mod hooks;
 pub mod interpolate;
 pub mod lifecycle;
+mod lockfile;
 pub mod logs;
 mod managed_engine;
 pub mod manifest;
@@ -114,7 +115,11 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
-        ComposeCommand::Build { file } => match build::build(&file).await {
+        ComposeCommand::Build { file, frozen } => match if frozen {
+            build::build_frozen(&file).await
+        } else {
+            build::build(&file).await
+        } {
             Ok(_) => 0,
             Err(err) => report_error(&err),
         },
@@ -123,7 +128,16 @@ pub async fn run(cli: ComposeCli) -> i32 {
             explicit_daemon_namespace,
             file,
             start,
-        } => match serve(explicit_engine_url, explicit_daemon_namespace, file, start).await {
+            frozen,
+        } => match serve(
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            start,
+            frozen,
+        )
+        .await
+        {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -348,6 +362,7 @@ async fn serve(
     explicit_daemon_namespace: Option<String>,
     file: std::path::PathBuf,
     start: bool,
+    frozen: bool,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -355,6 +370,12 @@ async fn serve(
     // project, but an existing default file still supplies its URL and
     // namespace.
     let initial_file = load_invocation_file(&file, start)?;
+    if start
+        && frozen
+        && let Some(initial_file) = &initial_file
+    {
+        lockfile::preflight_frozen(initial_file)?;
+    }
     let daemon_namespace =
         resolve_daemon_namespace(explicit_daemon_namespace.clone(), initial_file.as_ref());
     let environment_engine_url = std::env::var("III_URL")
@@ -398,6 +419,7 @@ async fn serve(
 
     let mut start_project = start.then(|| InitialProject {
         file,
+        frozen,
         progress: report::StartupProgress::start(matches!(engine_mode, EngineMode::Managed { .. })),
     });
     let managed_engine = match engine_mode {
@@ -505,6 +527,7 @@ fn load_invocation_file(file: &std::path::Path, required: bool) -> Result<Option
 
 struct InitialProject {
     file: std::path::PathBuf,
+    frozen: bool,
     progress: report::StartupProgress,
 }
 
@@ -627,7 +650,13 @@ async fn serve_daemon(
         let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
             operation.cancellation(),
         ));
-        let up = daemon.up_until_shutdown(Some(file), None, operation_id, startup_shutdown);
+        let up = daemon.up_until_shutdown(
+            Some(file),
+            None,
+            operation_id,
+            startup_shutdown,
+            project.frozen,
+        );
         tokio::pin!(up);
         let mut connected = daemon.engine().is_connected();
         if connected {
@@ -766,7 +795,7 @@ fn report_error(err: &ComposeError) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace};
+    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace, serve};
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
@@ -839,5 +868,26 @@ mod tests {
         let loaded = load_invocation_file(&path, false).unwrap();
 
         assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn frozen_start_checks_the_lock_before_starting_a_managed_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let namespace = format!("frozen-preflight-{}", uuid::Uuid::new_v4());
+        std::fs::write(
+            &path,
+            format!(
+                "namespace: {namespace}\nengine: {{ workers: {{}} }}\ncontainers:\n  state:\n    worker: package://state\n    version: next\n"
+            ),
+        )
+        .unwrap();
+        let compose_path = path.canonicalize().unwrap();
+        let state = crate::state::StateStore::for_project(&namespace, &compose_path).unwrap();
+
+        let error = serve(None, None, path, true, true).await.unwrap_err();
+
+        assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
+        assert!(!state.dir().exists());
     }
 }
