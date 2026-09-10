@@ -40,6 +40,17 @@ use crate::{
 /// Fast enough that a crash is reported while the operator is still watching,
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
+/// How many times `add_configured` redoes its unlocked plan because the file
+/// changed before it took the mutation lock. Beyond this it fails with
+/// `AddPlanStale` rather than edit from a plan made against another file.
+const ADD_REPLAN_LIMIT: u32 = 2;
+
+struct AddPlan {
+    snapshot: String,
+    wanted: Vec<crate::edit::NewContainer>,
+    selected_versions: BTreeMap<String, String>,
+    resolved_graphs: BTreeMap<String, BTreeSet<String>>,
+}
 
 #[derive(Debug, Clone)]
 pub enum EnginePolicy {
@@ -518,98 +529,58 @@ impl Daemon {
 
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
-        let declared = ComposeFile::load(path)?;
-        let mut path_workers: BTreeSet<String> = declared
-            .containers
-            .iter()
-            .filter(|(_, container)| {
-                matches!(&container.worker, crate::config::WorkerSource::Path { .. })
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
         let asked = workers
             .iter()
             .map(crate::edit::WorkerInput::parse)
             .collect::<Result<Vec<_>>>()?;
         let declarations = coalesce_containers(asked.clone())?;
-        path_workers.extend(
-            declarations
-                .iter()
-                .filter(|worker| matches!(worker.source, crate::edit::Source::Path { .. }))
-                .map(|worker| worker.key.clone()),
-        );
-        // A worker is not useful alone: its manifest names what it calls, and
-        // the registry answers with that whole graph already pinned to versions
-        // that satisfy each other. They are declared rather than started
-        // behind the file, so what runs is still what the file says.
-        //
-        // Dependencies first and the worker last: with no `start_after`, start
-        // order is declaration order, so this is what makes a worker start
-        // after the things it calls.
-        let path_workers = &path_workers;
-        let mut expanded = futures::stream::iter(asked.clone().into_iter().enumerate().map(
-            |(index, mut worker)| async move {
-                // Coalesce registry graphs before applying explicit settings.
-                // A requested worker can also be another worker's dependency.
-                worker.fields.clear();
-                worker.start_after.clear();
-                let graph = self.expand(&worker, path_workers).await;
-                (index, graph)
-            },
-        ))
-        .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
-        expanded.sort_by_key(|(index, _)| *index);
-        let mut wanted = Vec::new();
-        let mut selected_versions = BTreeMap::new();
-        let mut resolved_graphs = BTreeMap::new();
-        for (index, expansion) in expanded {
-            let (containers, versions) = expansion?;
-            if matches!(asked[index].source, crate::edit::Source::Package { .. }) {
-                let nodes = graph_members(&containers);
-                resolved_graphs.insert(asked[index].key.clone(), nodes);
-            }
-            for (container, version) in versions {
-                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
-                    && current != version
-                {
-                    return Err(ComposeError::InvalidWorkerSpec {
-                        spec: container.clone(),
-                        reason: format!(
-                            "the requested workers resolve container '{container}' to conflicting \
-                             versions {current} and {version}"
-                        ),
-                    });
-                }
-            }
-            wanted.extend(containers);
-        }
-        let mut wanted = coalesce_containers(wanted)?;
-        for worker in &mut wanted {
-            if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
-                worker.fields = declaration.fields.clone();
-                worker
-                    .start_after
-                    .extend(declaration.start_after.iter().cloned());
-                worker.start_after.sort();
-                worker.start_after.dedup();
-            }
-        }
-
+        let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
         let operation = crate::operation::active(&operation_id);
-        let _mutation = self.lock_mutation(path).await;
-        if operation
-            .as_ref()
-            .is_some_and(|operation| operation.is_cancelled())
-        {
-            return Err(ComposeError::OperationCancelled { operation_id });
-        }
-        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        // The plan is made against a snapshot, unlocked. Only the file it was
+        // made against is ever edited: a file that moved underneath (another
+        // add declaring one of this graph's dependencies as `path://`, say)
+        // is planned again, and past the limit the add fails for a retry.
+        let mut replans = 0;
+        let (_mutation, text, wanted, selected_versions, resolved_graphs) = loop {
+            let AddPlan {
+                snapshot,
+                wanted,
+                selected_versions,
+                resolved_graphs,
+            } = self
+                .plan_add(path, &asked, &declarations, &asked_keys, &operation_id)
+                .await?;
+            let mutation = self.lock_mutation(path).await;
+            if operation
+                .as_ref()
+                .is_some_and(|operation| operation.is_cancelled())
+            {
+                return Err(ComposeError::OperationCancelled { operation_id });
+            }
+            let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            if text == snapshot {
+                break (mutation, text, wanted, selected_versions, resolved_graphs);
+            }
+            if replans == ADD_REPLAN_LIMIT {
+                return Err(ComposeError::AddPlanStale {
+                    path: path.to_path_buf(),
+                    replans,
+                });
+            }
+            replans += 1;
+            crate::report::daemon_line(
+                &format!(
+                    "{}: changed while this add resolved its graph; planning again",
+                    path.display()
+                ),
+                true,
+            );
+        };
         self.validate_engine_policy_text(path, &text)?;
+        let declared = crate::ComposeFile::parse(&text, path)?;
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -703,6 +674,121 @@ impl Daemon {
             version,
             operations,
         ))
+    }
+
+    /// Everything `add_configured` does before it takes the mutation lock:
+    /// expand the asked workers into their registry graphs against the
+    /// declaration as it stands, keep the pins the operator already wrote, and
+    /// retain the exact registry selections needed to prepare the lock. Slow
+    /// registry calls run unlocked; artifact acquisition happens only after the
+    /// plan is confirmed against the same file snapshot.
+    /// Returns the text the plan was made against with the plan, so the caller
+    /// can tell whether that declaration is still the one it is editing.
+    async fn plan_add(
+        &self,
+        path: &Path,
+        asked: &[crate::edit::NewContainer],
+        declarations: &[crate::edit::NewContainer],
+        asked_keys: &BTreeSet<String>,
+        operation_id: &str,
+    ) -> Result<AddPlan> {
+        let snapshot = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
+        let mut path_workers: BTreeSet<String> = declared
+            .containers
+            .iter()
+            .filter(|(_, container)| {
+                matches!(&container.worker, crate::config::WorkerSource::Path { .. })
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        path_workers.extend(
+            declarations
+                .iter()
+                .filter(|worker| matches!(worker.source, crate::edit::Source::Path { .. }))
+                .map(|worker| worker.key.clone()),
+        );
+        // A worker is not useful alone: its manifest names what it calls, and
+        // the registry answers with that whole graph already pinned to versions
+        // that satisfy each other. They are declared rather than started
+        // behind the file, so what runs is still what the file says.
+        //
+        // Dependencies first and the worker last: with no `start_after`, start
+        // order is declaration order, so this is what makes a worker start
+        // after the things it calls.
+        let path_workers = &path_workers;
+        let mut expanded = futures::stream::iter(asked.iter().cloned().enumerate().map(
+            |(index, mut worker)| async move {
+                // Coalesce registry graphs before applying explicit settings.
+                // A requested worker can also be another worker's dependency.
+                worker.fields.clear();
+                worker.start_after.clear();
+                let graph = self.expand(&worker, path_workers).await;
+                (index, graph)
+            },
+        ))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+        expanded.sort_by_key(|(index, _)| *index);
+        let mut wanted = Vec::new();
+        let mut selected_versions = BTreeMap::new();
+        let mut resolved_graphs = BTreeMap::new();
+        for (index, expansion) in expanded {
+            let (containers, versions) = expansion?;
+            if matches!(asked[index].source, crate::edit::Source::Package { .. }) {
+                resolved_graphs.insert(asked[index].key.clone(), graph_members(&containers));
+            }
+            for (container, version) in versions {
+                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
+                    && current != version
+                {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: container.clone(),
+                        reason: format!(
+                            "the requested workers resolve container '{container}' to conflicting \
+                             versions {current} and {version}"
+                        ),
+                    });
+                }
+            }
+            wanted.extend(containers);
+        }
+        let wanted = coalesce_containers(wanted)?;
+        // Against the snapshot read above, which is also the text the caller
+        // edits. Existing dependencies stay on their declared selector and
+        // reuse their lock entry instead of being forced to the graph's latest
+        // exact selection.
+        let mut wanted =
+            keep_declared_dependencies(wanted, asked_keys, &declared, &mut selected_versions);
+        for worker in &mut wanted {
+            if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
+                worker.fields = declaration.fields.clone();
+                worker
+                    .start_after
+                    .extend(declaration.start_after.iter().cloned());
+                worker.start_after.sort();
+                worker.start_after.dedup();
+            }
+        }
+        let operation = crate::operation::active(operation_id);
+        if operation
+            .as_ref()
+            .is_some_and(|operation| operation.is_cancelled())
+        {
+            return Err(ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            });
+        }
+        Ok(AddPlan {
+            snapshot,
+            wanted,
+            selected_versions,
+            resolved_graphs,
+        })
     }
 
     /// The worker asked for, plus everything it needs, in start order.
@@ -1504,6 +1590,56 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Drop graph-expanded dependencies the compose file already declares.
+///
+/// `compose::add worker=X` resolves X's whole dependency graph. Only nodes not
+/// yet declared are added, plus what the caller explicitly asked for: a pin the
+/// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
+/// version moves. A declared dependency whose pin differs from what the
+/// registry resolved is logged, never rewritten or forced into the lock.
+fn keep_declared_dependencies(
+    wanted: Vec<crate::edit::NewContainer>,
+    asked: &BTreeSet<String>,
+    declared: &ComposeFile,
+    selected_versions: &mut BTreeMap<String, String>,
+) -> Vec<crate::edit::NewContainer> {
+    let wanted = wanted
+        .into_iter()
+        .filter(|worker| {
+            if asked.contains(&worker.key) {
+                return true;
+            }
+            let Some(existing) = declared.containers.get(&worker.key) else {
+                return true;
+            };
+            if let crate::edit::Source::Package {
+                version: Some(resolved),
+                ..
+            } = &worker.source
+                && existing.version.as_deref() != Some(resolved.as_str())
+            {
+                crate::report::daemon_line(
+                    &format!(
+                        "{}: kept the declared version {} (the registry resolved {resolved} for this \
+                         add); run compose::update worker={} to move it",
+                        worker.key,
+                        existing.version.as_deref().unwrap_or("unpinned"),
+                        worker.key
+                    ),
+                    true,
+                );
+            }
+            false
+        })
+        .collect::<Vec<_>>();
+    let wanted_keys = wanted
+        .iter()
+        .map(|worker| worker.key.as_str())
+        .collect::<BTreeSet<_>>();
+    selected_versions.retain(|key, _| wanted_keys.contains(key.as_str()));
+    wanted
+}
+
 /// Turns one registry answer into the declarations Compose can own.
 ///
 /// Engine-kind dependencies are omitted because the engine already provides
@@ -2293,5 +2429,86 @@ mod mutation_outcome_tests {
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
+    }
+}
+
+#[cfg(test)]
+mod declared_dependency_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::keep_declared_dependencies;
+    use crate::edit::{NewContainer, Source};
+
+    fn resolved(name: &str, version: &str) -> NewContainer {
+        NewContainer {
+            key: name.to_string(),
+            source: Source::Package {
+                reference: format!("api.workers.iii.dev/{name}"),
+                version: Some(version.to_string()),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        }
+    }
+
+    #[test]
+    fn an_add_leaves_already_declared_dependencies_alone() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n  http:\n    worker: package://http\n    version: \"0.21.9\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["provider-openai-codex".to_string()].into();
+        let wanted = vec![
+            resolved("state", "0.22.9"),
+            resolved("llm-router", "1.4.19"),
+            resolved("provider-openai-codex", "0.4.9"),
+        ];
+        let mut selected_versions = BTreeMap::from([
+            ("state".to_string(), "0.22.9".to_string()),
+            ("llm-router".to_string(), "1.4.19".to_string()),
+            ("provider-openai-codex".to_string(), "0.4.9".to_string()),
+        ]);
+
+        let kept = keep_declared_dependencies(wanted, &asked, &declared, &mut selected_versions);
+        let keys: Vec<&str> = kept.iter().map(|worker| worker.key.as_str()).collect();
+
+        assert_eq!(keys, vec!["llm-router", "provider-openai-codex"]);
+        assert_eq!(
+            selected_versions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["llm-router", "provider-openai-codex"],
+            "the lock must not be forced to the dropped dependency version"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_asked_worker_is_always_written_even_when_declared() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["state".to_string()].into();
+        let mut selected_versions = BTreeMap::from([("state".to_string(), "0.22.9".to_string())]);
+
+        let kept = keep_declared_dependencies(
+            vec![resolved("state", "0.22.9")],
+            &asked,
+            &declared,
+            &mut selected_versions,
+        );
+
+        assert_eq!(
+            kept.len(),
+            1,
+            "compose::add worker=state is the operator moving the pin on purpose"
+        );
+        assert_eq!(
+            selected_versions.get("state").map(String::as_str),
+            Some("0.22.9")
+        );
     }
 }

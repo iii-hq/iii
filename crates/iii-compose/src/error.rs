@@ -99,6 +99,14 @@ pub enum ComposeError {
     #[error("container '{container}' depends on itself")]
     SelfDependency { container: String },
 
+    #[error(
+        "compose::stop stops every project this daemon holds and exits; it takes no container. \
+         '{container}' was ignored by earlier versions and the whole project went down with the \
+         engine. Use compose::down container={container} to stop one container, or \
+         compose::stop with no target to stop the daemon."
+    )]
+    StopTakesNoContainer { container: String },
+
     #[error("dependency cycle: {path}")]
     DependencyCycle { path: String },
 
@@ -457,6 +465,15 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    /// `compose::add` plans (graph expansion, artifact acquisition) against a
+    /// snapshot of the file, unlocked, and only edits the file it planned
+    /// against. A file that keeps changing underneath is not edited from a
+    /// stale plan; the caller retries.
+    #[error(
+        "{path} changed {replans} times while compose::add was resolving its graph; nothing was          written. Retry the add."
+    )]
+    AddPlanStale { path: PathBuf, replans: u32 },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -535,6 +552,7 @@ impl ComposeError {
             Self::EngineAlreadyOwned { .. } => "ENGINE_ALREADY_OWNED",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
+            Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
@@ -584,6 +602,7 @@ impl ComposeError {
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",

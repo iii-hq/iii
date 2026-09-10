@@ -331,6 +331,9 @@ impl Project {
                         }
                     }
                 },
+                // Stopped by this daemon and recorded as such: the expected
+                // state after `down`, not an anomaly worth a line.
+                Reconciliation::Stopped => {}
                 Reconciliation::Gone => {
                     daemon_line(
                         &self.project_namespace,

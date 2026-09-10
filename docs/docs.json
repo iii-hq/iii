@@ -150,6 +150,7 @@
                 "group": "Linkly",
                 "pages": [
                   "next/tutorials/linkly/overview",
+                  "next/tutorials/linkly/agentic",
                   "next/tutorials/linkly/foundations",
                   "next/tutorials/linkly/observability",
                   "next/tutorials/linkly/persistence",
