@@ -40,6 +40,8 @@ type: "reference"
     and the health check exposes `dirty_backlog_spans`.
   - Attribute values are capped at ingest (`trace_storage.max_attribute_bytes`, default 64 KiB);
     a cut `iii.payload.json` sets `iii.payload.truncated`.
+  - On Linux with glibc the engine returns freed heap to the OS once a minute, so its memory
+    follows the bounded span cache instead of staying at the last burst's peak.
 
   ## Reliability
 
