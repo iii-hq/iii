@@ -400,9 +400,17 @@ value:
         screens:
           - chat
           - \"ext:onboarding\"
+        sizes:
+          - 0.7
+          - 0.3
 ";
 
-/// Open the new project's console on chat beside the tour.
+/// Open the new project's console on chat beside the tour, 70/30.
+///
+/// `sizes` are index-aligned with the columns and normalized by their sum;
+/// a list whose length does not match the column count is ignored in favour
+/// of equal widths (`tabSizes` in the console's workspace model), which is
+/// what the pane-count assertion in the tests guards.
 ///
 /// `http_port` is deliberately absent: the console backfills the port it
 /// actually bound, which matters because it moves to the next free port when
@@ -1096,6 +1104,11 @@ mod tests {
                 serde_json::json!("ext:onboarding")
             ]
         );
+        // Sizes only apply when they line up with the column count; a
+        // mismatch silently drops the project back to equal widths.
+        let sizes = tabs[0]["sizes"].as_array().unwrap();
+        assert_eq!(sizes.len(), tabs[0]["columns"].as_u64().unwrap() as usize);
+        assert_eq!(sizes[0].as_f64().unwrap(), 0.7);
         // No port: the console backfills the one it actually bound.
         assert!(entry.value.get("http_port").is_none());
     }
