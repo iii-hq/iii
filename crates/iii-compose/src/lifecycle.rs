@@ -28,7 +28,7 @@ use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
-    config::{ComposeFile, Container},
+    config::{ComposeFile, Container, RestartPolicy},
     configuration::{ConfigFile, merge},
     dag,
     engine::EngineClient,
@@ -37,7 +37,7 @@ use crate::{
     logs::LogStore,
     manifest::{StartSpec, VmSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
-    report,
+    report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
     state::{ChildRecord, ChildStatus},
 };
@@ -52,6 +52,9 @@ pub struct OpResult {
     /// already in the desired state.
     pub changed: bool,
     pub containers: Vec<ContainerResult>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) primary_error: Option<OpError>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -109,9 +112,19 @@ pub struct LifecycleCtx<'a> {
 /// What one container's start produced: which one, how long it took, and
 /// whether it came up.
 enum StartAttempt {
-    Ready(ChildRecord, Supervised),
+    Ready {
+        record: ChildRecord,
+        child: Supervised,
+        recovery: Option<RetryRecovery>,
+    },
     Failed(ComposeError),
     Interrupted,
+}
+
+struct RetryRecovery {
+    attempt: u32,
+    total_attempts: u32,
+    elapsed: Duration,
 }
 
 enum StartFailure {
@@ -177,6 +190,9 @@ async fn up_inner(
     let mut results: Vec<ContainerResult> = Vec::new();
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
+    // Containers that failed and said their failure does not fail the
+    // operation. Named so the closing line reports the partial project.
+    let mut not_required_failures = Vec::new();
     let max_parallel_workers = crate::parallelism::max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
@@ -235,7 +251,7 @@ async fn up_inner(
             async move {
                 let began = Instant::now();
                 let outcome =
-                    start_one_attempt(ctx, &key, shutdown, Some(&start_operation_id)).await;
+                    start_one_with_retries(ctx, &key, shutdown, Some(&start_operation_id)).await;
                 (key, began.elapsed(), outcome)
             }
         }))
@@ -248,8 +264,21 @@ async fn up_inner(
         while let Some((key, took, outcome)) = outcomes.next().await {
             let key = &key;
             match outcome {
-                StartAttempt::Ready(record, child) => {
-                    report::ready(key, took);
+                StartAttempt::Ready {
+                    record,
+                    child,
+                    recovery,
+                } => {
+                    if let Some(recovery) = recovery {
+                        report::retry_recovered(
+                            key,
+                            recovery.attempt,
+                            recovery.total_attempts,
+                            recovery.elapsed,
+                        );
+                    } else {
+                        report::ready(key, took);
+                    }
                     records.insert(key.clone(), record);
                     children.insert(key.clone(), child);
                     started.push(key.clone());
@@ -281,8 +310,17 @@ async fn up_inner(
                     if let Some(operation) = crate::operation::active(&operation_id) {
                         operation.emit(Some(key), "failed", error.to_string()).await;
                     }
-                    if failure.is_none() {
-                        failure = Some((key.clone(), error));
+                    if is_required(ctx.file, key) {
+                        if failure.is_none() {
+                            failure = Some((key.clone(), error));
+                        }
+                    } else {
+                        // The plan counted it, so the progress has to account
+                        // for it however it settled.
+                        if let Some(operation) = crate::operation::active(&operation_id) {
+                            operation.completed_one().await;
+                        }
+                        not_required_failures.push(key.clone());
                     }
                 }
                 StartAttempt::Interrupted => interrupted = true,
@@ -305,6 +343,7 @@ async fn up_inner(
                 status: OpStatus::Failed,
                 changed: !started.is_empty(),
                 containers: results,
+                primary_error: Some(OpError::from(&error)),
             });
         }
     }
@@ -321,13 +360,26 @@ async fn up_inner(
 
     report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
+    if !not_required_failures.is_empty() {
+        report::not_required_failed(&not_required_failures);
+    }
     report::summary_ok("up", changed, results.len(), began.elapsed());
     Some(OpResult {
         operation_id,
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
     })
+}
+
+/// Whether this container's failure fails the operation. A container the file
+/// no longer declares is treated as required: the strict rule is the one that
+/// refuses rather than the one that carries on.
+fn is_required(file: &ComposeFile, key: &str) -> bool {
+    file.containers
+        .get(key)
+        .is_none_or(|container| container.required)
 }
 
 /// Drops a leading `container '<name>': ` from a message that is already being
@@ -355,9 +407,31 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
-    restart_one_inner(ctx, children, records, key, operation_id, None)
+    restart_one_inner(ctx, children, records, key, operation_id, None, None)
         .await
         .expect("restart without a shutdown signal cannot be interrupted")
+}
+
+pub(crate) async fn restart_one_supervised(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    attempt: u32,
+    total_attempts: u32,
+) -> OpResult {
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        None,
+        Some((attempt, total_attempts)),
+    )
+    .await
+    .expect("supervised restart without a shutdown signal cannot be interrupted")
 }
 
 pub(crate) async fn restart_one_until_shutdown(
@@ -368,7 +442,16 @@ pub(crate) async fn restart_one_until_shutdown(
     operation_id: String,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> Option<OpResult> {
-    restart_one_inner(ctx, children, records, key, operation_id, Some(shutdown)).await
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        Some(shutdown),
+        None,
+    )
+    .await
 }
 
 async fn restart_one_inner(
@@ -378,6 +461,7 @@ async fn restart_one_inner(
     key: &str,
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
+    retry: Option<(u32, u32)>,
 ) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -391,8 +475,12 @@ async fn restart_one_inner(
         return None;
     }
 
-    report::plan(&[(key.to_string(), 0)]);
-    stop_one(ctx, children, records, key).await;
+    if let Some((attempt, total_attempts)) = retry {
+        report::retry_starting(key, attempt, total_attempts);
+    } else {
+        report::plan(&[(key.to_string(), 0)]);
+    }
+    let stopped = stop_one(ctx, children, records, key).await;
 
     // The child is gone, but the engine learns that from a socket closing and
     // not from us. Starting into that window makes the replacement collide
@@ -414,8 +502,16 @@ async fn restart_one_inner(
     let took = started.elapsed();
 
     let result = match outcome {
-        StartAttempt::Ready(record, child) => {
-            report::ready(key, took);
+        StartAttempt::Ready {
+            record,
+            child,
+            recovery: _,
+        } => {
+            if let Some((attempt, total_attempts)) = retry {
+                report::retry_recovered(key, attempt, total_attempts, took);
+            } else {
+                report::ready(key, took);
+            }
             records.insert(key.to_string(), record);
             children.insert(key.to_string(), child);
             ContainerResult {
@@ -432,17 +528,30 @@ async fn restart_one_inner(
                 &strip_container_prefix(&error.to_string(), key),
             );
             report::plan_done();
-            report::summary_failed("restart", error.code(), began.elapsed());
+            let required = is_required(ctx.file, key);
+            if required {
+                report::summary_failed("restart", error.code(), began.elapsed());
+            } else {
+                report::not_required_failed(&[key.to_string()]);
+                report::summary_ok("restart", 0, 1, began.elapsed());
+            }
+            let error = OpError::from(&error);
+            let primary_error = required.then(|| error.clone());
             return Some(OpResult {
                 operation_id,
-                status: OpStatus::Failed,
-                changed: false,
+                status: if required {
+                    OpStatus::Failed
+                } else {
+                    OpStatus::Ok
+                },
+                changed: stopped,
                 containers: vec![ContainerResult {
                     container: key.to_string(),
                     state: ChildStatus::Failed,
-                    changed: false,
-                    error: Some(OpError::from(&error)),
+                    changed: stopped,
+                    error: Some(error),
                 }],
+                primary_error,
             });
         }
         StartAttempt::Interrupted => {
@@ -457,6 +566,7 @@ async fn restart_one_inner(
         status: OpStatus::Ok,
         changed: true,
         containers: vec![result],
+        primary_error: None,
     })
 }
 
@@ -506,6 +616,7 @@ pub async fn remove_one(
             changed,
             error: None,
         }],
+        primary_error: None,
     }
 }
 
@@ -597,6 +708,124 @@ pub async fn down(
         status: OpStatus::Ok,
         changed: changed > 0,
         containers: results,
+        primary_error: None,
+    }
+}
+
+/// Starts a container and applies its restart policy before the operation
+/// settles. The original start is not part of the replacement budget, which
+/// matches run-time supervision: a worker gets the configured number of
+/// replacements after the process it was using failed.
+async fn start_one_with_retries(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    mut shutdown: Option<crate::shutdown::ShutdownSignal>,
+    operation_id: Option<&str>,
+) -> StartAttempt {
+    let restart_config = ctx
+        .file
+        .containers
+        .get(key)
+        .map(|container| container.restart.clone())
+        .unwrap_or_default();
+    let mut error = match start_one_attempt(ctx, key, shutdown.clone(), operation_id).await {
+        StartAttempt::Failed(error) if retries_start_failure(restart_config.condition, &error) => {
+            error
+        }
+        settled => return settled,
+    };
+
+    for attempt in 1..=restart_config.max_attempts {
+        report::retry_starting(key, attempt, restart_config.max_attempts);
+        if let Some(operation) = operation_id.and_then(crate::operation::active) {
+            operation
+                .emit(
+                    Some(key),
+                    "retrying",
+                    format!(
+                        "starting attempt {attempt} of {}",
+                        restart_config.max_attempts
+                    ),
+                )
+                .await;
+        }
+
+        let began = Instant::now();
+        match start_one_attempt(ctx, key, shutdown.clone(), operation_id).await {
+            StartAttempt::Ready {
+                record,
+                child,
+                recovery: _,
+            } => {
+                return StartAttempt::Ready {
+                    record,
+                    child,
+                    recovery: Some(RetryRecovery {
+                        attempt,
+                        total_attempts: restart_config.max_attempts,
+                        elapsed: began.elapsed(),
+                    }),
+                };
+            }
+            StartAttempt::Failed(next_error) => error = next_error,
+            StartAttempt::Interrupted => return StartAttempt::Interrupted,
+        }
+
+        if attempt == restart_config.max_attempts
+            || !retries_start_failure(restart_config.condition, &error)
+        {
+            break;
+        }
+
+        let delay = restart::backoff(&restart_config, attempt);
+        let next_attempt = attempt + 1;
+        report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
+        if let Some(operation) = operation_id.and_then(crate::operation::active) {
+            operation
+                .emit(
+                    Some(key),
+                    "retrying",
+                    format!(
+                        "waiting before attempt {next_attempt} of {}",
+                        restart_config.max_attempts
+                    ),
+                )
+                .await;
+        }
+        if !wait_for_retry(&mut shutdown, delay).await {
+            return StartAttempt::Interrupted;
+        }
+    }
+
+    StartAttempt::Failed(error)
+}
+
+/// `on-failure` excludes the one start outcome that is not a failure: a child
+/// that exits successfully before registration. Every other startup error is a
+/// failed attempt, including a rejected `pre_run` hook.
+fn retries_start_failure(policy: RestartPolicy, error: &ComposeError) -> bool {
+    match policy {
+        RestartPolicy::No => false,
+        RestartPolicy::Always => true,
+        RestartPolicy::OnFailure => {
+            !matches!(error, ComposeError::ChildExitedBeforeReady { code: 0, .. })
+        }
+    }
+}
+
+async fn wait_for_retry(
+    shutdown: &mut Option<crate::shutdown::ShutdownSignal>,
+    delay: Duration,
+) -> bool {
+    if let Some(signal) = shutdown {
+        tokio::select! {
+            biased;
+            _ = signal.wait() => false,
+            _ = tokio::time::sleep(delay) => true,
+        }
+    } else {
+        tokio::time::sleep(delay).await;
+        true
     }
 }
 
@@ -607,7 +836,11 @@ async fn start_one_attempt(
     operation_id: Option<&str>,
 ) -> StartAttempt {
     match start_one_until_shutdown(ctx, key, shutdown, operation_id).await {
-        Ok((record, child)) => StartAttempt::Ready(record, child),
+        Ok((record, child)) => StartAttempt::Ready {
+            record,
+            child,
+            recovery: None,
+        },
         Err(StartFailure::Failed(error)) => StartAttempt::Failed(error),
         Err(StartFailure::Interrupted) => StartAttempt::Interrupted,
     }
@@ -1057,9 +1290,9 @@ async fn stop_one(
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
-) {
+) -> bool {
     let Some(child) = children.remove(key) else {
-        return;
+        return false;
     };
     child.stop(ctx.file.stop_timeout).await;
 
@@ -1101,6 +1334,8 @@ async fn stop_one(
     if let Some(record) = records.get_mut(key) {
         record.status = ChildStatus::Stopped;
     }
+
+    true
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.
@@ -1238,6 +1473,7 @@ fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -
             changed: false,
             error: Some(OpError::from(error)),
         }],
+        primary_error: Some(OpError::from(error)),
     }
 }
 
@@ -1295,6 +1531,28 @@ containers:
     }
 
     #[test]
+    fn on_failure_does_not_retry_a_clean_exit_before_ready() {
+        let error = ComposeError::ChildExitedBeforeReady {
+            container: "api".to_string(),
+            code: 0,
+            tail: None,
+        };
+
+        assert!(!retries_start_failure(RestartPolicy::OnFailure, &error));
+    }
+
+    #[test]
+    fn always_retries_a_clean_exit_before_ready() {
+        let error = ComposeError::ChildExitedBeforeReady {
+            container: "api".to_string(),
+            code: 0,
+            tail: None,
+        };
+
+        assert!(retries_start_failure(RestartPolicy::Always, &error));
+    }
+
+    #[test]
     fn a_failed_plan_reports_the_code_on_the_operation() {
         let error = ComposeError::UnknownContainer {
             container: "ghost".to_string(),
@@ -1323,6 +1581,7 @@ containers:
                 changed: true,
                 error: None,
             }],
+            primary_error: None,
         };
 
         let json = serde_json::to_value(&result).unwrap();
@@ -1335,6 +1594,10 @@ containers:
             json["containers"][0].get("error").is_none(),
             "a successful container carries no error key"
         );
+        assert!(
+            json.get("primary_error").is_none(),
+            "the internal primary error must not be serialized"
+        )
     }
 }
 

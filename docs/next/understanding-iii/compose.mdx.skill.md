@@ -150,21 +150,92 @@ started is rolled back, and everything after it in the start order is never atte
 containers that have nothing to do with it. Once a container is ready, the supervisor is narrower:
 it takes that container's transitive dependents down and leaves the rest alone.
 
-So a `mailer` that nothing depends on ends the whole start if it fails during `up`, and is contained
-if it fails a minute later. The same declaration, the same container, two blast radii separated only
-by timing.
+So a `mailer` that nothing depends on would end the whole start if it failed during `up`, and be
+contained if it failed a minute later. The same declaration, the same container, two blast radii
+separated only by timing.
 
-Each rule is defensible where it stands. An `up` that reported success over a half-started project
-would be worse than one that refuses, and a supervisor that tore down a whole project because one
-leaf died would be worse than one that contains it. What is missing is a way for the compose file to
-say which it wants, so the choice is compose's rather than the operator's. That is a v1 limitation
-rather than a decision: a project cannot mark a container as non-essential, and it cannot ask for a
-dead one to be restarted, because there is no restart policy at all.
+Each rule is useful for a different project. Compose therefore makes the start-time choice part of
+the file instead of assuming that every container has the same blast radius.
 
-Both belong in the file rather than in compose's judgement, and they are two separate questions:
-whether a container's failure fails the operation, and what happens when a ready container exits.
-Whatever those grow into, the property worth keeping is that the answer reads the same at start time
-and at run time.
+### Saying it in the file
+
+A container is not required by default. Its failed start is reported against that container,
+nothing is rolled back, and the operation carries on. Set `required: true` when one container must
+make the operation fail:
+
+```yaml
+containers:
+  database:
+    worker: path://./workers/database
+    required: true
+```
+
+Use `required_default` to set the fallback for every container in a file. A container-level value
+always wins:
+
+```yaml
+required_default: true
+
+containers:
+  queue:
+    worker: path://./workers/queue
+    required: false
+  state:
+    worker: path://./workers/state
+```
+
+Here, `state` inherits `true`, while `queue` remains false. When neither `required` nor
+`required_default` is present, the effective value is false.
+
+Dependents of a non-required container carry on too. A container that names it in `start_after`
+starts as if it had come up, because `start_after` is a start order rather than a claim that the
+dependent cannot run without it. A dependent that genuinely cannot run without it says so by
+failing on its own.
+
+That moves what `status: ok` means. It used to say every planned container is up; it now says every
+required one is, so the return names the rest in `not_required_failures` rather than leaving a
+caller to compare the plan against a later status call. A successful result has no top-level error.
+
+`required` controls the result after Compose finishes trying. A second field controls whether
+Compose retries before it accepts that result.
+
+### Retry policy
+
+A container declares what Compose does when its first start fails or when it exits after it was
+ready:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+```
+
+`no` is the default. A failed first start settles immediately, and an exit after `Ready` takes the
+container's transitive dependents down. `on-failure` retries a failed start or a non-zero run-time
+exit. A clean run-time exit with `on-failure` is recorded as `stopped`. `always` retries a clean
+run-time exit, which is the answer for a worker that is only correct while it is running.
+
+A supervised restart is the same act as `compose::restart`: one container stops and starts, and the
+graph around it is left alone. So its dependents stay up while it is gone. This is the same reasoning
+that non-required starts use: `start_after` is a start order rather than a claim that the dependent
+cannot run without it. What that costs is a dependent holding a connection that drops and has to
+reconnect, which is the cost the file asked for by declaring a policy at all.
+
+Replacement attempts are capped at five. The first retry is immediate. Later retries wait from
+500ms up to a ceiling of 30 seconds. Both limits are load-bearing: a policy with no backoff turns a
+crash loop into a busy loop, and a policy with no cap never lets the operator find out. A container
+that holds ready for a minute has recovered, so its run-time budget refills. A worker that crashes
+once an hour is therefore restarted every time, rather than five times ever.
+
+When the budget runs out the supervisor does what it would have done with no policy at all. It fails
+the container, takes its dependents down, and says which in the log. That is the shape worth
+keeping: `restart` changes how many times compose tries, and never what happens when trying is over.
+
+`compose::status` reports a container waiting on a run-time replacement as `restarting`. It is
+not `ready`, because nothing is running under that name, and not `failed`, because the supervisor
+has not given up on it. It has no PID until the next process starts. During `up`, the active progress
+row shows the retry attempt, its wait, and the successful recovery.
 
 ## Related
 

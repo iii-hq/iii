@@ -1379,6 +1379,10 @@ impl Daemon {
                         project.reconcile_after_reconnect().await;
                     }
                     project.reap_unexpected_exits().await;
+                    // After the reap, so a container that has just exited
+                    // spends its first attempt on the tick that noticed rather
+                    // than waiting for the next one.
+                    project.drive_restarts().await;
                 }
             }
         });
@@ -1407,6 +1411,14 @@ pub struct MutationOutcome {
     /// Concise failure for the first worker that could not reach its target state.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<MutationError>,
+    /// Workers that failed while the operation still succeeded, which is only
+    /// possible for a container whose effective `required` value is `false`.
+    ///
+    /// `status: ok` used to mean every planned container is up. It now means
+    /// every *required* one is, so the return has to name the rest rather than
+    /// leave a caller to compare the plan against a later status call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_required_failures: Option<Vec<String>>,
 }
 
 impl MutationOutcome {
@@ -1426,16 +1438,41 @@ impl MutationOutcome {
             .chain(worker)
             .collect();
         let mut affected_workers = std::collections::BTreeSet::new();
-        let mut error = None;
+        let mut primary_error = None;
+        // Reconciliation can restart and then start the same container. Keep
+        // its first position, but let its last result describe the final state.
+        let mut latest_container_errors = indexmap::IndexMap::new();
 
-        for result in operations.flat_map(|operation| &operation.containers) {
-            if result.changed && !requested.contains(result.container.as_str()) {
-                affected_workers.insert(result.container.clone());
+        for operation in operations {
+            if primary_error.is_none() {
+                primary_error = operation.primary_error.as_ref().map(MutationError::from);
             }
-            if error.is_none() {
-                error = result.error.as_ref().map(MutationError::from);
+            for result in &operation.containers {
+                if result.changed && !requested.contains(result.container.as_str()) {
+                    affected_workers.insert(result.container.clone());
+                }
+                latest_container_errors.insert(
+                    result.container.clone(),
+                    result.error.as_ref().map(MutationError::from),
+                );
             }
         }
+
+        let first_container_error = latest_container_errors.values().find_map(Clone::clone);
+        let failed: Vec<String> = latest_container_errors
+            .iter()
+            .filter_map(|(container, error)| error.as_ref().map(|_| container.clone()))
+            .collect();
+        let error = if status == OpStatus::Failed {
+            primary_error.or(first_container_error)
+        } else {
+            None
+        };
+        // A succeeding operation with a failed container is the non-required
+        // case and nothing else: a required failure is what makes the status
+        // `failed` in the first place.
+        let not_required_failures =
+            (status == OpStatus::Ok && !failed.is_empty()).then_some(failed);
 
         Self {
             status,
@@ -1448,6 +1485,7 @@ impl MutationOutcome {
             affected_workers: (!affected_workers.is_empty())
                 .then(|| affected_workers.into_iter().collect()),
             error,
+            not_required_failures,
         }
     }
 
@@ -2377,8 +2415,45 @@ mod mutation_outcome_tests {
         state::ChildStatus,
     };
 
+    fn optional_mailer_failure(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: false,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Failed,
+                changed: false,
+                error: Some(OpError {
+                    code: "STARTUP_TIMEOUT".into(),
+                    message: "container 'mailer' was not ready after 2s".into(),
+                }),
+            }],
+            primary_error: None,
+        }
+    }
+
+    fn ready_mailer(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: true,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Ready,
+                changed: true,
+                error: None,
+            }],
+            primary_error: None,
+        }
+    }
+
     #[test]
     fn concise_outcome_omits_healthy_containers_and_log_tails() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+        };
         let result = OpResult {
             operation_id: "diagnostic-only".into(),
             status: OpStatus::Failed,
@@ -2400,12 +2475,10 @@ mod mutation_outcome_tests {
                     container: "tailscale".into(),
                     state: ChildStatus::Failed,
                     changed: false,
-                    error: Some(OpError {
-                        code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
-                        message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
-                    }),
+                    error: Some(primary_error.clone()),
                 },
             ],
+            primary_error: Some(primary_error),
         };
 
         let outcome = MutationOutcome::from_operations(
@@ -2431,6 +2504,89 @@ mod mutation_outcome_tests {
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
+    }
+
+    #[test]
+    fn failed_outcome_prefers_primary_error_over_earlier_container_error() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'api' exited with 9 before it registered".into(),
+        };
+
+        let result = OpResult {
+            operation_id: "mixed-failure".into(),
+            status: OpStatus::Failed,
+            changed: false,
+            containers: vec![
+                ContainerResult {
+                    container: "mailer".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(OpError {
+                        code: "STARTUP_TIMEOUT".into(),
+                        message: "container 'mailer' was not ready after 2s".into(),
+                    }),
+                },
+                ContainerResult {
+                    container: "api".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(primary_error.clone()),
+                },
+            ],
+            primary_error: Some(primary_error),
+        };
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Failed,
+            false,
+            None,
+            None,
+            None,
+            std::iter::once(&result),
+        );
+        let encoded = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(
+            encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+            "{encoded}"
+        );
+    }
+
+    #[test]
+    fn successful_outcome_reports_each_not_required_failure_once() {
+        let restart = optional_mailer_failure("restart");
+        let up = optional_mailer_failure("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            false,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!(
+            (outcome.error, outcome.not_required_failures),
+            (None, Some(vec!["mailer".to_string()]))
+        );
+    }
+
+    #[test]
+    fn successful_outcome_omits_a_failure_recovered_by_a_later_operation() {
+        let restart = optional_mailer_failure("restart");
+        let up = ready_mailer("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            true,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!((outcome.error, outcome.not_required_failures), (None, None));
     }
 }
 

@@ -44,12 +44,13 @@ pub mod project;
 pub mod registry;
 pub mod remote;
 pub mod report;
+mod restart;
 mod shutdown;
 pub mod spawn;
 pub mod state;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
-pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
+pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport, VmSpec};
 

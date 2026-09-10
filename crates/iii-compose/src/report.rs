@@ -84,6 +84,11 @@ enum RowState {
         what: String,
         began: Instant,
     },
+    Retrying {
+        attempt: u32,
+        total: u32,
+        phase: RetryPhase,
+    },
     Ready {
         what: String,
         elapsed: Duration,
@@ -95,6 +100,12 @@ enum RowState {
     },
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
+}
+
+#[derive(Clone)]
+enum RetryPhase {
+    Waiting(Duration),
+    Starting(String),
 }
 
 struct StartupRows {
@@ -280,6 +291,11 @@ fn console() -> &'static Mutex<Console> {
 /// settles, which is what a log wants anyway.
 pub fn plan(rows: &[(String, usize)]) {
     if !animated() {
+        console()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .rows
+            .clear();
         return;
     }
     {
@@ -340,7 +356,9 @@ fn set(key: &str, to: RowState) -> bool {
     {
         *what = format!("Starting ({ready}/{total})");
     }
-    redraw(&mut state);
+    if animated() {
+        redraw(&mut state);
+    }
     true
 }
 
@@ -389,6 +407,24 @@ fn render_row(row: &Row, frame: usize, animate: bool) -> String {
             what.dimmed(),
             format!("({})", format_elapsed(began.elapsed())).dimmed(),
         ),
+        RowState::Retrying {
+            attempt,
+            total,
+            phase,
+        } => {
+            let phase = retry_label(*attempt, *total, phase);
+            format!(
+                "{indent}{} {} {}",
+                if animate {
+                    FRAMES[frame % FRAMES.len()]
+                } else {
+                    RUNNING
+                }
+                .cyan(),
+                row.key.bold(),
+                phase.dimmed(),
+            )
+        }
         RowState::Ready { what, elapsed } => format!(
             "{indent}{} {} {} {}",
             OK.green(),
@@ -476,10 +512,12 @@ fn ensure_ticker() {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let turning = state.startup.is_some()
-                    || state
-                        .rows
-                        .iter()
-                        .any(|row| matches!(row.state, RowState::Starting { .. }));
+                    || state.rows.iter().any(|row| {
+                        matches!(
+                            row.state,
+                            RowState::Starting { .. } | RowState::Retrying { .. }
+                        )
+                    });
                 if turning {
                     state.frame = state.frame.wrapping_add(1);
                     redraw(&mut state);
@@ -492,6 +530,29 @@ fn ensure_ticker() {
 /// A container is being worked on. On a terminal this spins until the container
 /// settles; anywhere else it is a plain line.
 pub fn starting(key: &str, what: &str) {
+    let retry = {
+        let state = console().lock().unwrap_or_else(|p| p.into_inner());
+        state.rows.iter().find_map(|row| match &row.state {
+            RowState::Retrying {
+                attempt,
+                total,
+                phase,
+            } if row.key == key => Some((
+                *attempt,
+                *total,
+                matches!(phase, RetryPhase::Starting(current) if current == what),
+            )),
+            _ => None,
+        })
+    };
+    if let Some((_, _, true)) = retry {
+        return;
+    }
+    if let Some((attempt, total, false)) = retry {
+        show_retry(key, attempt, total, RetryPhase::Starting(what.to_string()));
+        return;
+    }
+
     let began = {
         let state = console().lock().unwrap_or_else(|p| p.into_inner());
         state
@@ -518,6 +579,93 @@ pub fn starting(key: &str, what: &str) {
         key.bold(),
         what.dimmed()
     ));
+}
+
+/// Keeps a supervised restart visible while its next attempt is backing off.
+pub(crate) fn retry_waiting(key: &str, attempt: u32, total: u32, delay: Duration) {
+    show_retry(key, attempt, total, RetryPhase::Waiting(delay));
+}
+
+/// Starts one supervised attempt on the row created during its backoff.
+pub(crate) fn retry_starting(key: &str, attempt: u32, total: u32) {
+    show_retry(
+        key,
+        attempt,
+        total,
+        RetryPhase::Starting("starting".to_string()),
+    );
+}
+
+/// Leaves the final supervised attempt as a completed terminal line.
+pub(crate) fn retry_recovered(key: &str, attempt: u32, total: u32, elapsed: Duration) {
+    let row = Row {
+        key: key.to_string(),
+        depth: 0,
+        state: RowState::Ready {
+            what: recovered_label(attempt, total),
+            elapsed,
+        },
+    };
+    show_retry_row(row);
+}
+
+fn show_retry(key: &str, attempt: u32, total: u32, phase: RetryPhase) {
+    let row = Row {
+        key: key.to_string(),
+        depth: 0,
+        state: RowState::Retrying {
+            attempt,
+            total,
+            phase,
+        },
+    };
+    show_retry_row(row);
+}
+
+fn show_retry_row(row: Row) {
+    let animate = animated();
+    // During `up`, keep this row inside the dependency tree and preserve its
+    // depth. A run-time retry has no active plan, so it falls through and owns
+    // a one-row block as before.
+    if animate && set(&row.key, row.state.clone()) {
+        return;
+    }
+
+    let static_line = {
+        let mut state = console()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.rows = vec![row];
+        state.frame = 0;
+        if animate {
+            redraw(&mut state);
+            None
+        } else {
+            state.rows.first().map(|row| render_row(row, 0, false))
+        }
+    };
+
+    if let Some(static_line) = static_line {
+        line(&static_line);
+    } else {
+        ensure_ticker();
+    }
+}
+
+fn retry_label(attempt: u32, total: u32, phase: &RetryPhase) -> String {
+    match phase {
+        RetryPhase::Waiting(delay) => {
+            format!(
+                "Retrying {attempt}/{total}, waiting {}",
+                format_elapsed(*delay)
+            )
+        }
+        RetryPhase::Starting(what) => format!("Retrying {attempt}/{total}, {what}"),
+    }
+}
+
+fn recovered_label(attempt: u32, total: u32) -> String {
+    format!("Recovered on attempt {attempt}/{total}")
 }
 
 pub fn ready(key: &str, elapsed: Duration) {
@@ -597,6 +745,23 @@ pub fn rolled_back(key: &str) {
         key.bold(),
         "rolled back".yellow()
     ));
+}
+
+/// Containers that failed with an effective `required` value of `false`.
+/// Printed before the closing line so a partial project does not read as a
+/// clean start.
+pub fn not_required_failed(containers: &[String]) {
+    let names = containers
+        .iter()
+        .map(|container| format!("'{container}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = if containers.len() == 1 {
+        format!("container {names} failed and is not required: the project is up without it")
+    } else {
+        format!("containers {names} failed and are not required: the project is up without them")
+    };
+    line(&body.yellow().to_string());
 }
 
 /// Closing line of an operation.
@@ -800,6 +965,76 @@ mod tests {
         // The finished panel must not be redrawn over subsequent output.
         line("after startup");
         tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    #[test]
+    fn redirected_retry_reports_transitions_without_animation() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "report::tests::retry_panel_fixture",
+                "--nocapture",
+            ])
+            .env_remove("CLICOLOR_FORCE")
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let waiting = stderr.find("api Retrying 2/5, waiting 1.0s").unwrap();
+        let starting = stderr.find("api Retrying 2/5, starting").unwrap();
+        let configuring = stderr.find("api Retrying 2/5, configuring").unwrap();
+        let recovered = stderr.find("api Recovered on attempt 2/5 (1.8s)").unwrap();
+        assert!(
+            waiting < starting && starting < configuring && configuring < recovered,
+            "{stderr}"
+        );
+        assert_eq!(
+            stderr.matches("api Retrying 2/5, starting").count(),
+            1,
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains('\x1b') && !FRAMES.iter().any(|frame| stderr.contains(frame)),
+            "{stderr}"
+        );
+    }
+
+    /// Also usable under a PTY to inspect the retry redraws.
+    #[tokio::test]
+    #[ignore = "subprocess fixture for the retry progress renderer"]
+    async fn retry_panel_fixture() {
+        plan(&[("api".to_string(), 0)]);
+        retry_waiting("api", 2, 5, Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        retry_starting("api", 2, 5);
+        starting("api", "starting");
+        starting("api", "configuring");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        retry_recovered("api", 2, 5, Duration::from_millis(1800));
+        plan_done();
+    }
+
+    #[test]
+    fn waiting_retry_names_the_next_attempt_and_delay() {
+        assert_eq!(
+            retry_label(2, 5, &RetryPhase::Waiting(Duration::from_secs(1))),
+            "Retrying 2/5, waiting 1.0s"
+        );
+    }
+
+    #[test]
+    fn active_retry_names_the_attempt_and_phase() {
+        assert_eq!(
+            retry_label(2, 5, &RetryPhase::Starting("configuring".to_string())),
+            "Retrying 2/5, configuring"
+        );
+    }
+
+    #[test]
+    fn recovered_retry_names_the_successful_attempt() {
+        assert_eq!(recovered_label(2, 5), "Recovered on attempt 2/5");
     }
 
     /// A container keeps its colour once it has one, and red is never handed
