@@ -41,12 +41,13 @@ pub struct TriggerArgs {
     #[arg(long)]
     pub json: Option<String>,
 
-    /// Engine host address. Taken from `III_URL` when omitted, else
-    /// `localhost`.
+    /// Engine host address. Taken from the working directory's compose file
+    /// or `III_URL` when omitted, else `localhost`.
     #[arg(long)]
     pub address: Option<String>,
 
-    /// Engine WebSocket port. Taken from `III_URL` when omitted, else 49134.
+    /// Engine WebSocket port. Taken from the working directory's compose file
+    /// or `III_URL` when omitted, else 49134.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -87,28 +88,51 @@ fn engine_url_endpoint(raw: &str) -> Option<(String, u16)> {
     Some((host, url.port().unwrap_or(DEFAULT_PORT)))
 }
 
-/// Resolves the engine endpoint from the flags and `III_URL`.
+/// Reads `engine.url` from the compose file in the working directory.
 ///
-/// `III_URL` is how every managed context already names its engine: compose
-/// exports it to each worker it spawns, and `iii compose --engine` reads it.
-/// This CLI used to ignore it, so on a project that does not own port 49134
-/// every call silently reached whatever engine did.
+/// Returns `None` whenever the file is absent, unreadable, invalid, or
+/// declares no engine. This is only a resolution step: `iii trigger` has to
+/// keep working outside any project, so a broken compose file must never fail
+/// a command that did not ask about it.
+fn compose_file_engine_url() -> Option<String> {
+    let path = std::path::Path::new(iii_compose::cli::DEFAULT_COMPOSE_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    // Only the engine section, so a container the running binary cannot parse
+    // does not cost the caller the address the file plainly states.
+    let engine = iii_compose::config::parse_engine_section(&text, path).ok()??;
+    (!engine.url.trim().is_empty()).then_some(engine.url)
+}
+
+/// Resolves the engine endpoint from the flags, the compose file, and
+/// `III_URL`.
 ///
-/// `--address` and `--port` still win, each over its own half of the URL, so a
-/// flag can retarget one component and inherit the other.
+/// Order, matching `iii compose`: the flag, then the compose file in the
+/// working directory, then `III_URL`, then `localhost:49134`. `iii compose`
+/// resolves `--engine`, then the file, then `III_URL` (see
+/// `iii_compose::resolve_engine_mode`), so the file is ahead of the
+/// environment here for the same reason: a project directory states which
+/// engine it owns, and a leftover variable in the operator's shell should not
+/// beat it.
 ///
-/// Takes the environment value as an argument rather than reading it, so the
-/// precedence is testable without mutating process state.
+/// `--address` and `--port` win over whichever source supplied the URL, each
+/// over its own half, so a flag can retarget one component and inherit the
+/// other.
+///
+/// Takes both outside values as arguments rather than reading them, so the
+/// precedence is testable without touching the filesystem or process state.
 fn resolve_endpoint(
     address: Option<&str>,
     port: Option<u16>,
+    compose_url: Option<&str>,
     engine_url: Option<&str>,
 ) -> (String, u16) {
-    let from_env = engine_url
+    let from_source = [compose_url, engine_url]
+        .into_iter()
+        .flatten()
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .and_then(engine_url_endpoint);
-    let (env_host, env_port) = match from_env {
+        .find_map(engine_url_endpoint);
+    let (source_host, source_port) = match from_source {
         Some((host, port)) => (Some(host), Some(port)),
         None => (None, None),
     };
@@ -116,17 +140,23 @@ fn resolve_endpoint(
     (
         address
             .map(str::to_string)
-            .or(env_host)
+            .or(source_host)
             .unwrap_or_else(|| DEFAULT_ADDRESS.to_string()),
-        port.or(env_port).unwrap_or(DEFAULT_PORT),
+        port.or(source_port).unwrap_or(DEFAULT_PORT),
     )
 }
 
 impl TriggerArgs {
     /// The engine this invocation talks to.
     fn endpoint(&self) -> (String, u16) {
+        let compose_url = compose_file_engine_url();
         let engine_url = std::env::var("III_URL").ok();
-        resolve_endpoint(self.address.as_deref(), self.port, engine_url.as_deref())
+        resolve_endpoint(
+            self.address.as_deref(),
+            self.port,
+            compose_url.as_deref(),
+            engine_url.as_deref(),
+        )
     }
 }
 
@@ -171,9 +201,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compose_file_is_used_when_no_other_source_names_an_engine() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://127.0.0.1:49934"), None),
+            ("127.0.0.1".to_string(), 49934)
+        );
+    }
+
+    #[test]
+    fn compose_file_wins_over_engine_url() {
+        // `iii compose` resolves the file ahead of `III_URL`; a leftover
+        // variable in the operator's shell must not beat the project.
+        assert_eq!(
+            resolve_endpoint(
+                None,
+                None,
+                Some("ws://127.0.0.1:49934"),
+                Some("ws://127.0.0.1:49134")
+            ),
+            ("127.0.0.1".to_string(), 49934)
+        );
+    }
+
+    #[test]
+    fn flags_win_over_the_compose_file() {
+        assert_eq!(
+            resolve_endpoint(
+                Some("example.test"),
+                Some(1234),
+                Some("ws://127.0.0.1:49934"),
+                None
+            ),
+            ("example.test".to_string(), 1234)
+        );
+    }
+
+    #[test]
+    fn each_flag_wins_over_its_own_half_of_the_compose_file() {
+        assert_eq!(
+            resolve_endpoint(None, Some(1234), Some("ws://127.0.0.1:49934"), None),
+            ("127.0.0.1".to_string(), 1234)
+        );
+    }
+
+    #[test]
+    fn unusable_compose_url_falls_through_to_engine_url() {
+        for compose in ["", "   ", "not a url", "http://127.0.0.1:49934"] {
+            assert_eq!(
+                resolve_endpoint(None, None, Some(compose), Some("ws://127.0.0.1:49134")),
+                ("127.0.0.1".to_string(), 49134),
+                "unexpected endpoint for compose url {compose:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unusable_compose_url_and_no_engine_url_falls_back_to_defaults() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("not a url"), None),
+            ("localhost".to_string(), DEFAULT_PORT)
+        );
+    }
+
+    #[test]
     fn endpoint_defaults_when_nothing_is_set() {
         assert_eq!(
-            resolve_endpoint(None, None, None),
+            resolve_endpoint(None, None, None, None),
             ("localhost".to_string(), DEFAULT_PORT)
         );
     }
@@ -181,7 +274,7 @@ mod tests {
     #[test]
     fn endpoint_reads_engine_url() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(None, None, None, Some("ws://127.0.0.1:49734")),
             ("127.0.0.1".to_string(), 49734)
         );
     }
@@ -192,6 +285,7 @@ mod tests {
             resolve_endpoint(
                 Some("example.test"),
                 Some(1234),
+                None,
                 Some("ws://127.0.0.1:49734")
             ),
             ("example.test".to_string(), 1234)
@@ -201,11 +295,16 @@ mod tests {
     #[test]
     fn each_flag_wins_over_its_own_half() {
         assert_eq!(
-            resolve_endpoint(None, Some(1234), Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(None, Some(1234), None, Some("ws://127.0.0.1:49734")),
             ("127.0.0.1".to_string(), 1234)
         );
         assert_eq!(
-            resolve_endpoint(Some("example.test"), None, Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(
+                Some("example.test"),
+                None,
+                None,
+                Some("ws://127.0.0.1:49734")
+            ),
             ("example.test".to_string(), 49734)
         );
     }
@@ -214,7 +313,7 @@ mod tests {
     fn unusable_engine_url_falls_back_to_defaults() {
         for url in ["", "   ", "not a url", "http://127.0.0.1:49734", "ws://"] {
             assert_eq!(
-                resolve_endpoint(None, None, Some(url)),
+                resolve_endpoint(None, None, None, Some(url)),
                 ("localhost".to_string(), DEFAULT_PORT),
                 "unexpected endpoint for III_URL {url:?}"
             );
@@ -224,7 +323,7 @@ mod tests {
     #[test]
     fn engine_url_without_a_port_keeps_the_engine_default() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://engine.test")),
+            resolve_endpoint(None, None, None, Some("ws://engine.test")),
             ("engine.test".to_string(), DEFAULT_PORT)
         );
     }
@@ -232,7 +331,7 @@ mod tests {
     #[test]
     fn engine_url_keeps_ipv6_brackets() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://[::1]:49734")),
+            resolve_endpoint(None, None, None, Some("ws://[::1]:49734")),
             ("[::1]".to_string(), 49734)
         );
     }

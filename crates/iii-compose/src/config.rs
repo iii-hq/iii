@@ -296,8 +296,10 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
 /// Mutation preflight and teardown paths use this to reject ownership changes
 /// without requiring the container graph to be valid first. A cached project
 /// must still be stoppable or repairable when an unrelated container edit is
-/// temporarily invalid.
-pub(crate) fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
+/// temporarily invalid. `iii trigger` reads the engine address through it for
+/// the same reason: the address a caller needs does not depend on whether the
+/// containers parse.
+pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
@@ -783,6 +785,9 @@ containers:
   api:
     worker: path://./api
     start_after: [missing]
+    # A field this binary does not know, as a file written for a newer
+    # release would carry.
+    unknown_field: true
     environment:
       BROKEN: ${III_COMPOSE_ENGINE_ONLY_MISSING}
 "#;
