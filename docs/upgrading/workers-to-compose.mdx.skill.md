@@ -32,7 +32,7 @@ Write worker-compose.yaml:
 
 Stored configuration: for every worker whose configuration id changed (for example iii-state to state), read the old value with configuration::get and raw: true so ${VAR} templates are copied as templates rather than expanded values, put it under config_override or write it to the new id with configuration::set, and verify the new worker before removing the old entry. Do not rename YAML files as a shortcut.
 
-Never edit ~/.iii/compose/<namespace>/engine-config.yaml. Compose generates it.
+Never edit engine-config.yaml in the Compose state directory. Compose generates it at <project-dir>/.iii/compose/<namespace>/engine-config.yaml by default, or $III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/engine-config.yaml when III_COMPOSE_STATE_DIR is set.
 
 Start the project. iii compose stays in the foreground, so run it in a second terminal or send it to the background with its output in a log file, then wait until it has started every container:
   iii compose --namespace dev --up --file worker-compose.yaml
@@ -101,8 +101,10 @@ engine:
 ```
 
 `engine.url` defaults to `ws://127.0.0.1:49134`. Compose writes the engine-only representation to
-`~/.iii/compose/<daemon-namespace>/engine-config.yaml` with owner-only permissions and starts the
-engine from it. Do not edit that generated file.
+`<project-dir>/.iii/compose/<daemon-namespace>/engine-config.yaml` by default. When `III_COMPOSE_STATE_DIR`
+is set, the path is `$III_COMPOSE_STATE_DIR/<project-slug>/<daemon-namespace>/engine-config.yaml`.
+Compose writes the file with owner-only permissions and starts the engine from it. Do not edit
+that generated file.
 
 Remove explicit `iii-engine-functions`, `iii-telemetry`, and `iii-observability` entries. The
 engine injects them automatically, and declaring one under `engine.workers` fails.

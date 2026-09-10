@@ -223,7 +223,7 @@ impl ComposeCli {
     /// `--namespace`, or `default` when no compose file is available.
     ///
     /// Validated here rather than at first use: it is both a namespace the
-    /// engine routes on and a directory under `~/.iii/compose`, so a separator
+    /// engine routes on and a project state directory, so a separator
     /// or an empty string is a daemon that half-works until the first write.
     pub fn daemon_namespace(&self) -> Result<String> {
         let explicit = self.validated_namespace()?;

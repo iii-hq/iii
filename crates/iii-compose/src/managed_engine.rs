@@ -44,16 +44,20 @@ pub struct ManagedEngine {
 
 impl ManagedEngine {
     /// Starts the current `iii` executable with output detached from compose's
-    /// terminal and captured below this daemon namespace's state directory.
-    pub async fn start(spec: &EngineSpec, daemon_namespace: &str) -> Result<Self> {
+    /// terminal and captured in the owning project's namespace directory.
+    pub async fn start(
+        spec: &EngineSpec,
+        daemon_namespace: &str,
+        compose_path: &Path,
+    ) -> Result<Self> {
         ensure_listener_available(spec)?;
         let executable =
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
             })?;
-        let state_root = StateStore::root()?;
-        let namespace_dir = state_root.join(daemon_namespace);
-        let lock_dir = namespace_dir.clone();
+        let store = StateStore::for_project(daemon_namespace, compose_path)?;
+        let namespace_dir = store.dir();
+        let lock_dir = namespace_dir.to_path_buf();
         let namespace = daemon_namespace.to_string();
         let namespace_lock =
             tokio::task::spawn_blocking(move || NamespaceLock::acquire(&lock_dir, &namespace))
@@ -61,8 +65,8 @@ impl ManagedEngine {
                 .map_err(|source| ComposeError::EngineSpawnFailed {
                     message: format!("could not claim the managed engine namespace: {source}"),
                 })??;
-        let config_path = materialize_engine_config(spec, &namespace_dir)?;
-        let log_path = engine_log_path(&state_root, daemon_namespace);
+        let config_path = materialize_engine_config(spec, namespace_dir)?;
+        let log_path = engine_log_path(namespace_dir);
         let mut engine = Self::spawn_with_materialized_config(
             &executable,
             &config_path,
@@ -419,7 +423,7 @@ fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value>
     Ok(serde_yaml::Value::Mapping(config))
 }
 
-/// Cross-process ownership of one managed engine namespace.
+/// Cross-process ownership of one managed engine in a project and namespace.
 ///
 /// The lock file persists, but the kernel lock is released with this guard or
 /// when the process exits, so a crash cannot strand the namespace.
@@ -791,8 +795,8 @@ fn archive_path(path: &Path, index: usize) -> PathBuf {
     PathBuf::from(archive)
 }
 
-fn engine_log_path(root: &Path, daemon_namespace: &str) -> PathBuf {
-    root.join(daemon_namespace).join("engine.log")
+fn engine_log_path(namespace_dir: &Path) -> PathBuf {
+    namespace_dir.join("engine.log")
 }
 
 #[cfg(unix)]
@@ -1063,15 +1067,15 @@ port: 60123
     }
 
     #[test]
-    fn engine_log_lives_under_the_daemon_namespace() {
+    fn engine_log_lives_in_the_project_namespace_directory() {
         assert_eq!(
-            engine_log_path(Path::new("/state"), "blue-whale"),
-            Path::new("/state/blue-whale/engine.log")
+            engine_log_path(Path::new("/project/.iii/compose/blue-whale")),
+            Path::new("/project/.iii/compose/blue-whale/engine.log")
         );
     }
 
     #[test]
-    fn concurrent_managed_engines_cannot_claim_the_same_namespace() {
+    fn concurrent_managed_engines_cannot_claim_the_same_project_namespace() {
         let dir = tempfile::tempdir().unwrap();
         let namespace_dir = dir.path().join("orders");
         std::fs::create_dir(&namespace_dir).unwrap();

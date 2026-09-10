@@ -117,26 +117,24 @@ fn a_corrupt_state_file_is_an_error_not_a_silent_reset() {
 
 #[test]
 fn state_recorded_for_another_compose_file_is_refused() {
-    // Unreachable through the normal path now that the directory is derived
-    // from the compose file — it takes a slug collision, or a state file
-    // someone moved. Kept because what it prevents is one project adopting and
-    // later killing another's children.
+    // Two compose files in the same directory and namespace share a state
+    // path. Refuse the other file's state instead of adopting its children.
     let state = DaemonState::new(Path::new("/srv/a/compose.yaml"), "ns");
 
     state
         .check_binding(Path::new("/srv/a/compose.yaml"))
         .unwrap();
     let err = state
-        .check_binding(Path::new("/srv/b/compose.yaml"))
+        .check_binding(Path::new("/srv/a/other-compose.yaml"))
         .expect_err("state belongs to the file it recorded");
     assert_eq!(err.code(), "INVALID_STATE_FILE");
 }
 
 #[test]
-fn a_project_is_its_file_and_two_files_never_share_a_directory() {
+fn relocated_project_slugs_distinguish_compose_paths() {
     use iii_compose::state::project_slug;
 
-    // Readable, so `~/.iii/compose` can be browsed, and unique, so two
+    // Readable, so `$III_COMPOSE_STATE_DIR` can be browsed, and unique, so two
     // projects whose directories happen to share a name stay apart.
     let a = project_slug(Path::new("/srv/orders/worker-compose.yaml"));
     let b = project_slug(Path::new("/opt/orders/worker-compose.yaml"));
