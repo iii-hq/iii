@@ -370,6 +370,12 @@ async fn serve(
     // project, but an existing default file still supplies its URL and
     // namespace.
     let initial_file = load_invocation_file(&file, start)?;
+    if start
+        && frozen
+        && let Some(initial_file) = &initial_file
+    {
+        lockfile::preflight_frozen(initial_file)?;
+    }
     let daemon_namespace =
         resolve_daemon_namespace(explicit_daemon_namespace.clone(), initial_file.as_ref());
     let environment_engine_url = std::env::var("III_URL")
@@ -789,7 +795,7 @@ fn report_error(err: &ComposeError) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace};
+    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace, serve};
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
@@ -862,5 +868,26 @@ mod tests {
         let loaded = load_invocation_file(&path, false).unwrap();
 
         assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn frozen_start_checks_the_lock_before_starting_a_managed_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let namespace = format!("frozen-preflight-{}", uuid::Uuid::new_v4());
+        std::fs::write(
+            &path,
+            format!(
+                "namespace: {namespace}\nengine: {{ workers: {{}} }}\ncontainers:\n  state:\n    worker: package://state\n    version: next\n"
+            ),
+        )
+        .unwrap();
+        let compose_path = path.canonicalize().unwrap();
+        let state = crate::state::StateStore::for_project(&namespace, &compose_path).unwrap();
+
+        let error = serve(None, None, path, true, true).await.unwrap_err();
+
+        assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
+        assert!(!state.dir().exists());
     }
 }

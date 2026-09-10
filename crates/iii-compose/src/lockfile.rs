@@ -54,6 +54,7 @@ struct LockedContainer {
 pub struct PreparedLock {
     path: PathBuf,
     lock: ComposeLock,
+    existed: bool,
     changed: bool,
     package_changes: BTreeSet<String>,
     install_statuses: BTreeMap<String, crate::registry::InstallStatus>,
@@ -89,6 +90,14 @@ impl PreparedLock {
     /// Whether the lock itself changed, including selector-only changes.
     pub fn changed(&self) -> bool {
         self.changed
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn existed(&self) -> bool {
+        self.existed
     }
 
     /// Cache result for each package acquired while preparing this lock.
@@ -207,6 +216,35 @@ pub async fn prepare_with_versions(
 /// and never changes the lock. A missing cache entry is still downloaded from
 /// the immutable URL and digest already recorded in the lock.
 pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Result<PreparedLock> {
+    let lock = frozen_lock(compose)?;
+    let path = lock_path(&compose.path);
+    let declarations = package_declarations(compose);
+
+    for (key, _, _) in &declarations {
+        if let (Some(container), Some(entry)) =
+            (compose.containers.get_mut(key), lock.containers.get(key))
+        {
+            container.resolved_package = Some(entry.resolved.clone());
+        }
+    }
+    let mut prepared = PreparedLock {
+        path,
+        lock,
+        existed: true,
+        changed: false,
+        package_changes: BTreeSet::new(),
+        install_statuses: BTreeMap::new(),
+    };
+    prepared.install(cache_root).await?;
+    Ok(prepared)
+}
+
+/// Checks that frozen startup can use the lock before any engine is started.
+pub(crate) fn preflight_frozen(compose: &ComposeFile) -> Result<()> {
+    frozen_lock(compose).map(|_| ())
+}
+
+fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
     let path = lock_path(&compose.path);
     let lock =
         load(&path)?.ok_or_else(|| ComposeError::FrozenLockMissing { path: path.clone() })?;
@@ -216,13 +254,13 @@ pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Res
         let worker = format!("package://{reference}");
         let Some(entry) = lock.containers.get(key) else {
             return Err(ComposeError::FrozenLockOutOfDate {
-                path,
+                path: path.clone(),
                 message: format!("container '{key}' is missing from the lock"),
             });
         };
         if entry.worker != worker || entry.requested != *requested {
             return Err(ComposeError::FrozenLockOutOfDate {
-                path,
+                path: path.clone(),
                 message: format!(
                     "container '{key}' changed from {}@{} to package://{reference}@{requested}",
                     entry.worker, entry.requested,
@@ -241,22 +279,7 @@ pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Res
         });
     }
 
-    for (key, _, _) in &declarations {
-        if let (Some(container), Some(entry)) =
-            (compose.containers.get_mut(key), lock.containers.get(key))
-        {
-            container.resolved_package = Some(entry.resolved.clone());
-        }
-    }
-    let mut prepared = PreparedLock {
-        path,
-        lock,
-        changed: false,
-        package_changes: BTreeSet::new(),
-        install_statuses: BTreeMap::new(),
-    };
-    prepared.install(cache_root).await?;
-    Ok(prepared)
+    Ok(lock)
 }
 
 /// Returns package graph ownership recorded beside one compose file.
@@ -354,6 +377,7 @@ async fn prepare_metadata_with_versions(
     Ok(PreparedLock {
         path,
         lock,
+        existed: previous.is_some(),
         changed,
         package_changes,
         install_statuses: BTreeMap::new(),
