@@ -218,6 +218,20 @@ resource "aws_cloudfront_distribution" "site" {
     origin_request_policy_id = local.origin_request_all_viewer_id
   }
 
+  # Checkpoint assets and verification POSTs must reach the docs origin.
+  # CloudFront requires the full method set to allow POST.
+  ordered_cache_behavior {
+    path_pattern           = "/.well-known/vercel/*"
+    target_origin_id       = "docs-nlb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = local.cache_policy_disabled_id
+    origin_request_policy_id = local.origin_request_all_viewer_id
+  }
+
   viewer_certificate {
     acm_certificate_arn      = aws_acm_certificate_validation.site.certificate_arn
     ssl_support_method       = "sni-only"
