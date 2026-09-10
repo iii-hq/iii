@@ -431,7 +431,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use iii::workers::worker::DEFAULT_PORT;
 
     #[test]
     fn trigger_parses_with_positional_fn_path_only() {
@@ -442,8 +441,10 @@ mod tests {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert!(args.kv.is_empty());
                 assert!(args.json.is_none());
-                assert_eq!(args.address, "localhost");
-                assert_eq!(args.port, DEFAULT_PORT);
+                // Absent, not defaulted: the endpoint is resolved later so
+                // `III_URL` can fill in whichever half no flag named.
+                assert_eq!(args.address, None);
+                assert_eq!(args.port, None);
                 assert_eq!(args.timeout_ms, 30_000);
             }
             _ => panic!("expected Trigger subcommand"),

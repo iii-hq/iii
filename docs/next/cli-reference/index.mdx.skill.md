@@ -149,8 +149,8 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 | Option | Description |
 | ------ | ----------- |
 | `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
-| `--address <ADDRESS>` | Engine host address [default: localhost] |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+| `--address <ADDRESS>` | Engine host address. Taken from `III_URL` when omitted, else `localhost` |
+| `--port <PORT>` | Engine WebSocket port. Taken from `III_URL` when omitted, else 49134 |
 | `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
 | `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
 

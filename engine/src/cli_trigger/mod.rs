@@ -41,13 +41,14 @@ pub struct TriggerArgs {
     #[arg(long)]
     pub json: Option<String>,
 
-    /// Engine host address.
-    #[arg(long, default_value = "localhost")]
-    pub address: String,
+    /// Engine host address. Taken from `III_URL` when omitted, else
+    /// `localhost`.
+    #[arg(long)]
+    pub address: Option<String>,
 
-    /// Engine WebSocket port.
-    #[arg(long, default_value_t = DEFAULT_PORT)]
-    pub port: u16,
+    /// Engine WebSocket port. Taken from `III_URL` when omitted, else 49134.
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Max time to wait for the invocation result (milliseconds).
     #[arg(long, default_value_t = 30_000)]
@@ -65,12 +66,77 @@ pub struct TriggerArgs {
     pub help: bool,
 }
 
+/// Host used when neither a flag nor `III_URL` names one.
+const DEFAULT_ADDRESS: &str = "localhost";
+
+/// Splits a `ws://` or `wss://` engine URL into host and port.
+///
+/// Returns `None` for anything that is not one of those, so a stale or
+/// malformed `III_URL` falls back to the defaults instead of failing a command
+/// that never asked about it. A URL without a port keeps `DEFAULT_PORT`: the
+/// scheme defaults the `url` crate knows (80 and 443) are not this engine's.
+fn engine_url_endpoint(raw: &str) -> Option<(String, u16)> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return None;
+    }
+    let host = match url.host()? {
+        url::Host::Ipv6(address) => format!("[{address}]"),
+        host => host.to_string(),
+    };
+    Some((host, url.port().unwrap_or(DEFAULT_PORT)))
+}
+
+/// Resolves the engine endpoint from the flags and `III_URL`.
+///
+/// `III_URL` is how every managed context already names its engine: compose
+/// exports it to each worker it spawns, and `iii compose --engine` reads it.
+/// This CLI used to ignore it, so on a project that does not own port 49134
+/// every call silently reached whatever engine did.
+///
+/// `--address` and `--port` still win, each over its own half of the URL, so a
+/// flag can retarget one component and inherit the other.
+///
+/// Takes the environment value as an argument rather than reading it, so the
+/// precedence is testable without mutating process state.
+fn resolve_endpoint(
+    address: Option<&str>,
+    port: Option<u16>,
+    engine_url: Option<&str>,
+) -> (String, u16) {
+    let from_env = engine_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .and_then(engine_url_endpoint);
+    let (env_host, env_port) = match from_env {
+        Some((host, port)) => (Some(host), Some(port)),
+        None => (None, None),
+    };
+
+    (
+        address
+            .map(str::to_string)
+            .or(env_host)
+            .unwrap_or_else(|| DEFAULT_ADDRESS.to_string()),
+        port.or(env_port).unwrap_or(DEFAULT_PORT),
+    )
+}
+
+impl TriggerArgs {
+    /// The engine this invocation talks to.
+    fn endpoint(&self) -> (String, u16) {
+        let engine_url = std::env::var("III_URL").ok();
+        resolve_endpoint(self.address.as_deref(), self.port, engine_url.as_deref())
+    }
+}
+
 pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
+    let (address, port) = args.endpoint();
     if args.help {
         help::print(
             args.function_path.as_deref(),
-            &args.address,
-            args.port,
+            &address,
+            port,
             args.timeout_ms,
             args.namespace.as_deref(),
         )
@@ -92,8 +158,8 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
     exec::invoke(
         function_path,
         payload,
-        &args.address,
-        args.port,
+        &address,
+        port,
         args.timeout_ms,
         args.namespace.as_deref(),
     )
@@ -104,14 +170,81 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn endpoint_defaults_when_nothing_is_set() {
+        assert_eq!(
+            resolve_endpoint(None, None, None),
+            ("localhost".to_string(), DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn endpoint_reads_engine_url() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://127.0.0.1:49734")),
+            ("127.0.0.1".to_string(), 49734)
+        );
+    }
+
+    #[test]
+    fn flags_win_over_engine_url() {
+        assert_eq!(
+            resolve_endpoint(
+                Some("example.test"),
+                Some(1234),
+                Some("ws://127.0.0.1:49734")
+            ),
+            ("example.test".to_string(), 1234)
+        );
+    }
+
+    #[test]
+    fn each_flag_wins_over_its_own_half() {
+        assert_eq!(
+            resolve_endpoint(None, Some(1234), Some("ws://127.0.0.1:49734")),
+            ("127.0.0.1".to_string(), 1234)
+        );
+        assert_eq!(
+            resolve_endpoint(Some("example.test"), None, Some("ws://127.0.0.1:49734")),
+            ("example.test".to_string(), 49734)
+        );
+    }
+
+    #[test]
+    fn unusable_engine_url_falls_back_to_defaults() {
+        for url in ["", "   ", "not a url", "http://127.0.0.1:49734", "ws://"] {
+            assert_eq!(
+                resolve_endpoint(None, None, Some(url)),
+                ("localhost".to_string(), DEFAULT_PORT),
+                "unexpected endpoint for III_URL {url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_url_without_a_port_keeps_the_engine_default() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://engine.test")),
+            ("engine.test".to_string(), DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn engine_url_keeps_ipv6_brackets() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://[::1]:49734")),
+            ("[::1]".to_string(), 49734)
+        );
+    }
+
     #[tokio::test]
     async fn run_trigger_missing_fn_path_errors() {
         let args = TriggerArgs {
             function_path: None,
             kv: vec![],
             json: None,
-            address: "localhost".to_string(),
-            port: DEFAULT_PORT,
+            address: None,
+            port: None,
             timeout_ms: 800,
             help: false,
             namespace: None,
@@ -130,8 +263,8 @@ mod tests {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: None,
-            address: "localhost".to_string(),
-            port: 19999,
+            address: None,
+            port: Some(19999),
             timeout_ms: 800,
             help: false,
             namespace: None,
@@ -157,8 +290,8 @@ mod tests {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: Some("not-json".to_string()),
-            address: "localhost".to_string(),
-            port: DEFAULT_PORT,
+            address: None,
+            port: None,
             timeout_ms: 30_000,
             help: false,
             namespace: None,
