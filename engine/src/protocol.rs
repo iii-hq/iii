@@ -88,6 +88,15 @@ pub enum TriggerAction {
     Void,
 }
 
+/// Deserialize a present field as `Some(value)` even when the value is `null`.
+/// Pair with `#[serde(default)]` so an absent field still reads as `None`.
+fn deserialize_present<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
@@ -184,7 +193,14 @@ pub enum Message {
     InvocationResult {
         invocation_id: Uuid,
         function_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// The executor's return value. `"result": null` (returned null) and
+        /// an absent field (returned nothing) are different answers, and the
+        /// caller distinguishes them: `state::get` on a miss is `null`.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present",
+            skip_serializing_if = "Option::is_none"
+        )]
         result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
@@ -332,6 +348,39 @@ mod tests {
         invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
     };
+
+    #[test]
+    fn invocation_result_null_stays_null_and_absent_stays_absent() {
+        let id = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f";
+        let with_null = format!(
+            r#"{{"type":"invocationresult","invocation_id":"{id}","function_id":"state::get","result":null}}"#
+        );
+        let message: Message = serde_json::from_str(&with_null).expect("null result parses");
+        let Message::InvocationResult { result, error, .. } = &message else {
+            panic!("unexpected variant");
+        };
+        assert_eq!(result, &Some(serde_json::Value::Null));
+        assert!(error.is_none());
+        let wire = serde_json::to_string(&message).expect("serializes");
+        assert!(
+            wire.contains(r#""result":null"#),
+            "null must stay on the wire: {wire}"
+        );
+
+        let absent = format!(
+            r#"{{"type":"invocationresult","invocation_id":"{id}","function_id":"fire::forget"}}"#
+        );
+        let message: Message = serde_json::from_str(&absent).expect("absent result parses");
+        let Message::InvocationResult { result, .. } = &message else {
+            panic!("unexpected variant");
+        };
+        assert_eq!(result, &None);
+        let wire = serde_json::to_string(&message).expect("serializes");
+        assert!(
+            !wire.contains(r#""result""#),
+            "absent must stay absent: {wire}"
+        );
+    }
 
     #[test]
     fn deserialize_unregister_trigger_without_type() {

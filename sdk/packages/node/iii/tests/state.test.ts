@@ -80,7 +80,8 @@ describe('State Operations', () => {
         payload: { scope, key: 'non-existent-item' },
       })
 
-      expect(result).toBeUndefined()
+      // A miss is `null`; `undefined` is reserved for returning nothing.
+      expect(result).toBeNull()
     })
   })
 
@@ -93,7 +94,7 @@ describe('State Operations', () => {
       await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
       await expect(
         iii.trigger({ function_id: 'state::get', payload: { scope, key } }),
-      ).resolves.toBeUndefined()
+      ).resolves.toBeNull()
     })
 
     it('should handle deleting non-existent item gracefully', async () => {

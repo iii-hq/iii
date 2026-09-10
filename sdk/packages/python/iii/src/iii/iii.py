@@ -533,6 +533,11 @@ class III:
             data: dict[str, Any] = msg.model_dump(by_alias=True, exclude_none=True)
             if "type" in data and hasattr(data["type"], "value"):
                 data["type"] = data["type"].value
+            if (
+                isinstance(msg, InvocationResultMessage)
+                and "result" in msg.model_fields_set
+            ):
+                data.setdefault("result", None)
             return data
         return {"data": msg}
 

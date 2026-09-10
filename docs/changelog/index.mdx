@@ -45,6 +45,9 @@ type: "reference"
 
   ## Reliability
 
+  - A function that returns `null` now reaches its caller as `null`. The engine used to drop the
+    field on the way through, so the Node SDK resolved `undefined` and a strict `=== null` check on
+    a `state::get` miss never fired. The Python SDK keeps a `None` return on the wire the same way.
   - Improved queue routing across namespaces.
   - Improved trace archive cleanup and summary pagination.
   - Reduced CLI telemetry traffic.
