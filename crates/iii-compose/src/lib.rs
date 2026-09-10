@@ -24,6 +24,7 @@ pub mod config;
 pub mod configuration;
 pub mod daemon;
 pub mod dag;
+mod dependencies;
 pub mod edit;
 pub mod engine;
 pub mod error;

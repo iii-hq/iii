@@ -3,7 +3,7 @@
 
 //! Prepare every registry package in a compose file without starting anything.
 
-use std::{future::Future, path::Path, time::Instant};
+use std::{collections::BTreeSet, future::Future, path::Path, time::Instant};
 
 use futures::StreamExt;
 
@@ -91,7 +91,7 @@ where
             let began = Instant::now();
             report::starting(&container, &format!("preparing {reference}@{version}"));
             let result = installer(request, cache).await;
-            (index, container, began.elapsed(), result)
+            (index, container, reference, began.elapsed(), result)
         }
     }))
     .buffer_unordered(crate::parallelism::max_parallel_workers());
@@ -99,7 +99,14 @@ where
     let mut downloaded = 0;
     let mut cached = 0;
     let mut failures = Vec::new();
-    while let Some((index, container, elapsed, result)) = work.next().await {
+    let mut warned = BTreeSet::new();
+    while let Some((index, container, reference, elapsed, result)) = work.next().await {
+        if let Ok(package) = &result
+            && let Some(alias_of) = &package.alias_of
+            && warned.insert((registry::split_reference(&reference), alias_of.clone()))
+        {
+            registry::warn_alias(&container, &reference, Some(alias_of), None).await;
+        }
         match result {
             Ok(package) => match package.status {
                 InstallStatus::Downloaded => {
@@ -149,6 +156,7 @@ mod tests {
     fn package(status: InstallStatus) -> InstalledPackage {
         InstalledPackage {
             name: "worker".to_string(),
+            alias_of: None,
             version: "1.0.0".to_string(),
             payload: Payload::Binary("/tmp/worker".into()),
             default_config: None,
