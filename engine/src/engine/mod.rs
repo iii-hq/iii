@@ -4460,10 +4460,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_null_result_from_the_executor_reaches_the_caller_as_null() {
-        // A worker-routed function (state::get on a missing key) answers
-        // `"result": null`. The caller must receive `null`, not an omitted
-        // field: the TS SDK resolves an omitted field as `undefined` and a
-        // strict `=== null` check never fires (MOT-4732).
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);

@@ -80,9 +80,7 @@ describe('State Operations', () => {
         payload: { scope, key: 'non-existent-item' },
       })
 
-      // The state worker answers `null` for a miss and the engine forwards it
-      // as-is (MOT-4732); `undefined` is reserved for functions that return
-      // nothing.
+      // A miss is `null`; `undefined` is reserved for returning nothing.
       expect(result).toBeNull()
     })
   })

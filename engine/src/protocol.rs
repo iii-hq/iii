@@ -88,9 +88,8 @@ pub enum TriggerAction {
     Void,
 }
 
-/// Deserialize a field that is present as `Some(value)` even when the value is
-/// `null`. Pair with `#[serde(default)]` so an absent field still reads as
-/// `None`; the pair keeps "returned null" and "returned nothing" distinct.
+/// Deserialize a present field as `Some(value)` even when the value is `null`.
+/// Pair with `#[serde(default)]` so an absent field still reads as `None`.
 fn deserialize_present<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -194,12 +193,9 @@ pub enum Message {
     InvocationResult {
         invocation_id: Uuid,
         function_id: String,
-        /// The executor's return value. `"result": null` (a handler that
-        /// returned null) and an absent field (a handler that returned
-        /// nothing) are different answers: `state::get` on a missing key is
-        /// `null`, and a TypeScript caller checks `=== null`. serde folds a
-        /// JSON `null` into `None` by default, which would forward the miss
-        /// with the field omitted and the caller would see `undefined`.
+        /// The executor's return value. `"result": null` (returned null) and
+        /// an absent field (returned nothing) are different answers, and the
+        /// caller distinguishes them: `state::get` on a miss is `null`.
         #[serde(
             default,
             deserialize_with = "deserialize_present",
