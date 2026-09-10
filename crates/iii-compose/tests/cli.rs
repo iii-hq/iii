@@ -7,7 +7,7 @@
 use clap::Parser;
 use iii_compose::{
     BuildCli, ComposeCli, ComposeCommand, ComposeFile, ComposeSubcommand, EngineMode,
-    resolve_engine_mode,
+    logs::LogStream, resolve_engine_mode,
 };
 
 /// Mirrors how the engine mounts the subcommand, so parsing is exercised
@@ -133,6 +133,8 @@ fn a_programmatic_file_without_up_is_refused() {
         ns: None,
         up: false,
         file: Some("other.yaml".into()),
+        follow: false,
+        stream: None,
         command: None,
     }
     .plan()
@@ -217,6 +219,8 @@ fn build_conflicts_with_daemon_options() {
         ns: None,
         up: true,
         file: None,
+        follow: false,
+        stream: None,
         command: Some(ComposeSubcommand::Build(BuildCli {
             file: "worker-compose.yaml".into(),
         })),
@@ -450,4 +454,70 @@ fn the_namespace_reads_the_same_on_either_side_of_the_up_flag() {
         assert_eq!(explicit_daemon_namespace.as_deref(), Some("orders"));
         assert!(start, "{args:?} should still enable --up");
     }
+}
+
+#[test]
+fn follow_echoes_worker_output_for_a_bare_daemon_and_for_up() {
+    for args in [
+        &["iii", "compose", "--follow"][..],
+        &["iii", "compose", "-F"],
+        &["iii", "compose", "--up", "-F"],
+        &[
+            "iii",
+            "compose",
+            "--up",
+            "-f",
+            "/app/worker-compose.yaml",
+            "--follow",
+        ],
+    ] {
+        let ComposeCommand::Serve { follow, stream, .. } = parse(args).plan().unwrap() else {
+            panic!("{args:?}: expected serve command");
+        };
+        assert!(follow, "{args:?} should enable --follow");
+        assert_eq!(stream, None);
+    }
+
+    let ComposeCommand::Serve { follow, stream, .. } =
+        parse(&["iii", "compose", "-F", "--stream", "stderr"])
+            .plan()
+            .unwrap()
+    else {
+        panic!("expected serve command");
+    };
+    assert!(follow);
+    assert_eq!(stream, Some(LogStream::Stderr));
+
+    let ComposeCommand::Serve { follow, stream, .. } = parse(&["iii", "compose"]).plan().unwrap()
+    else {
+        panic!("expected serve command");
+    };
+    assert!(!follow);
+    assert_eq!(stream, None);
+}
+
+#[test]
+fn stream_requires_follow_and_neither_combines_with_build() {
+    for args in [
+        &["iii", "compose", "--stream", "stderr"][..],
+        &["iii", "compose", "--follow", "build"],
+        &["iii", "compose", "build", "--follow"],
+    ] {
+        assert!(Wrapper::try_parse_from(args).is_err(), "{args:?} must fail");
+    }
+
+    let error = ComposeCli {
+        engine: None,
+        ns: None,
+        up: false,
+        file: None,
+        follow: true,
+        stream: None,
+        command: Some(ComposeSubcommand::Build(BuildCli {
+            file: "worker-compose.yaml".into(),
+        })),
+    }
+    .plan()
+    .unwrap_err();
+    assert_eq!(error.code(), "BUILD_CONFLICTS_WITH_SERVE_OPTIONS");
 }
