@@ -331,6 +331,7 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     }
 
     seed_console_layout(&dir);
+    seed_onboarding_container(&dir);
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -404,6 +405,66 @@ value:
           - 0.7
           - 0.3
 ";
+
+/// The tour's own worker, declared in the project's compose file.
+///
+/// The layout seed above opens a pane on `ext:onboarding`, and that page is
+/// served by the `onboarding` worker — a page injected by a worker is only
+/// there while the worker runs. Without this the seeded pane opens on the
+/// console's "Extension page not loaded" placeholder.
+///
+/// A version is not optional for a `package://` container (compose rejects
+/// the file without one), so this is a range rather than a pin: patch
+/// releases of the tour reach a new project with no engine release.
+const ONBOARDING_CONTAINER: &str = "\
+  # The guided tour. It serves the `onboarding` console page that the seeded
+  # workspace layout opens beside the chat.
+  onboarding:
+    worker: package://onboarding
+    version: \"^0.1.0\"
+    start_after:
+      - state
+
+";
+
+/// Insert the tour's container into a `worker-compose.yaml` body, or return
+/// `None` when there is nothing to do: no `containers:` mapping to insert
+/// into, or a container by that name already declared (a re-run, or an
+/// operator who added their own).
+///
+/// A text insert, not a YAML round-trip: the harness template's compose file
+/// is half instructive comments, and `serde_yaml` would drop every one of
+/// them.
+fn with_onboarding_container(text: &str) -> Option<String> {
+    if text.lines().any(|line| line.trim_end() == "  onboarding:") {
+        return None;
+    }
+    let heading = "containers:\n";
+    let start = if text.starts_with(heading) {
+        0
+    } else {
+        text.find(&format!("\n{heading}"))? + 1
+    };
+    let insert_at = start + heading.len();
+    let mut patched = String::with_capacity(text.len() + ONBOARDING_CONTAINER.len());
+    patched.push_str(&text[..insert_at]);
+    patched.push_str(ONBOARDING_CONTAINER);
+    patched.push_str(&text[insert_at..]);
+    Some(patched)
+}
+
+/// Best effort, like the layout seed. A project whose compose file cannot
+/// take the container still starts; its tour pane is the placeholder until
+/// someone declares the worker.
+fn seed_onboarding_container(dir: &Path) {
+    let path = dir.join("worker-compose.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if let Some(patched) = with_onboarding_container(&text) {
+        let _ = std::fs::write(&path, patched);
+    }
+}
 
 /// Open the new project's console on chat beside the tour, 70/30.
 ///
@@ -1128,6 +1189,53 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "id: console\nname: mine\ndescription: mine\n"
         );
+    }
+
+    /// The pane the layout seed opens is served by the `onboarding` worker, so
+    /// the container has to reach the project's compose file. It is a text
+    /// insert, and the harness template's compose file is mostly comments, so
+    /// the test pins both the placement and that the rest survives.
+    #[test]
+    fn the_tour_container_lands_under_containers() {
+        let source = "namespace: demo\n\ncontainers:\n  # keep me\n  state:\n    worker: package://state\n    version: \"1.0.0\"\n";
+
+        let patched = with_onboarding_container(source).expect("compose file takes the container");
+
+        let containers = patched.find("containers:\n").unwrap();
+        let onboarding = patched.find("  onboarding:\n").unwrap();
+        let state = patched.find("  state:\n").unwrap();
+        assert!(containers < onboarding && onboarding < state);
+        assert!(patched.contains("worker: package://onboarding"));
+        assert!(patched.contains("# keep me"), "comments must survive");
+        assert!(patched.contains("namespace: demo"));
+
+        // Compose rejects a `package://` container with no version.
+        assert!(patched.contains("version: \"^0.1.0\""));
+    }
+
+    #[test]
+    fn the_tour_container_is_written_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("worker-compose.yaml");
+        std::fs::write(&path, "containers:\n  state:\n    worker: path://./state\n").unwrap();
+
+        seed_onboarding_container(tmp.path());
+        seed_onboarding_container(tmp.path());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("  onboarding:").count(), 1);
+        assert!(with_onboarding_container(&text).is_none());
+    }
+
+    /// No compose file, or one with no `containers:` mapping: nothing to do,
+    /// and the tour still starts.
+    #[test]
+    fn the_tour_container_needs_a_containers_mapping() {
+        assert!(with_onboarding_container("namespace: demo\n").is_none());
+
+        let tmp = tempfile::tempdir().unwrap();
+        seed_onboarding_container(tmp.path());
+        assert!(!tmp.path().join("worker-compose.yaml").exists());
     }
 
     #[test]
