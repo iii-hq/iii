@@ -688,6 +688,14 @@ async fn start_one_until_shutdown(
                     ctx.package_cache,
                 ))?,
             };
+            let operation = operation_id.and_then(crate::operation::active);
+            crate::registry::warn_alias(
+                key,
+                reference,
+                installed.alias_of.as_deref(),
+                operation.as_deref(),
+            )
+            .await;
             report::starting(
                 key,
                 &format!("starting {} {}", installed.name, installed.version),

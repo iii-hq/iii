@@ -48,6 +48,7 @@ const ADD_REPLAN_LIMIT: u32 = 2;
 struct AddPlan {
     snapshot: String,
     wanted: Vec<crate::edit::NewContainer>,
+    aliases: Vec<crate::dependencies::Alias>,
     selected_versions: BTreeMap<String, String>,
     resolved_graphs: BTreeMap<String, BTreeSet<String>>,
 }
@@ -190,6 +191,28 @@ fn graph_members(containers: &[crate::edit::NewContainer]) -> BTreeSet<String> {
             std::iter::once(container.key.clone()).chain(container.start_after.iter().cloned())
         })
         .collect()
+}
+
+/// Returns one root's reachable declarations after alias and instance reuse.
+fn graph_members_for_root(
+    containers: &[crate::edit::NewContainer],
+    root: &str,
+) -> BTreeSet<String> {
+    let containers = containers
+        .iter()
+        .map(|container| (container.key.as_str(), container))
+        .collect::<BTreeMap<_, _>>();
+    let mut members = BTreeSet::new();
+    let mut visit = vec![root.to_string()];
+    while let Some(key) = visit.pop() {
+        if !members.insert(key.clone()) {
+            continue;
+        }
+        if let Some(container) = containers.get(key.as_str()) {
+            visit.extend(container.start_after.iter().cloned());
+        }
+    }
+    members
 }
 
 fn stale_graph_members(
@@ -541,14 +564,15 @@ impl Daemon {
         // add declaring one of this graph's dependencies as `path://`, say)
         // is planned again, and past the limit the add fails for a retry.
         let mut replans = 0;
-        let (_mutation, text, wanted, selected_versions, resolved_graphs) = loop {
+        let (_mutation, text, wanted, aliases, selected_versions, resolved_graphs) = loop {
             let AddPlan {
                 snapshot,
                 wanted,
+                aliases,
                 selected_versions,
                 resolved_graphs,
             } = self
-                .plan_add(path, &asked, &declarations, &asked_keys, &operation_id)
+                .plan_add(path, &declarations, &asked_keys, &operation_id)
                 .await?;
             let mutation = self.lock_mutation(path).await;
             if operation
@@ -562,7 +586,14 @@ impl Daemon {
                 source,
             })?;
             if text == snapshot {
-                break (mutation, text, wanted, selected_versions, resolved_graphs);
+                break (
+                    mutation,
+                    text,
+                    wanted,
+                    aliases,
+                    selected_versions,
+                    resolved_graphs,
+                );
             }
             if replans == ADD_REPLAN_LIMIT {
                 return Err(ComposeError::AddPlanStale {
@@ -581,6 +612,15 @@ impl Daemon {
         };
         self.validate_engine_policy_text(path, &text)?;
         let declared = crate::ComposeFile::parse(&text, path)?;
+        for alias in aliases {
+            crate::registry::warn_alias(
+                &alias.container,
+                &alias.reference,
+                Some(&alias.canonical),
+                operation.as_deref(),
+            )
+            .await;
+        }
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -679,15 +719,14 @@ impl Daemon {
     /// Everything `add_configured` does before it takes the mutation lock:
     /// expand the asked workers into their registry graphs against the
     /// declaration as it stands, keep the pins the operator already wrote, and
-    /// retain the exact registry selections needed to prepare the lock. Slow
-    /// registry calls run unlocked; artifact acquisition happens only after the
-    /// plan is confirmed against the same file snapshot.
+    /// retain the exact registry selections needed to prepare the lock. Registry
+    /// calls run unlocked; artifact acquisition happens only after the plan is
+    /// confirmed against the same file snapshot.
     /// Returns the text the plan was made against with the plan, so the caller
     /// can tell whether that declaration is still the one it is editing.
     async fn plan_add(
         &self,
         path: &Path,
-        asked: &[crate::edit::NewContainer],
         declarations: &[crate::edit::NewContainer],
         asked_keys: &BTreeSet<String>,
         operation_id: &str,
@@ -696,84 +735,26 @@ impl Daemon {
             path: path.to_path_buf(),
             source,
         })?;
-        let declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
-        let mut path_workers: BTreeSet<String> = declared
-            .containers
-            .iter()
-            .filter(|(_, container)| {
-                matches!(&container.worker, crate::config::WorkerSource::Path { .. })
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        path_workers.extend(
-            declarations
-                .iter()
-                .filter(|worker| matches!(worker.source, crate::edit::Source::Path { .. }))
-                .map(|worker| worker.key.clone()),
+        let mut declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
+        crate::lockfile::attach(&mut declared)?;
+        let mut plan = crate::dependencies::plan(&declared, declarations).await?;
+        let mut selected_versions = std::mem::take(&mut plan.selected_versions);
+        plan.containers = keep_declared_dependencies(
+            plan.containers,
+            asked_keys,
+            &declared,
+            &mut selected_versions,
         );
-        // A worker is not useful alone: its manifest names what it calls, and
-        // the registry answers with that whole graph already pinned to versions
-        // that satisfy each other. They are declared rather than started
-        // behind the file, so what runs is still what the file says.
-        //
-        // Dependencies first and the worker last: with no `start_after`, start
-        // order is declaration order, so this is what makes a worker start
-        // after the things it calls.
-        let path_workers = &path_workers;
-        let mut expanded = futures::stream::iter(asked.iter().cloned().enumerate().map(
-            |(index, mut worker)| async move {
-                // Coalesce registry graphs before applying explicit settings.
-                // A requested worker can also be another worker's dependency.
-                worker.fields.clear();
-                worker.start_after.clear();
-                let graph = self.expand(&worker, path_workers).await;
-                (index, graph)
-            },
-        ))
-        .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
-        expanded.sort_by_key(|(index, _)| *index);
-        let mut wanted = Vec::new();
-        let mut selected_versions = BTreeMap::new();
-        let mut resolved_graphs = BTreeMap::new();
-        for (index, expansion) in expanded {
-            let (containers, versions) = expansion?;
-            if matches!(asked[index].source, crate::edit::Source::Package { .. }) {
-                resolved_graphs.insert(asked[index].key.clone(), graph_members(&containers));
-            }
-            for (container, version) in versions {
-                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
-                    && current != version
-                {
-                    return Err(ComposeError::InvalidWorkerSpec {
-                        spec: container.clone(),
-                        reason: format!(
-                            "the requested workers resolve container '{container}' to conflicting \
-                             versions {current} and {version}"
-                        ),
-                    });
-                }
-            }
-            wanted.extend(containers);
-        }
-        let wanted = coalesce_containers(wanted)?;
-        // Against the snapshot read above, which is also the text the caller
-        // edits. Existing dependencies stay on their declared selector and
-        // reuse their lock entry instead of being forced to the graph's latest
-        // exact selection.
-        let mut wanted =
-            keep_declared_dependencies(wanted, asked_keys, &declared, &mut selected_versions);
-        for worker in &mut wanted {
-            if let Some(declaration) = declarations.iter().find(|item| item.key == worker.key) {
-                worker.fields = declaration.fields.clone();
-                worker
-                    .start_after
-                    .extend(declaration.start_after.iter().cloned());
-                worker.start_after.sort();
-                worker.start_after.dedup();
-            }
-        }
+        let resolved_graphs = declarations
+            .iter()
+            .filter(|worker| matches!(worker.source, crate::edit::Source::Package { .. }))
+            .map(|worker| {
+                (
+                    worker.key.clone(),
+                    graph_members_for_root(&plan.containers, &worker.key),
+                )
+            })
+            .collect();
         let operation = crate::operation::active(operation_id);
         if operation
             .as_ref()
@@ -785,7 +766,8 @@ impl Daemon {
         }
         Ok(AddPlan {
             snapshot,
-            wanted,
+            wanted: plan.containers,
+            aliases: plan.aliases,
             selected_versions,
             resolved_graphs,
         })
@@ -1648,7 +1630,7 @@ fn keep_declared_dependencies(
 /// root is different: silently omitting the exact worker the caller requested
 /// would make `compose::add` report success without changing the project, so
 /// reject it with migration guidance instead.
-fn expand_graph(
+pub(crate) fn expand_graph(
     asked: &crate::edit::NewContainer,
     reference: &str,
     graph: crate::registry::Graph,
@@ -1977,6 +1959,7 @@ containers:
                 name: "state".to_string(),
                 version: "0.22.8".to_string(),
                 kind: "binary".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };
@@ -1999,6 +1982,7 @@ containers:
                 name: "configuration".to_string(),
                 version: "0.23.0".to_string(),
                 kind: "engine".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };
@@ -2026,6 +2010,7 @@ containers:
                 name: "iii-engine-functions".to_string(),
                 version: "0.23.0".to_string(),
                 kind: "engine".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };
@@ -2050,16 +2035,19 @@ containers:
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "configuration".to_string(),
                     version: "0.23.0".to_string(),
                     kind: "engine".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -2083,16 +2071,19 @@ containers:
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "db".to_string(),
                     version: "3.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -2115,11 +2106,13 @@ containers:
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -2141,11 +2134,13 @@ containers:
                     name: "tailscale".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "console".to_string(),
                     version: "1.9.11".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![("tailscale".to_string(), "console".to_string())],
@@ -2177,16 +2172,19 @@ containers:
                     name: "tailscale".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "console".to_string(),
                     version: "1.9.11".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -2221,16 +2219,19 @@ containers:
                     name: "tailscale".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "console".to_string(),
                     version: "1.9.11".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -2255,6 +2256,7 @@ containers:
                 name: "console".to_string(),
                 version: "1.9.11".to_string(),
                 kind: "binary".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };

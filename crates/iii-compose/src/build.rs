@@ -6,9 +6,18 @@
 use std::{path::Path, time::Instant};
 
 #[cfg(test)]
+use std::collections::BTreeSet;
+
+#[cfg(test)]
 use futures::StreamExt;
 
-use crate::{ComposeFile, error::Result, registry::InstallStatus, report, state::StateStore};
+use crate::{
+    ComposeFile,
+    error::Result,
+    registry::{self, InstallStatus},
+    report,
+    state::StateStore,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildReport {
@@ -66,6 +75,9 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             return Err(error);
         }
     };
+    for (container, reference, canonical) in prepared.aliases() {
+        registry::warn_alias(container, reference, Some(canonical), None).await;
+    }
     prepared.write_if_changed()?;
 
     let mut downloaded = 0;
@@ -136,7 +148,7 @@ where
             let began = Instant::now();
             report::starting(&container, &format!("preparing {reference}@{version}"));
             let result = installer(request, cache).await;
-            (index, container, began.elapsed(), result)
+            (index, container, reference, began.elapsed(), result)
         }
     }))
     .buffer_unordered(crate::parallelism::max_parallel_workers());
@@ -144,7 +156,14 @@ where
     let mut downloaded = 0;
     let mut cached = 0;
     let mut failures = Vec::new();
-    while let Some((index, container, elapsed, result)) = work.next().await {
+    let mut warned = BTreeSet::new();
+    while let Some((index, container, reference, elapsed, result)) = work.next().await {
+        if let Ok(package) = &result
+            && let Some(alias_of) = &package.alias_of
+            && warned.insert((registry::split_reference(&reference), alias_of.clone()))
+        {
+            registry::warn_alias(&container, &reference, Some(alias_of), None).await;
+        }
         match result {
             Ok(package) => match package.status {
                 InstallStatus::Downloaded => {
@@ -194,6 +213,7 @@ mod tests {
     fn package(status: InstallStatus) -> InstalledPackage {
         InstalledPackage {
             name: "worker".to_string(),
+            alias_of: None,
             version: "1.0.0".to_string(),
             payload: Payload::Binary("/tmp/worker".into()),
             default_config: None,

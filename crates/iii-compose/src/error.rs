@@ -497,7 +497,7 @@ pub enum ComposeError {
     DaemonAlreadyServing { engine_url: String, detail: String },
 
     #[error(
-        "another managed compose invocation already owns namespace '{namespace}'. \
+        "another managed compose invocation already owns namespace '{namespace}' in this project. \
          Stop it, wait for it to finish, or choose a different --namespace"
     )]
     DaemonNamespaceTaken { namespace: String },

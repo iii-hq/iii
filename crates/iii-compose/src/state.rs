@@ -31,10 +31,10 @@ use crate::{
 
 pub const STATE_FILE: &str = "state.json";
 
-/// Directory name for one project's state, derived from its compose file.
+/// Directory name for relocated project state, derived from its compose file.
 ///
 /// Two halves for two jobs: the parent directory's name so an operator
-/// browsing `~/.iii/compose` recognises what they are looking at, and a hash of
+/// browsing `$III_COMPOSE_STATE_DIR` recognises what they are looking at, and a hash of
 /// the canonical path so two projects that happen to share a directory name
 /// stay apart. The file name itself is nearly always `worker-compose.yaml`, so
 /// it carries nothing.
@@ -102,8 +102,7 @@ impl ChildRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonState {
     /// Compose file this state belongs to, canonicalized. It is also what the
-    /// state directory is derived from, so the two can only disagree if the
-    /// derivation collided — see [`DaemonState::check_binding`].
+    /// state is bound to — see [`DaemonState::check_binding`].
     pub compose_path: PathBuf,
     pub namespace: String,
     #[serde(default)]
@@ -121,10 +120,8 @@ impl DaemonState {
 
     /// Refuses state recorded for a different compose file.
     ///
-    /// Not an operator error any more: the directory is derived from the path,
-    /// so reaching this means two paths produced one slug. Rare enough to be a
-    /// surprise and dangerous enough to refuse — adopting it would let one
-    /// project kill another's children.
+    /// Two compose files in the same directory must use different namespaces.
+    /// Adopting another file's state would let one project kill its children.
     pub fn check_binding(&self, compose_path: &Path) -> Result<()> {
         if self.compose_path == compose_path {
             return Ok(());
@@ -132,7 +129,7 @@ impl DaemonState {
         Err(ComposeError::InvalidState {
             path: compose_path.to_path_buf(),
             message: format!(
-                "it records {} instead. Two compose files resolved to one state directory",
+                "it records {} instead. Use a different namespace for each compose file in this directory",
                 self.compose_path.display()
             ),
         })
@@ -179,8 +176,8 @@ pub struct StateStore {
 }
 
 impl StateStore {
-    /// Everything compose keeps on this machine: `~/.iii/compose`, or
-    /// `$III_COMPOSE_STATE_DIR` when the operator relocates it.
+    /// Shared package storage: `~/.iii/compose`, or `$III_COMPOSE_STATE_DIR`.
+    /// Project state lives beside the compose file unless explicitly relocated.
     pub fn root() -> Result<PathBuf> {
         match std::env::var_os("III_COMPOSE_STATE_DIR") {
             Some(root) => Ok(PathBuf::from(root)),
@@ -198,19 +195,22 @@ impl StateStore {
     }
 
     /// Where one project's state lives:
-    /// `~/.iii/compose/<daemon-namespace>/<project-slug>`, or under
-    /// `$III_COMPOSE_STATE_DIR` when the operator relocates it (a read-only
-    /// home, a tmpfs, a test).
+    /// `<compose-dir>/.iii/compose/<daemon-namespace>`, or
+    /// `$III_COMPOSE_STATE_DIR/<project-slug>/<daemon-namespace>` when relocated.
     ///
-    /// The slug comes from the compose file, not from a name anyone chose:
-    /// there is nothing else that identifies a project, and a chosen name is a
-    /// second identity that can be pointed at the wrong file.
+    /// Callers pass the canonical compose path so `--file` and symlinks use
+    /// the same directory. A shared external root needs a slug to keep projects
+    /// apart, while the default is already scoped to the project directory.
     pub fn for_project(daemon_namespace: &str, compose_path: &Path) -> Result<Self> {
-        Ok(Self::at(
-            Self::root()?
-                .join(daemon_namespace)
-                .join(project_slug(compose_path)),
-        ))
+        let project_dir = match std::env::var_os("III_COMPOSE_STATE_DIR") {
+            Some(root) => PathBuf::from(root).join(project_slug(compose_path)),
+            None => compose_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(".iii")
+                .join("compose"),
+        };
+        Ok(Self::at(project_dir.join(daemon_namespace)))
     }
 
     pub fn at(dir: impl Into<PathBuf>) -> Self {

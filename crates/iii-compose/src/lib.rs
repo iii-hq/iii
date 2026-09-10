@@ -24,6 +24,7 @@ pub mod config;
 pub mod configuration;
 pub mod daemon;
 pub mod dag;
+mod dependencies;
 pub mod edit;
 pub mod engine;
 pub mod error;
@@ -423,7 +424,8 @@ async fn serve(
             let Some(spec) = owner.engine.as_ref() else {
                 unreachable!("managed mode is selected only from an engine section");
             };
-            let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
+            let engine =
+                managed_engine::ManagedEngine::start(spec, &daemon_namespace, &owner.path).await?;
             if let Some(project) = &start_project {
                 project.progress.engine_waiting();
             }

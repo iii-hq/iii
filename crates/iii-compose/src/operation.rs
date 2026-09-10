@@ -9,7 +9,7 @@
 //! only; normal progress delivery never polls.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Instant,
 };
@@ -196,6 +196,7 @@ struct State {
     completed: usize,
     sequence: u64,
     last_event: Option<ProgressEvent>,
+    warnings: BTreeSet<String>,
 }
 
 pub struct Operation {
@@ -220,6 +221,7 @@ impl Operation {
                 completed: 0,
                 sequence: 0,
                 last_event: None,
+                warnings: BTreeSet::new(),
             }),
             cancel,
             emitter,
@@ -282,6 +284,14 @@ impl Operation {
     pub async fn emit(&self, container: Option<&str>, phase: &str, detail: impl Into<String>) {
         self.emit_progress(container, phase, detail, None, None, false)
             .await;
+    }
+
+    pub(crate) async fn warn_once(&self, key: String, container: &str, detail: String) {
+        if !self.state.write().await.warnings.insert(key) {
+            return;
+        }
+        crate::report::daemon_line(&format!("warning: {detail}"), true);
+        self.emit(Some(container), "warning", detail).await;
     }
     pub async fn plan(&self, total: usize) {
         self.state.write().await.total = total;
@@ -401,6 +411,34 @@ impl OperationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn alias_warnings_are_emitted_once_per_operation_even_with_concurrent_installs() {
+        let emitter = ProgressEmitter {
+            client: IIIClient::new("ws://127.0.0.1:1/ws"),
+            bindings: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        let operation = Operation::new("compose:alias-warning".into(), 1, emitter.clone());
+        tokio::join!(
+            crate::registry::warn_alias("shell", "console", Some("shell"), Some(&operation)),
+            crate::registry::warn_alias(
+                "shell",
+                "api.workers.iii.dev/console",
+                Some("shell"),
+                Some(&operation)
+            ),
+        );
+        let snapshot = operation.snapshot().await;
+        assert_eq!(snapshot.last_sequence, 1);
+        let event = snapshot.last_event.unwrap();
+        assert_eq!(event.phase, "warning");
+        assert_eq!(event.container.as_deref(), Some("shell"));
+        assert!(event.detail.contains("'console' is an alias of 'shell'"));
+        assert!(!event.terminal);
+        let next = Operation::new("compose:next-alias-warning".into(), 1, emitter);
+        crate::registry::warn_alias("shell", "console", Some("shell"), Some(&next)).await;
+        assert_eq!(next.snapshot().await.last_sequence, 1);
+    }
 
     #[test]
     fn lifecycle_suffixes_resolve_to_the_root_operation() {

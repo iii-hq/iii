@@ -88,9 +88,8 @@ impl Project {
 
         let recovered = store.load()?;
         if let Some(state) = &recovered {
-            // The directory is derived from the path, so this only fires on a
-            // slug collision — and adopting another project's children is
-            // exactly what it must not do.
+            // Two compose files in one directory must not adopt each other's
+            // children when they use the same namespace.
             state.check_binding(&file.path)?;
         }
         let mut state =
@@ -373,10 +372,8 @@ impl Project {
     /// Everything this project owns on disk: its durable record, the
     /// configuration it was handed, and each container's output.
     ///
-    /// Reported by `compose::status` because the directory is derived from the
-    /// compose file rather than named by anyone — so asking is the only way to
-    /// know, and an operator looking for a container's log should not have to
-    /// reproduce a hash to find it.
+    /// Reported by `compose::status`, including when the operator relocates
+    /// state with `III_COMPOSE_STATE_DIR`.
     pub fn state_dir(&self) -> &Path {
         self.store.dir()
     }

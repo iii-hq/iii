@@ -96,6 +96,25 @@ impl PreparedLock {
         &self.install_statuses
     }
 
+    /// Registry aliases present in this resolved lock.
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.lock
+            .containers
+            .iter()
+            .filter_map(|(container, entry)| {
+                entry.resolved.alias_of.as_deref().map(|canonical| {
+                    (
+                        container.as_str(),
+                        entry
+                            .worker
+                            .strip_prefix("package://")
+                            .unwrap_or(&entry.worker),
+                        canonical,
+                    )
+                })
+            })
+    }
+
     /// Records the complete package graph selected for one explicit root.
     pub fn replace_graph(&mut self, root: &str, nodes: BTreeSet<String>) {
         if self.lock.graphs.get(root) == Some(&nodes) {
@@ -416,6 +435,7 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
             )));
         };
         let expected_name = reference.rsplit('/').next().unwrap_or(reference);
+        let (expected_registry, _) = crate::registry::split_reference(reference);
         if entry.requested.trim().is_empty() {
             return Err(invalid(format!(
                 "container '{container}' has an empty requested version"
@@ -427,9 +447,25 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
                 entry.resolved.name
             )));
         }
+        if entry.resolved.registry != expected_registry {
+            return Err(invalid(format!(
+                "container '{container}' resolved from '{}', expected '{expected_registry}'",
+                entry.resolved.registry
+            )));
+        }
         if !crate::registry::is_path_safe(&entry.resolved.name) {
             return Err(invalid(format!(
                 "container '{container}' has an unsafe resolved package name"
+            )));
+        }
+        if entry
+            .resolved
+            .alias_of
+            .as_deref()
+            .is_some_and(|alias| !crate::registry::is_path_safe(alias))
+        {
+            return Err(invalid(format!(
+                "container '{container}' has an unsafe resolved canonical package name"
             )));
         }
         if !crate::registry::is_path_safe(&entry.resolved.version) {
@@ -525,6 +561,8 @@ mod tests {
                     requested: "next".to_string(),
                     resolved: ResolvedPackage {
                         name: "state".to_string(),
+                        alias_of: None,
+                        registry: crate::registry::DEFAULT_REGISTRY.to_string(),
                         version: "0.22.8".to_string(),
                         kind: "binary".to_string(),
                         artifacts: BTreeMap::from([(
