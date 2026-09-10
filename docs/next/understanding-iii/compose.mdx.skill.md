@@ -194,7 +194,7 @@ failing on its own.
 
 That moves what `status: ok` means. It used to say every planned container is up; it now says every
 required one is, so the return names the rest in `not_required_failures` rather than leaving a
-caller to compare the plan against a later status call.
+caller to compare the plan against a later status call. A successful result has no top-level error.
 
 `required` controls the result after Compose finishes trying. A second field controls whether
 Compose retries before it accepts that result.
@@ -213,8 +213,8 @@ containers:
 
 `no` is the default. A failed first start settles immediately, and an exit after `Ready` takes the
 container's transitive dependents down. `on-failure` retries a failed start or a non-zero run-time
-exit. `always` also retries a clean run-time exit, which is the answer for a worker that is only
-correct while it is running.
+exit. A clean run-time exit with `on-failure` is recorded as `stopped`. `always` retries a clean
+run-time exit, which is the answer for a worker that is only correct while it is running.
 
 A supervised restart is the same act as `compose::restart`: one container stops and starts, and the
 graph around it is left alone. So its dependents stay up while it is gone. This is the same reasoning
@@ -232,10 +232,10 @@ When the budget runs out the supervisor does what it would have done with no pol
 the container, takes its dependents down, and says which in the log. That is the shape worth
 keeping: `restart` changes how many times compose tries, and never what happens when trying is over.
 
-`compose::status` reports a ready container waiting on a run-time replacement as `restarting`. It is
+`compose::status` reports a container waiting on a run-time replacement as `restarting`. It is
 not `ready`, because nothing is running under that name, and not `failed`, because the supervisor
-has not given up on it. During `up`, the active progress row shows the retry attempt, its wait, and
-the successful recovery.
+has not given up on it. It has no PID until the next process starts. During `up`, the active progress
+row shows the retry attempt, its wait, and the successful recovery.
 
 ## Related
 

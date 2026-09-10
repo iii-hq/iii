@@ -21,6 +21,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
@@ -319,32 +320,39 @@ impl Project {
     /// observes the gaps between operations — a deliberate stop removes the
     /// child from the map before signalling it, and is never seen here.
     pub(crate) async fn reap_unexpected_exits(&self) {
-        let dead: Vec<(String, i32)> = {
+        let dead: Vec<(String, ExitStatus)> = {
             let inner = self.inner.lock().await;
             inner
                 .children
                 .iter()
                 .filter_map(|(key, child)| match child.poll() {
-                    crate::process::Outcome::Exited(status) => {
-                        Some((key.clone(), status.code().unwrap_or(-1)))
-                    }
+                    crate::process::Outcome::Exited(status) => Some((key.clone(), status)),
                     crate::process::Outcome::Running => None,
                 })
                 .collect()
         };
 
-        for (key, code) in dead {
-            let reason = format!("exited unexpectedly with {code}");
+        for (key, status) in dead {
+            let clean_exit = status.success();
+            let reason = if clean_exit {
+                format!("exited successfully ({status})")
+            } else {
+                format!("exited unexpectedly ({status})")
+            };
             daemon_line(
                 &self.project_namespace,
                 &format!("{key} {reason}"),
-                Tone::Warn,
+                if clean_exit { Tone::Plain } else { Tone::Warn },
             );
 
             // A container that asked to be restarted gets the first attempt
             // immediately: its dependents stay up, and the exit only cascades
             // once the budget below is spent.
-            if self.restart_config(&key).await.wants_restart(code) {
+            if self
+                .restart_config(&key)
+                .await
+                .wants_restart(status.code().unwrap_or(-1))
+            {
                 if let Some(lease) = self.claim_restart(&key, RestartCause::UnexpectedExit).await {
                     self.run_restart_attempt(&key, lease, RestartCause::UnexpectedExit)
                         .await;
@@ -352,7 +360,11 @@ impl Project {
                 continue;
             }
 
-            self.cascade_failure(&key, reason).await;
+            if clean_exit {
+                self.cascade_stop(&key).await;
+            } else {
+                self.cascade_failure(&key, reason).await;
+            }
         }
     }
 
@@ -548,6 +560,20 @@ impl Project {
     /// compose did for every unexpected exit before there was a policy, and
     /// what it still does once one has run out of attempts.
     async fn cascade_failure(&self, key: &str, reason: String) {
+        self.stop_with_dependents(key).await;
+
+        // After the cascade, so `down` marking everything Stopped does not
+        // erase why this one went.
+        self.mark(key, ChildStatus::Failed, Some(reason)).await;
+    }
+
+    /// Records a successful exit that its policy does not restart as stopped.
+    async fn cascade_stop(&self, key: &str) {
+        self.stop_with_dependents(key).await;
+        self.mark(key, ChildStatus::Stopped, None).await;
+    }
+
+    async fn stop_with_dependents(&self, key: &str) {
         self.inner.lock().await.restarts.remove(key);
 
         // Cascade through the same path a targeted `down` takes: it stops
@@ -565,10 +591,6 @@ impl Project {
             );
         }
         self.down(Some(key), format!("supervisor:{key}")).await;
-
-        // After the cascade, so `down` marking everything Stopped does not
-        // erase why this one went.
-        self.mark(key, ChildStatus::Failed, Some(reason)).await;
     }
 
     /// This container's declared answer to exiting after it was ready. A
@@ -602,9 +624,7 @@ impl Project {
         let mut inner = self.inner.lock().await;
         if let Some(entry) = inner.state.containers.get_mut(key) {
             entry.status = status;
-            if last_error.is_some() {
-                entry.last_error = last_error;
-            }
+            entry.last_error = last_error;
         }
         let snapshot = inner.state.clone();
         drop(inner);
@@ -1121,14 +1141,15 @@ impl Project {
                         matches!(child.poll(), crate::process::Outcome::Running)
                     })
                 });
+                let state = match (running, record.map(|record| record.status)) {
+                    (true, _) => ChildStatus::Ready,
+                    (false, Some(status)) => status,
+                    (false, None) => ChildStatus::Stopped,
+                };
                 ContainerStatus {
                     container: key.clone(),
-                    state: match (running, record.map(|record| record.status)) {
-                        (true, _) => ChildStatus::Ready,
-                        (false, Some(status)) => status,
-                        (false, None) => ChildStatus::Stopped,
-                    },
-                    pid: record.map(|record| record.pid),
+                    state,
+                    pid: record.filter(|_| running).map(|record| record.pid),
                     owned: inner
                         .as_ref()
                         .is_some_and(|inner| inner.children.contains_key(key)),

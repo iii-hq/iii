@@ -191,7 +191,8 @@ A worker is not required by default. If it fails to start, its failure is report
 worker, nothing is rolled back, and the operation still returns `ok`. Workers that name it in
 `start_after` start anyway, because `start_after` is a start order and not a claim that the dependent
 cannot run without it. The response lists every worker that failed this way in
-`not_required_failures`, and `error` carries the first reason.
+`not_required_failures`. A response with `status: ok` has no top-level `error`; that field is present
+only when the operation returns `status: failed`.
 
 Set `required: true` when a worker must fail the operation:
 
@@ -454,18 +455,20 @@ the next time the worker is restarted.
 
 ### Checking status
 
-`compose::status` reports each declared worker with its `state`, its `pid`, an `owned` flag, its
-rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a worker this daemon
-has knowledge of but does not manage (ie. was not started by the compose daemon).
+`compose::status` reports each declared worker with its `state`, the active process `pid` when one
+exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+`false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
+compose daemon).
 
 #### Worker states
 
-| State      | Meaning                                                    |
-| ---------- | ---------------------------------------------------------- |
-| `starting` | Spawned. The engine has not registered it yet.             |
-| `ready`    | Registered in the engine under `(namespace, container)`.   |
-| `failed`   | Exited without being asked to, or one of its hooks failed. |
-| `stopped`  | Stopped by this daemon.                                    |
+| State        | Meaning                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `starting`   | Spawned. The engine has not registered it yet.                                                |
+| `ready`      | Registered in the engine under `(namespace, container)`.                                      |
+| `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
+| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
+| `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
 
 ### Viewing logs
 
@@ -809,10 +812,12 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
 | A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
-After a worker is ready, the daemon checks it every 250 ms. A worker that exits takes its transitive
-dependents down with it and is recorded as `failed`. Automatic restarts are not performed. When the
-engine connection drops and comes back, every running worker gets its `startup_timeout` to register
-again.
+After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
+happens after it exits. An eligible retry keeps its dependents running and reports `restarting`
+between attempts. A successful exit without an eligible retry is recorded as `stopped`. An
+unsuccessful exit without an eligible retry, or one that exhausts its retries, is recorded as
+`failed`. When no retry remains, its transitive dependents stop. When the engine connection drops
+and comes back, every running worker gets its `startup_timeout` to register again.
 
 Dependency shutdown is dependent upon when a shutdown happens:
 

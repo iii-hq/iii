@@ -533,11 +533,22 @@ pub fn starting(key: &str, what: &str) {
     let retry = {
         let state = console().lock().unwrap_or_else(|p| p.into_inner());
         state.rows.iter().find_map(|row| match &row.state {
-            RowState::Retrying { attempt, total, .. } if row.key == key => Some((*attempt, *total)),
+            RowState::Retrying {
+                attempt,
+                total,
+                phase,
+            } if row.key == key => Some((
+                *attempt,
+                *total,
+                matches!(phase, RetryPhase::Starting(current) if current == what),
+            )),
             _ => None,
         })
     };
-    if let Some((attempt, total)) = retry {
+    if let Some((_, _, true)) = retry {
+        return;
+    }
+    if let Some((attempt, total, false)) = retry {
         show_retry(key, attempt, total, RetryPhase::Starting(what.to_string()));
         return;
     }
@@ -739,11 +750,16 @@ pub fn rolled_back(key: &str) {
 /// Containers that failed with an effective `required` value of `false`.
 /// Printed before the closing line so a partial project does not read as a
 /// clean start.
-pub fn not_required_failed(count: usize) {
-    let body = if count == 1 {
-        "1 container failed and is not required: the project is up without it".to_string()
+pub fn not_required_failed(containers: &[String]) {
+    let names = containers
+        .iter()
+        .map(|container| format!("'{container}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = if containers.len() == 1 {
+        format!("container {names} failed and is not required: the project is up without it")
     } else {
-        format!("{count} containers failed and are not required: the project is up without them")
+        format!("containers {names} failed and are not required: the project is up without them")
     };
     line(&body.yellow().to_string());
 }
@@ -967,9 +983,18 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
         let stderr = String::from_utf8(output.stderr).unwrap();
         let waiting = stderr.find("api Retrying 2/5, waiting 1.0s").unwrap();
+        let starting = stderr.find("api Retrying 2/5, starting").unwrap();
         let configuring = stderr.find("api Retrying 2/5, configuring").unwrap();
         let recovered = stderr.find("api Recovered on attempt 2/5 (1.8s)").unwrap();
-        assert!(waiting < configuring && configuring < recovered, "{stderr}");
+        assert!(
+            waiting < starting && starting < configuring && configuring < recovered,
+            "{stderr}"
+        );
+        assert_eq!(
+            stderr.matches("api Retrying 2/5, starting").count(),
+            1,
+            "{stderr}"
+        );
         assert!(
             !stderr.contains('\x1b') && !FRAMES.iter().any(|frame| stderr.contains(frame)),
             "{stderr}"
@@ -980,9 +1005,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "subprocess fixture for the retry progress renderer"]
     async fn retry_panel_fixture() {
+        plan(&[("api".to_string(), 0)]);
         retry_waiting("api", 2, 5, Duration::from_secs(1));
         tokio::time::sleep(Duration::from_millis(100)).await;
         retry_starting("api", 2, 5);
+        starting("api", "starting");
         starting("api", "configuring");
         tokio::time::sleep(Duration::from_millis(100)).await;
         retry_recovered("api", 2, 5, Duration::from_millis(1800));

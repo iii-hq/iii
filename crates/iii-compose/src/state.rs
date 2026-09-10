@@ -70,9 +70,11 @@ pub enum ChildStatus {
     /// supervisor has not given up on it, which is what separates it from
     /// `Failed`.
     Restarting,
-    /// Exited unexpectedly, or a hook failed.
+    /// Exited unsuccessfully with no eligible retry, exhausted its retries, or
+    /// a hook failed.
     Failed,
-    /// Stopped on purpose by this daemon.
+    /// Stopped by the daemon, or exited successfully without an eligible
+    /// restart.
     Stopped,
 }
 

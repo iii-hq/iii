@@ -1236,9 +1236,9 @@ containers:
         json!(["mailer"]),
         "the return has to name what is down under an ok: {up}"
     );
-    assert_eq!(
-        up["error"]["code"], "STARTUP_TIMEOUT",
-        "the reason for the contained failure is still reported: {up}"
+    assert!(
+        up.get("error").is_none(),
+        "a successful operation must not carry a top-level error: {up}"
     );
 
     // Rollback is what `required: true` buys, so nothing may have been undone.
@@ -1431,6 +1431,93 @@ containers:
     daemon.shutdown().await;
 }
 
+/// `on-failure` does not restart a successful run-time exit. The worker is
+/// stopped, has no live PID, and does not retain an error from an earlier
+/// state.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clean_exit_with_on_failure_stops_without_retrying() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let attempts = tmp.path().join("workers/api/attempts");
+    let done = tmp.path().join("workers/api/done");
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: clean-exit
+startup_timeout: 5s
+stop_timeout: 100ms
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+    scripts:
+      run: "echo up >> attempts; while [ ! -f done ]; do sleep 0.05; done; exit 0"
+"#,
+        &["api"],
+    );
+
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        wait_for_start_markers(&[attempts.as_path()]).await;
+        let api = register_test_worker(port, "clean-exit", "api");
+        wait_for_worker_state(&daemon, "clean-exit", "api", true).await;
+        api
+    };
+    let (up, api) = tokio::join!(up, ready);
+    assert_eq!(
+        up.expect("compose::up should answer")["status"],
+        "ok",
+        "the project should start before the clean exit"
+    );
+
+    std::fs::write(&done, "").expect("ask api to exit cleanly");
+    api.shutdown_async().await;
+    wait_for_container_state(port, &file, "api", "stopped").await;
+
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status after a clean exit");
+    let api = status["containers"]
+        .as_array()
+        .expect("containers")
+        .iter()
+        .find(|container| container["container"] == "api")
+        .unwrap_or_else(|| panic!("missing api: {status}"));
+    assert_eq!(
+        api["state"], "stopped",
+        "clean exit was reported as failed: {status}"
+    );
+    assert!(
+        api.get("pid").is_none(),
+        "stopped worker retained a PID: {status}"
+    );
+    assert!(
+        api.get("last_error").is_none(),
+        "clean exit retained an error: {status}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&attempts)
+            .expect("read attempts")
+            .lines()
+            .count(),
+        1,
+        "on-failure restarted a successful exit"
+    );
+
+    daemon.shutdown().await;
+}
+
 /// `required` controls startup only, so a non-required container still spends
 /// its restart budget after it had become ready. Once the budget is spent the
 /// supervisor does what it would have done with no policy at all: fails the
@@ -1493,6 +1580,28 @@ containers:
 
     std::fs::write(&die, "").expect("ask api to exit");
     api.shutdown_async().await;
+
+    // The old process has exited while the supervisor waits for its next
+    // attempt, so status must not expose that process's PID.
+    wait_for_container_state(port, &file, "api", "restarting").await;
+    let restarting = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("status during retry backoff");
+    let restarting_api = restarting["containers"]
+        .as_array()
+        .expect("containers")
+        .iter()
+        .find(|container| container["container"] == "api")
+        .unwrap_or_else(|| panic!("missing api: {restarting}"));
+    assert_eq!(restarting_api["state"], "restarting", "{restarting}");
+    assert!(
+        restarting_api.get("pid").is_none(),
+        "a restarting worker exposed its dead PID: {restarting}"
+    );
 
     // Every attempt is spent, and only then does the failure cascade.
     wait_for_container_state(port, &file, "api", "failed").await;
@@ -1608,9 +1717,9 @@ containers:
         json!(["mailer"]),
         "the failed restart must name the optional container: {restart}"
     );
-    assert_eq!(
-        restart["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
-        "the failed restart must retain its error: {restart}"
+    assert!(
+        restart.get("error").is_none(),
+        "a successful restart must not carry a top-level error: {restart}"
     );
 
     daemon.shutdown().await;

@@ -1466,7 +1466,7 @@ impl MutationOutcome {
         let error = if status == OpStatus::Failed {
             primary_error.or(first_container_error)
         } else {
-            first_container_error
+            None
         };
         // A succeeding operation with a failed container is the non-required
         // case and nothing else: a required failure is what makes the status
@@ -2567,8 +2567,8 @@ mod mutation_outcome_tests {
         );
 
         assert_eq!(
-            outcome.not_required_failures,
-            Some(vec!["mailer".to_string()])
+            (outcome.error, outcome.not_required_failures),
+            (None, Some(vec!["mailer".to_string()]))
         );
     }
 

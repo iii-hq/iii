@@ -191,9 +191,8 @@ async fn up_inner(
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
     // Containers that failed and said their failure does not fail the
-    // operation. Counted so the closing line reports a partial project as
-    // partial rather than reading like a clean start.
-    let mut not_required_failures = 0usize;
+    // operation. Named so the closing line reports the partial project.
+    let mut not_required_failures = Vec::new();
     let max_parallel_workers = crate::parallelism::max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
@@ -321,7 +320,7 @@ async fn up_inner(
                         if let Some(operation) = crate::operation::active(&operation_id) {
                             operation.completed_one().await;
                         }
-                        not_required_failures += 1;
+                        not_required_failures.push(key.clone());
                     }
                 }
                 StartAttempt::Interrupted => interrupted = true,
@@ -361,8 +360,8 @@ async fn up_inner(
 
     report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
-    if not_required_failures > 0 {
-        report::not_required_failed(not_required_failures);
+    if !not_required_failures.is_empty() {
+        report::not_required_failed(&not_required_failures);
     }
     report::summary_ok("up", changed, results.len(), began.elapsed());
     Some(OpResult {
@@ -533,7 +532,7 @@ async fn restart_one_inner(
             if required {
                 report::summary_failed("restart", error.code(), began.elapsed());
             } else {
-                report::not_required_failed(1);
+                report::not_required_failed(&[key.to_string()]);
                 report::summary_ok("restart", 0, 1, began.elapsed());
             }
             let error = OpError::from(&error);
