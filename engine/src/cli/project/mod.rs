@@ -330,6 +330,8 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         return code;
     }
 
+    seed_console_layout(&dir);
+
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -373,6 +375,53 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
 
 /// Set while `iii compose --up` runs as our child, so the Ctrl+C handler above
 /// leaves the interrupt to compose.
+/// The console keeps its pane layout in the `console` configuration entry,
+/// which the engine's file adapter stores at `<project>/config/<id>.yaml`.
+/// Writing it before the first boot is what opens the tour beside the chat:
+/// with no stored value the console seeds its own chat+traces default
+/// instead (`register_console_config` only sends `initial_value` when the
+/// entry is absent), and re-registration never overwrites a stored value —
+/// so this survives restarts, and the operator's own tab edits write back to
+/// the same file.
+///
+/// `name` and `description` are not optional on disk: an entry missing them
+/// fails to parse and the adapter skips the file.
+const CONSOLE_LAYOUT_SEED: &str = "\
+id: console
+name: Console
+description: Console server and UI settings.
+metadata:
+  ui_form: console
+value:
+  workspace:
+    tabs:
+      - id: tab-home
+        columns: 2
+        screens:
+          - chat
+          - \"ext:onboarding\"
+";
+
+/// Open the new project's console on chat beside the tour.
+///
+/// `http_port` is deliberately absent: the console backfills the port it
+/// actually bound, which matters because it moves to the next free port when
+/// the configured one is taken.
+///
+/// Best effort. A project that cannot take the seed still starts; its console
+/// just opens on the stock layout.
+fn seed_console_layout(dir: &Path) {
+    let config_dir = dir.join("config");
+    let path = config_dir.join("console.yaml");
+    if path.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&config_dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(&path, CONSOLE_LAYOUT_SEED);
+}
+
 static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 
 /// The console worker's configuration entry, and its own default port for
@@ -1020,6 +1069,52 @@ mod tests {
         let count = vars.len();
         vars.dedup();
         assert_eq!(vars.len(), count);
+    }
+
+    /// The seed has to survive the round trip the engine actually does: the
+    /// configuration file adapter parses each `config/*.yaml` into a
+    /// `ConfigurationEntry` and SKIPS any file it cannot parse, which would
+    /// leave the tour project on the stock layout with only a log line.
+    #[test]
+    fn the_console_seed_parses_as_a_configuration_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_console_layout(tmp.path());
+
+        let raw = std::fs::read(tmp.path().join("config").join("console.yaml")).unwrap();
+        let entry: iii::workers::configuration::structs::ConfigurationEntry =
+            serde_yaml::from_slice(&raw).unwrap();
+
+        assert_eq!(entry.id, CONSOLE_CONFIG);
+        assert!(!entry.name.is_empty());
+        let tabs = entry.value["workspace"]["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0]["columns"], 2);
+        assert_eq!(
+            tabs[0]["screens"].as_array().unwrap(),
+            &vec![
+                serde_json::json!("chat"),
+                serde_json::json!("ext:onboarding")
+            ]
+        );
+        // No port: the console backfills the one it actually bound.
+        assert!(entry.value.get("http_port").is_none());
+    }
+
+    /// A project that already carries a console entry keeps it — the seed is
+    /// for a fresh scaffold, not a re-run over someone's saved layout.
+    #[test]
+    fn the_console_seed_never_overwrites_an_existing_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config").join("console.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "id: console\nname: mine\ndescription: mine\n").unwrap();
+
+        seed_console_layout(tmp.path());
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "id: console\nname: mine\ndescription: mine\n"
+        );
     }
 
     #[test]
