@@ -253,7 +253,8 @@ pub fn validate_manifest_keys(
         "unknown key(s) in {}: [{}]. Supported fields are: name, description, \
          runtime.base_image, scripts.(setup|install|start), env, dependencies, \
          resources.(cpus|memory), plus the registry publish metadata keys \
-         (iii, deploy, manifest, tags) which the engine accepts and ignores.",
+         (iii, deploy, manifest, tags, license) which the engine accepts and \
+         ignores.",
         manifest_path.display(),
         unknown.join(", "),
     ))
