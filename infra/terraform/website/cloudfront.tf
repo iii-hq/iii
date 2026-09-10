@@ -230,6 +230,12 @@ resource "aws_cloudfront_distribution" "site" {
 
     cache_policy_id          = local.cache_policy_disabled_id
     origin_request_policy_id = local.origin_request_all_viewer_id
+
+    # The function preserves /.well-known/ requests and canonicalizes www.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.redirects.arn
+    }
   }
 
   viewer_certificate {
