@@ -579,6 +579,15 @@ pub fn lock_changed(path: &std::path::Path, created: bool) {
     ));
 }
 
+pub fn lock_removed(path: &std::path::Path) {
+    line(&format!(
+        "{} {} {}",
+        OK.green(),
+        path.display().to_string().bold(),
+        "removed".green()
+    ));
+}
+
 pub fn stopped(key: &str) {
     line(&format!(
         "{} {} {}",

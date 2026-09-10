@@ -41,6 +41,20 @@ struct ComposeLock {
     graphs: BTreeMap<String, BTreeSet<String>>,
 }
 
+impl ComposeLock {
+    fn empty() -> Self {
+        Self {
+            version: LOCKFILE_VERSION,
+            containers: BTreeMap::new(),
+            graphs: BTreeMap::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.containers.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockedContainer {
@@ -61,10 +75,20 @@ pub struct PreparedLock {
 }
 
 impl PreparedLock {
-    /// Writes the lock atomically when its serialized state changed.
+    /// Persists a changed lock, or removes it when no packages remain.
     pub fn write_if_changed(&self) -> Result<()> {
         if !self.changed {
             return Ok(());
+        }
+        if self.lock.is_empty() {
+            return match std::fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(source) => Err(ComposeError::Io {
+                    path: self.path.clone(),
+                    source,
+                }),
+            };
         }
         let text =
             serde_yaml::to_string(&self.lock).map_err(|error| ComposeError::InvalidLock {
@@ -98,6 +122,10 @@ impl PreparedLock {
 
     pub(crate) fn existed(&self) -> bool {
         self.existed
+    }
+
+    pub(crate) fn removes_file(&self) -> bool {
+        self.changed && self.lock.is_empty()
     }
 
     /// Cache result for each package acquired while preparing this lock.
@@ -216,7 +244,7 @@ pub async fn prepare_with_versions(
 /// and never changes the lock. A missing cache entry is still downloaded from
 /// the immutable URL and digest already recorded in the lock.
 pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Result<PreparedLock> {
-    let lock = frozen_lock(compose)?;
+    let (lock, existed) = frozen_lock(compose)?;
     let path = lock_path(&compose.path);
     let declarations = package_declarations(compose);
 
@@ -230,7 +258,7 @@ pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Res
     let mut prepared = PreparedLock {
         path,
         lock,
-        existed: true,
+        existed,
         changed: false,
         package_changes: BTreeSet::new(),
         install_statuses: BTreeMap::new(),
@@ -244,11 +272,15 @@ pub(crate) fn preflight_frozen(compose: &ComposeFile) -> Result<()> {
     frozen_lock(compose).map(|_| ())
 }
 
-fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
+fn frozen_lock(compose: &ComposeFile) -> Result<(ComposeLock, bool)> {
     let path = lock_path(&compose.path);
-    let lock =
-        load(&path)?.ok_or_else(|| ComposeError::FrozenLockMissing { path: path.clone() })?;
     let declarations = package_declarations(compose);
+    let Some(lock) = load(&path)? else {
+        if declarations.is_empty() {
+            return Ok((ComposeLock::empty(), false));
+        }
+        return Err(ComposeError::FrozenLockMissing { path });
+    };
 
     for (key, reference, requested) in &declarations {
         let worker = format!("package://{reference}");
@@ -279,7 +311,7 @@ fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
         });
     }
 
-    Ok(lock)
+    Ok((lock, true))
 }
 
 /// Returns package graph ownership recorded beside one compose file.
@@ -373,11 +405,16 @@ async fn prepare_metadata_with_versions(
         containers,
         graphs,
     };
-    let changed = previous.as_ref() != Some(&lock);
+    let existed = previous.is_some();
+    let changed = if lock.is_empty() {
+        existed
+    } else {
+        previous.as_ref() != Some(&lock)
+    };
     Ok(PreparedLock {
         path,
         lock,
-        existed: previous.is_some(),
+        existed,
         changed,
         package_changes,
         install_statuses: BTreeMap::new(),
@@ -685,7 +722,7 @@ mod tests {
         let compose_path = dir.path().join("worker-compose.yaml");
         std::fs::write(
             &compose_path,
-            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+            "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n",
         )
         .unwrap();
         let mut compose = ComposeFile::load(&compose_path).unwrap();
@@ -697,6 +734,66 @@ mod tests {
 
         assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
         assert!(!lock_path(&compose_path).exists());
+    }
+
+    #[tokio::test]
+    async fn path_only_prepare_does_not_create_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+        )
+        .unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        let prepared = prepare(&mut compose, &dir.path().join("cache"), &BTreeSet::new())
+            .await
+            .unwrap();
+        prepared.write_if_changed().unwrap();
+
+        assert!(!lock_path(&compose_path).exists());
+    }
+
+    #[tokio::test]
+    async fn path_only_frozen_prepare_does_not_require_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+        )
+        .unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        let prepared = prepare_frozen(&mut compose, &dir.path().join("cache"))
+            .await
+            .unwrap();
+        prepared.write_if_changed().unwrap();
+
+        assert!(!lock_path(&compose_path).exists());
+    }
+
+    #[tokio::test]
+    async fn path_only_prepare_removes_an_existing_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_path,
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+        )
+        .unwrap();
+        let lock_path = lock_path(&compose_path);
+        write_atomically(&lock_path, &serde_yaml::to_string(&lock()).unwrap()).unwrap();
+        let mut compose = ComposeFile::load(&compose_path).unwrap();
+
+        let prepared = prepare(&mut compose, &dir.path().join("cache"), &BTreeSet::new())
+            .await
+            .unwrap();
+        assert!(prepared.removes_file());
+        prepared.write_if_changed().unwrap();
+
+        assert!(!lock_path.exists());
     }
 
     #[tokio::test]

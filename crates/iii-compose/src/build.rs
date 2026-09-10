@@ -79,7 +79,9 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
     prepared.write_if_changed()?;
-    if prepared.changed() {
+    if prepared.removes_file() {
+        report::lock_removed(prepared.path());
+    } else if prepared.changed() {
         report::lock_changed(prepared.path(), !prepared.existed());
     }
 

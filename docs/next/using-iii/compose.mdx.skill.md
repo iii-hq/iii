@@ -31,7 +31,7 @@ iii compose [OPTIONS]
 | `--engine <URL>`       | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL                    |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up`                 | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one                                          |
-| `--frozen`             | With `--up`, require the compose file and existing lock to match and skip package resolution                                                              |
+| `--frozen`             | With `--up`, require registry package declarations to match an existing lock and skip package resolution                                                   |
 | `-f, --file <PATH>`    | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file            |
 
 `Ctrl^C`, `SIGINT` and `SIGTERM` all gracefully stop the daemon, every worker run by the daemon, and
@@ -177,7 +177,7 @@ ready stay as they are.
 | ----------- | -------------------------------------------------------------------------------------------- |
 | `file`      | The project to start.                                                                        |
 | `container` | Starts that worker and the workers it depends on, and nothing else.                          |
-| `frozen`    | Requires a current `worker-compose.lock` and does not resolve package selectors when `true`. |
+| `frozen`    | Requires registry package declarations to match an existing lock and does not resolve package selectors when `true`. |
 
 #### compose::up failures
 
@@ -266,9 +266,13 @@ changes and causes no restart.
 
 ### Package lock
 
-Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
-requested selector. The lock keeps the resolved dependency graph, versions, package types,
-artifact URLs, SHA-256 digests, and default configuration returned by the registry.
+Compose writes `worker-compose.lock` beside `worker-compose.yaml` when the compose file has at least
+one `package://` worker. The compose file keeps the requested selector. The lock keeps the resolved
+dependency graph, versions, package types, artifact URLs, SHA-256 digests, and default configuration
+returned by the registry.
+
+A compose file with only `path://` workers does not create or require a lock, including in frozen
+mode. Path workers use local content, so the package lock does not freeze their files.
 
 ```text
 worker-compose.yaml: next
@@ -285,11 +289,11 @@ Compose downloads the URL in the lock and verifies its SHA-256 digest. Compose a
 extracted cache contents before reuse. A changed cache entry is downloaded again from the locked
 URL.
 
-Use `iii compose build --frozen` in CI to require the compose file and lock to match. Use
-`iii compose --up --frozen` or `compose::up frozen=true` to apply the same rule during startup.
+Use `iii compose build --frozen` in CI to require each registry package declaration and its lock
+entry to match. Use `iii compose --up --frozen` or `compose::up frozen=true` to apply the same rule during startup.
 Frozen mode never resolves selectors or changes the lock. It can download a missing artifact only
-from the URL already in the lock. Commit the lock so development, CI, and deployments use the same
-package content.
+from the URL already in the lock. When the compose file has package workers, commit the lock so
+development, CI, and deployments use the same package content.
 
 ### Removing a worker
 
@@ -695,10 +699,10 @@ iii compose build [-f, --file <PATH>] [--frozen]
 | Option              | Description                                                                              |
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
-| `--frozen`          | Require an existing current lock and skip package selector resolution                     |
+| `--frozen`          | Require package declarations to match an existing lock and skip package selector resolution |
 
-`build` reads and validates the compose file, prepares `worker-compose.lock`, then downloads every
-`package://` worker into the same cache used by `compose::up`. The file defaults to
+`build` reads and validates the compose file, prepares `worker-compose.lock` when package workers
+exist, then downloads every `package://` worker into the same cache used by `compose::up`. The file defaults to
 `./worker-compose.yaml`. The command does not connect to an engine, start a worker, or run lifecycle
 hooks. Local `path://` workers and engine-managed workers need no registry download and are skipped.
 

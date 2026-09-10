@@ -2334,18 +2334,21 @@ containers:
     }
 
     #[tokio::test]
-    async fn failed_lock_write_restores_the_previous_compose_file() {
+    async fn failed_lock_removal_restores_the_previous_compose_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("worker-compose.yaml");
+        let lock_path = crate::lockfile::lock_path(&path);
         let previous = "containers:\n  api:\n    worker: path://.\n";
         let edited = "namespace: changed\ncontainers:\n  api:\n    worker: path://.\n";
         std::fs::write(&path, previous).unwrap();
+        std::fs::write(&lock_path, "version: 1\ncontainers: {}\n").unwrap();
 
         let mut compose = crate::ComposeFile::parse(edited, &path).unwrap();
         let prepared = crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new())
             .await
             .unwrap();
-        std::fs::create_dir(crate::lockfile::lock_path(&path)).unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::create_dir(lock_path).unwrap();
 
         let error = persist_mutation(&path, previous, edited, &prepared)
             .expect_err("the lock path is a directory");
