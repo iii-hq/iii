@@ -34,7 +34,7 @@
   <a href="#sdks">SDKs</a> ·
   <a href="#agent-skills">Agent Skills</a> ·
   <a href="#console">Console</a> ·
-  <a href="#resources">Resources</a> ·
+  <a href="#resources">Resources</a>
 </p>
 
 ## What is iii?
