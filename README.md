@@ -29,12 +29,12 @@
 <!-- Index -->
 <p align="center">
   <a href="#what-is-iii">What is iii?</a> ·
-  <a href="#quick-start">Quick Start</a> ·
+  <a href="#install-iii">Install iii</a> ·
   <a href="#add-workers">Add Workers</a> ·
   <a href="#sdks">SDKs</a> ·
   <a href="#agent-skills">Agent Skills</a> ·
   <a href="#console">Console</a> ·
-  <a href="#resources">Resources</a>
+  <a href="#resources">Resources</a> ·
 </p>
 
 ## What is iii?
