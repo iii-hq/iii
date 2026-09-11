@@ -311,6 +311,82 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 }
 
 const LEARN_III_TEMPLATE: &str = "harness";
+/// The base image every worker in the `--learn-iii` project starts from.
+/// Also `oci_image_for_kind`'s answer for JavaScript and TypeScript, and its
+/// fallback for an unrecognised kind, so it is the right first guess before
+/// the template has been written and its manifests can be read.
+const LEARN_III_BASE_IMAGE: &str = "docker.io/iiidev/node:latest";
+
+/// Start downloading base images in the background.
+///
+/// The first boot of a new project waits on an image that is hundreds of
+/// megabytes, and the operator spends the minute before it choosing a
+/// template and pasting a provider key. This puts the download in that
+/// minute instead of after it.
+///
+/// The work runs in `iii-worker`, which owns the rootfs cache; the engine
+/// does not link that crate. Both processes share the cache on disk and take
+/// its per-image lock, so this racing the real pull costs at worst a wait.
+///
+/// `None` when `iii-worker` cannot be found or will not start. That is not
+/// worth reporting: nothing is missing yet, and the spawn that needs the
+/// image pulls it in the usual place with the usual errors.
+fn start_image_prefetch(images: &[String]) -> Option<tokio::process::Child> {
+    if images.is_empty() {
+        return None;
+    }
+    let worker = iii::bin_resolve::find_existing_binary("iii-worker")?;
+    tokio::process::Command::new(worker)
+        .arg("__pull-images")
+        .args(images)
+        // The operator is reading a menu. A pull that printed onto it, or a
+        // failure line for an image nothing has asked for yet, would only be
+        // noise.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+/// Every distinct `runtime.base_image` declared by a worker under `dir`.
+///
+/// Read after scaffolding to catch whatever the template actually shipped,
+/// which need not be the image [`start_image_prefetch`] was already given.
+fn declared_base_images(dir: &Path) -> Vec<String> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<String>) {
+        // Worker manifests sit at the top of a worker directory. A handful of
+        // levels reaches them under `workers/<name>/` without descending into
+        // `node_modules` and friends.
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        if let Ok(Some(manifest)) = iii_compose::manifest::read_manifest(dir)
+            && let Some(image) = manifest.base_image
+            && !out.contains(&image)
+        {
+            out.push(image);
+        }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "node_modules" || name == "target" {
+                continue;
+            }
+            walk(&path, depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 0, &mut out);
+    out
+}
+
 const LEARN_III_DIR: &str = "learn-iii";
 
 /// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
@@ -325,6 +401,11 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     args.template = Some(LEARN_III_TEMPLATE.to_string());
     args.directory = Some(dir.to_string_lossy().into_owned());
 
+    // Before the scaffolder's own menu, not after it: `run_init_with_template`
+    // runs an interactive TUI, so this is the earliest moment the download can
+    // start and the longest stretch of thinking time it can hide behind.
+    let mut prefetch = start_image_prefetch(&[LEARN_III_BASE_IMAGE.to_string()]);
+
     let code = run_init_with_template(args).await;
     if code != 0 {
         return code;
@@ -332,6 +413,14 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
 
     seed_console_layout(&dir);
     seed_onboarding_container(&dir);
+
+    // The template is on disk now, so its manifests can say what they really
+    // need. Anything beyond the image already being fetched gets its own pass.
+    let extra: Vec<String> = declared_base_images(&dir)
+        .into_iter()
+        .filter(|image| image != LEARN_III_BASE_IMAGE)
+        .collect();
+    let mut extra_prefetch = start_image_prefetch(&extra);
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -350,6 +439,18 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     eprintln!();
     eprintln!("  {} starting the tour: {}", "▶".green(), hint.bold());
     eprintln!();
+
+    // Let the downloads finish before compose asks for the same images.
+    // `ensure_rootfs` takes a per-image lock, so an overlap would be safe but
+    // pointless: compose would sit on the lock with nothing on screen, while
+    // waiting here keeps one pull visible in one place. By now the operator
+    // has read a menu and pasted a key, so this is usually already done.
+    for child in [prefetch.as_mut(), extra_prefetch.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        let _ = child.wait().await;
+    }
 
     // Aborted when compose exits, so the poll inside needs no deadline of its
     // own: the tour's life is the deadline.
@@ -1255,5 +1356,59 @@ mod tests {
             next_free_dir(tmp.path(), "learn-iii"),
             tmp.path().join("learn-iii-2")
         );
+    }
+
+    #[test]
+    fn base_images_are_collected_from_every_worker_and_deduplicated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let write = |dir: &std::path::Path, image: Option<&str>| {
+            std::fs::create_dir_all(dir).unwrap();
+            let runtime = match image {
+                Some(image) => format!("runtime:\n  base_image: {image}\n"),
+                None => String::new(),
+            };
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("name: w\nlanguage: javascript\n{runtime}"),
+            )
+            .unwrap();
+        };
+
+        write(
+            &root.join("workers/alpha"),
+            Some("docker.io/iiidev/node:latest"),
+        );
+        write(
+            &root.join("workers/beta"),
+            Some("docker.io/iiidev/node:latest"),
+        );
+        write(
+            &root.join("workers/gamma"),
+            Some("docker.io/iiidev/python:latest"),
+        );
+        // A worker with no `base_image` runs on the engine, not in a VM.
+        write(&root.join("workers/delta"), None);
+        // Never descended into, however deep a manifest sits inside it.
+        write(
+            &root.join("workers/alpha/node_modules/pkg"),
+            Some("docker.io/library/never:pulled"),
+        );
+
+        let mut images = declared_base_images(root);
+        images.sort();
+        assert_eq!(
+            images,
+            vec![
+                "docker.io/iiidev/node:latest".to_string(),
+                "docker.io/iiidev/python:latest".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_image_list_starts_no_prefetch() {
+        assert!(start_image_prefetch(&[]).is_none());
     }
 }

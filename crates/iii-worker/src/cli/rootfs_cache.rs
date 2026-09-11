@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::oci_ref::canonical_cache_key;
 use crate::cli::worker_manager::oci::{
@@ -128,6 +128,46 @@ pub fn resolve_cached(oci_ref: &str, hints: &CacheHints<'_>) -> Option<PathBuf> 
     None
 }
 
+/// Lock file guarding one image's pull. Lives beside the rootfs
+/// directories rather than inside one, because the pull begins by
+/// deleting that directory.
+fn lock_path_for_image(oci_ref: &str) -> PathBuf {
+    let mut path = canonical_path(oci_ref);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rootfs".to_string());
+    path.set_file_name(format!("{name}.lock"));
+    path
+}
+
+/// Take the per-image pull lock, waiting for any other holder to finish.
+///
+/// Acquired on a blocking thread, like the bundle installer's staging
+/// lock: `fslock` blocks on a syscall and the async runtime must not.
+/// The lock is released when the guard drops, and by the kernel if the
+/// process dies, so a crashed pull does not wedge the next one.
+async fn lock_for_image(oci_ref: &str) -> Result<fslock::LockFile> {
+    let lock_path = lock_path_for_image(oci_ref);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "could not create the rootfs cache directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    tokio::task::spawn_blocking(move || -> Result<fslock::LockFile> {
+        let mut lock = fslock::LockFile::open(&lock_path)
+            .with_context(|| format!("could not open {}", lock_path.display()))?;
+        lock.lock_with_pid()
+            .with_context(|| format!("could not lock {}", lock_path.display()))?;
+        Ok(lock)
+    })
+    .await
+    .context("the rootfs pull lock task panicked")?
+}
+
 /// Ensure a populated rootfs exists for `oci_ref`; return its on-disk
 /// path. `on_pull_start` fires exactly once, only on a cache miss, right
 /// before the network pull begins — use it to log "Pulling..." or
@@ -137,6 +177,19 @@ pub async fn ensure_rootfs(
     hints: &CacheHints<'_>,
     on_pull_start: impl FnOnce(),
 ) -> Result<PathBuf> {
+    if let Some(cached) = resolve_cached(oci_ref, hints) {
+        return Ok(cached);
+    }
+    // Past this point we are going to delete and re-extract `dest`, so no
+    // second caller may be inside the same image's miss path. Two of them
+    // (a prefetch and the spawn it was meant to warm, or simply two `iii`
+    // processes) would each `remove_dir_all` a directory the other was
+    // extracting into, and the survivor would keep a rootfs with another
+    // pull's files spliced through it.
+    let _lock = lock_for_image(oci_ref).await?;
+    // Re-check under the lock: whoever held it before us has very likely
+    // just finished this exact pull, and re-pulling would throw away a
+    // rootfs that is already complete.
     if let Some(cached) = resolve_cached(oci_ref, hints) {
         return Ok(cached);
     }
@@ -194,5 +247,54 @@ mod tests {
         );
         let hints = CacheHints::default();
         assert!(resolve_cached(&uniq, &hints).is_none());
+    }
+
+    /// The lock is what stops a prefetch and the spawn it was warming from
+    /// deleting each other's half-extracted rootfs. Two holders of the same
+    /// image's lock must not overlap; two different images must not block.
+    #[tokio::test]
+    async fn the_pull_lock_excludes_one_image_and_not_another() {
+        let tmp = tempdir().unwrap();
+        let lock_a = tmp.path().join("a.lock");
+        let lock_b = tmp.path().join("b.lock");
+
+        let mut first = fslock::LockFile::open(&lock_a).unwrap();
+        first.lock_with_pid().unwrap();
+
+        // A second holder of the SAME lock waits. `try_lock` is the
+        // non-blocking form of what `lock_for_image` does, so a refusal here
+        // is exactly the wait a real second caller would take.
+        let mut same = fslock::LockFile::open(&lock_a).unwrap();
+        assert!(
+            !same.try_lock_with_pid().unwrap(),
+            "a second caller took the same image's lock while it was held"
+        );
+
+        // A different image is unrelated and must not be serialized behind it.
+        let mut other = fslock::LockFile::open(&lock_b).unwrap();
+        assert!(
+            other.try_lock_with_pid().unwrap(),
+            "a different image's pull was blocked by an unrelated lock"
+        );
+
+        drop(first);
+        let mut after = fslock::LockFile::open(&lock_a).unwrap();
+        assert!(
+            after.try_lock_with_pid().unwrap(),
+            "the lock was not released when its holder dropped"
+        );
+    }
+
+    #[test]
+    fn the_lock_file_sits_beside_the_rootfs_it_guards() {
+        let dest = canonical_path("docker.io/iiidev/node:latest");
+        let lock = lock_path_for_image("docker.io/iiidev/node:latest");
+        // Beside, never inside: the pull begins by deleting `dest`.
+        assert_eq!(lock.parent(), dest.parent());
+        assert_ne!(lock, dest);
+        assert!(!lock.starts_with(&dest));
+        // Two references to the same image share one lock; two images do not.
+        assert_eq!(lock, lock_path_for_image("iiidev/node:latest"));
+        assert_ne!(lock, lock_path_for_image("docker.io/iiidev/python:latest"));
     }
 }
