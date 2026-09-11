@@ -475,6 +475,7 @@ async fn restart_one_inner(
         return None;
     }
 
+    report::restarting(key);
     if let Some((attempt, total_attempts)) = retry {
         report::retry_starting(key, attempt, total_attempts);
     } else {
