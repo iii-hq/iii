@@ -41,12 +41,19 @@ pub struct TriggerArgs {
     #[arg(long)]
     pub json: Option<String>,
 
-    /// Engine host address. Taken from `III_URL` when omitted, else
-    /// `localhost`.
+    /// Engine WebSocket address (`ws://host:port`). Overrides `III_URL`. The
+    /// local default is used when neither supplies a URL. Encrypted
+    /// (`wss://`) connections are not supported.
+    #[arg(long, value_name = "URL")]
+    pub engine: Option<String>,
+
+    /// DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken
+    /// from `--engine` or `III_URL` when omitted, else `localhost`.
     #[arg(long)]
     pub address: Option<String>,
 
-    /// Engine WebSocket port. Taken from `III_URL` when omitted, else 49134.
+    /// DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken
+    /// from `--engine` or `III_URL` when omitted, else 49134.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -69,22 +76,51 @@ pub struct TriggerArgs {
 /// Host used when neither a flag nor `III_URL` names one.
 const DEFAULT_ADDRESS: &str = "localhost";
 
-/// Splits a `ws://` or `wss://` engine URL into host and port.
+/// Told to the caller when a URL asks for TLS, which no iii engine serves.
+const WSS_UNSUPPORTED: &str = "Encrypted websocket connections are not currently supported.";
+
+/// Splits a `ws://` engine URL into host and port.
 ///
-/// Returns `None` for anything that is not one of those, so a stale or
-/// malformed `III_URL` falls back to the defaults instead of failing a command
-/// that never asked about it. A URL without a port keeps `DEFAULT_PORT`: the
-/// scheme defaults the `url` crate knows (80 and 443) are not this engine's.
-fn engine_url_endpoint(raw: &str) -> Option<(String, u16)> {
-    let url = url::Url::parse(raw.trim()).ok()?;
-    if !matches!(url.scheme(), "ws" | "wss") {
-        return None;
+/// `wss://` is an error rather than a fallback. No iii engine terminates TLS,
+/// and the address is rebuilt as `ws://` further down, so accepting one would
+/// send a caller who asked for TLS over the wire in the clear.
+///
+/// Every other unusable value returns `Ok(None)`, so a stale or malformed
+/// `III_URL` falls back to the defaults instead of failing a command that
+/// never asked about it. A URL without a port keeps `DEFAULT_PORT`: the scheme
+/// defaults the `url` crate knows (80 and 443) are not this engine's.
+fn engine_url_endpoint(raw: &str) -> anyhow::Result<Option<(String, u16)>> {
+    let Ok(url) = url::Url::parse(raw.trim()) else {
+        return Ok(None);
+    };
+    if url.scheme() == "wss" {
+        anyhow::bail!(WSS_UNSUPPORTED);
     }
-    let host = match url.host()? {
+    if url.scheme() != "ws" {
+        return Ok(None);
+    }
+    let Some(host) = url.host() else {
+        return Ok(None);
+    };
+    let host = match host {
         url::Host::Ipv6(address) => format!("[{address}]"),
         host => host.to_string(),
     };
-    Some((host, url.port().unwrap_or(DEFAULT_PORT)))
+    Ok(Some((host, url.port().unwrap_or(DEFAULT_PORT))))
+}
+
+/// Reads the `--engine` flag, which the caller typed and must therefore be
+/// told about when it is wrong.
+///
+/// A malformed `III_URL` can be ignored; a malformed `--engine` cannot, or the
+/// call quietly goes to `localhost` instead of the engine that was named.
+fn engine_flag_endpoint(raw: &str) -> anyhow::Result<(String, u16)> {
+    let raw = raw.trim();
+    engine_url_endpoint(raw)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--engine {raw:?} must be a ws:// URL with a host, e.g. ws://localhost:49134"
+        )
+    })
 }
 
 /// Resolves the engine endpoint from the flags and `III_URL`.
@@ -94,44 +130,74 @@ fn engine_url_endpoint(raw: &str) -> Option<(String, u16)> {
 /// This CLI used to ignore it, so on a project that does not own port 49134
 /// every call silently reached whatever engine did.
 ///
-/// `--address` and `--port` still win, each over its own half of the URL, so a
-/// flag can retarget one component and inherit the other.
+/// Order is `--engine`, then `III_URL`, then `localhost:49134`. The deprecated
+/// `--address` and `--port` still win, each over its own half of whichever URL
+/// won, so a flag can retarget one component and inherit the other.
+///
+/// A `wss://` URL fails the call from either source. Falling back would send
+/// the payload in the clear to a different engine than the caller named, and
+/// both outcomes are worse than stopping.
 ///
 /// Takes the environment value as an argument rather than reading it, so the
 /// precedence is testable without mutating process state.
 fn resolve_endpoint(
     address: Option<&str>,
     port: Option<u16>,
+    engine_flag: Option<&str>,
     engine_url: Option<&str>,
-) -> (String, u16) {
-    let from_env = engine_url
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .and_then(engine_url_endpoint);
-    let (env_host, env_port) = match from_env {
+) -> anyhow::Result<(String, u16)> {
+    let from_source = match engine_flag.map(str::trim).filter(|url| !url.is_empty()) {
+        Some(flag) => Some(engine_flag_endpoint(flag)?),
+        None => match engine_url.map(str::trim).filter(|url| !url.is_empty()) {
+            Some(url) => engine_url_endpoint(url)?,
+            None => None,
+        },
+    };
+    let (source_host, source_port) = match from_source {
         Some((host, port)) => (Some(host), Some(port)),
         None => (None, None),
     };
 
-    (
+    Ok((
         address
             .map(str::to_string)
-            .or(env_host)
+            .or(source_host)
             .unwrap_or_else(|| DEFAULT_ADDRESS.to_string()),
-        port.or(env_port).unwrap_or(DEFAULT_PORT),
-    )
+        port.or(source_port).unwrap_or(DEFAULT_PORT),
+    ))
 }
 
 impl TriggerArgs {
     /// The engine this invocation talks to.
-    fn endpoint(&self) -> (String, u16) {
+    fn endpoint(&self) -> anyhow::Result<(String, u16)> {
         let engine_url = std::env::var("III_URL").ok();
-        resolve_endpoint(self.address.as_deref(), self.port, engine_url.as_deref())
+        resolve_endpoint(
+            self.address.as_deref(),
+            self.port,
+            self.engine.as_deref(),
+            engine_url.as_deref(),
+        )
+    }
+
+    /// Warns once when the call used the superseded flags.
+    ///
+    /// Written to stderr: `iii trigger` prints the invocation result to
+    /// stdout, and a notice about a flag must not end up inside output a
+    /// script is parsing.
+    fn warn_deprecated_endpoint_flags(&self) {
+        let used = match (self.address.is_some(), self.port.is_some()) {
+            (true, true) => "--address and --port are",
+            (true, false) => "--address is",
+            (false, true) => "--port is",
+            (false, false) => return,
+        };
+        eprintln!("warning: {used} deprecated; use `--engine ws://host:port` instead");
     }
 }
 
 pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
-    let (address, port) = args.endpoint();
+    args.warn_deprecated_endpoint_flags();
+    let (address, port) = args.endpoint()?;
     if args.help {
         help::print(
             args.function_path.as_deref(),
@@ -173,7 +239,7 @@ mod tests {
     #[test]
     fn endpoint_defaults_when_nothing_is_set() {
         assert_eq!(
-            resolve_endpoint(None, None, None),
+            resolve_endpoint(None, None, None, None).unwrap(),
             ("localhost".to_string(), DEFAULT_PORT)
         );
     }
@@ -181,7 +247,7 @@ mod tests {
     #[test]
     fn endpoint_reads_engine_url() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(None, None, None, Some("ws://127.0.0.1:49734")).unwrap(),
             ("127.0.0.1".to_string(), 49734)
         );
     }
@@ -192,8 +258,10 @@ mod tests {
             resolve_endpoint(
                 Some("example.test"),
                 Some(1234),
+                None,
                 Some("ws://127.0.0.1:49734")
-            ),
+            )
+            .unwrap(),
             ("example.test".to_string(), 1234)
         );
     }
@@ -201,11 +269,17 @@ mod tests {
     #[test]
     fn each_flag_wins_over_its_own_half() {
         assert_eq!(
-            resolve_endpoint(None, Some(1234), Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(None, Some(1234), None, Some("ws://127.0.0.1:49734")).unwrap(),
             ("127.0.0.1".to_string(), 1234)
         );
         assert_eq!(
-            resolve_endpoint(Some("example.test"), None, Some("ws://127.0.0.1:49734")),
+            resolve_endpoint(
+                Some("example.test"),
+                None,
+                None,
+                Some("ws://127.0.0.1:49734")
+            )
+            .unwrap(),
             ("example.test".to_string(), 49734)
         );
     }
@@ -214,7 +288,7 @@ mod tests {
     fn unusable_engine_url_falls_back_to_defaults() {
         for url in ["", "   ", "not a url", "http://127.0.0.1:49734", "ws://"] {
             assert_eq!(
-                resolve_endpoint(None, None, Some(url)),
+                resolve_endpoint(None, None, None, Some(url)).unwrap(),
                 ("localhost".to_string(), DEFAULT_PORT),
                 "unexpected endpoint for III_URL {url:?}"
             );
@@ -224,7 +298,7 @@ mod tests {
     #[test]
     fn engine_url_without_a_port_keeps_the_engine_default() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://engine.test")),
+            resolve_endpoint(None, None, None, Some("ws://engine.test")).unwrap(),
             ("engine.test".to_string(), DEFAULT_PORT)
         );
     }
@@ -232,9 +306,76 @@ mod tests {
     #[test]
     fn engine_url_keeps_ipv6_brackets() {
         assert_eq!(
-            resolve_endpoint(None, None, Some("ws://[::1]:49734")),
+            resolve_endpoint(None, None, None, Some("ws://[::1]:49734")).unwrap(),
             ("[::1]".to_string(), 49734)
         );
+    }
+
+    #[test]
+    fn the_engine_flag_wins_over_the_environment() {
+        assert_eq!(
+            resolve_endpoint(
+                None,
+                None,
+                Some("ws://flag.test:4300"),
+                Some("ws://127.0.0.1:49734")
+            )
+            .unwrap(),
+            ("flag.test".to_string(), 4300)
+        );
+    }
+
+    #[test]
+    fn the_deprecated_flags_still_win_over_the_engine_flag() {
+        assert_eq!(
+            resolve_endpoint(None, Some(1234), Some("ws://flag.test:4300"), None).unwrap(),
+            ("flag.test".to_string(), 1234)
+        );
+    }
+
+    #[test]
+    fn a_wss_environment_url_is_refused_rather_than_downgraded() {
+        // Falling back would send the payload in the clear to an engine the
+        // caller did not name.
+        let err = resolve_endpoint(None, None, None, Some("wss://engine.test:443"))
+            .expect_err("wss must not resolve");
+        assert_eq!(err.to_string(), WSS_UNSUPPORTED);
+    }
+
+    #[test]
+    fn a_wss_engine_flag_is_refused() {
+        let err = resolve_endpoint(None, None, Some("wss://engine.test:443"), None)
+            .expect_err("wss must not resolve");
+        assert_eq!(err.to_string(), WSS_UNSUPPORTED);
+    }
+
+    #[test]
+    fn a_wss_url_is_refused_even_when_both_flags_supply_the_endpoint() {
+        // The address never reaches the socket here, but the caller still
+        // asked for TLS and must not be told the call was fine.
+        let err = resolve_endpoint(
+            Some("example.test"),
+            Some(1234),
+            None,
+            Some("wss://engine.test:443"),
+        )
+        .expect_err("wss must not resolve");
+        assert_eq!(err.to_string(), WSS_UNSUPPORTED);
+    }
+
+    #[test]
+    fn an_unusable_engine_flag_errors_instead_of_falling_back() {
+        // The caller typed this one, so silence would send the call to
+        // localhost while the operator believes it went somewhere else.
+        for url in ["not a url", "http://127.0.0.1:49734", "ws://"] {
+            let err = resolve_endpoint(None, None, Some(url), None)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("must be a ws:// URL"),
+                "unexpected error for --engine {url:?}: {err}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -243,6 +384,7 @@ mod tests {
             function_path: None,
             kv: vec![],
             json: None,
+            engine: None,
             address: None,
             port: None,
             timeout_ms: 800,
@@ -263,6 +405,7 @@ mod tests {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: None,
+            engine: None,
             address: None,
             port: Some(19999),
             timeout_ms: 800,
@@ -290,6 +433,7 @@ mod tests {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: Some("not-json".to_string()),
+            engine: None,
             address: None,
             port: None,
             timeout_ms: 30_000,
