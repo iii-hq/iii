@@ -569,7 +569,7 @@ mod tests {
             ("ws://user@127.0.0.1:4400", "must not carry credentials"),
             ("ws:127.0.0.1:4400", "must start with ws://"),
         ] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(detail), "unexpected error for {url:?}: {err}");
@@ -582,7 +582,7 @@ mod tests {
         // crate normalises both paths to "/".
         for url in ["ws://engine.test:4400", "ws://engine.test:4400/"] {
             assert_eq!(
-                resolve_endpoint(None, None, Some(url), None).unwrap(),
+                resolve_endpoint(None, None, Some(url), None, None).unwrap(),
                 ("engine.test".to_string(), 4400),
                 "unexpected endpoint for {url:?}"
             );
@@ -596,7 +596,7 @@ mod tests {
             "wss://engine.test/ws",
             "WSS://engine.test",
         ] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert_eq!(err, WSS_UNSUPPORTED, "unexpected error for {url:?}");
@@ -606,9 +606,15 @@ mod tests {
     #[test]
     fn a_url_with_credentials_is_refused_without_echoing_the_password() {
         // An error line reaches terminals, CI logs and bug reports.
-        let err = resolve_endpoint(None, None, Some("ws://user:secret@127.0.0.1:4400"), None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_endpoint(
+            None,
+            None,
+            Some("ws://user:secret@127.0.0.1:4400"),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("must not carry credentials"), "{err}");
         assert!(
             !err.contains("secret"),
