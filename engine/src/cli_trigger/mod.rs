@@ -41,13 +41,13 @@ pub struct TriggerArgs {
     #[arg(long)]
     pub json: Option<String>,
 
-    /// Engine host address. Taken from the working directory's compose file
-    /// or `III_URL` when omitted, else `localhost`.
+    /// Engine host address. Taken from `III_URL` or the working directory's
+    /// compose file when omitted, else `localhost`.
     #[arg(long)]
     pub address: Option<String>,
 
-    /// Engine WebSocket port. Taken from the working directory's compose file
-    /// or `III_URL` when omitted, else 49134.
+    /// Engine WebSocket port. Taken from `III_URL` or the working directory's
+    /// compose file when omitted, else 49134.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -106,13 +106,12 @@ fn compose_file_engine_url() -> Option<String> {
 /// Resolves the engine endpoint from the flags, the compose file, and
 /// `III_URL`.
 ///
-/// Order, matching `iii compose`: the flag, then the compose file in the
-/// working directory, then `III_URL`, then `localhost:49134`. `iii compose`
-/// resolves `--engine`, then the file, then `III_URL` (see
-/// `iii_compose::resolve_engine_mode`), so the file is ahead of the
-/// environment here for the same reason: a project directory states which
-/// engine it owns, and a leftover variable in the operator's shell should not
-/// beat it.
+/// Order: the flag, then `III_URL`, then the compose file in the working
+/// directory, then `localhost:49134`. The environment is ahead of the file
+/// because an explicitly exported variable is the caller's live intent, while
+/// the file is only what the directory happens to hold: a worker or a shell
+/// that compose itself pointed at another engine must reach that engine, not
+/// the one the checked-in file names.
 ///
 /// `--address` and `--port` win over whichever source supplied the URL, each
 /// over its own half, so a flag can retarget one component and inherit the
@@ -126,7 +125,7 @@ fn resolve_endpoint(
     compose_url: Option<&str>,
     engine_url: Option<&str>,
 ) -> (String, u16) {
-    let from_source = [compose_url, engine_url]
+    let from_source = [engine_url, compose_url]
         .into_iter()
         .flatten()
         .map(str::trim)
@@ -209,9 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn compose_file_wins_over_engine_url() {
-        // `iii compose` resolves the file ahead of `III_URL`; a leftover
-        // variable in the operator's shell must not beat the project.
+    fn engine_url_wins_over_the_compose_file() {
+        // An exported `III_URL` is the caller's live intent; the file is only
+        // what the directory happens to hold.
         assert_eq!(
             resolve_endpoint(
                 None,
@@ -219,7 +218,7 @@ mod tests {
                 Some("ws://127.0.0.1:49934"),
                 Some("ws://127.0.0.1:49134")
             ),
-            ("127.0.0.1".to_string(), 49934)
+            ("127.0.0.1".to_string(), 49134)
         );
     }
 
@@ -245,12 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn unusable_compose_url_falls_through_to_engine_url() {
-        for compose in ["", "   ", "not a url", "http://127.0.0.1:49934"] {
+    fn unusable_engine_url_falls_through_to_the_compose_file() {
+        for engine_url in ["", "   ", "not a url", "http://127.0.0.1:49134"] {
             assert_eq!(
-                resolve_endpoint(None, None, Some(compose), Some("ws://127.0.0.1:49134")),
-                ("127.0.0.1".to_string(), 49134),
-                "unexpected endpoint for compose url {compose:?}"
+                resolve_endpoint(None, None, Some("ws://127.0.0.1:49934"), Some(engine_url)),
+                ("127.0.0.1".to_string(), 49934),
+                "unexpected endpoint for III_URL {engine_url:?}"
             );
         }
     }
