@@ -402,8 +402,8 @@ value:
           - chat
           - \"ext:onboarding\"
         sizes:
-          - 0.7
-          - 0.3
+          - 0.6
+          - 0.4
 ";
 
 /// The tour's own worker, declared in the project's compose file.
@@ -1169,7 +1169,7 @@ mod tests {
         // mismatch silently drops the project back to equal widths.
         let sizes = tabs[0]["sizes"].as_array().unwrap();
         assert_eq!(sizes.len(), tabs[0]["columns"].as_u64().unwrap() as usize);
-        assert_eq!(sizes[0].as_f64().unwrap(), 0.7);
+        assert_eq!(sizes[0].as_f64().unwrap(), 0.6);
         // No port: the console backfills the one it actually bound.
         assert!(entry.value.get("http_port").is_none());
     }
