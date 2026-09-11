@@ -59,6 +59,7 @@ const CLEAR_LINE: &str = "\r\x1b[2K";
 /// waves now, so what an operator wants is not "which one is compose on" but
 /// "where is all of it" — which is a block that is redrawn, not a line that is
 /// replaced.
+#[derive(Default)]
 struct Console {
     startup: Option<StartupRows>,
     rows: Vec<Row>,
@@ -66,8 +67,13 @@ struct Console {
     /// far up to go. Zero when nothing is drawn.
     drawn: usize,
     frame: usize,
+    size: Option<(u16, u16)>,
+    /// Once cursor coordinates become unreliable, keep this operation static.
+    static_output: bool,
+    rendered: Vec<Row>,
 }
 
+#[derive(Clone, PartialEq)]
 struct Row {
     key: String,
     /// How far in it sits: a container is drawn under the one that waits for
@@ -76,7 +82,7 @@ struct Row {
     state: RowState,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum RowState {
     /// Declared, and waiting on something earlier in the graph.
     Waiting,
@@ -102,7 +108,7 @@ enum RowState {
     Skipped(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum RetryPhase {
     Waiting(Duration),
     Starting(String),
@@ -122,13 +128,11 @@ pub(crate) struct StartupProgress {
 impl StartupProgress {
     pub(crate) fn start(managed: bool) -> Self {
         let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+        *state = Console::default();
         state.startup = Some(StartupRows::new(managed));
+        redraw(&mut state);
         if animated() {
-            redraw(&mut state);
             ensure_ticker();
-        } else if let Some(startup) = &state.startup {
-            eprintln!("{}", render_row(&startup.engine, 0, false));
-            eprintln!("{}", render_row(&startup.containers, 0, false));
         }
         Self { finished: false }
     }
@@ -157,11 +161,7 @@ impl StartupProgress {
         } else {
             *what = message.to_string();
         }
-        if animated() {
-            redraw(&mut state);
-        } else {
-            eprintln!("{}", render_row(&startup.engine, 0, false));
-        }
+        redraw(&mut state);
     }
 
     pub(crate) fn containers_starting(&self) {
@@ -173,11 +173,7 @@ impl StartupProgress {
             what: "Starting".to_string(),
             began: Instant::now(),
         };
-        if animated() {
-            redraw(&mut state);
-        } else {
-            eprintln!("{}", render_row(&startup.containers, 0, false));
-        }
+        redraw(&mut state);
     }
 
     pub(crate) fn finish(&mut self, success: bool, message: &str) {
@@ -195,21 +191,14 @@ impl StartupProgress {
         for row in &mut state.rows {
             match row.state {
                 RowState::Waiting => row.state = RowState::Skipped("Not started".to_string()),
-                RowState::Starting { .. } => row.state = RowState::Skipped("Cancelled".to_string()),
+                RowState::Starting { .. } | RowState::Retrying { .. } => {
+                    row.state = RowState::Skipped("Cancelled".to_string());
+                }
                 _ => {}
             }
         }
-        if animated() {
-            redraw(&mut state);
-        } else if let Some(startup) = &state.startup {
-            if !matches!(startup.engine.state, RowState::Ready { .. }) {
-                eprintln!("{}", render_row(&startup.engine, 0, false));
-            }
-            eprintln!("{}", render_row(&startup.containers, 0, false));
-        }
-        state.startup = None;
-        state.rows.clear();
-        state.drawn = 0;
+        redraw(&mut state);
+        *state = Console::default();
     }
 }
 
@@ -274,35 +263,22 @@ impl StartupRows {
 
 fn console() -> &'static Mutex<Console> {
     static CONSOLE: OnceLock<Mutex<Console>> = OnceLock::new();
-    CONSOLE.get_or_init(|| {
-        Mutex::new(Console {
-            startup: None,
-            rows: Vec::new(),
-            drawn: 0,
-            frame: 0,
-        })
-    })
+    CONSOLE.get_or_init(|| Mutex::new(Console::default()))
 }
 
 /// Announces what this operation will touch, in the shape it will touch it.
 ///
-/// `rows` is `(container, depth)` in the order to draw. Nothing is drawn on a
-/// terminal that cannot animate: there, each container reports itself as it
-/// settles, which is what a log wants anyway.
+/// `rows` is `(container, depth)` in the order to draw. A terminal that cannot
+/// animate gets state transitions instead of repeated spinner frames.
 pub fn plan(rows: &[(String, usize)]) {
-    if !animated() {
-        console()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .rows
-            .clear();
-        return;
-    }
     {
         let console = console();
         let mut state = console
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.startup.is_none() {
+            *state = Console::default();
+        }
         state.rows = rows
             .iter()
             .map(|(key, depth)| Row {
@@ -311,14 +287,12 @@ pub fn plan(rows: &[(String, usize)]) {
                 state: RowState::Waiting,
             })
             .collect();
-        // The engine panel already owns the block above these new child rows.
-        if state.startup.is_none() {
-            state.drawn = 0;
-        }
         state.frame = 0;
         redraw(&mut state);
     }
-    ensure_ticker();
+    if animated() {
+        ensure_ticker();
+    }
 }
 
 /// Releases the block so later output does not overwrite it.
@@ -328,8 +302,7 @@ pub fn plan_done() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if state.startup.is_none() {
-        state.rows.clear();
-        state.drawn = 0;
+        *state = Console::default();
     }
 }
 
@@ -356,31 +329,119 @@ fn set(key: &str, to: RowState) -> bool {
     {
         *what = format!("Starting ({ready}/{total})");
     }
-    if animated() {
-        redraw(&mut state);
-    }
+    redraw(&mut state);
     true
 }
 
-/// Redraws the block in place: up over what was drawn, then every row again.
-fn redraw(state: &mut Console) {
-    let mut out = String::new();
-    if state.drawn > 0 {
-        out.push_str(&format!("\x1b[{}A", state.drawn));
+impl Console {
+    fn observe_size(&mut self, size: Option<(u16, u16)>) {
+        if self.drawn > 0 && self.size != size {
+            // Resize can reflow the old block into scrollback. Preserve it and
+            // emit only subsequent changes; its old cursor offset is unsafe.
+            self.static_output = true;
+            self.drawn = 0;
+        }
+        self.size = size;
     }
-    let headers = state
-        .startup
-        .iter()
-        .flat_map(|startup| [&startup.engine, &startup.containers])
-        .map(|row| (row, ""));
-    let indent = if state.startup.is_some() { "  " } else { "" };
-    for (row, prefix) in headers.chain(state.rows.iter().map(|row| (row, indent))) {
-        out.push_str(CLEAR_LINE);
-        out.push_str(prefix);
-        out.push_str(&render_row(row, state.frame, true));
+
+    fn clear_block(&mut self, out: &mut String) {
+        if self.drawn == 0 {
+            return;
+        }
+        out.push_str(&format!("\x1b[{}A", self.drawn));
+        for _ in 0..self.drawn {
+            out.push_str(CLEAR_LINE);
+            out.push('\n');
+        }
+        out.push_str(&format!("\x1b[{}A", self.drawn));
+        self.drawn = 0;
+        self.rendered.clear();
+    }
+
+    fn render(&mut self, size: Option<(u16, u16)>) -> String {
+        self.observe_size(size);
+        let mut rows = Vec::new();
+        if let Some(startup) = &self.startup {
+            rows.extend([startup.engine.clone(), startup.containers.clone()]);
+        }
+        rows.extend(self.rows.iter().cloned().map(|mut row| {
+            row.depth += usize::from(self.startup.is_some());
+            row
+        }));
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|row| render_row(row, self.frame, true))
+            .collect();
+        let height = size.and_then(|(height, width)| {
+            let needed = panel_height(&lines, width)?;
+            // The last newline leaves the cursor on a row below the panel.
+            (needed < usize::from(height)).then_some(needed)
+        });
+        let mut out = String::new();
+        if self.static_output || height.is_none() {
+            if self.drawn > 0 {
+                // This is a larger new frame, not a resize. The previous
+                // frame still fits, so replace it with a static snapshot.
+                self.clear_block(&mut out);
+            }
+            self.static_output = true;
+            for row in &rows {
+                if !self.rendered.contains(row) {
+                    out.push_str(&render_row(row, 0, false));
+                    out.push('\n');
+                }
+            }
+        } else {
+            self.clear_block(&mut out);
+            for line in &lines {
+                out.push_str(CLEAR_LINE);
+                out.push_str(line);
+                out.push('\n');
+            }
+            self.drawn = height.unwrap_or_default();
+        }
+        self.rendered = rows;
+        out
+    }
+
+    fn line(&mut self, text: &str, size: Option<(u16, u16)>) -> String {
+        self.observe_size(size);
+        let mut out = String::new();
+        self.clear_block(&mut out);
+        out.push_str(text);
         out.push('\n');
+        out.push_str(&self.render(size));
+        out
     }
-    state.drawn = state.rows.len() + if state.startup.is_some() { 2 } else { 0 };
+}
+
+/// Animate only complete, unwrapped rows. Wide characters can wrap before the
+/// last column, so dividing a string's display width by the terminal width is
+/// not a reliable cursor offset.
+fn panel_height(lines: &[String], width: u16) -> Option<usize> {
+    if width < 2 {
+        return None;
+    }
+    lines
+        .iter()
+        .all(|line| {
+            !console::strip_ansi_codes(line)
+                .chars()
+                .any(char::is_control)
+                && console::measure_text_width(line) < usize::from(width)
+        })
+        .then_some(lines.len())
+}
+
+fn terminal_size() -> Option<(u16, u16)> {
+    animated()
+        .then(|| console::Term::stderr().size_checked())
+        .flatten()
+}
+
+/// Redraws only while the entire block and its cursor fit in the terminal.
+fn redraw(state: &mut Console) {
+    let out = state.render(terminal_size());
     let mut stderr = std::io::stderr().lock();
     let _ = write!(stderr, "{out}");
     let _ = stderr.flush();
@@ -452,7 +513,9 @@ fn render_row(row: &Row, frame: usize, animate: bool) -> String {
 /// Whether progress can animate. A pipe or a file gets static lines.
 fn animated() -> bool {
     static ANIMATED: OnceLock<bool> = OnceLock::new();
-    *ANIMATED.get_or_init(|| std::io::stderr().is_terminal())
+    *ANIMATED.get_or_init(|| {
+        std::io::stderr().is_terminal() && !std::env::var("TERM").is_ok_and(|term| term == "dumb")
+    })
 }
 
 /// Writes one line, stepping around the spinner if one is turning.
@@ -478,24 +541,10 @@ pub fn line(text: &str) {
     let mut state = console
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let out = state.line(text, terminal_size());
     let mut stderr = std::io::stderr().lock();
-
-    // The block owns the bottom of the screen, so a line goes above it: rewind
-    // over it, print, and draw it again underneath.
-    if state.drawn > 0 {
-        let _ = write!(stderr, "\x1b[{}A", state.drawn);
-        for _ in 0..state.drawn {
-            let _ = writeln!(stderr, "{CLEAR_LINE}");
-        }
-        let _ = write!(stderr, "\x1b[{}A", state.drawn);
-    }
-    let _ = writeln!(stderr, "{text}");
-    if state.drawn > 0 {
-        state.drawn = 0;
-        redraw(&mut state);
-    } else {
-        let _ = stderr.flush();
-    }
+    let _ = write!(stderr, "{out}");
+    let _ = stderr.flush();
 }
 
 /// Turns the frame for the whole block. One task, not one per container: the
@@ -511,13 +560,14 @@ fn ensure_ticker() {
                 let mut state = console
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let turning = state.startup.is_some()
-                    || state.rows.iter().any(|row| {
-                        matches!(
-                            row.state,
-                            RowState::Starting { .. } | RowState::Retrying { .. }
-                        )
-                    });
+                let turning = !state.static_output
+                    && (state.startup.is_some()
+                        || state.rows.iter().any(|row| {
+                            matches!(
+                                row.state,
+                                RowState::Starting { .. } | RowState::Retrying { .. }
+                            )
+                        }));
                 if turning {
                     state.frame = state.frame.wrapping_add(1);
                     redraw(&mut state);
@@ -623,31 +673,22 @@ fn show_retry(key: &str, attempt: u32, total: u32, phase: RetryPhase) {
 }
 
 fn show_retry_row(row: Row) {
-    let animate = animated();
     // During `up`, keep this row inside the dependency tree and preserve its
     // depth. A run-time retry has no active plan, so it falls through and owns
     // a one-row block as before.
-    if animate && set(&row.key, row.state.clone()) {
+    if set(&row.key, row.state.clone()) {
         return;
     }
 
-    let static_line = {
+    {
         let mut state = console()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.rows = vec![row];
         state.frame = 0;
-        if animate {
-            redraw(&mut state);
-            None
-        } else {
-            state.rows.first().map(|row| render_row(row, 0, false))
-        }
-    };
-
-    if let Some(static_line) = static_line {
-        line(&static_line);
-    } else {
+        redraw(&mut state);
+    }
+    if animated() {
         ensure_ticker();
     }
 }
@@ -766,11 +807,7 @@ pub fn not_required_failed(containers: &[String]) {
 
 /// Closing line of an operation.
 pub fn summary_ok(action: &str, changed: usize, total: usize, elapsed: Duration) {
-    let body = if changed == 0 {
-        format!("{action}: nothing to do ({total} already in place)")
-    } else {
-        format!("{action}: {changed} of {total} changed")
-    };
+    let body = format!("{action}: {changed} of {total} changed");
     line(&format!(
         "{} {}",
         body.green(),
@@ -868,6 +905,10 @@ fn pick_color(taken: &[Color], last: Option<Color>) -> Color {
         .copied()
         .unwrap_or(CONTAINER_COLORS[0])
 }
+
+#[cfg(test)]
+#[path = "report/terminal_tests.rs"]
+mod terminal_tests;
 
 #[cfg(test)]
 mod tests {
