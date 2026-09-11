@@ -66,6 +66,7 @@ on:
         required: false
 
 env:
+  III_TELEMETRY_ENABLED: "false"
   TAP_REPO: iii-hq/homebrew-tap
 
 jobs:

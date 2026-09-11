@@ -78,12 +78,23 @@ pub fn libkrun_available() -> bool {
 
 /// Build the VM boot env. Launcher wins: `III_ISOLATION=libkrun` is written
 /// after caller env so an OCI image `ENV III_ISOLATION=docker` cannot override it.
+/// The effective host telemetry opt-out similarly wins over supplied values.
 pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<String, String> {
+    build_vm_env_with_telemetry(caller_env, iii_telemetry_policy::is_telemetry_disabled())
+}
+
+fn build_vm_env_with_telemetry(
+    caller_env: HashMap<String, String>,
+    telemetry_disabled: bool,
+) -> HashMap<String, String> {
     let mut merged = HashMap::with_capacity(caller_env.len() + 1);
     for (key, value) in caller_env {
         merged.insert(key, value);
     }
     merged.insert("III_ISOLATION".to_string(), "libkrun".to_string());
+    if telemetry_disabled {
+        merged.insert("III_TELEMETRY_ENABLED".to_string(), "false".to_string());
+    }
     merged
 }
 
@@ -177,6 +188,9 @@ pub fn build_vm_command(
     // that itself carries a lifeline can never wrongly die with it.
     cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
     cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        cmd.env("III_TELEMETRY_ENABLED", "false");
+    }
     for boot_arg in vm_boot_args_dev(
         &rootfs,
         rootfs_lower.as_deref(),
@@ -909,6 +923,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // Detached by design — see the matching scrub in run_dev above.
         cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
         cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
+        if iii_telemetry_policy::is_telemetry_disabled() {
+            cmd.env("III_TELEMETRY_ENABLED", "false");
+        }
         for boot_arg in vm_boot_args_oci(
             &worker_rootfs,
             oci_rootfs_lower.as_deref(),
@@ -1089,6 +1106,48 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_opt_out_reaches_vm_boot_arguments() {
+        for (disabled, declared, expected) in [
+            (true, None, Some("III_TELEMETRY_ENABLED=false")),
+            (true, Some("true"), Some("III_TELEMETRY_ENABLED=false")),
+            (false, None, None),
+            (false, Some("true"), Some("III_TELEMETRY_ENABLED=true")),
+            (false, Some("false"), Some("III_TELEMETRY_ENABLED=false")),
+        ] {
+            let caller = declared
+                .map(|value| HashMap::from([("III_TELEMETRY_ENABLED".into(), value.into())]))
+                .unwrap_or_default();
+            let env: Vec<_> = build_vm_env_with_telemetry(caller, disabled)
+                .into_iter()
+                .collect();
+            let parsed = parse_vm_boot_args(vm_boot_args_dev(
+                Path::new("/tmp/rootfs"),
+                None,
+                "",
+                None,
+                "/bin/sh",
+                2,
+                2048,
+                Path::new("/tmp/vm.pid"),
+                Path::new("/tmp/control.sock"),
+                Path::new("/tmp/shell.sock"),
+                None,
+                &env,
+                &[],
+                &[],
+            ));
+            assert_eq!(
+                parsed
+                    .env
+                    .iter()
+                    .find(|entry| entry.starts_with("III_TELEMETRY_ENABLED="))
+                    .map(String::as_str),
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn vm_boot_args_oci_enables_network_and_roundtrips() {
         let env = vec![("III_URL".to_string(), "ws://localhost:3111".to_string())];
         let exec_args = vec!["--url".to_string(), "ws://localhost:3111".to_string()];
@@ -1174,7 +1233,7 @@ mod tests {
 
     #[test]
     fn build_vm_env_injects_isolation_marker_into_empty_input() {
-        let merged = build_vm_env(HashMap::new());
+        let merged = build_vm_env_with_telemetry(HashMap::new(), false);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
         assert_eq!(merged.len(), 1);
     }
@@ -1184,7 +1243,7 @@ mod tests {
         let mut caller = HashMap::new();
         caller.insert("NODE_ENV".to_string(), "production".to_string());
         caller.insert("III_URL".to_string(), "ws://127.0.0.1:3111".to_string());
-        let merged = build_vm_env(caller);
+        let merged = build_vm_env_with_telemetry(caller, false);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
         assert_eq!(merged.get("NODE_ENV"), Some(&"production".to_string()));
         assert_eq!(
@@ -1198,7 +1257,7 @@ mod tests {
     fn build_vm_env_launcher_overrides_caller_isolation() {
         let mut caller = HashMap::new();
         caller.insert("III_ISOLATION".to_string(), "docker".to_string());
-        let merged = build_vm_env(caller);
+        let merged = build_vm_env_with_telemetry(caller, false);
         assert_eq!(merged.get("III_ISOLATION"), Some(&"libkrun".to_string()));
     }
 

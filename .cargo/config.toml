@@ -1,3 +1,8 @@
+[env]
+# Contributor cargo test/run processes opt out unless explicitly overridden.
+# This is a runtime environment default, not a compiled-in product default.
+III_TELEMETRY_ENABLED = { value = "false", force = false }
+
 # Linker configuration for init binary musl cross-compilation.
 # rust-lld is bundled with the Rust toolchain -- no system packages needed.
 # D-01 specified musl-tools/aarch64-linux-gnu-gcc, but rust-lld achieves

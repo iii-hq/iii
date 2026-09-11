@@ -22,6 +22,7 @@ integration-vm = []
 integration-oci = []
 
 [dependencies]
+iii-telemetry-policy = { workspace = true }
 iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
 # TODO: switch to crates.io pin before shipping; path dep for co-development

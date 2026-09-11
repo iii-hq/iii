@@ -12,6 +12,9 @@
 
 set -eu
 
+# Cover the installer and installed binaries even when run outside CI.
+export III_TELEMETRY_ENABLED=false
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 INSTALL_SH="$SCRIPT_DIR/../install.sh"
 

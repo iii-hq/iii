@@ -9,7 +9,9 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn worker_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iii-worker"));
+    command.env("III_TELEMETRY_ENABLED", "false");
+    command
 }
 
 fn fixtures() -> PathBuf {

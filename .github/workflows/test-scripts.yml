@@ -5,9 +5,12 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/**'
-      - '.github/workflows/test-scripts.yml'
-      - '.github/workflows/alpha-release.yml'
-      - '.github/workflows/release-iii.yml'
+      - '.github/workflows/**'
+      - '.cargo/config.toml'
+      - 'scripts/start-iii.sh'
+      - 'scripts/generate-cli-docs.sh'
+      - 'engine/docker-compose*.yml'
+      - 'engine/tests/fixtures/templates/docker/docker-compose.yml'
       - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'
       - 'engine/src/workers/**/skill.md'
@@ -17,14 +20,20 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/**'
-      - '.github/workflows/test-scripts.yml'
-      - '.github/workflows/alpha-release.yml'
-      - '.github/workflows/release-iii.yml'
+      - '.github/workflows/**'
+      - '.cargo/config.toml'
+      - 'scripts/start-iii.sh'
+      - 'scripts/generate-cli-docs.sh'
+      - 'engine/docker-compose*.yml'
+      - 'engine/tests/fixtures/templates/docker/docker-compose.yml'
       - '**/iii.worker.yaml'
       - 'engine/src/workers/**/skills/**'
       - 'engine/src/workers/**/skill.md'
       - 'crates/**/skills/**'
       - 'crates/**/skill.md'
+
+env:
+  III_TELEMETRY_ENABLED: "false"
 
 jobs:
   pytest:

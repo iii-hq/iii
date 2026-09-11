@@ -10,6 +10,7 @@ name = "iii_compose"
 path = "src/lib.rs"
 
 [dependencies]
+iii-telemetry-policy = { workspace = true }
 async-trait = "0.1"
 chrono = "0.4"
 clap = { workspace = true }

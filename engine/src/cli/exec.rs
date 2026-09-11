@@ -33,14 +33,19 @@ pub fn run_binary(
     // Flush all output before replacing the process
     flush_output();
 
+    let mut envs = envs.to_vec();
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        envs.push(("III_TELEMETRY_ENABLED".to_string(), "false".to_string()));
+    }
+
     #[cfg(unix)]
     {
-        run_binary_unix(binary_path, args, envs)
+        run_binary_unix(binary_path, args, &envs)
     }
 
     #[cfg(windows)]
     {
-        run_binary_windows(binary_path, args, envs)
+        run_binary_windows(binary_path, args, &envs)
     }
 }
 

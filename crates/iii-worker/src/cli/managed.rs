@@ -46,12 +46,16 @@ pub use super::local_worker::{handle_local_add, is_local_path, start_local_worke
 /// its telemetry counters. Used for every worker type installed via `/resolve`
 /// (engine workers have no artifact; binary/image/bundle workers fetch their
 /// artifacts from external URLs the registry never sees, so this is the only
-/// install signal it gets). When a CI environment is detected, `ci=true` is
-/// also sent so the registry increments parallel `ci_count` columns. The
+/// install signal it gets). CI and developer opt-out suppress this optional
+/// request entirely. The
 /// endpoint returns 204 (no artifact); errors are logged as warnings and never
 /// block the install.
 async fn fire_worker_telemetry(name: &str, version: &str) {
     use super::registry::{HTTP_CLIENT, with_download_query};
+
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        return;
+    }
 
     let api_url =
         std::env::var("III_API_URL").unwrap_or_else(|_| "https://api.workers.iii.dev".to_string());
@@ -4489,6 +4493,24 @@ mod tests {
         EnvVarGuard { key, old }
     }
 
+    // Caller holds TEST_ENV_LOCK; restore CI/opt-out settings after mock tests.
+    fn enable_test_analytics() -> Vec<EnvVarGuard> {
+        let mut guards = Vec::new();
+        for key in iii_telemetry_policy::CI_ENV_VARS
+            .iter()
+            .copied()
+            .chain(["III_TELEMETRY_DEV"])
+        {
+            guards.push(EnvVarGuard {
+                key,
+                old: std::env::var_os(key),
+            });
+            unsafe { std::env::remove_var(key) };
+        }
+        guards.push(set_env_var_for_test("III_TELEMETRY_ENABLED", "true"));
+        guards
+    }
+
     fn binary_archive(binary_name: &str) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
@@ -5480,7 +5502,10 @@ workers:
             .unwrap_or_else(|e| e.into_inner());
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        crate::cli::registry::clear_ci_env_vars_for_test();
+        let _policy = enable_test_analytics();
+        let home = tempfile::tempdir().unwrap();
+        let _home = set_env_var_for_test("HOME", home.path());
+        let _userprofile = set_env_var_for_test("USERPROFILE", home.path());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -5513,64 +5538,39 @@ workers:
     }
 
     #[tokio::test]
-    async fn fire_worker_telemetry_appends_ci_true_in_ci_environment() {
+    async fn fire_worker_telemetry_skips_opted_out_and_ci_requests() {
         let _env_guard = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        crate::cli::registry::clear_ci_env_vars_for_test();
-        let _ci_guard = set_env_var_for_test("CI", "true");
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let _api_guard = set_env_var_for_test("III_API_URL", &base_url);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept request");
-            let mut buf = [0_u8; 4096];
-            let n = stream.read(&mut buf).await.expect("read request");
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let path = request
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .unwrap_or_default()
-                .to_string();
-            let _ = tx.send(path);
-            let _ = stream
-                .write_all(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n")
-                .await;
-        });
-
+        let _policy = enable_test_analytics();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _api = set_env_var_for_test(
+            "III_API_URL",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        for value in ["false", "0", " OFF "] {
+            let _enabled = set_env_var_for_test("III_TELEMETRY_ENABLED", value);
+            fire_worker_telemetry("iii-http", "1.0.0").await;
+        }
+        let _ci = set_env_var_for_test("CI", "true");
         fire_worker_telemetry("iii-http", "1.0.0").await;
-
-        let path = rx.await.expect("request captured");
         assert!(
-            path.contains("ci=true"),
-            "expected ci=true in download telemetry request, got: {path}"
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
         );
-        assert!(
-            path.contains("version=1.0.0"),
-            "expected version=1.0.0 in download telemetry request, got: {path}"
-        );
-        server.abort();
     }
 
-    /// Regression: a `binary` node installed via the `/resolve` path must fire
-    /// `GET /download/{name}` telemetry, not just engine workers. Before the
-    /// fix this only ran for the `"engine"` arm, so binary/image/bundle installs
-    /// were invisible to the registry's per-worker counter. Drives a real
-    /// binary install against a recording server and asserts the download
-    /// endpoint was hit.
+    // Exercise real artifact installation with and without analytics.
     #[tokio::test]
-    async fn handle_resolved_graph_add_binary_node_fires_download_telemetry() {
-        in_temp_dir_async(|dir| async move {
+    async fn handle_resolved_graph_add_binary_node_respects_telemetry_opt_out() {
+        for telemetry_enabled in [true, false] {
+            in_temp_dir_async(move |dir| async move {
             let _env_guard = crate::TEST_ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            let _policy = enable_test_analytics();
+            let _enabled = set_env_var_for_test("III_TELEMETRY_ENABLED", if telemetry_enabled { "true" } else { "false" });
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5663,20 +5663,16 @@ workers:
                 "binary worker should be installed on disk"
             );
             let hits = recorded.lock().unwrap().clone();
-            // `with_download_query` appends `ci=true` when a CI env var (CI,
-            // GITHUB_ACTIONS, ...) is present, so match on path + version and
-            // tolerate extra query params instead of full-string equality.
             let expected_path = format!("/download/{worker_name}");
-            assert!(
-                hits.iter().any(|hit| {
-                    let (path, query) = hit.split_once('?').unwrap_or((hit.as_str(), ""));
-                    path == expected_path && query.split('&').any(|pair| pair == "version=1.0.0")
-                }),
-                "expected GET {expected_path}?version=1.0.0 telemetry hit, got: {hits:?}"
-            );
+            let telemetry_sent = hits.iter().any(|hit| {
+                let (path, query) = hit.split_once('?').unwrap_or((hit.as_str(), ""));
+                path == expected_path && query.split('&').any(|pair| pair == "version=1.0.0")
+            });
+            assert_eq!(telemetry_sent, telemetry_enabled, "captured requests: {hits:?}");
             server.abort();
         })
         .await;
+        }
     }
 
     #[tokio::test]

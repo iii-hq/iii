@@ -74,6 +74,38 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 ### Run the Engine
 
+Cargo commands launched from this checkout default to
+`III_TELEMETRY_ENABLED=false` through the repository's `.cargo/config.toml`.
+This covers `cargo run`, `cargo test`, and their child processes. The default
+does not override an explicitly supplied environment variable and is not baked
+into release binaries. To exercise telemetry intentionally with `cargo run`, set
+`III_TELEMETRY_ENABLED=true` explicitly.
+
+CI workflows, `scripts/start-iii.sh`, `scripts/generate-cli-docs.sh`, installer
+test scripts, and Rust integration helpers that launch real binaries explicitly
+set `III_TELEMETRY_ENABLED=false`, including when their parent environment says
+`true`. Use the installed `iii` command directly for customer or production
+launches; `scripts/start-iii.sh` is a CI and contributor launcher.
+
+When invoking a built binary or test executable directly, Cargo's environment
+defaults do not apply. Set the opt-out before starting it:
+
+```bash
+III_TELEMETRY_ENABLED=false ./target/debug/iii --config engine/config.yaml
+```
+
+The public engine Docker Compose examples retain the production default of
+enabled telemetry and forward an explicit opt-out into the container:
+
+```bash
+III_TELEMETRY_ENABLED=false docker compose -f engine/docker-compose.yml up
+```
+
+This setting controls anonymous product usage telemetry. It does not disable
+OpenTelemetry traces, metrics, or logs. The SDK example Docker Compose files
+only start observability and broker dependencies, so they have no III process
+to configure.
+
 ```bash
 # With default config
 cargo run -- --config config.yaml
@@ -164,6 +196,19 @@ cargo test -- --nocapture
 ```
 
 ### Writing Tests
+
+Any test helper that launches `iii` or `iii-worker` must set
+`.env("III_TELEMETRY_ENABLED", "false")` on the child command. This keeps direct
+execution of the integration test binary protected without mutating the test
+runner's global environment. Shell and Python launchers must also pass the
+opt-out explicitly across the process boundary.
+
+The entrypoint regression checks use fake executables and a dependency-free
+Cargo probe; they do not launch the engine or contact a telemetry service:
+
+```bash
+python3 -m pytest .github/scripts/test_telemetry_entrypoints.py -v
+```
 
 - Place unit tests in the same file using `#[cfg(test)]` modules
 - Use `mockall` for mocking dependencies

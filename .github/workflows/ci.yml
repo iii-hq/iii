@@ -160,6 +160,8 @@ jobs:
           # test runners like nextest aren't used here: several engine tests rely
           # on shared in-process global state — tracing/metrics singletons,
           # ports — and aren't isolation-safe.)
+          cargo test -p iii-telemetry-policy
+          cargo test -p scaffolder-core --lib
           cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
           cargo test -p iii --all-features
           # Reports re-read the merged profdata (no recompile), so emitting the

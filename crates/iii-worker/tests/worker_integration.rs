@@ -220,6 +220,7 @@ fn add_subcommand_multiple_workers() {
 fn add_from_non_project_dir_leaves_cwd_untouched() {
     let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["add", "definitely-not-a-worker-mot4091", "--no-wait"])
         .current_dir(temp.path())
         .env("HOME", temp.path())

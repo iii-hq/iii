@@ -333,6 +333,27 @@ pub fn env_has_path(env: &[String]) -> bool {
         .any(|kv| matches!(kv.split_once('='), Some(("PATH", _))))
 }
 
+/// The caller's guest environment, completed before passing it to libkrun.
+fn guest_env(
+    supplied: &[String],
+    telemetry_disabled: bool,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env: std::collections::BTreeMap<String, String> = supplied
+        .iter()
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    if !env_has_path(supplied) {
+        env.insert("PATH".to_string(), DEFAULT_GUEST_PATH.to_string());
+    }
+    // The guest cannot see host CI variables or the developer marker file.
+    // Apply the effective opt-out last so --env cannot re-enable it.
+    if telemetry_disabled {
+        env.insert("III_TELEMETRY_ENABLED".to_string(), "false".to_string());
+    }
+    env
+}
+
 /// Conditionally rewrite localhost/loopback URLs.
 ///
 /// `None` means networking is disabled — no virtio-net device is attached,
@@ -1007,21 +1028,9 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
         }
 
-        for env_str in &args.env {
-            if let Some((key, value)) = env_str.split_once('=') {
-                let rewritten_value = rewrite_localhost(value);
-                e = e.env(key, &rewritten_value);
-            }
-        }
-        // Fallback PATH for rootfs caches that pre-date the
-        // `.oci-config.json` write step (`oci.rs:604`) — `read_oci_env`
-        // returns [] on those, so PATH never makes it into `args.env`,
-        // and shebang scripts like `#!/usr/bin/env node` then fail to
-        // resolve binaries that live in /usr/local/bin. The check runs
-        // after the caller loop so an explicit `--env PATH=...` (or an
-        // OCI image that does ship PATH) always wins.
-        if !env_has_path(&args.env) {
-            e = e.env("PATH", DEFAULT_GUEST_PATH);
+        for (key, value) in guest_env(&args.env, iii_telemetry_policy::is_telemetry_disabled()) {
+            let rewritten_value = rewrite_localhost(&value);
+            e = e.env(&key, &rewritten_value);
         }
         e
     });
@@ -1216,6 +1225,33 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn telemetry_opt_out_wins_over_supplied_guest_env() {
+        for (disabled, declared, expected) in [
+            (true, None, Some("false")),
+            (true, Some("true"), Some("false")),
+            (false, None, None),
+            (false, Some("true"), Some("true")),
+            (false, Some("false"), Some("false")),
+        ] {
+            let supplied = declared
+                .map(|value| vec![format!("III_TELEMETRY_ENABLED={value}")])
+                .unwrap_or_default();
+            let env = guest_env(&supplied, disabled);
+            assert_eq!(
+                env.get("III_TELEMETRY_ENABLED").map(String::as_str),
+                expected
+            );
+            assert_eq!(
+                env.get("PATH").map(String::as_str),
+                Some(DEFAULT_GUEST_PATH)
+            );
+        }
+        let env = guest_env(&["PATH=".into(), "CUSTOM=a=b".into()], false);
+        assert_eq!(env["PATH"], "");
+        assert_eq!(env["CUSTOM"], "a=b");
+    }
 
     #[test]
     fn test_vm_boot_args_parse() {

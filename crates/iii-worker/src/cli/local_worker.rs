@@ -341,7 +341,13 @@ fi"#
 pub fn build_env_exports(env: &HashMap<String, String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     for (k, v) in env {
-        if k == "III_ENGINE_URL" || k == "III_URL" || k == "III_WORKER_NAME" {
+        // These values already arrive through the guest environment. Re-exporting
+        // the project value here would undo launcher overrides, including opt-out.
+        if k == "III_ENGINE_URL"
+            || k == "III_URL"
+            || k == "III_WORKER_NAME"
+            || k == "III_TELEMETRY_ENABLED"
+        {
             continue;
         }
         if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
@@ -365,6 +371,20 @@ pub fn build_local_env(
     worker_name: &str,
     project_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
+    build_local_env_with_telemetry(
+        engine_url,
+        worker_name,
+        project_env,
+        iii_telemetry_policy::is_telemetry_disabled(),
+    )
+}
+
+fn build_local_env_with_telemetry(
+    engine_url: &str,
+    worker_name: &str,
+    project_env: &HashMap<String, String>,
+    telemetry_disabled: bool,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
     env.insert("III_URL".to_string(), engine_url.to_string());
@@ -377,6 +397,9 @@ pub fn build_local_env(
         if key != "III_ENGINE_URL" && key != "III_URL" && key != "III_WORKER_NAME" {
             env.insert(key.clone(), value.clone());
         }
+    }
+    if telemetry_disabled {
+        env.insert("III_TELEMETRY_ENABLED".to_string(), "false".to_string());
     }
     env
 }
@@ -1592,6 +1615,50 @@ async fn start_worker_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn telemetry_opt_out_survives_local_script_exports() {
+        let project_env = HashMap::from([("III_TELEMETRY_ENABLED".into(), "true".into())]);
+        for (disabled, expected) in [(true, "false"), (false, "true")] {
+            let guest_env = build_local_env_with_telemetry(
+                "ws://localhost:49134",
+                "test",
+                &project_env,
+                disabled,
+            );
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!(
+                    "{} && printf '%s' \"$III_TELEMETRY_ENABLED\"",
+                    build_env_exports(&project_env)
+                ))
+                .env_clear()
+                .envs(guest_env)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn telemetry_opt_out_in_guest_cannot_be_reenabled_by_project_script() {
+        let project_env = HashMap::from([("III_TELEMETRY_ENABLED".into(), "true".into())]);
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "{} && printf '%s' \"$III_TELEMETRY_ENABLED\"",
+                build_env_exports(&project_env)
+            ))
+            .env_clear()
+            .env("III_TELEMETRY_ENABLED", "false")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "false");
+    }
 
     #[test]
     fn build_local_mounts_maps_project_to_workspace() {

@@ -13,6 +13,9 @@
 //! starts the same way regardless of which shell launched the daemon, and a
 //! stale `III_URL` in the operator's environment can never point a child at the
 //! wrong engine.
+//! An effective operator telemetry opt-out is also materialized as `false`
+//! after the container environment, including when the opt-out came from CI
+//! or a host-only developer marker.
 //!
 //! The plan is computed as data ([`SpawnPlan`]) and only then turned into a
 //! process, so the contract is assertable without spawning anything.
@@ -135,6 +138,10 @@ pub struct SpawnPlan {
 /// win over a reserved key — those are rejected at parse time rather than
 /// silently dropped here.
 pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
+    spawn_plan_with_telemetry(ctx, iii_telemetry_policy::is_telemetry_disabled())
+}
+
+fn spawn_plan_with_telemetry(ctx: &SpawnCtx<'_>, telemetry_disabled: bool) -> SpawnPlan {
     let mut env: BTreeMap<String, String> = BASELINE_ENV
         .iter()
         .filter_map(|name| {
@@ -145,6 +152,9 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         .collect();
 
     env.extend(ctx.user_env.clone());
+    if telemetry_disabled {
+        env.insert("III_TELEMETRY_ENABLED".to_string(), "false".to_string());
+    }
 
     env.insert("III_URL".to_string(), ctx.engine_url.to_string());
     env.insert("III_NAMESPACE".to_string(), ctx.namespace.to_string());
@@ -292,6 +302,98 @@ mod tests {
         path.canonicalize()
             .or_else(|_| std::path::absolute(path))
             .unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telemetry_opt_out_survives_env_clear_and_child_overrides() {
+        let start = StartSpec::Shell("printf '%s' \"${III_TELEMETRY_ENABLED-unset}\"".to_string());
+        for (disabled, declared, expected) in [
+            (true, None, "false"),
+            (true, Some("true"), "false"),
+            (true, Some("off"), "false"),
+            (false, None, "unset"),
+            (false, Some("true"), "true"),
+            (false, Some("false"), "false"),
+            (false, Some("off"), "off"),
+        ] {
+            let user_env = declared
+                .map(|value| env_of(&[("III_TELEMETRY_ENABLED", value)]))
+                .unwrap_or_default();
+            let mut context = ctx(&start, None, &user_env);
+            context.working_dir = Path::new("/");
+            let plan = spawn_plan_with_telemetry(&context, disabled);
+            let output = plan.command().unwrap().output().await.unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                expected,
+                "disabled={disabled}, declared={declared:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telemetry_policy_propagates_across_processes() {
+        const PROBE: &str = "III_COMPOSE_TEST_TELEMETRY_EXPECTED";
+        if let Ok(expected) = std::env::var(PROBE) {
+            let start = StartSpec::Exec {
+                program: PathBuf::from("/bin/sh"),
+                args: vec!["-c".into(), "printf '%s' \"$III_TELEMETRY_ENABLED\"".into()],
+            };
+            let user_env = env_of(&[("III_TELEMETRY_ENABLED", "true")]);
+            let mut context = ctx(&start, None, &user_env);
+            context.working_dir = Path::new("/");
+            let output = spawn_plan(&context)
+                .command()
+                .unwrap()
+                .output()
+                .await
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            return;
+        }
+
+        for (setting, marker, expected) in [
+            (None, false, "true"),
+            (Some(("III_TELEMETRY_ENABLED", "true")), false, "true"),
+            (Some(("III_TELEMETRY_ENABLED", "false")), false, "false"),
+            (Some(("III_TELEMETRY_ENABLED", "0")), false, "false"),
+            (Some(("III_TELEMETRY_ENABLED", " OFF ")), false, "false"),
+            (Some(("III_TELEMETRY_ENABLED", "No")), false, "false"),
+            (Some(("CI", "")), false, "false"),
+            (Some(("III_TELEMETRY_DEV", "true")), false, "false"),
+            (None, true, "false"),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            if marker {
+                std::fs::create_dir(home.path().join(".iii")).unwrap();
+                std::fs::write(home.path().join(".iii/telemetry_dev_optout"), "").unwrap();
+            }
+            // Separate processes keep policy inputs isolated from parallel tests.
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "spawn::tests::telemetry_policy_propagates_across_processes",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", home.path())
+                .env(PROBE, expected);
+            if let Some((key, value)) = setting {
+                child.env(key, value);
+            }
+            let output = child.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "setting={setting:?}, marker={marker}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

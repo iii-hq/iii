@@ -353,6 +353,7 @@ fn vm_boot_subprocess_receives_correct_rootfs_argument() {
 
     let binary = env!("CARGO_BIN_EXE_iii-worker");
     let output = std::process::Command::new(binary)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("__vm-boot")
         .arg("--rootfs")
         .arg(&temp_dir_path)
@@ -414,6 +415,7 @@ fn vm_boot_subprocess_rejects_nonexistent_rootfs() {
     let nonexistent_path = "/nonexistent/path/that/does/not/exist";
 
     let output = std::process::Command::new(binary)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("__vm-boot")
         .arg("--rootfs")
         .arg(nonexistent_path)
