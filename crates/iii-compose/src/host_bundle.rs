@@ -56,6 +56,8 @@ pub struct PreparedHostBundle {
 pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<PreparedHostBundle> {
     let container_dir = container_dir(host_root, key)?;
     let source_fingerprint = source_fingerprint(&spec.install_dir)?;
+    ensure_private_dir(host_root)?;
+    ensure_private_dir(&container_dir)?;
     let workspace = container_dir.join("workspace");
     let expected_workspace = WorkspaceMeta {
         format_version: FORMAT_VERSION,
@@ -64,12 +66,12 @@ pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<Pre
 
     let workspace_replaced = !workspace_matches(&workspace, &expected_workspace);
     if workspace_replaced {
-        fs::create_dir_all(&container_dir).map_err(|source| io_error(&container_dir, source))?;
         let staging = container_dir.join(format!("workspace.tmp-{}", uuid::Uuid::new_v4()));
         remove_any(&staging)?;
-        fs::create_dir(&staging).map_err(|source| io_error(&staging, source))?;
+        ensure_private_dir(&staging)?;
         if let Err(error) = copy_tree(&spec.install_dir, &staging)
             .and_then(|_| write_json_atomic(&staging.join(WORKSPACE_META), &expected_workspace))
+            .and_then(|_| harden_tree(&staging))
         {
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
@@ -94,13 +96,22 @@ pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<Pre
     })
 }
 
-/// Records a successful install. An absent install is already prepared by
-/// definition and deliberately needs no marker.
+/// Makes the workspace owner-only immediately before executing bundle code.
+pub fn harden_for_execution(host_root: &Path, key: &str) -> Result<()> {
+    let container_dir = container_dir(host_root, key)?;
+    ensure_private_dir(host_root)?;
+    ensure_private_dir(&container_dir)?;
+    harden_tree(&container_dir.join("workspace"))
+}
+
+/// Records a successful install after hardening everything it created. An
+/// absent install is already prepared by definition and needs no marker.
 pub fn mark_prepared(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<()> {
     let container_dir = container_dir(host_root, key)?;
     let Some(_) = spec.install else {
         return Ok(());
     };
+    harden_for_execution(host_root, key)?;
     let meta = PreparedMeta {
         format_version: FORMAT_VERSION,
         source_fingerprint: source_fingerprint(&spec.install_dir)?,
@@ -143,7 +154,9 @@ fn install_fingerprint(install: Option<&str>) -> String {
 }
 
 fn workspace_matches(path: &Path, expected: &WorkspaceMeta) -> bool {
-    path.is_dir() && json_matches(&path.join(WORKSPACE_META), expected)
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        && json_matches(&path.join(WORKSPACE_META), expected)
+        && tree_is_owner_only(path)
 }
 
 fn json_matches<T>(path: &Path, expected: &T) -> bool
@@ -164,6 +177,7 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let bytes =
         serde_json::to_vec(value).map_err(|source| io_error(path, io::Error::other(source)))?;
     fs::write(&temp, bytes).map_err(|source| io_error(&temp, source))?;
+    harden_path(&temp)?;
     fs::rename(&temp, path).map_err(|source| {
         let _ = fs::remove_file(&temp);
         io_error(path, source)
@@ -191,13 +205,11 @@ fn copy_tree_from(source: &Path, destination: &Path, source_root: &Path) -> Resu
         let metadata = fs::symlink_metadata(&from).map_err(|error| io_error(&from, error))?;
         if metadata.is_dir() {
             fs::create_dir(&to).map_err(|error| io_error(&to, error))?;
+            harden_path(&to)?;
             copy_tree_from(&from, &to, source_root)?;
-            fs::set_permissions(&to, metadata.permissions())
-                .map_err(|error| io_error(&to, error))?;
         } else if metadata.is_file() {
             fs::copy(&from, &to).map_err(|error| io_error(&to, error))?;
-            fs::set_permissions(&to, metadata.permissions())
-                .map_err(|error| io_error(&to, error))?;
+            harden_path(&to)?;
         } else if metadata.file_type().is_symlink() {
             copy_symlink(&from, &to, source_root)?;
         } else {
@@ -240,6 +252,96 @@ fn copy_symlink(source: &Path, _destination: &Path, _source_root: &Path) -> Resu
         source,
         io::Error::new(io::ErrorKind::Unsupported, "bundle symlinks require unix"),
     ))
+}
+
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path).map_err(|source| io_error(path, source))?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !metadata.is_dir() {
+        return Err(io_error(
+            path,
+            io::Error::other("host bundle state path must be a directory, not a symlink or file"),
+        ));
+    }
+    harden_path(path)
+}
+
+fn harden_tree(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    harden_path(path)?;
+    if metadata.is_dir() {
+        let entries = fs::read_dir(path).map_err(|source| io_error(path, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(path, source))?;
+            harden_tree(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn harden_path(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    let mode = if metadata.is_dir() {
+        0o700
+    } else if metadata.is_file() {
+        0o600 | u32::from(metadata.permissions().mode() & 0o100 != 0) * 0o100
+    } else {
+        return Err(io_error(
+            path,
+            io::Error::other("host bundle workspace contains an unsupported file type"),
+        ));
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|source| io_error(path, source))
+}
+
+#[cfg(not(unix))]
+fn harden_path(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn tree_is_owner_only(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    let expected = if metadata.is_dir() {
+        0o700
+    } else if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+        0o700
+    } else if metadata.is_file() {
+        0o600
+    } else {
+        return false;
+    };
+    if mode != expected {
+        return false;
+    }
+    !metadata.is_dir()
+        || fs::read_dir(path).is_ok_and(|entries| {
+            entries.into_iter().all(|entry| {
+                entry
+                    .ok()
+                    .is_some_and(|entry| tree_is_owner_only(&entry.path()))
+            })
+        })
+}
+
+#[cfg(not(unix))]
+fn tree_is_owner_only(_path: &Path) -> bool {
+    true
 }
 
 fn remove_any(path: &Path) -> Result<()> {
@@ -292,6 +394,89 @@ mod tests {
             assert_eq!(marker_error.code(), "INVALID_HOST_BUNDLE_CONTAINER_KEY");
         }
         assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copied_and_installed_workspace_content_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        fs::set_permissions(
+            source.path().join("worker.js"),
+            fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        let prepared = prepare(&spec, state.path(), "worker").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&prepared.workspace), 0o700);
+        assert_eq!(mode(&prepared.workspace.join("worker.js")), 0o700);
+
+        let installed = prepared.workspace.join("node_modules");
+        fs::create_dir(&installed).unwrap();
+        fs::write(installed.join("dependency.js"), "installed").unwrap();
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(
+            installed.join("dependency.js"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+        assert_eq!(mode(&installed), 0o700);
+        assert_eq!(mode(&installed.join("dependency.js")), 0o600);
+        assert!(
+            !prepare(&spec, state.path(), "worker")
+                .unwrap()
+                .install_required
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insecure_reused_workspace_is_rebuilt_before_execution() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&spec, state.path(), "worker").unwrap();
+        fs::write(first.workspace.join("untrusted"), "discard").unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+        fs::set_permissions(&first.workspace, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let rebuilt = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(rebuilt.install_required);
+        assert!(!rebuilt.workspace.join("untrusted").exists());
+        assert_eq!(
+            fs::metadata(&rebuilt.workspace)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_run_output_is_hardened_even_without_an_install_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", None);
+        let prepared = prepare(&spec, state.path(), "worker").unwrap();
+        let generated = prepared.workspace.join("generated-by-pre-run");
+        fs::write(&generated, "hook output").unwrap();
+        fs::set_permissions(&generated, fs::Permissions::from_mode(0o666)).unwrap();
+
+        harden_for_execution(state.path(), "worker").unwrap();
+        assert_eq!(
+            fs::metadata(generated).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

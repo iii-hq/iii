@@ -645,7 +645,10 @@ worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails
 `MISSING_START_COMMAND`.
 
 For a bundle using `runtime: host`, Compose copies the verified bundle from the shared package cache
-into a private workspace before running any publisher script. The effective order is:
+into a private, owner-only workspace before running any publisher script. On Unix, directories are normalized
+to `0700` and files to `0600`, retaining only the owner's executable bit when needed. Insecure reused
+workspaces are rebuilt before execution. Permissions are enforced again after `pre_run` and installation,
+immediately before the worker is spawned. The effective order is:
 
 ```text
 prepare or reuse workspace

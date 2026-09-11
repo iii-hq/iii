@@ -1073,6 +1073,9 @@ async fn start_one_until_shutdown(
         })?;
         crate::host_bundle::mark_prepared(spec, ctx.host_dir, key)?;
     }
+    if matches!(start, StartSpec::HostBundle(_)) {
+        crate::host_bundle::harden_for_execution(ctx.host_dir, key)?;
+    }
     let plan = spawn_plan(&spawn_ctx);
     let command = match plan.command() {
         Some(command) => command,
