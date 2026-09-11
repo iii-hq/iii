@@ -13,7 +13,7 @@
 
 use std::{
     fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -54,8 +54,8 @@ pub struct PreparedHostBundle {
 
 /// Materializes or reuses one container's private workspace.
 pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<PreparedHostBundle> {
+    let container_dir = container_dir(host_root, key)?;
     let source_fingerprint = source_fingerprint(&spec.install_dir)?;
-    let container_dir = host_root.join(key);
     let workspace = container_dir.join("workspace");
     let expected_workspace = WorkspaceMeta {
         format_version: FORMAT_VERSION,
@@ -74,8 +74,7 @@ pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<Pre
             let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
-        remove_any(&workspace)?;
-        fs::rename(&staging, &workspace).map_err(|source| io_error(&workspace, source))?;
+        promote_workspace(&staging, &workspace)?;
     }
 
     let expected_prepared = PreparedMeta {
@@ -98,6 +97,7 @@ pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<Pre
 /// Records a successful install. An absent install is already prepared by
 /// definition and deliberately needs no marker.
 pub fn mark_prepared(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<()> {
+    let container_dir = container_dir(host_root, key)?;
     let Some(_) = spec.install else {
         return Ok(());
     };
@@ -108,7 +108,28 @@ pub fn mark_prepared(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Resu
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
     };
-    write_json_atomic(&host_root.join(key).join(PREPARED_FILE), &meta)
+    write_json_atomic(&container_dir.join(PREPARED_FILE), &meta)
+}
+
+/// Resolves one container-owned directory without allowing the key to become a path.
+fn container_dir(host_root: &Path, key: &str) -> Result<PathBuf> {
+    let mut components = Path::new(key).components();
+    if matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() {
+        return Ok(host_root.join(key));
+    }
+    Err(ComposeError::InvalidHostBundleContainerKey {
+        container: key.to_string(),
+    })
+}
+
+/// Replaces a workspace and removes the completed staging copy if either step fails.
+fn promote_workspace(staging: &Path, workspace: &Path) -> Result<()> {
+    let result = remove_any(workspace)
+        .and_then(|_| fs::rename(staging, workspace).map_err(|source| io_error(workspace, source)));
+    if result.is_err() {
+        let _ = remove_any(staging);
+    }
+    result
 }
 
 fn source_fingerprint(install_dir: &Path) -> Result<String> {
@@ -256,6 +277,34 @@ mod tests {
             has_base_image: false,
             has_resources: false,
         }
+    }
+
+    #[test]
+    fn unsafe_container_keys_cannot_escape_the_host_root() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+
+        for key in ["", "/tmp", "../x", "a/b", ".", ".."] {
+            let prepare_error = prepare(&spec, state.path(), key).unwrap_err();
+            assert_eq!(prepare_error.code(), "INVALID_HOST_BUNDLE_CONTAINER_KEY");
+            let marker_error = mark_prepared(&spec, state.path(), key).unwrap_err();
+            assert_eq!(marker_error.code(), "INVALID_HOST_BUNDLE_CONTAINER_KEY");
+        }
+        assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn failed_workspace_promotion_removes_completed_staging_data() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("workspace.tmp-test");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("worker.js"), "complete copy").unwrap();
+        let workspace = root.path().join("missing-parent/workspace");
+
+        let error = promote_workspace(&staging, &workspace).unwrap_err();
+        assert_eq!(error.code(), "IO_ERROR");
+        assert!(!staging.exists());
     }
 
     #[test]

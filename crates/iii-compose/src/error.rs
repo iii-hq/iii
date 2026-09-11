@@ -123,6 +123,10 @@ pub enum ComposeError {
     RuntimeOnlyForBundles { container: String },
 
     #[error(
+        "container '{container}': a host bundle workspace key must be one non-empty path component"
+    )]
+    InvalidHostBundleContainerKey { container: String },
+    #[error(
         "container '{container}': package 'scripts.run' requires 'runtime: host'; bundles use a VM by default"
     )]
     PackageRunRequiresHostRuntime { container: String },
@@ -568,6 +572,7 @@ impl ComposeError {
             Self::RuntimeOnlyForBundles { .. } => "RUNTIME_ONLY_FOR_BUNDLES",
             Self::PackageRunRequiresHostRuntime { .. } => "PACKAGE_RUN_REQUIRES_HOST_RUNTIME",
             Self::RuntimeRequiresBundle { .. } => "RUNTIME_REQUIRES_BUNDLE",
+            Self::InvalidHostBundleContainerKey { .. } => "INVALID_HOST_BUNDLE_CONTAINER_KEY",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
