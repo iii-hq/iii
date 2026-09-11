@@ -27,6 +27,7 @@ services:
       - /app/worker-compose.yaml
     environment:
       - III_EXECUTION_CONTEXT=docker
+      - III_TELEMETRY_ENABLED=${III_TELEMETRY_ENABLED:-true}
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
       interval: 10s

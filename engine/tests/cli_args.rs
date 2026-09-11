@@ -1,7 +1,9 @@
 use std::process::{Command, Stdio};
 
 fn iii_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_iii"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
+    command.env("III_TELEMETRY_ENABLED", "false");
+    command
 }
 
 /// Spawn the engine in `dir`, wait for it to create `file_name`, then kill it.

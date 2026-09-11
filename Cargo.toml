@@ -10,6 +10,7 @@ members = [
   "console/packages/console-rust",
   "crates/iii-clap-docs",
   "crates/iii-compose",
+  "crates/iii-telemetry-policy",
   "crates/iii-init",
   "crates/iii-filesystem",
   "crates/iii-network",
@@ -33,6 +34,7 @@ iii-sdk = { path = "sdk/packages/rust/iii" }
 iii-observability = { path = "sdk/packages/rust/observability", version = "0.23.1-rc.6" }
 iii-helpers = { path = "sdk/packages/rust/helpers", version = "0.23.1-rc.6" }
 scaffolder-core = { path = "crates/scaffolder-core" }
+iii-telemetry-policy = { path = "crates/iii-telemetry-policy" }
 
 # Shared dependencies used by tooling crates
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "process", "time"] }

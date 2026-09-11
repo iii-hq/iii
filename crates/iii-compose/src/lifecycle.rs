@@ -1171,6 +1171,9 @@ async fn vm_command(
     for name in &plan.env_remove {
         command.env_remove(name);
     }
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        command.env("III_TELEMETRY_ENABLED", "false");
+    }
     command.stdin(std::process::Stdio::null());
     Ok(command)
 }
@@ -1203,6 +1206,9 @@ async fn prepare_vm(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        command.env("III_TELEMETRY_ENABLED", "false");
+    }
     // `vm_command` is cancellation-safe: dropping this future after a shutdown
     // signal must not leave its short-lived helper running.
     command.kill_on_drop(true);

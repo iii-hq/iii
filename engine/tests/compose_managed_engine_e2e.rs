@@ -7,6 +7,7 @@ use std::{process::Stdio, time::Duration, time::Instant};
 
 fn iii_bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
+    command.env("III_TELEMETRY_ENABLED", "false");
     command.env_remove("CLICOLOR_FORCE").env("NO_COLOR", "1");
     command
 }

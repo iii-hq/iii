@@ -101,6 +101,7 @@ fn sandbox_command(tmp: &Path, logfile: &Path) -> Command {
     let log = std::fs::File::create(logfile).unwrap();
     let log_err = log.try_clone().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_iii-worker"));
+    cmd.env("III_TELEMETRY_ENABLED", "false");
     cmd.arg("sandbox-daemon")
         .arg("--config")
         .arg(config)
@@ -259,6 +260,7 @@ fn sandbox_survives_orphaning_while_its_declared_engine_is_alive() {
     std::fs::write(&config, "image_allowlist: []\n").unwrap();
 
     let shell = Command::new("sh")
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("-c")
         .arg(
             r#""$DAEMON_BIN" sandbox-daemon --config "$SANDBOX_CONFIG" --engine ws://127.0.0.1:1 >>"$DAEMON_LOG" 2>&1 & echo $! > "$DAEMON_PIDFILE"; wait"#,
@@ -361,6 +363,7 @@ fn watch_source_exits_when_its_declared_engine_dies() {
     let log_err = log.try_clone().unwrap();
     let mut watcher = KillOnDrop(
         Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+            .env("III_TELEMETRY_ENABLED", "false")
             .args(["__watch-source", "--worker", "test-worker", "--project"])
             .arg(&project)
             .env("RUST_LOG", "info")

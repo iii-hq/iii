@@ -477,53 +477,7 @@ fn detect_timezone() -> String {
     std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string())
 }
 
-/// Environment variables that mark a CI runner. Public so a test that needs to
-/// look like a developer machine can clear the whole set instead of keeping its
-/// own copy, which would drift and pass locally while failing on a runner.
-pub const CI_ENV_VARS: &[&str] = &[
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "CIRCLECI",
-    "JENKINS_URL",
-    "TRAVIS",
-    "BUILDKITE",
-    "TF_BUILD",
-    "CODEBUILD_BUILD_ID",
-    "BITBUCKET_BUILD_NUMBER",
-    "DRONE",
-    "TEAMCITY_VERSION",
-];
-
-pub fn is_ci_environment() -> bool {
-    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
-}
-
-/// True when `III_TELEMETRY_ENABLED` is set to a value that reads as off.
-/// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring
-/// surrounding whitespace. A truthy or unrecognized value does not opt out
-/// here; CI detection and dev opt-out still apply.
-pub fn env_opt_out() -> bool {
-    std::env::var("III_TELEMETRY_ENABLED")
-        .map(|val| is_falsey(&val))
-        .unwrap_or(false)
-}
-
-fn is_falsey(val: &str) -> bool {
-    matches!(
-        val.trim().to_ascii_lowercase().as_str(),
-        "false" | "0" | "no" | "off"
-    )
-}
-
-pub fn is_dev_optout() -> bool {
-    if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
-        return true;
-    }
-
-    let base_dir = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-    base_dir.join(".iii").join("telemetry_dev_optout").exists()
-}
+pub use iii_telemetry_policy::{CI_ENV_VARS, env_opt_out, is_ci_environment, is_dev_optout};
 
 pub fn detect_client_type() -> &'static str {
     "iii_direct"

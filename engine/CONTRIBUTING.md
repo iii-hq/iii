@@ -74,6 +74,36 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 ### Run the Engine
 
+Telemetry is enabled by default, including local development with `cargo run`,
+Make, and `scripts/start-iii.sh`. These launchers preserve the caller's setting;
+the repository does not set a Cargo telemetry default or bake an opt-out into
+release binaries.
+
+Team members must explicitly opt out in their own shell before running any
+installer, CLI, local engine, or test command:
+
+```bash
+export III_TELEMETRY_ENABLED=false
+```
+
+CI workflows, dedicated Make test/CI targets, `scripts/generate-cli-docs.sh`,
+installer test scripts, and integration helpers set the opt-out explicitly.
+Generic development commands do not. Existing operator opt-outs through engine
+configuration, `III_TELEMETRY_DEV`, or the developer marker remain supported,
+as does the existing CI detection policy.
+
+Public Docker Compose examples also default to enabled telemetry. A team
+member's explicit opt-out is forwarded into the container:
+
+```bash
+III_TELEMETRY_ENABLED=false docker compose -f engine/docker-compose.yml up
+```
+
+This setting controls anonymous product usage telemetry. It does not disable
+OpenTelemetry traces, metrics, or logs. The SDK example Docker Compose files
+only start observability and broker dependencies, so they have no III process
+to configure.
+
 ```bash
 # With default config
 cargo run -- --config config.yaml
@@ -164,6 +194,19 @@ cargo test -- --nocapture
 ```
 
 ### Writing Tests
+
+Any test helper that launches `iii` or `iii-worker` must set
+`.env("III_TELEMETRY_ENABLED", "false")` on the child command. This keeps direct
+execution of the integration test binary protected without mutating the test
+runner's global environment. Shell and Python launchers must also pass the
+opt-out explicitly across the process boundary.
+
+The entrypoint regression checks use fake executables and a dependency-free
+Cargo probe; they do not launch the engine or contact a telemetry service:
+
+```bash
+python3 -m pytest .github/scripts/test_telemetry_entrypoints.py -v
+```
 
 - Place unit tests in the same file using `#[cfg(test)]` modules
 - Use `mockall` for mocking dependencies

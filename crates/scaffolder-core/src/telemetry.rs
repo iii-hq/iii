@@ -55,42 +55,7 @@ fn read_device_id() -> Option<String> {
     state.identity.device_id.filter(|id| !id.is_empty())
 }
 
-/// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring
-/// surrounding whitespace. Kept in sync with the engine's
-/// `telemetry::environment::env_opt_out`; the two crates share no dependency.
-fn is_falsey(val: &str) -> bool {
-    matches!(
-        val.trim().to_ascii_lowercase().as_str(),
-        "false" | "0" | "no" | "off"
-    )
-}
-
-pub fn is_telemetry_disabled() -> bool {
-    if std::env::var("III_TELEMETRY_ENABLED")
-        .map(|val| is_falsey(&val))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
-        return true;
-    }
-    const CI_VARS: &[&str] = &[
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "CIRCLECI",
-        "JENKINS_URL",
-        "TRAVIS",
-        "BUILDKITE",
-        "TF_BUILD",
-        "CODEBUILD_BUILD_ID",
-        "BITBUCKET_BUILD_NUMBER",
-        "DRONE",
-        "TEAMCITY_VERSION",
-    ];
-    CI_VARS.iter().any(|v| std::env::var(v).is_ok())
-}
+pub use iii_telemetry_policy::is_telemetry_disabled;
 
 fn detect_is_container() -> bool {
     if std::env::var("III_CONTAINER").is_ok() {
@@ -187,6 +152,9 @@ fn build_amplitude_client() -> Option<reqwest::Client> {
 }
 
 async fn post_amplitude(endpoint: &str, payload: &AmplitudePayload<'_>) {
+    if is_telemetry_disabled() {
+        return;
+    }
     let Some(client) = build_amplitude_client() else {
         return;
     };
@@ -317,6 +285,9 @@ async fn post_posthog(
     event_properties: serde_json::Value,
     user_properties: Option<serde_json::Value>,
 ) {
+    if is_telemetry_disabled() {
+        return;
+    }
     let Some(key) = resolve_posthog_api_key() else {
         return;
     };
@@ -579,6 +550,47 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+    // Isolate opt-in transport tests from other tests that mutate process env.
+    // Both HTTP destinations below are loopback mocks, never public analytics.
+    fn isolated_transport_test(name: &str) -> bool {
+        const CHILD: &str = "III_SCAFFOLDER_TRANSPORT_TEST";
+        if std::env::var(CHILD).ok().as_deref() == Some(name) {
+            return true;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                &format!("telemetry::tests::{name}"),
+                "--nocapture",
+            ])
+            .env(CHILD, name)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("III_TELEMETRY_ENABLED", "true")
+            .env_remove("III_TELEMETRY_DEV");
+        for key in iii_telemetry_policy::CI_ENV_VARS {
+            command.env_remove(key);
+        }
+        assert!(command.status().unwrap().success(), "isolated test {name}");
+        false
+    }
+
+    async fn capture_both_transports(server: &MockServer) {
+        // This runs only in the single-test subprocess above.
+        unsafe {
+            std::env::set_var("POSTHOG_HOST", server.uri());
+            std::env::set_var("POSTHOG_PROJECT_API_KEY", "phc_test");
+        }
+        Mock::given(method("POST"))
+            .and(path("/batch/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
     #[test]
     fn project_ini_body_format() {
         let s = format!(
@@ -651,7 +663,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(home_env)]
     async fn sends_failed_event_when_yaml_missing() {
+        if !isolated_transport_test("sends_failed_event_when_yaml_missing") {
+            return;
+        }
         let mock_server = MockServer::start().await;
+        capture_both_transports(&mock_server).await;
 
         Mock::given(method("POST"))
             .and(path("/2/httpapi"))
@@ -682,9 +698,13 @@ mod tests {
         }
 
         let requests: Vec<Request> = mock_server.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
 
-        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let amplitude = requests
+            .iter()
+            .find(|request| request.url.path() == "/2/httpapi")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&amplitude.body).unwrap();
         let event = &body["events"][0];
         assert_eq!(event["event_type"], "iii_tools_telemetry_failed");
         assert_eq!(
@@ -696,7 +716,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(home_env)]
     async fn sends_normal_event_when_yaml_exists() {
+        if !isolated_transport_test("sends_normal_event_when_yaml_exists") {
+            return;
+        }
         let mock_server = MockServer::start().await;
+        capture_both_transports(&mock_server).await;
 
         Mock::given(method("POST"))
             .and(path("/2/httpapi"))
@@ -739,9 +763,13 @@ mod tests {
         }
 
         let requests: Vec<Request> = mock_server.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
 
-        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let amplitude = requests
+            .iter()
+            .find(|request| request.url.path() == "/2/httpapi")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&amplitude.body).unwrap();
         let event = &body["events"][0];
         assert_eq!(event["event_type"], "project_created");
         assert_eq!(event["device_id"], "test-device-abc");
@@ -750,6 +778,40 @@ mod tests {
             "user_id should not be sent"
         );
         assert_eq!(event["event_properties"]["project_id"], "test-id");
+    }
+
+    #[tokio::test]
+    async fn opt_out_blocks_direct_transports_even_when_spawn_gate_is_bypassed() {
+        if !isolated_transport_test(
+            "opt_out_blocks_direct_transports_even_when_spawn_gate_is_bypassed",
+        ) {
+            return;
+        }
+        let server = MockServer::start().await;
+        unsafe {
+            std::env::set_var("POSTHOG_HOST", server.uri());
+            std::env::set_var("POSTHOG_PROJECT_API_KEY", "phc_test");
+            std::env::set_var("III_TELEMETRY_ENABLED", "false");
+        }
+        let endpoint = format!("{}/2/httpapi", server.uri());
+        send_amplitude_to(
+            &endpoint,
+            "project_created",
+            "iii-tools",
+            "test",
+            serde_json::json!({}),
+        )
+        .await;
+        assert!(
+            spawn_project_event(
+                "project_created",
+                "iii-tools",
+                "test".into(),
+                serde_json::json!({})
+            )
+            .is_none()
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[test]
