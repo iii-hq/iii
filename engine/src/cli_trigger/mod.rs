@@ -84,34 +84,59 @@ const WSS_UNSUPPORTED: &str = "Encrypted websocket connections are not currently
 
 /// Splits a `ws://` engine URL into host and port.
 ///
-/// Every unusable value is an error, named by the `source` that carried it.
-/// An endpoint that cannot be parsed used to fall back to `localhost:49134`,
-/// which sent the call to whichever engine happened to own that port while the
-/// operator believed it went where they had pointed it. That silence is the
-/// failure this command already had; a stale value is better reported than
-/// worked around.
+/// The accepted shapes are exactly `ws://host` and `ws://host:port`. An engine
+/// address is a host and a port and nothing else, and every part this CLI
+/// cannot honour is refused rather than dropped: the endpoint is rebuilt as
+/// `ws://{host}:{port}` further down, so a path, a query, or credentials would
+/// vanish without a word and connect somewhere other than the value says.
+/// Silently ignored credentials are the worst of those, because the caller is
+/// left believing the connection was authenticated.
 ///
-/// `wss://` is refused with its own message. No iii engine terminates TLS, and
-/// the address is rebuilt as `ws://` further down, so accepting one would send
-/// a caller who asked for TLS over the wire in the clear.
+/// Every unusable value is an error, named by the `source` that carried it. An
+/// endpoint that cannot be parsed used to fall back to `localhost:49134`, which
+/// sent the call to whichever engine happened to own that port while the
+/// operator believed it went where they had pointed it.
+///
+/// `wss://` is refused with its own message. No iii engine terminates TLS, so
+/// accepting one would send a caller who asked for TLS over the wire in the
+/// clear.
 ///
 /// A URL without a port keeps `DEFAULT_PORT`: the scheme defaults the `url`
 /// crate knows (80 and 443) are not this engine's.
 fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)> {
     let raw = raw.trim();
-    let malformed = || {
-        anyhow::anyhow!(
-            "{source} {raw:?} must be a ws:// URL with a host, e.g. ws://localhost:49134"
-        )
+    let malformed = |detail: &str| {
+        anyhow::anyhow!("{source} {raw:?} {detail}; expected ws://host or ws://host:port")
     };
-    let url = url::Url::parse(raw).map_err(|_| malformed())?;
-    if url.scheme() == "wss" {
+
+    // Checked before parsing, so `wss:` in any form is named for what it is.
+    if raw.len() >= 4 && raw[..4].eq_ignore_ascii_case("wss:") {
         anyhow::bail!(WSS_UNSUPPORTED);
     }
-    if url.scheme() != "ws" {
-        return Err(malformed());
+    if raw.len() < 5 || !raw[..5].eq_ignore_ascii_case("ws://") {
+        return Err(malformed("must start with ws://"));
     }
-    let host = match url.host().ok_or_else(malformed)? {
+
+    let url = url::Url::parse(raw).map_err(|_| malformed("is not a valid URL"))?;
+    let host = url.host().ok_or_else(|| malformed("names no host"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        // Dropping these quietly would leave the caller believing the
+        // connection carried them. The value is left out of the message on
+        // purpose: it holds the password, and an error line ends up in
+        // terminals, CI logs and bug reports.
+        anyhow::bail!("{source} must not carry credentials; expected ws://host or ws://host:port");
+    }
+    if !matches!(url.path(), "" | "/") {
+        return Err(malformed("must not have a path"));
+    }
+    if url.query().is_some() {
+        return Err(malformed("must not have a query string"));
+    }
+    if url.fragment().is_some() {
+        return Err(malformed("must not have a fragment"));
+    }
+
+    let host = match host {
         url::Host::Ipv6(address) => format!("[{address}]"),
         host => host.to_string(),
     };
@@ -339,7 +364,7 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(
-                err.starts_with("III_URL") && err.contains("must be a ws:// URL"),
+                err.starts_with("III_URL") && err.contains("expected ws://host or ws://host:port"),
                 "unexpected error for III_URL {url:?}: {err}"
             );
         }
@@ -357,7 +382,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("must be a ws:// URL"),
+            err.contains("expected ws://host or ws://host:port"),
             "unexpected error: {err}"
         );
     }
@@ -441,7 +466,7 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(
-                err.starts_with("--engine") && err.contains("must be a ws:// URL"),
+                err.starts_with("--engine") && err.contains("expected ws://host or ws://host:port"),
                 "unexpected error for --engine {url:?}: {err}"
             );
         }
@@ -530,6 +555,69 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.starts_with("--engine"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn a_url_with_more_than_a_host_and_port_is_refused() {
+        // Each of these parses, and every part past the authority would be
+        // dropped when the endpoint is rebuilt as `ws://host:port`.
+        for (url, detail) in [
+            ("ws://127.0.0.1:4400/ws", "must not have a path"),
+            ("ws://127.0.0.1:4400/a/b", "must not have a path"),
+            ("ws://127.0.0.1:4400?x=1", "must not have a query string"),
+            ("ws://127.0.0.1:4400#frag", "must not have a fragment"),
+            ("ws://user@127.0.0.1:4400", "must not carry credentials"),
+            ("ws:127.0.0.1:4400", "must start with ws://"),
+        ] {
+            let err = resolve_endpoint(None, None, Some(url), None)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(detail), "unexpected error for {url:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_bare_host_and_a_trailing_slash_are_both_accepted() {
+        // `ws://host` and `ws://host:port/` are the same address; the `url`
+        // crate normalises both paths to "/".
+        for url in ["ws://engine.test:4400", "ws://engine.test:4400/"] {
+            assert_eq!(
+                resolve_endpoint(None, None, Some(url), None).unwrap(),
+                ("engine.test".to_string(), 4400),
+                "unexpected endpoint for {url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wss_url_is_named_as_tls_whatever_its_shape() {
+        for url in [
+            "wss://engine.test:443",
+            "wss://engine.test/ws",
+            "WSS://engine.test",
+        ] {
+            let err = resolve_endpoint(None, None, Some(url), None)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, WSS_UNSUPPORTED, "unexpected error for {url:?}");
+        }
+    }
+
+    #[test]
+    fn a_url_with_credentials_is_refused_without_echoing_the_password() {
+        // An error line reaches terminals, CI logs and bug reports.
+        let err = resolve_endpoint(None, None, Some("ws://user:secret@127.0.0.1:4400"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must not carry credentials"), "{err}");
+        assert!(
+            !err.contains("secret"),
+            "password leaked into the error: {err}"
+        );
+        assert!(
+            !err.contains("user"),
+            "username leaked into the error: {err}"
+        );
     }
 
     #[tokio::test]
