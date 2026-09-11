@@ -61,11 +61,19 @@ pub enum EngineMode {
 
 /// Resolves the engine URL and ownership after the compose file is parsed.
 ///
-/// An explicit CLI URL always selects an external engine. Without one, an
-/// `engine:` section is managed only when `--up` starts that file; a bare
-/// daemon connects to its URL without taking ownership. File configuration
-/// wins over the process environment, and the local engine address is the
-/// final fallback.
+/// The order is `--engine`, then `III_URL`, then the compose file, then the
+/// local engine address. The environment beats the file: an exported variable
+/// is the caller's live intent, while the file is only what the working
+/// directory happens to hold. `iii trigger` resolves its endpoint the same
+/// way.
+///
+/// `III_URL` selects an engine exactly as `--engine` does, ownership included:
+/// an address that comes from outside the file names an engine that is already
+/// running, so compose connects to it and starts none of its own. Only the
+/// file can hand compose an engine to own, and only `--up` takes it: an
+/// `engine:` section carries the engine's whole configuration, not just an
+/// address, so a bare URL is not a thing compose could spawn from. A bare
+/// daemon connects to the file's engine without taking ownership.
 pub fn resolve_engine_mode(
     file: Option<&ComposeFile>,
     start: bool,
@@ -78,16 +86,25 @@ pub fn resolve_engine_mode(
         };
     }
 
-    if start && let Some(engine) = file.and_then(|file| file.engine.as_ref()) {
+    if let Some(url) = environment_engine_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        return EngineMode::External {
+            url: url.to_string(),
+        };
+    }
+
+    let file_engine = file.and_then(|file| file.engine.as_ref());
+
+    if start && let Some(engine) = file_engine {
         return EngineMode::Managed {
             url: engine.url.clone(),
         };
     }
 
-    let url = file
-        .and_then(|file| file.engine.as_ref())
+    let url = file_engine
         .map(|engine| engine.url.as_str())
-        .or(environment_engine_url)
         .unwrap_or(config::DEFAULT_ENGINE_URL);
     EngineMode::External {
         url: url.to_string(),
@@ -402,10 +419,13 @@ async fn serve(
             policy
         }
         EngineMode::External { .. } => {
+            // An address from outside the file overrides the file's engine, so
+            // the file's declared engine is no longer what this daemon must
+            // match. `III_URL` counts here for the same reason `--engine`
+            // does: it named the engine that won.
+            let overridden = explicit_engine_url.is_some() || environment_engine_url.is_some();
             match initial_file.as_ref().filter(|file| file.engine.is_some()) {
-                Some(file) if explicit_engine_url.is_some() => {
-                    daemon::EnginePolicy::external_overriding(file)
-                }
+                Some(file) if overridden => daemon::EnginePolicy::external_overriding(file),
                 Some(file) => daemon::EnginePolicy::external_from_file(file),
                 None => daemon::EnginePolicy::External,
             }

@@ -358,7 +358,23 @@ fn up_without_a_cli_namespace_defers_to_the_compose_file() {
 }
 
 #[test]
-fn up_uses_the_file_engine_when_the_cli_does_not_override_it() {
+fn up_uses_the_file_engine_when_nothing_else_names_one() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), true, None, None),
+        EngineMode::Managed {
+            url: "ws://127.0.0.1:49134".to_string()
+        }
+    );
+}
+
+#[test]
+fn up_with_an_environment_engine_connects_without_owning_it() {
     let managed = ComposeFile::parse(
         "engine: { workers: {} }\ncontainers: {}\n",
         "/srv/app/worker-compose.yaml",
@@ -372,10 +388,68 @@ fn up_uses_the_file_engine_when_the_cli_does_not_override_it() {
             None,
             Some("ws://global-environment:49134"),
         ),
-        EngineMode::Managed {
-            url: "ws://127.0.0.1:49134".to_string()
+        EngineMode::External {
+            url: "ws://global-environment:49134".to_string()
         },
-        "a process-wide III_URL must not override a file-owned engine"
+        "III_URL selects an engine the same way --engine does, ownership included"
+    );
+}
+
+#[test]
+fn explicit_engine_beats_the_environment_with_up() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&managed),
+            true,
+            Some("ws://flag:1"),
+            Some("ws://global-environment:49134"),
+        ),
+        EngineMode::External {
+            url: "ws://flag:1".to_string()
+        }
+    );
+}
+
+#[test]
+fn bare_compose_prefers_the_environment_over_the_file_engine() {
+    let managed = ComposeFile::parse(
+        "engine: { url: 'ws://file-engine:49134', workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&managed),
+            false,
+            None,
+            Some("ws://global-environment:49134"),
+        ),
+        EngineMode::External {
+            url: "ws://global-environment:49134".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_empty_environment_url_falls_through_to_the_file_engine() {
+    let managed = ComposeFile::parse(
+        "engine: { url: 'ws://file-engine:49134', workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), false, None, Some("   ")),
+        EngineMode::External {
+            url: "ws://file-engine:49134".to_string()
+        }
     );
 }
 

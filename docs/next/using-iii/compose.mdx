@@ -564,6 +564,17 @@ and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for 
   Changes to these worker configurations take effect only after the engine restarts.
 </Note>
 
+#### Which engine Compose uses
+
+Compose takes the engine address from the first of these that supplies one: the `--engine` flag,
+the `III_URL` environment variable, the `engine:` section of the compose file, then
+`ws://127.0.0.1:49134`.
+
+An address from `--engine` or `III_URL` names an engine that already runs, so Compose connects to
+it and starts no engine of its own, even with `--up`. Only the compose file can give Compose an
+engine to own, and only `--up` takes it: an `engine:` section carries the engine's whole
+configuration, not only an address.
+
 ### Worker fields
 
 Each key under `containers` is the name the worker registers under.
