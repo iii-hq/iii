@@ -32,7 +32,7 @@
   <a href="#install-iii">Install iii</a> ·
   <a href="#add-workers">Add Workers</a> ·
   <a href="#sdks">SDKs</a> ·
-  <a href="#agent-skills">Agent Skills</a> ·
+  <a href="#agent-skills-for-3rd-party-harnesses">Agent Skills</a> ·
   <a href="#console">Console</a> ·
   <a href="#resources">Resources</a>
 </p>
