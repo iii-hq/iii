@@ -82,6 +82,34 @@ const DEFAULT_ADDRESS: &str = "localhost";
 /// Told to the caller when a URL asks for TLS, which no iii engine serves.
 const WSS_UNSUPPORTED: &str = "Encrypted websocket connections are not currently supported.";
 
+/// Replaces any `user:password@` in a URL-shaped string with `***@`.
+///
+/// Applied to every value quoted back in an error. The authority is whatever
+/// sits between the scheme and the first `/`, `?` or `#`, which is where the
+/// `url` crate reads credentials from, and this runs on strings that never
+/// parsed, so it cannot rely on that crate to find them.
+fn redact_credentials(raw: &str) -> String {
+    let rest_start = match raw.find("://") {
+        Some(index) => index + 3,
+        None => match raw.find(':') {
+            Some(index) => index + 1,
+            None => 0,
+        },
+    };
+    let rest = &raw[rest_start..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    match authority.rfind('@') {
+        Some(at) => format!(
+            "{}***@{}{}",
+            &raw[..rest_start],
+            &authority[at + 1..],
+            &rest[authority_end..]
+        ),
+        None => raw.to_string(),
+    }
+}
+
 /// Splits a `ws://` engine URL into host and port.
 ///
 /// The accepted shapes are exactly `ws://host` and `ws://host:port`. An engine
@@ -105,15 +133,27 @@ const WSS_UNSUPPORTED: &str = "Encrypted websocket connections are not currently
 /// crate knows (80 and 443) are not this engine's.
 fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)> {
     let raw = raw.trim();
+    // Quoted back with any `user:password@` hidden. An error line reaches
+    // terminals, CI logs and bug reports, and a value this function rejects is
+    // exactly the one nobody checked for a secret.
+    let shown = redact_credentials(raw);
     let malformed = |detail: &str| {
-        anyhow::anyhow!("{source} {raw:?} {detail}; expected ws://host or ws://host:port")
+        anyhow::anyhow!("{source} {shown:?} {detail}; expected ws://host or ws://host:port")
     };
 
-    // Checked before parsing, so `wss:` in any form is named for what it is.
-    if raw.len() >= 4 && raw[..4].eq_ignore_ascii_case("wss:") {
+    // `str::get` rather than a slice: an index into a multi-byte character
+    // panics, and this is user input. Checked before parsing, so `wss:` in any
+    // form is named for what it is.
+    if raw
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("wss:"))
+    {
         anyhow::bail!(WSS_UNSUPPORTED);
     }
-    if raw.len() < 5 || !raw[..5].eq_ignore_ascii_case("ws://") {
+    if !raw
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ws://"))
+    {
         return Err(malformed("must start with ws://"));
     }
 
@@ -121,10 +161,8 @@ fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)>
     let host = url.host().ok_or_else(|| malformed("names no host"))?;
     if !url.username().is_empty() || url.password().is_some() {
         // Dropping these quietly would leave the caller believing the
-        // connection carried them. The value is left out of the message on
-        // purpose: it holds the password, and an error line ends up in
-        // terminals, CI logs and bug reports.
-        anyhow::bail!("{source} must not carry credentials; expected ws://host or ws://host:port");
+        // connection carried them.
+        return Err(malformed("must not carry credentials"));
     }
     if !matches!(url.path(), "" | "/") {
         return Err(malformed("must not have a path"));
@@ -604,26 +642,58 @@ mod tests {
     }
 
     #[test]
-    fn a_url_with_credentials_is_refused_without_echoing_the_password() {
-        // An error line reaches terminals, CI logs and bug reports.
+    fn credentials_never_reach_the_error_text() {
+        // An error line reaches terminals, CI logs and bug reports, and the
+        // value this rejects is the one nobody checked for a secret. Every
+        // rejection path has to hide them, not just the one that names them:
+        // a wrong scheme is reported before the URL is ever parsed.
+        for url in [
+            "ws://user:secret@127.0.0.1:4400",
+            "http://user:secret@127.0.0.1:4400",
+            "ws://user:secret@127.0.0.1:4400/path",
+            "wss://user:secret@127.0.0.1:4400",
+            "gibberish://user:secret@host",
+        ] {
+            let err = resolve_endpoint(None, None, Some(url), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                !err.contains("secret"),
+                "password leaked for {url:?}: {err}"
+            );
+            assert!(!err.contains("user"), "username leaked for {url:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_redacted_value_keeps_the_part_that_helps() {
         let err = resolve_endpoint(
             None,
             None,
-            Some("ws://user:secret@127.0.0.1:4400"),
+            Some("http://user:secret@127.0.0.1:4400"),
             None,
             None,
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("must not carry credentials"), "{err}");
         assert!(
-            !err.contains("secret"),
-            "password leaked into the error: {err}"
+            err.contains("***@127.0.0.1:4400"),
+            "host and port should survive redaction: {err}"
         );
-        assert!(
-            !err.contains("user"),
-            "username leaked into the error: {err}"
-        );
+    }
+
+    #[test]
+    fn a_non_ascii_value_is_rejected_rather_than_panicking() {
+        // `raw[..4]` panics when the index lands inside a character.
+        for url in ["wssé", "ws:é", "wsé", "wss√", "é", "ws"] {
+            let err = resolve_endpoint(None, None, Some(url), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("expected ws://host or ws://host:port"),
+                "unexpected error for {url:?}: {err}"
+            );
+        }
     }
 
     #[tokio::test]
