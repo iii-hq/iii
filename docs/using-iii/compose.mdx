@@ -247,7 +247,8 @@ A container object accepts these fields:
 | `worker` | Required. A package name, `name@version`, registry reference, or local path. Also accepts `package://` and `path://` sources. |
 | `version` | Package version. Must agree with a version included in `worker`. |
 | `start_after` | Container keys to start first. Compose adds the package's resolved dependencies to this list. |
-| `scripts` | `pre_run`, `pre_run_timeout`, `run`, and `post_run`. `run` is valid only for local workers. |
+| `runtime` | `host` or `vm`. Valid only for registry packages whose resolved artifact is a bundle; omitted bundles use `vm`. |
+| `scripts` | `pre_run`, `pre_run_timeout`, `run`, and `post_run`. For packages, `run` requires `runtime: host` and is valid only when the resolved artifact is a bundle. |
 | `config_name` | Name of the worker's base configuration. |
 | `config_override` | Configuration value applied over the base configuration. |
 | `working_dir` | Working directory, relative to the compose file. |
@@ -532,6 +533,12 @@ containers:
       pre_run_timeout: 2m
       run: npm start
       post_run: ./scripts/cleanup.sh
+  math:
+    worker: package://math-worker
+    version: "1.0.0"
+    runtime: host
+    scripts:
+      run: .venv/bin/python src/custom_math_worker.py
   state:
     worker: package://state
     version: "0.21.4"
@@ -572,6 +579,7 @@ Each key under `containers` is the name the worker registers under.
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `worker`          | string         | required             | `path://<dir>` or `package://<name>`. A package may name its registry: `package://<registry-host>/<name>`. |
 | `version`         | string         | absent               | Version range. Required for `package://`.                                                                  |
+| `runtime`         | `host` or `vm` | absent               | Runtime for registry bundle artifacts. An omitted value resolves to `vm`.                                  |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration.                                                                |
@@ -592,44 +600,79 @@ fails the start instead of falling back to the host or to another image.
 
 ### Worker kinds
 
-Worker packages can be released in multiple different "kinds". A kind compose cannot run fails with
+Worker packages can be released in multiple different "kinds". A kind Compose cannot run fails with
 `UNSUPPORTED_PACKAGE_KIND`.
 
-| Kind     | How it runs                                                                     |
-| -------- | ------------------------------------------------------------------------------- |
-| `binary` | A child process on the host.                                                    |
-| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
-| `path`   | A path to a worker stored locally on disk.                                      |
+| Kind     | How it runs                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------ |
+| `binary` | A child process on the host.                                                                                 |
+| `bundle` | In a VM by default. Set `runtime: host` to run it as a host process from a private persistent workspace.     |
+| `path`   | A path to a worker stored locally on disk.                                                                   |
+
+`runtime` applies only to registry packages whose resolved artifact is a bundle. Using it on a
+`path://` worker, or resolving a package with `runtime` to a binary artifact, is an error. There is
+no automatic fallback between VM and host: an omitted `runtime` means `vm`, and a VM start failure
+does not retry the bundle on the host.
 
 A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
 glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable; a
 bundle worker on a machine without `iii-worker` fails saying so, and every other worker kind is
 unaffected.
 
-Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
-anything is downloaded. Run compose under WSL, where the VM has KVM to run on. Every other worker
-kind runs on windows as it always has.
+Registry bundles are currently refused on Windows before installation, including bundles declared
+with `runtime: host`. Run Compose under WSL, where the VM has KVM to run on. Every other worker kind
+runs on Windows as it always has.
 
-Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
+Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which Compose
 honours.
 
 ### Scripts
 
-| Field             | Type   | Default | Description                                         |
-| ----------------- | ------ | ------- | --------------------------------------------------- |
-| `pre_run`         | string | absent  | Runs to completion before the worker is spawned.    |
-| `pre_run_timeout` | string | `60s`   | Budget for `pre_run`. Rejected without a `pre_run`. |
-| `run`             | string | absent  | Start command. Rejected for `package://` workers.   |
-| `post_run`        | string | absent  | Runs after the worker's exit is confirmed.          |
+| Field             | Type   | Default | Description                                                                                  |
+| ----------------- | ------ | ------- | -------------------------------------------------------------------------------------------- |
+| `pre_run`         | string | absent  | Additional Compose hook that runs to completion before installation and start.               |
+| `pre_run_timeout` | string | `60s`   | Budget for `pre_run`. Rejected without a `pre_run`.                                          |
+| `run`             | string | absent  | Start command for path workers, or override for a registry bundle using `runtime: host`.      |
+| `post_run`        | string | absent  | Additional Compose hook that runs after the worker's exit is confirmed.                      |
 
 Both hooks run with the worker's environment, working directory, and their own process group. A
-`post_run` runs after the worker stops but before the compose daemon exits. The top-level
-`stop_timeout` argument is a global timer for a compose daemon to stop. If this time is exceeded all
-scripts will be exited along with the compose daemon.
+`post_run` runs after the worker stops but before the Compose daemon exits. The top-level
+`stop_timeout` argument is a global timer for a Compose daemon to stop. If this time is exceeded all
+scripts will be exited along with the Compose daemon.
 
 A path worker's start command is `scripts.run` in `worker-compose.yaml`, or `scripts.start` in the
 worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails with
 `MISSING_START_COMMAND`.
+
+For a bundle using `runtime: host`, Compose copies the verified bundle from the shared package cache
+into a private workspace before running any publisher script. The effective order is:
+
+```text
+prepare or reuse workspace
+-> scripts.pre_run from worker-compose.yaml
+-> scripts.install from iii.worker.yaml, when preparation is not current
+-> scripts.run from worker-compose.yaml, or scripts.start from iii.worker.yaml
+-> readiness and process supervision
+-> scripts.post_run from worker-compose.yaml
+```
+
+There is no `scripts.install` field in `worker-compose.yaml`. A publisher should make its install
+command create isolated dependencies inside the supplied workspace, for example a Python `.venv` or
+project-local JavaScript dependencies. Unsafe bundle symlinks are rejected while the private copy is
+prepared. Compose reruns installation when the bundle contents, its
+install command, the host OS or architecture, or the preparation format changes. A failed install is
+not marked prepared. Changing only the Compose `scripts.run` override does not reinstall.
+Installation uses the worker's `startup_timeout`.
+
+For host bundles, `scripts.run` replaces the manifest's `scripts.start`; `pre_run` and `post_run`
+remain additional Compose hooks. `working_dir` is ignored so publisher scripts cannot be redirected
+outside the private workspace. Compose warns when it ignores that field, a manifest
+`runtime.base_image`, or VM resource settings, and when `scripts.run` overrides `scripts.start`.
+
+<Warning>
+  `runtime: host` removes VM isolation. Bundle scripts run with the normal permissions of the user
+  that runs the Compose daemon. Review the publisher and its scripts before selecting host runtime.
+</Warning>
 
 ### Configuration precedence
 
@@ -640,13 +683,14 @@ the error is `CONFIG_FETCH_FAILED`.
 
 ## The worker environment
 
-A worker's environment is defined by the following sources:
+A worker's environment is defined by the following sources, from lowest to highest precedence:
 
 1. A host baseline. On Unix: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `TZ`,
    `LANG`, `LC_ALL`. Windows adds the variables the platform needs, such as `SystemRoot`, `COMSPEC`,
    and `PATHEXT`.
-2. The worker's `env_file` entries, then its `environment` map.
-3. The reserved variables, which the daemon owns.
+2. For a registry bundle using `runtime: host`, the `env` map in `iii.worker.yaml`.
+3. The worker's `env_file` entries, then its `environment` map.
+4. The reserved variables, which the daemon owns.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |
@@ -658,8 +702,11 @@ A worker's environment is defined by the following sources:
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
 | `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
+| `III_ISOLATION`         | `libkrun` for VM workers or `host` for host processes.                        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
+Reserved entries from a host bundle's manifest are ignored, so the publisher cannot override the
+runtime contract.
 
 ### Expanding values from environment variables
 
@@ -715,7 +762,9 @@ iii compose --up --file worker-compose.yaml --frozen
 ```
 
 The cache is shared under `~/.iii/compose/packages`, or under `$III_COMPOSE_STATE_DIR/packages` when that
-variable is set. A later `compose::up` reuses a valid cached artifact if it exists.
+variable is set. A later `compose::up` reuses a valid cached artifact if it exists. Host bundles are
+copied to their project-private workspaces before execution; publisher scripts never run directly in
+this global cache.
 
 ## Readiness
 
@@ -758,6 +807,8 @@ directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 | `config/`            | Resolved worker configuration files.                                                          |
 | `logs/`              | Rotating stdout and stderr for project workers.                                                |
 | `vm/`                | VM state for bundle and local-image workers, including rootfs, boot scripts and guest configs. |
+| `host/<container>/workspace/` | Private persistent workspace for a registry bundle using `runtime: host`.            |
+| `host/<container>/.iii-compose-host-prepared.json` | Preparation marker used to decide whether `scripts.install` must run. |
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces.
@@ -792,7 +843,7 @@ Compose can output the following error codes:
 | Area                | Codes                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Compose file        | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`, `UNDEFINED_VARIABLE`, `INVALID_REFERENCE`, `UNTERMINATED_REFERENCE`                                                                                                        |
-| Worker declaration  | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `NOT_A_PACKAGE_CONTAINER`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                                                                         |
+| Worker declaration  | `MISSING_VERSION_FOR_PACKAGE`, `RUNTIME_ONLY_FOR_BUNDLES`, `PACKAGE_RUN_REQUIRES_HOST_RUNTIME`, `RUNTIME_REQUIRES_BUNDLE`, `NOT_A_PACKAGE_CONTAINER`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                                                                         |
 | Worker resolution   | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `INVALID_WORKER_SPEC`, `WORKER_SOURCE_CHANGED`, `ENGINE_WORKER_IS_BUILTIN`                                                                                                                                                                                                             |
 | Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                       |
 | Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `CONFIG_PUBLISH_FAILED`, `ENGINE_CALL_FAILED`, `PROJECT_DID_NOT_START`                            |

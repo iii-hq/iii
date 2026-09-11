@@ -28,14 +28,14 @@ use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
-    config::{ComposeFile, Container, RestartPolicy},
+    config::{BundleRuntime, ComposeFile, Container, RestartPolicy},
     configuration::{ConfigFile, merge},
     dag,
     engine::EngineClient,
     error::{ComposeError, Result},
     hooks,
     logs::LogStore,
-    manifest::{StartSpec, VmSpec, resolve_start},
+    manifest::{HostBundleSpec, StartSpec, VmSpec, read_host_bundle_manifest, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -107,6 +107,8 @@ pub struct LifecycleCtx<'a> {
     pub logs: &'a LogStore,
     /// Root of the per-container VM state.
     pub vm_dir: &'a std::path::Path,
+    /// Root of per-container host bundle workspaces.
+    pub host_dir: &'a std::path::Path,
 }
 
 /// What one container's start produced: which one, how long it took, and
@@ -935,19 +937,52 @@ async fn start_one_until_shutdown(
                 &format!("starting {} {}", installed.name, installed.version),
             );
             match installed.payload {
-                crate::registry::Payload::Binary(program) => (
-                    StartSpec::Exec {
-                        program,
-                        args: Vec::new(),
-                    },
-                    installed.default_config,
-                ),
-                // The start command is the bundle's own, read from its manifest
-                // inside the VM. Nothing on the host runs it.
-                crate::registry::Payload::Bundle(install_dir) => (
-                    StartSpec::Vm(VmSpec::Bundle { install_dir }),
-                    installed.default_config,
-                ),
+                crate::registry::Payload::Binary(program) => {
+                    if container.runtime.is_some() {
+                        return Err(ComposeError::RuntimeRequiresBundle {
+                            container: key.to_string(),
+                            kind: "binary".to_string(),
+                        }
+                        .into());
+                    }
+                    (
+                        StartSpec::Exec {
+                            program,
+                            args: Vec::new(),
+                        },
+                        installed.default_config,
+                    )
+                }
+                crate::registry::Payload::Bundle(install_dir) => {
+                    match container.runtime.unwrap_or(BundleRuntime::Vm) {
+                        BundleRuntime::Vm => (
+                            StartSpec::Vm(VmSpec::Bundle { install_dir }),
+                            installed.default_config,
+                        ),
+                        BundleRuntime::Host => {
+                            let manifest = read_host_bundle_manifest(&install_dir, key)?;
+                            let manifest_start = manifest
+                                .start
+                                .expect("host bundle validation requires scripts.start");
+                            let run = container
+                                .scripts
+                                .run
+                                .clone()
+                                .unwrap_or_else(|| manifest_start.clone());
+                            (
+                                StartSpec::HostBundle(HostBundleSpec {
+                                    install_dir,
+                                    install: manifest.install,
+                                    run,
+                                    env: manifest.env,
+                                    has_base_image: manifest.base_image.is_some(),
+                                    has_resources: manifest.has_resources,
+                                }),
+                                installed.default_config,
+                            )
+                        }
+                    }
+                }
             }
         }
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
@@ -960,14 +995,26 @@ async fn start_one_until_shutdown(
             .await;
     }
 
-    let user_env = container.resolve_user_env(key)?;
+    let mut user_env = container.resolve_user_env(key)?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
-    let worker_dir = container.worker_dir();
-    let working_dir = resolve_working_dir(
-        container.working_dir.as_deref(),
-        worker_dir,
-        &ctx.file.base_dir,
-    );
+    let mut prepared_host = None;
+    let working_dir = match &start {
+        StartSpec::HostBundle(spec) => {
+            report_host_bundle_warnings(key, container, spec);
+            let prepared = crate::host_bundle::prepare(spec, ctx.host_dir, key)?;
+            let workspace = prepared.workspace.clone();
+            let mut merged = spec.env.clone();
+            merged.extend(user_env);
+            user_env = merged;
+            prepared_host = Some(prepared);
+            workspace
+        }
+        _ => resolve_working_dir(
+            container.working_dir.as_deref(),
+            container.worker_dir(),
+            &ctx.file.base_dir,
+        ),
+    };
 
     let spawn_ctx = SpawnCtx {
         engine_url: ctx.engine_url,
@@ -1003,6 +1050,29 @@ async fn start_one_until_shutdown(
         })?;
     }
 
+    if let (StartSpec::HostBundle(spec), Some(prepared)) = (&start, &prepared_host)
+        && prepared.install_required
+        && let Some(install) = spec.install.as_deref()
+    {
+        report::starting(key, "installing bundle dependencies on the host");
+        let Some(result) = hooks::await_script_until_shutdown(
+            &spawn_ctx,
+            "install",
+            install,
+            container.startup_timeout,
+            shutdown.as_mut(),
+        )
+        .await
+        else {
+            return Err(StartFailure::Interrupted);
+        };
+        result.map_err(|err| ComposeError::HookFailed {
+            container: key.to_string(),
+            hook_code: err.code(),
+            message: err.to_string(),
+        })?;
+        crate::host_bundle::mark_prepared(spec, ctx.host_dir, key)?;
+    }
     let plan = spawn_plan(&spawn_ctx);
     let command = match plan.command() {
         Some(command) => command,
@@ -1084,6 +1154,32 @@ async fn start_one_until_shutdown(
 
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
     Ok((record, child))
+}
+
+fn report_host_bundle_warnings(key: &str, container: &Container, spec: &HostBundleSpec) {
+    report::line(&format!(
+        "warning: {key} is a registry bundle running on the host without VM isolation"
+    ));
+    if spec.has_base_image {
+        report::line(&format!(
+            "warning: {key} uses runtime: host; iii.worker.yaml runtime.base_image is ignored"
+        ));
+    }
+    if spec.has_resources {
+        report::line(&format!(
+            "warning: {key} uses runtime: host; VM CPU and memory settings are ignored"
+        ));
+    }
+    if container.scripts.run.is_some() {
+        report::line(&format!(
+            "warning: {key} worker-compose.yaml scripts.run overrides iii.worker.yaml scripts.start"
+        ));
+    }
+    if container.working_dir.is_some() {
+        report::line(&format!(
+            "warning: {key} uses runtime: host; working_dir is ignored so dependencies stay in the private bundle workspace"
+        ));
+    }
 }
 
 /// Builds the boot command for a VM container, by asking `iii-worker` for it.
