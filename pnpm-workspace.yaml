@@ -4,7 +4,6 @@ packages:
   - sdk/packages/node/iii-browser
   - sdk/packages/node/observability
   - sdk/packages/node/helpers
-  - engine/src/workers/observability/ui
   - console/packages/*
   - docs
   - website
