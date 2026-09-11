@@ -132,6 +132,7 @@ iii project init [OPTIONS] [NAME]
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
+| `--learn-iii` | Take the 5-minute tour of iii: scaffold the "harness" template into NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then start `iii compose --up` inside it. Cannot be combined with any other scaffolding option |
 
 ### `iii trigger`
 

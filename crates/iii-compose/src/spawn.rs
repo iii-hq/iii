@@ -128,6 +128,24 @@ pub struct SpawnPlan {
     pub working_dir: PathBuf,
 }
 
+/// The device id `iii project init` wrote beside the compose file. The same
+/// value the engine reports telemetry under, so a worker's own events land on
+/// the machine that produced them rather than on an identity of their own.
+///
+/// Its own small parse rather than a shared one: `iii-compose` does not depend
+/// on the engine crate that owns telemetry, and this is four lines of INI.
+const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
+
+fn project_device_id(compose_dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(compose_dir.join(".iii").join("project.ini")).ok()?;
+    contents.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("device_id=")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 /// Builds the spawn plan for one container.
 ///
 /// Precedence, lowest to highest: host baseline, then the container's
@@ -169,6 +187,16 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         "III_COMPOSE_DIR".to_string(),
         compose_dir.to_string_lossy().to_string(),
     );
+    // The project's device id, for workers that report telemetry of their own.
+    // Not reserved: `environment:` still wins, which is what a test or a CI run
+    // wants. A project with no `.iii/project.ini` — one not scaffolded by
+    // `iii project init` — simply has no id to publish, so the variable is
+    // absent and a worker must treat it as optional.
+    if !env.contains_key(HOST_USER_ID_ENV)
+        && let Some(device_id) = project_device_id(compose_dir)
+    {
+        env.insert(HOST_USER_ID_ENV.to_string(), device_id);
+    }
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     match ctx.config_path {
         Some(config_path) => {
@@ -339,6 +367,41 @@ mod tests {
 
         assert_eq!(Path::new(&plan.env["III_COMPOSE_FILE"]), expected_file);
         assert_eq!(Path::new(&plan.env["III_COMPOSE_DIR"]), expected_dir);
+    }
+
+    /// The three states of the device id: published from the project file,
+    /// beaten by an explicit `environment:`, and simply absent for a project
+    /// that was never scaffolded.
+    #[test]
+    fn host_user_id_comes_from_the_project_file_and_yields_to_the_container() {
+        let temp = tempfile::tempdir().unwrap();
+        let compose_file = temp.path().join("worker-compose.yaml");
+        std::fs::write(&compose_file, "containers: {}").unwrap();
+        let start = StartSpec::Shell("cargo run".to_string());
+
+        // No `.iii/project.ini` yet: nothing to publish.
+        let user_env = BTreeMap::new();
+        let mut context = ctx(&start, None, &user_env);
+        context.compose_file = &compose_file;
+        assert!(!spawn_plan(&context).env.contains_key("III_HOST_USER_ID"));
+
+        std::fs::create_dir_all(temp.path().join(".iii")).unwrap();
+        std::fs::write(
+            temp.path().join(".iii").join("project.ini"),
+            "[project]\nproject_id=p-1\ndevice_id=device-abc\n",
+        )
+        .unwrap();
+
+        let mut context = ctx(&start, None, &user_env);
+        context.compose_file = &compose_file;
+        assert_eq!(spawn_plan(&context).env["III_HOST_USER_ID"], "device-abc");
+
+        // Not reserved: a container that declares it wins.
+        let declared =
+            BTreeMap::from([("III_HOST_USER_ID".to_string(), "from-compose".to_string())]);
+        let mut context = ctx(&start, None, &declared);
+        context.compose_file = &compose_file;
+        assert_eq!(spawn_plan(&context).env["III_HOST_USER_ID"], "from-compose");
     }
 
     #[test]

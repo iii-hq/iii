@@ -81,6 +81,8 @@ iii-sdk = { workspace = true }
 iii-helpers = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
+cliclack = { workspace = true }
+open = { workspace = true }
 ctrlc = { workspace = true }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }

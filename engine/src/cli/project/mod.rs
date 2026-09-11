@@ -20,7 +20,9 @@ use scaffolder_core::cli::{
     apply_template_idempotent, build_fetcher, check_directory_state, print_err, resolve_root,
 };
 use scaffolder_core::{IiiConfig, TemplateFetcher};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Args, Debug, Clone)]
 pub struct ProjectArgs {
@@ -75,6 +77,13 @@ pub struct InitArgs {
     /// `.iii/project.ini` is always allowed (idempotent re-init).
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
+
+    /// Take the 5-minute tour of iii: scaffold the "harness" template into
+    /// NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken)
+    /// if no NAME is given, then start `iii compose --up` inside it. Cannot
+    /// be combined with any other scaffolding option.
+    #[arg(long = "learn-iii", conflicts_with_all = ["directory", "template", "docker", "template_dir"])]
+    pub learn_iii: bool,
 }
 
 impl InitArgs {
@@ -111,6 +120,9 @@ pub async fn run(args: ProjectArgs) -> i32 {
 }
 
 async fn run_init(args: InitArgs) -> i32 {
+    if args.learn_iii {
+        return run_learn_iii(args).await;
+    }
     if template_flow_requested(&args) {
         return run_init_with_template(args).await;
     }
@@ -214,6 +226,14 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
     }));
     let _ = ctrlc::set_handler(move || {
         let _ = console::Term::stderr().show_cursor();
+        // `--learn-iii` runs `iii compose --up` as a child, and Ctrl+C reaches
+        // every process in the foreground group. Compose stops the project
+        // itself; exiting here would hand the shell a prompt while that
+        // teardown still writes to the terminal, which reads as a hang and
+        // takes a second Ctrl+C to finish.
+        if CHILD_OWNS_TERMINAL.load(Ordering::Relaxed) {
+            return;
+        }
         std::process::exit(130);
     });
 
@@ -225,7 +245,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         languages: None,
         skip_tool_check: args.skip_iii,
         skip_install: false,
-        skip_next_steps: false,
+        // --learn-iii prints its own "starting the tour" line right after.
+        skip_next_steps: args.learn_iii,
         yes: false,
     };
 
@@ -287,6 +308,621 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 
     crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id_for_event);
     0
+}
+
+const LEARN_III_TEMPLATE: &str = "harness";
+/// The base image every worker in the `--learn-iii` project starts from.
+/// Also `oci_image_for_kind`'s answer for JavaScript and TypeScript, and its
+/// fallback for an unrecognised kind, so it is the right first guess before
+/// the template has been written and its manifests can be read.
+const LEARN_III_BASE_IMAGE: &str = "docker.io/iiidev/node:latest";
+
+/// Start downloading base images in the background.
+///
+/// The first boot of a new project waits on an image that is hundreds of
+/// megabytes, and the operator spends the minute before it choosing a
+/// template and pasting a provider key. This puts the download in that
+/// minute instead of after it.
+///
+/// The work runs in `iii-worker`, which owns the rootfs cache; the engine
+/// does not link that crate. Both processes share the cache on disk and take
+/// its per-image lock, so this racing the real pull costs at worst a wait.
+///
+/// `None` when `iii-worker` cannot be found or will not start. That is not
+/// worth reporting: nothing is missing yet, and the spawn that needs the
+/// image pulls it in the usual place with the usual errors.
+fn start_image_prefetch(images: &[String]) -> Option<tokio::process::Child> {
+    if images.is_empty() {
+        return None;
+    }
+    let worker = iii::bin_resolve::find_existing_binary("iii-worker")?;
+    tokio::process::Command::new(worker)
+        .arg("__pull-images")
+        .args(images)
+        // The operator is reading a menu. A pull that printed onto it, or a
+        // failure line for an image nothing has asked for yet, would only be
+        // noise.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+/// Every distinct `runtime.base_image` declared by a worker under `dir`.
+///
+/// Read after scaffolding to catch whatever the template actually shipped,
+/// which need not be the image [`start_image_prefetch`] was already given.
+fn declared_base_images(dir: &Path) -> Vec<String> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<String>) {
+        // Worker manifests sit at the top of a worker directory. A handful of
+        // levels reaches them under `workers/<name>/` without descending into
+        // `node_modules` and friends.
+        if depth > 3 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        if let Ok(Some(manifest)) = iii_compose::manifest::read_manifest(dir)
+            && let Some(image) = manifest.base_image
+            && !out.contains(&image)
+        {
+            out.push(image);
+        }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "node_modules" || name == "target" {
+                continue;
+            }
+            walk(&path, depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 0, &mut out);
+    out
+}
+
+const LEARN_III_DIR: &str = "learn-iii";
+
+/// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
+/// <NAME>`, then `iii compose --up` from inside the new directory. Without
+/// NAME the directory is the first free `learn-iii` name; a given NAME is
+/// used as-is, so a taken one fails the same way plain init does.
+async fn run_learn_iii(mut args: InitArgs) -> i32 {
+    let dir = match args.name.as_deref() {
+        Some(name) => PathBuf::from(name),
+        None => next_free_dir(Path::new(""), LEARN_III_DIR),
+    };
+    args.template = Some(LEARN_III_TEMPLATE.to_string());
+    args.directory = Some(dir.to_string_lossy().into_owned());
+
+    // Before the scaffolder's own menu, not after it: `run_init_with_template`
+    // runs an interactive TUI, so this is the earliest moment the download can
+    // start and the longest stretch of thinking time it can hide behind.
+    let mut prefetch = start_image_prefetch(&[LEARN_III_BASE_IMAGE.to_string()]);
+
+    let code = run_init_with_template(args).await;
+    if code != 0 {
+        return code;
+    }
+
+    seed_console_layout(&dir);
+    seed_onboarding_container(&dir);
+
+    // The template is on disk now, so its manifests can say what they really
+    // need. Anything beyond the image already being fetched gets its own pass.
+    let extra: Vec<String> = declared_base_images(&dir)
+        .into_iter()
+        .filter(|image| image != LEARN_III_BASE_IMAGE)
+        .collect();
+    let mut extra_prefetch = start_image_prefetch(&extra);
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            return print_err(
+                "could not locate the iii binary",
+                &e.to_string(),
+                &format!("cd {} && iii compose --up", dir.display()),
+            );
+        }
+    };
+
+    prompt_provider_key(&dir);
+
+    let hint = format!("cd ./{} && iii compose --up", dir.display());
+    eprintln!();
+    eprintln!("  {} starting the tour: {}", "▶".green(), hint.bold());
+    eprintln!();
+
+    // Let the downloads finish before compose asks for the same images.
+    // `ensure_rootfs` takes a per-image lock, so an overlap would be safe but
+    // pointless: compose would sit on the lock with nothing on screen, while
+    // waiting here keeps one pull visible in one place. By now the operator
+    // has read a menu and pasted a key, so this is usually already done.
+    for child in [prefetch.as_mut(), extra_prefetch.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        let _ = child.wait().await;
+    }
+
+    // Aborted when compose exits, so the poll inside needs no deadline of its
+    // own: the tour's life is the deadline.
+    let announcer = tokio::spawn(announce_console_when_ready(dir.join("worker-compose.yaml")));
+    CHILD_OWNS_TERMINAL.store(true, Ordering::Relaxed);
+
+    let code = match tokio::process::Command::new(exe)
+        .args(["compose", "--up"])
+        .current_dir(&dir)
+        .status()
+        .await
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => print_err("could not start `iii compose --up`", &e.to_string(), &hint),
+    };
+
+    CHILD_OWNS_TERMINAL.store(false, Ordering::Relaxed);
+    announcer.abort();
+    // The key reader may still be parked on stdin in cbreak mode; the shell
+    // must not get its terminal back with ECHO off.
+    restore_terminal_mode();
+    code
+}
+
+/// Set while `iii compose --up` runs as our child, so the Ctrl+C handler above
+/// leaves the interrupt to compose.
+/// The console keeps its pane layout in the `console` configuration entry,
+/// which the engine's file adapter stores at `<project>/config/<id>.yaml`.
+/// Writing it before the first boot is what opens the tour beside the chat:
+/// with no stored value the console seeds its own chat+traces default
+/// instead (`register_console_config` only sends `initial_value` when the
+/// entry is absent), and re-registration never overwrites a stored value —
+/// so this survives restarts, and the operator's own tab edits write back to
+/// the same file.
+///
+/// `name` and `description` are not optional on disk: an entry missing them
+/// fails to parse and the adapter skips the file.
+const CONSOLE_LAYOUT_SEED: &str = "\
+id: console
+name: Console
+description: Console server and UI settings.
+metadata:
+  ui_form: console
+value:
+  workspace:
+    tabs:
+      - id: tab-home
+        columns: 2
+        screens:
+          - chat
+          - \"ext:onboarding\"
+        sizes:
+          - 0.6
+          - 0.4
+";
+
+/// The tour's own worker, declared in the project's compose file.
+///
+/// The layout seed above opens a pane on `ext:onboarding`, and that page is
+/// served by the `onboarding` worker — a page injected by a worker is only
+/// there while the worker runs. Without this the seeded pane opens on the
+/// console's "Extension page not loaded" placeholder.
+///
+/// A version is not optional for a `package://` container (compose rejects
+/// the file without one), so this is a range rather than a pin: patch
+/// releases of the tour reach a new project with no engine release.
+const ONBOARDING_CONTAINER: &str = "\
+  # The guided tour. It serves the `onboarding` console page that the seeded
+  # workspace layout opens beside the chat.
+  onboarding:
+    worker: package://onboarding
+    version: \"^0.1.0\"
+    start_after:
+      - state
+
+";
+
+/// Insert the tour's container into a `worker-compose.yaml` body, or return
+/// `None` when there is nothing to do: no `containers:` mapping to insert
+/// into, or a container by that name already declared (a re-run, or an
+/// operator who added their own).
+///
+/// A text insert, not a YAML round-trip: the harness template's compose file
+/// is half instructive comments, and `serde_yaml` would drop every one of
+/// them.
+fn with_onboarding_container(text: &str) -> Option<String> {
+    if text.lines().any(|line| line.trim_end() == "  onboarding:") {
+        return None;
+    }
+    let heading = "containers:\n";
+    let start = if text.starts_with(heading) {
+        0
+    } else {
+        text.find(&format!("\n{heading}"))? + 1
+    };
+    let insert_at = start + heading.len();
+    let mut patched = String::with_capacity(text.len() + ONBOARDING_CONTAINER.len());
+    patched.push_str(&text[..insert_at]);
+    patched.push_str(ONBOARDING_CONTAINER);
+    patched.push_str(&text[insert_at..]);
+    Some(patched)
+}
+
+/// Best effort, like the layout seed. A project whose compose file cannot
+/// take the container still starts; its tour pane is the placeholder until
+/// someone declares the worker.
+fn seed_onboarding_container(dir: &Path) {
+    let path = dir.join("worker-compose.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if let Some(patched) = with_onboarding_container(&text) {
+        let _ = std::fs::write(&path, patched);
+    }
+}
+
+/// Open the new project's console on chat beside the tour, 70/30.
+///
+/// `sizes` are index-aligned with the columns and normalized by their sum;
+/// a list whose length does not match the column count is ignored in favour
+/// of equal widths (`tabSizes` in the console's workspace model), which is
+/// what the pane-count assertion in the tests guards.
+///
+/// `http_port` is deliberately absent: the console backfills the port it
+/// actually bound, which matters because it moves to the next free port when
+/// the configured one is taken.
+///
+/// Best effort. A project that cannot take the seed still starts; its console
+/// just opens on the stock layout.
+fn seed_console_layout(dir: &Path) {
+    let config_dir = dir.join("config");
+    let path = config_dir.join("console.yaml");
+    if path.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&config_dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(&path, CONSOLE_LAYOUT_SEED);
+}
+
+static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
+
+/// The console worker's configuration entry, and its own default port for
+/// when that entry has no `http_port` yet.
+const CONSOLE_CONFIG: &str = "console";
+const DEFAULT_CONSOLE_PORT: u16 = 3113;
+const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Room for compose's startup renderer to print its closing line and stop
+/// repainting before anything else writes to the terminal.
+const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// Waits for the tour's project to serve, then points the user at the console
+/// and opens it on request.
+///
+/// The gate is every declared container reporting `ready` through
+/// `compose::status`, which is also when compose's startup renderer lets go of
+/// the terminal: it owns one global in-place block for the whole of `--up` and
+/// repaints it, so a banner printed before then is overwritten and the user
+/// never sees it. A ready console has not necessarily bound its listener yet,
+/// so the port is checked too.
+async fn announce_console_when_ready(compose_path: PathBuf) {
+    let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
+        return;
+    };
+    let namespace = file
+        .namespace
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let Some(engine) = file.engine.as_ref() else {
+        return;
+    };
+
+    let client =
+        iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
+
+    while !project_is_ready(&client, &file.path, &namespace).await {
+        tokio::time::sleep(READY_POLL_INTERVAL).await;
+    }
+
+    let port = client
+        .fetch_config(CONSOLE_CONFIG)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|config| {
+            config
+                .get("http_port")
+                .and_then(|port| port.as_u64())
+                .and_then(|port| u16::try_from(port).ok())
+        })
+        .unwrap_or(DEFAULT_CONSOLE_PORT);
+
+    while tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err()
+    {
+        tokio::time::sleep(READY_POLL_INTERVAL).await;
+    }
+
+    // ponytail: fixed settle delay. The renderer prints its closing line just
+    // after the last container flips ready, and compose publishes no "startup
+    // block finished" event to wait on instead. Swap this for that event if
+    // compose ever grows one.
+    tokio::time::sleep(BLOCK_SETTLE).await;
+
+    let url = format!("http://127.0.0.1:{port}");
+    eprintln!();
+    eprintln!(
+        "  {} Open your browser to continue: {}",
+        "▶".green(),
+        url.bold()
+    );
+    eprintln!("    Press {} to open it here.", "b".bold());
+    eprintln!();
+
+    // A blocking read on its own thread, not a blocking task: the process must
+    // be free to exit with compose while this is still parked on stdin.
+    std::thread::spawn(move || open_console_on_request(&url));
+}
+
+/// Whether every container the compose file declares reports `ready`.
+///
+/// A call that fails is the daemon not serving `compose::status` yet, which is
+/// indistinguishable here from a project still starting: both mean "not yet".
+async fn project_is_ready(
+    client: &iii_compose::engine::EngineClient,
+    compose_path: &Path,
+    namespace: &str,
+) -> bool {
+    let request = iii_sdk::protocol::TriggerRequest {
+        function_id: "compose::status".to_string(),
+        payload: serde_json::json!({ "file": compose_path }),
+        action: None,
+        timeout_ms: Some(10_000),
+    }
+    .namespace(namespace);
+
+    let Ok(value) = client.client().trigger(request).await else {
+        return false;
+    };
+    let Some(containers) = value.get("containers").and_then(|list| list.as_array()) else {
+        return false;
+    };
+    !containers.is_empty()
+        && containers
+            .iter()
+            .all(|container| container.get("state").and_then(|s| s.as_str()) == Some("ready"))
+}
+
+/// Waits for a bare `b` and opens `url` on it.
+///
+/// Cbreak, not raw: only `ICANON` and `ECHO` come off, so the keypress arrives
+/// without Enter while the terminal keeps translating the newlines compose
+/// writes for the rest of the tour, and keeps turning Ctrl+C into SIGINT. A
+/// raw-mode read drops both.
+#[cfg(unix)]
+fn open_console_on_request(url: &str) {
+    use nix::sys::termios::{LocalFlags, SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
+    use std::io::Read;
+
+    let stdin = std::io::stdin();
+    if let Ok(saved) = tcgetattr(&stdin) {
+        let mut cbreak = saved.clone();
+        cbreak.local_flags &= !(LocalFlags::ICANON | LocalFlags::ECHO);
+        // Canonical mode ignores these two, so they carry whatever the shell
+        // left behind: one byte, no timer, or the read returns immediately and
+        // spins.
+        cbreak.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+        cbreak.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+        if tcsetattr(&stdin, SetArg::TCSANOW, &cbreak).is_err() {
+            return;
+        }
+        // Ctrl+C ends the tour with this thread still parked below, so the
+        // restore cannot live only at the end of this function.
+        let _ = SAVED_TERMIOS.set(saved.into());
+    }
+
+    let mut key = [0u8; 1];
+    while let Ok(1) = stdin.lock().read(&mut key) {
+        if !key[0].eq_ignore_ascii_case(&b'b') {
+            continue;
+        }
+        if open::that(url).is_err() {
+            eprintln!("  could not open a browser, open {url} yourself\r");
+        }
+        break;
+    }
+    restore_terminal_mode();
+}
+
+#[cfg(not(unix))]
+fn open_console_on_request(url: &str) {
+    // Windows reads console input events, so there is no output mode to
+    // protect and no termios to put back.
+    let term = console::Term::stdout();
+    while let Ok(key) = term.read_char() {
+        if key.eq_ignore_ascii_case(&'b') {
+            if open::that(url).is_err() {
+                eprintln!("  could not open a browser, open {url} yourself");
+            }
+            break;
+        }
+    }
+}
+
+/// The caller's terminal settings, saved when [`open_console_on_request`] puts
+/// stdin in cbreak mode. Held as the raw struct because nix's `Termios` wraps
+/// it in a `RefCell` and so is not `Sync`.
+#[cfg(unix)]
+static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
+
+/// Puts the terminal back the way the shell handed it over. Safe to call when
+/// nothing changed it, and safe to call twice.
+fn restore_terminal_mode() {
+    #[cfg(unix)]
+    if let Some(saved) = SAVED_TERMIOS.get() {
+        let _ = nix::sys::termios::tcsetattr(
+            std::io::stdin(),
+            nix::sys::termios::SetArg::TCSANOW,
+            &nix::sys::termios::Termios::from(*saved),
+        );
+    }
+}
+
+/// `base` if it does not exist under `parent`, else the first free
+/// `base-1`, `base-2`, ...
+fn next_free_dir(parent: &Path, base: &str) -> PathBuf {
+    let first = parent.join(base);
+    if !first.exists() {
+        return first;
+    }
+    (1u32..)
+        .map(|i| parent.join(format!("{base}-{i}")))
+        .find(|p| !p.exists())
+        .expect("unbounded range always yields a free name")
+}
+
+/// The inference providers the harness template ships a key line for, in
+/// `.env` order. `container` is the commented `worker-compose.yaml` block to
+/// uncomment; the first two are enabled by the template already.
+const PROVIDERS: &[(&str, &str, Option<&str>)] = &[
+    ("Anthropic", "ANTHROPIC_API_KEY", None),
+    ("OpenAI", "OPENAI_API_KEY", None),
+    ("DeepSeek", "DEEPSEEK_API_KEY", Some("provider-deepseek")),
+    ("Kimi (Moonshot)", "MOONSHOT_API_KEY", Some("provider-kimi")),
+    ("xAI", "XAI_API_KEY", Some("provider-xai")),
+    ("Z.ai", "ZAI_API_KEY", Some("provider-zai")),
+    (
+        "OpenRouter",
+        "OPENROUTER_API_KEY",
+        Some("provider-openrouter"),
+    ),
+    ("llama.cpp", "LLAMACPP_API_KEY", Some("provider-llamacpp")),
+];
+
+const PROVIDER_KEY_NOTE: &str = "Before we begin, if you want to use the iii harness you'll need to \
+provide an API Key for an inference provider (ex. OpenAI, Anthropic). You can provide that now or \
+manually edit the .env that is at the root of this project's directory.\n\nNote: If you provide the \
+key after the project has started you'll need to manually restart the llm-router by running \
+`iii trigger compose::restart worker=llm-router`.";
+
+/// Ask for one provider API key and record it in the new project's `.env`.
+/// A provider the template ships commented out also gets its
+/// `worker-compose.yaml` block uncommented, so the router can reach it.
+///
+/// Every failure here is non-fatal: the tour still starts, and the note tells
+/// the user how to add the key by hand.
+fn prompt_provider_key(dir: &Path) {
+    let env_path = dir.join(".env");
+    if !std::io::stdin().is_terminal() || !env_path.exists() {
+        return;
+    }
+
+    eprintln!();
+    if cliclack::log::info(PROVIDER_KEY_NOTE).is_err() {
+        return;
+    }
+
+    let mut select = cliclack::select("Which inference provider?");
+    for (label, var, _) in PROVIDERS {
+        select = select.item(Some(*var), *label, *var);
+    }
+    select = select.item(None, "Skip for now", "edit .env yourself");
+
+    let Ok(Some(var)) = select.interact() else {
+        return;
+    };
+    let Ok(key) = cliclack::password(var).mask('•').interact() else {
+        return;
+    };
+    // Terminals and password managers pad pasted keys; a stray space breaks auth.
+    let key = key.trim();
+    if key.is_empty() {
+        let _ = cliclack::log::warning("No key entered, leaving .env unchanged.");
+        return;
+    }
+
+    if let Err(e) = set_env_var(&env_path, var, key) {
+        let _ = cliclack::log::warning(format!("could not write {}: {e}", env_path.display()));
+        return;
+    }
+
+    let container = PROVIDERS
+        .iter()
+        .find(|(_, v, _)| *v == var)
+        .and_then(|(_, _, c)| *c);
+    if let Some(container) = container
+        && let Err(e) = uncomment_container(&dir.join("worker-compose.yaml"), container)
+    {
+        let _ = cliclack::log::warning(format!("could not enable {container}: {e}"));
+    }
+
+    let _ = cliclack::log::success(format!("{var} written to {}", env_path.display()));
+}
+
+/// Set `var` in a `.env` file, replacing the existing line even when the
+/// template ships it commented out. Appends when the file has no such line.
+fn set_env_var(path: &Path, var: &str, value: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let assignment = format!("{var}=");
+    let mut out = String::with_capacity(text.len() + value.len());
+    let mut written = false;
+
+    for line in text.lines() {
+        let bare = line.trim_start().trim_start_matches('#').trim_start();
+        if !written && bare.starts_with(&assignment) {
+            out.push_str(&format!("{var}={value}\n"));
+            written = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !written {
+        out.push_str(&format!("{var}={value}\n"));
+    }
+    std::fs::write(path, out)
+}
+
+/// Uncomment the commented-out `worker-compose.yaml` container block whose
+/// first line names `container`. The block ends at the first blank line.
+fn uncomment_container(path: &Path, container: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let header = format!("{container}:");
+    let mut out = String::with_capacity(text.len());
+    let mut inside = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') && trimmed.contains(&header) {
+            inside = true;
+        } else if line.trim().is_empty() || !trimmed.starts_with('#') {
+            inside = false;
+        }
+        out.push_str(&if inside {
+            uncomment_line(line)
+        } else {
+            line.to_string()
+        });
+        out.push('\n');
+    }
+    std::fs::write(path, out)
+}
+
+/// `  #    worker: x` -> `    worker: x`: drop the first `#` and the two
+/// spaces after it, which puts the YAML back on its original column.
+fn uncomment_line(line: &str) -> String {
+    match line.split_once('#') {
+        Some((indent, rest)) => format!("{indent}{}", rest.strip_prefix("  ").unwrap_or(rest)),
+        None => line.to_string(),
+    }
 }
 
 async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
@@ -506,4 +1142,273 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
     }
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        action: ProjectAction,
+    }
+
+    #[test]
+    fn learn_iii_parses_alone() {
+        let cli = Cli::try_parse_from(["project", "init", "--learn-iii"]).unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert!(init.learn_iii);
+    }
+
+    #[test]
+    fn learn_iii_accepts_a_name() {
+        let cli = Cli::try_parse_from(["project", "init", "--learn-iii", "my-tour"]).unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert!(init.learn_iii);
+        assert_eq!(init.name.as_deref(), Some("my-tour"));
+    }
+
+    #[test]
+    fn learn_iii_rejects_template_and_directory() {
+        for extra in [
+            &["-t", "quickstart"][..],
+            &["-d", "x"],
+            &["--docker"],
+            &["--template-dir", "x"],
+        ] {
+            let mut argv = vec!["project", "init", "--learn-iii"];
+            argv.extend_from_slice(extra);
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "--learn-iii should conflict with {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_env_var_replaces_active_and_commented_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = tmp.path().join(".env");
+        std::fs::write(
+            &env,
+            "# comment\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=old\n# XAI_API_KEY=\n",
+        )
+        .unwrap();
+
+        set_env_var(&env, "OPENAI_API_KEY", "sk-new").unwrap();
+        set_env_var(&env, "XAI_API_KEY", "xai-new").unwrap();
+        set_env_var(&env, "ZAI_API_KEY", "zai-new").unwrap();
+
+        let text = std::fs::read_to_string(&env).unwrap();
+        assert_eq!(
+            text,
+            "# comment\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=sk-new\nXAI_API_KEY=xai-new\nZAI_API_KEY=zai-new\n"
+        );
+    }
+
+    #[test]
+    fn uncomment_container_touches_only_its_own_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose,
+            "containers:\n  queue:\n    worker: package://queue\n\n  #  provider-xai:                # XAI_API_KEY\n  #    worker: package://provider-xai\n  #    start_after:\n  #      - llm-router\n\n  #  provider-zai:\n  #    worker: package://provider-zai\n",
+        )
+        .unwrap();
+
+        uncomment_container(&compose, "provider-xai").unwrap();
+
+        let text = std::fs::read_to_string(&compose).unwrap();
+        assert!(text.contains("\n  provider-xai:                # XAI_API_KEY\n"));
+        assert!(text.contains("\n    worker: package://provider-xai\n"));
+        assert!(text.contains("\n      - llm-router\n"));
+        // The next block stays commented out.
+        assert!(text.contains("\n  #  provider-zai:\n"));
+    }
+
+    #[test]
+    fn every_provider_env_var_is_unique() {
+        let mut vars: Vec<_> = PROVIDERS.iter().map(|(_, v, _)| *v).collect();
+        vars.sort_unstable();
+        let count = vars.len();
+        vars.dedup();
+        assert_eq!(vars.len(), count);
+    }
+
+    /// The seed has to survive the round trip the engine actually does: the
+    /// configuration file adapter parses each `config/*.yaml` into a
+    /// `ConfigurationEntry` and SKIPS any file it cannot parse, which would
+    /// leave the tour project on the stock layout with only a log line.
+    #[test]
+    fn the_console_seed_parses_as_a_configuration_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed_console_layout(tmp.path());
+
+        let raw = std::fs::read(tmp.path().join("config").join("console.yaml")).unwrap();
+        let entry: iii::workers::configuration::structs::ConfigurationEntry =
+            serde_yaml::from_slice(&raw).unwrap();
+
+        assert_eq!(entry.id, CONSOLE_CONFIG);
+        assert!(!entry.name.is_empty());
+        let tabs = entry.value["workspace"]["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0]["columns"], 2);
+        assert_eq!(
+            tabs[0]["screens"].as_array().unwrap(),
+            &vec![
+                serde_json::json!("chat"),
+                serde_json::json!("ext:onboarding")
+            ]
+        );
+        // Sizes only apply when they line up with the column count; a
+        // mismatch silently drops the project back to equal widths.
+        let sizes = tabs[0]["sizes"].as_array().unwrap();
+        assert_eq!(sizes.len(), tabs[0]["columns"].as_u64().unwrap() as usize);
+        assert_eq!(sizes[0].as_f64().unwrap(), 0.6);
+        // No port: the console backfills the one it actually bound.
+        assert!(entry.value.get("http_port").is_none());
+    }
+
+    /// A project that already carries a console entry keeps it — the seed is
+    /// for a fresh scaffold, not a re-run over someone's saved layout.
+    #[test]
+    fn the_console_seed_never_overwrites_an_existing_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config").join("console.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "id: console\nname: mine\ndescription: mine\n").unwrap();
+
+        seed_console_layout(tmp.path());
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "id: console\nname: mine\ndescription: mine\n"
+        );
+    }
+
+    /// The pane the layout seed opens is served by the `onboarding` worker, so
+    /// the container has to reach the project's compose file. It is a text
+    /// insert, and the harness template's compose file is mostly comments, so
+    /// the test pins both the placement and that the rest survives.
+    #[test]
+    fn the_tour_container_lands_under_containers() {
+        let source = "namespace: demo\n\ncontainers:\n  # keep me\n  state:\n    worker: package://state\n    version: \"1.0.0\"\n";
+
+        let patched = with_onboarding_container(source).expect("compose file takes the container");
+
+        let containers = patched.find("containers:\n").unwrap();
+        let onboarding = patched.find("  onboarding:\n").unwrap();
+        let state = patched.find("  state:\n").unwrap();
+        assert!(containers < onboarding && onboarding < state);
+        assert!(patched.contains("worker: package://onboarding"));
+        assert!(patched.contains("# keep me"), "comments must survive");
+        assert!(patched.contains("namespace: demo"));
+
+        // Compose rejects a `package://` container with no version.
+        assert!(patched.contains("version: \"^0.1.0\""));
+    }
+
+    #[test]
+    fn the_tour_container_is_written_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("worker-compose.yaml");
+        std::fs::write(&path, "containers:\n  state:\n    worker: path://./state\n").unwrap();
+
+        seed_onboarding_container(tmp.path());
+        seed_onboarding_container(tmp.path());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("  onboarding:").count(), 1);
+        assert!(with_onboarding_container(&text).is_none());
+    }
+
+    /// No compose file, or one with no `containers:` mapping: nothing to do,
+    /// and the tour still starts.
+    #[test]
+    fn the_tour_container_needs_a_containers_mapping() {
+        assert!(with_onboarding_container("namespace: demo\n").is_none());
+
+        let tmp = tempfile::tempdir().unwrap();
+        seed_onboarding_container(tmp.path());
+        assert!(!tmp.path().join("worker-compose.yaml").exists());
+    }
+
+    #[test]
+    fn next_free_dir_skips_taken_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii")
+        );
+        std::fs::create_dir(tmp.path().join("learn-iii")).unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii-1")
+        );
+        std::fs::create_dir(tmp.path().join("learn-iii-1")).unwrap();
+        assert_eq!(
+            next_free_dir(tmp.path(), "learn-iii"),
+            tmp.path().join("learn-iii-2")
+        );
+    }
+
+    #[test]
+    fn base_images_are_collected_from_every_worker_and_deduplicated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let write = |dir: &std::path::Path, image: Option<&str>| {
+            std::fs::create_dir_all(dir).unwrap();
+            let runtime = match image {
+                Some(image) => format!("runtime:\n  base_image: {image}\n"),
+                None => String::new(),
+            };
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("name: w\nlanguage: javascript\n{runtime}"),
+            )
+            .unwrap();
+        };
+
+        write(
+            &root.join("workers/alpha"),
+            Some("docker.io/iiidev/node:latest"),
+        );
+        write(
+            &root.join("workers/beta"),
+            Some("docker.io/iiidev/node:latest"),
+        );
+        write(
+            &root.join("workers/gamma"),
+            Some("docker.io/iiidev/python:latest"),
+        );
+        // A worker with no `base_image` runs on the engine, not in a VM.
+        write(&root.join("workers/delta"), None);
+        // Never descended into, however deep a manifest sits inside it.
+        write(
+            &root.join("workers/alpha/node_modules/pkg"),
+            Some("docker.io/library/never:pulled"),
+        );
+
+        let mut images = declared_base_images(root);
+        images.sort();
+        assert_eq!(
+            images,
+            vec![
+                "docker.io/iiidev/node:latest".to_string(),
+                "docker.io/iiidev/python:latest".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_image_list_starts_no_prefetch() {
+        assert!(start_image_prefetch(&[]).is_none());
+    }
 }
