@@ -181,8 +181,89 @@ ready stay as they are.
 
 #### compose::up failures
 
-A project that fails to start due to a project-related issue ends the command with
-`PROJECT_DID_NOT_START`. Partial starts are rolled back in reverse dependency order.
+A worker is not required by default. If it fails to start, its failure is reported against that
+worker, nothing is rolled back, and the operation still returns `ok`. Workers that name it in
+`start_after` start anyway, because `start_after` is a start order and not a claim that the dependent
+cannot run without it. The response lists every worker that failed this way in
+`not_required_failures`. A response with `status: ok` has no top-level `error`; that field is present
+only when the operation returns `status: failed`.
+
+Set `required: true` when a worker must fail the operation:
+
+```yaml
+containers:
+  database:
+    worker: path://./workers/database
+    required: true
+```
+
+A required failure ends the command with `PROJECT_DID_NOT_START`. Partial starts are rolled back in
+reverse dependency order.
+
+Use `required_default` to change the fallback for all containers in the file. An explicit container
+value wins over the file value:
+
+```yaml
+required_default: true
+
+containers:
+  queue:
+    worker: package://queue
+    version: "0.21.9"
+    required: false
+  state:
+    worker: package://state
+    version: "0.22.5-rc.1"
+```
+
+In this example, `state` inherits `required_default: true`, while `queue` remains false. If both
+fields are absent, the effective value is false.
+
+#### Retrying a worker that fails
+
+By default, a failed first start settles immediately. A worker that exits after it was ready takes
+its dependents down with it and stays down. To retry either case, declare a restart policy:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+```
+
+`no` is the default. `on-failure` retries a failed start or a worker that exits with a non-zero
+status. `always` also restarts it when it exits successfully after it was ready.
+
+The short form uses five attempts, a 500ms base delay, a 30-second maximum delay, and a 60-second
+stability window. Use the object form to change these values for one worker:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: 500ms
+      max_delay: 30s
+      max_attempts: 5
+      window: 60s
+```
+
+| Field | Description | Default |
+| ----- | ----------- | ------- |
+| `condition` | Required in the object form. Accepts `no`, `on-failure`, or `always`. | `no` in the short form |
+| `delay` | Base delay for exponential backoff after a replacement fails. | `500ms` |
+| `max_delay` | Maximum delay between replacement attempts. | `30s` |
+| `max_attempts` | Maximum replacement attempts after the original process fails. | `5` |
+| `window` | Time a ready worker must stay active before its run-time attempt budget resets. | `60s` |
+
+The first replacement is immediate. If it fails, later attempts use exponential backoff from
+`delay` up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a
+run-time exit, only the named worker bounces: workers that name it in `start_after` keep running and
+see their connection drop and reconnect. `compose::status` reports the worker as `restarting` while
+it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
+startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
+`last_error` says the supervisor gave up.
 
 ### Stopping a project
 
@@ -368,18 +449,20 @@ the next time the worker is restarted.
 
 ### Checking status
 
-`compose::status` reports each declared worker with its `state`, its `pid`, an `owned` flag, its
-rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a worker this daemon
-has knowledge of but does not manage (ie. was not started by the compose daemon).
+`compose::status` reports each declared worker with its `state`, the active process `pid` when one
+exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+`false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
+compose daemon).
 
 #### Worker states
 
-| State      | Meaning                                                    |
-| ---------- | ---------------------------------------------------------- |
-| `starting` | Spawned. The engine has not registered it yet.             |
-| `ready`    | Registered in the engine under `(namespace, container)`.   |
-| `failed`   | Exited without being asked to, or one of its hooks failed. |
-| `stopped`  | Stopped by this daemon.                                    |
+| State        | Meaning                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `starting`   | Spawned. The engine has not registered it yet.                                                |
+| `ready`      | Registered in the engine under `(namespace, container)`.                                      |
+| `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
+| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
+| `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
 
 ### Viewing logs
 
@@ -449,17 +532,11 @@ iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
-## Namespaces
+## Configure a namespace
 
-Namespaces are used to allow advanced architectures that require more than one running copy of a
-given worker, multi-tenancy, some multi-agent workflows, and various isolation schemes between
-different parts of a iii application.
-
-Namespaces are arbitrary and their usage depends largely on the given usecase. They do not prescribe
-a specific way of constructing your iii application.
-
-The two primary points where Namespaces are used are during Worker registration via Compose and
-during Trigger and Function interactions. All have ways of declaring which namespace to use.
+Set the namespace in `worker-compose.yaml` or pass `--namespace` when starting Compose. Use the same
+namespace in Trigger and Function calls that target the project's workers. For the daemon namespace,
+project namespace, and routing model, see [Compose architecture](../understanding-iii/compose).
 
 ### Precedence
 
@@ -469,7 +546,7 @@ during Trigger and Function interactions. All have ways of declaring which names
 | `namespace:` in the file | The daemon namespace when `--namespace` is absent, and the project namespace. |
 | Neither                  | `default`.                                                                    |
 
-`namespace` is commonly defined in `worker-compose.yaml` but can be overriden on compose daemon
+`namespace` is commonly defined in `worker-compose.yaml` but can be overridden on compose daemon
 startup with the `--namespace` flag.
 
 Likewise, compose's own `compose::*` functions will exist within the same declared namespace.
@@ -533,13 +610,14 @@ containers:
 
 ### Top-level fields
 
-| Field             | Type   | Default | Description                                                                                   |
-| ----------------- | ------ | ------- | --------------------------------------------------------------------------------------------- |
-| `namespace`       | string | absent  | Namespace the project's workers register in. A project that declares none lands in `default`. |
-| `startup_timeout` | string | `60s`   | Readiness budget for every worker. A worker may override it.                                  |
-| `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                            |
-| `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                          |
-| `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                                 |
+| Field              | Type    | Default | Description                                                                                         |
+| ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `namespace`        | string  | absent  | Namespace the project's workers register in. A project that declares none lands in `default`.       |
+| `startup_timeout`  | string  | `60s`   | Readiness budget for every worker. A worker may override it.                                        |
+| `stop_timeout`     | string  | `10s`   | Grace between the polite stop and the forced kill.                                                  |
+| `required_default` | boolean | `false` | Fallback for workers that omit `required`. An explicit worker value wins.                            |
+| `engine`           | map     | absent  | Present when this Compose invocation owns and configures the engine.                                |
+| `containers`       | map     | empty   | Project workers. May be empty only when `engine:` is present.                                       |
 
 ### Engine fields
 
@@ -551,8 +629,9 @@ containers:
 
 Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
 and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
-`iii-worker-manager#rbac`. The engine starts `iii-engine-functions`, `iii-telemetry`, and
-`iii-observability` automatically. Do not declare these workers in the compose file.
+`iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
+usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
+these workers.
 
 <Note>
   Changes to these worker configurations take effect only after the engine restarts.
@@ -573,6 +652,8 @@ Each key under `containers` is the name the worker registers under.
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
+| `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
+| `restart`         | string         | `no`                 | What happens after a failed start or a run-time exit. `no`, `on-failure`, or `always`.                     |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with
@@ -725,10 +806,12 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
 | A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
-After a worker is ready, the daemon checks it every 250 ms. A worker that exits takes its transitive
-dependents down with it and is recorded as `failed`. Automatic restarts are not performed. When the
-engine connection drops and comes back, every running worker gets its `startup_timeout` to register
-again.
+After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
+happens after it exits. An eligible retry keeps its dependents running and reports `restarting`
+between attempts. A successful exit without an eligible retry is recorded as `stopped`. An
+unsuccessful exit without an eligible retry, or one that exhausts its retries, is recorded as
+`failed`. When no retry remains, its transitive dependents stop. When the engine connection drops
+and comes back, every running worker gets its `startup_timeout` to register again.
 
 Dependency shutdown is dependent upon when a shutdown happens:
 

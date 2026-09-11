@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
+chrono = "0.4"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
@@ -20,6 +21,7 @@ dirs = { workspace = true }
 # Colour is disabled automatically when the output is not a terminal, so piped
 # output stays parseable.
 colored = { workspace = true }
+console = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
 # Registry resolution and artefact download.
@@ -71,3 +73,4 @@ windows-sys = { version = "0.60", features = [
 tempfile = { workspace = true }
 jsonschema = { version = "0.30", default-features = false }
 wiremock = { workspace = true }
+vt100 = "0.16"
