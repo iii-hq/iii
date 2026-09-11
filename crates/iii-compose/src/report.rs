@@ -35,6 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::Local;
 use colored::{Color, Colorize};
 
 /// Marks left of a container name.
@@ -525,6 +526,16 @@ fn ensure_ticker() {
             }
         });
     });
+}
+
+/// Records the local time a restart begins outside the animated progress block.
+pub(crate) fn restarting(key: &str) {
+    line(&format!(
+        "{} {} {}",
+        RUNNING.dimmed(),
+        key.bold(),
+        format!("restarting at {}", Local::now().format("%H:%M:%S")).dimmed()
+    ));
 }
 
 /// A container is being worked on. On a terminal this spins until the container
