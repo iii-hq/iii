@@ -51,7 +51,7 @@ use crate::manifest::StartSpec;
 ///   merged value is written to the file and published to the entry. Pointing
 ///   the child at a different file leaves it reading one value while the
 ///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 8] = [
+pub const RESERVED_ENV: [&str; 9] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -59,6 +59,7 @@ pub const RESERVED_ENV: [&str; 8] = [
     "III_COMPOSE_DIR",
     "III_CONFIG",
     "III_CONFIG_NAME",
+    "III_ISOLATION",
     "III_WORKER_NAME",
 ];
 
@@ -169,6 +170,14 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         "III_COMPOSE_DIR".to_string(),
         compose_dir.to_string_lossy().to_string(),
     );
+    env.insert(
+        "III_ISOLATION".to_string(),
+        match ctx.start {
+            StartSpec::Vm(_) => "libkrun",
+            _ => "host",
+        }
+        .to_string(),
+    );
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     match ctx.config_path {
         Some(config_path) => {
@@ -193,6 +202,7 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
 
     let (program, args) = match ctx.start {
         StartSpec::Shell(command) => shell_invocation(command),
+        StartSpec::HostBundle(spec) => shell_invocation(&spec.run),
         StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
         // The host execs nothing for a VM container: the start command runs
         // inside the guest. Only the environment and the working directory
@@ -408,5 +418,23 @@ mod tests {
         );
         assert_eq!(resolve_working_dir(None, Some(&worker), &compose), worker);
         assert_eq!(resolve_working_dir(None, None, &compose), compose);
+    }
+
+    #[test]
+    fn isolation_reports_where_the_worker_runs() {
+        let user_env = BTreeMap::new();
+        let host = StartSpec::Shell("true".to_string());
+        assert_eq!(
+            spawn_plan(&ctx(&host, None, &user_env)).env["III_ISOLATION"],
+            "host"
+        );
+
+        let vm = StartSpec::Vm(crate::manifest::VmSpec::Bundle {
+            install_dir: PathBuf::from("/tmp/bundle"),
+        });
+        assert_eq!(
+            spawn_plan(&ctx(&vm, None, &user_env)).env["III_ISOLATION"],
+            "libkrun"
+        );
     }
 }

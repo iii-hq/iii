@@ -185,11 +185,26 @@ pub(crate) async fn await_pre_run_until_shutdown(
     timeout: Duration,
     shutdown: Option<&mut crate::shutdown::ShutdownSignal>,
 ) -> Option<Result<(), HookError>> {
-    const HOOK: &str = "pre_run";
+    await_script_until_shutdown(ctx, "pre_run", script, timeout, shutdown).await
+}
 
+/// Runs a named blocking lifecycle script under the same supervision contract
+/// as `pre_run`.
+pub(crate) async fn await_script_until_shutdown(
+    ctx: &SpawnCtx<'_>,
+    hook_name: &'static str,
+    script: &str,
+    timeout: Duration,
+    shutdown: Option<&mut crate::shutdown::ShutdownSignal>,
+) -> Option<Result<(), HookError>> {
     let mut hook = match spawn_hook(ctx, script) {
         Ok(hook) => hook,
-        Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+        Err(source) => {
+            return Some(Err(HookError::Spawn {
+                hook: hook_name,
+                source,
+            }));
+        }
     };
     let child = &mut hook.child;
 
@@ -230,16 +245,21 @@ pub(crate) async fn await_pre_run_until_shutdown(
 
     match outcome {
         HookOutcome::Finished((status, out, err)) => {
-            log_output(HOOK, ctx.container_key, &out, &err);
+            log_output(hook_name, ctx.container_key, &out, &err);
             let status = match status {
                 Ok(status) => status,
-                Err(source) => return Some(Err(HookError::Spawn { hook: HOOK, source })),
+                Err(source) => {
+                    return Some(Err(HookError::Spawn {
+                        hook: hook_name,
+                        source,
+                    }));
+                }
             };
             if status.success() {
                 Some(Ok(()))
             } else {
                 Some(Err(HookError::Failed {
-                    hook: HOOK,
+                    hook: hook_name,
                     code: status.code().unwrap_or(-1),
                 }))
             }
@@ -250,7 +270,7 @@ pub(crate) async fn await_pre_run_until_shutdown(
             hook.kill_tree();
             let _ = hook.child.wait().await;
             Some(Err(HookError::Timeout {
-                hook: HOOK,
+                hook: hook_name,
                 timeout,
             }))
         }
