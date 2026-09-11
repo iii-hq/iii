@@ -74,28 +74,26 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 ### Run the Engine
 
-Cargo commands launched from this checkout default to
-`III_TELEMETRY_ENABLED=false` through the repository's `.cargo/config.toml`.
-This covers `cargo run`, `cargo test`, and their child processes. The default
-does not override an explicitly supplied environment variable and is not baked
-into release binaries. To exercise telemetry intentionally with `cargo run`, set
-`III_TELEMETRY_ENABLED=true` explicitly.
+Telemetry is enabled by default, including local development with `cargo run`,
+Make, and `scripts/start-iii.sh`. These launchers preserve the caller's setting;
+the repository does not set a Cargo telemetry default or bake an opt-out into
+release binaries.
 
-CI workflows, `scripts/start-iii.sh`, `scripts/generate-cli-docs.sh`, installer
-test scripts, and Rust integration helpers that launch real binaries explicitly
-set `III_TELEMETRY_ENABLED=false`, including when their parent environment says
-`true`. Use the installed `iii` command directly for customer or production
-launches; `scripts/start-iii.sh` is a CI and contributor launcher.
-
-When invoking a built binary or test executable directly, Cargo's environment
-defaults do not apply. Set the opt-out before starting it:
+Team members must explicitly opt out in their own shell before running any
+installer, CLI, local engine, or test command:
 
 ```bash
-III_TELEMETRY_ENABLED=false ./target/debug/iii --config engine/config.yaml
+export III_TELEMETRY_ENABLED=false
 ```
 
-The public engine Docker Compose examples retain the production default of
-enabled telemetry and forward an explicit opt-out into the container:
+CI workflows, dedicated Make test/CI targets, `scripts/generate-cli-docs.sh`,
+installer test scripts, and integration helpers set the opt-out explicitly.
+Generic development commands do not. Existing operator opt-outs through engine
+configuration, `III_TELEMETRY_DEV`, or the developer marker remain supported,
+as does the existing CI detection policy.
+
+Public Docker Compose examples also default to enabled telemetry. A team
+member's explicit opt-out is forwarded into the container:
 
 ```bash
 III_TELEMETRY_ENABLED=false docker compose -f engine/docker-compose.yml up

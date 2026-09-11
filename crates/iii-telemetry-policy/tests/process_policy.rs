@@ -12,6 +12,7 @@ fn process_policy() {
     }
     for (enabled, ci, dev, marker, expected) in [
         (None, None, None, false, false),
+        (Some(""), None, None, false, false),
         (Some("true"), None, None, false, false),
         (Some(" FALSE "), None, None, false, true),
         (Some("off"), None, None, false, true),

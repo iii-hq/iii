@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This launcher is for CI and contributor test environments, including Compose.
-export III_TELEMETRY_ENABLED=false
-
 BINARY="./iii"
 CONFIG=""
 PORT=""

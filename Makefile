@@ -11,7 +11,10 @@ III_HTTP_URL        := http://localhost:3199
 PYTHON_SDK_DIR      := sdk/packages/python/iii
 LOCAL_BIN           := $(HOME)/.local/bin
 
-export III_TELEMETRY_ENABLED := false
+# Only dedicated test/CI targets opt out automatically. Local development
+# preserves the caller's environment and the product's enabled default.
+engine-test coverage test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
+ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-console ci-local: export III_TELEMETRY_ENABLED := false
 
 .PHONY: install install-node install-python install-hooks \
         engine-build engine-test coverage install-iii-worker engine-fmt-check \

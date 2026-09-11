@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tomllib
 
 import pytest
 import yaml
@@ -51,7 +50,7 @@ def parent_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize("mode", ["engine", "managed", "compose-file"])
-def test_start_launcher_opts_out_child_and_descendant(tmp_path: Path, parent_env, mode: str):
+def test_start_launcher_preserves_caller_telemetry(tmp_path: Path, parent_env, mode: str):
     # Exit before readiness so no socket or long-lived process is needed.
     # Both launch branches still cross their real fork/exec boundary.
     binary = executable(
@@ -79,7 +78,8 @@ def test_start_launcher_opts_out_child_and_descendant(tmp_path: Path, parent_env
         env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
     )
     assert result.returncode == 1, result.stdout + result.stderr
-    assert log_file.read_text().splitlines() == ["child=false", "descendant=false"]
+    expected = parent_env if parent_env is not None else "unset"
+    assert log_file.read_text().splitlines() == [f"child={expected}", f"descendant={expected}"]
     assert not pid_file.exists(), "failed startup must clean up its PID file"
 
 
@@ -148,12 +148,25 @@ def test_cargo_runtime_default_preserves_explicit_environment(
         capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == (parent_env if parent_env is not None else "false")
+    assert result.stdout.strip() == (parent_env if parent_env is not None else "unset")
 
 
-def test_cargo_opt_out_is_a_non_forcing_environment_default():
-    config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
-    assert config["env"][TELEMETRY_ENV] == {"value": "false", "force": False}
+@pytest.mark.parametrize("target", ["engine-up", "test-sdk-rust"])
+def test_make_only_opts_out_dedicated_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent_env, target: str,
+):
+    probe = executable(
+        tmp_path / "cargo",
+        'printf "telemetry=%s\\n" "${III_TELEMETRY_ENABLED-unset}"\n',
+    )
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    result = subprocess.run(
+        ["make", "--no-print-directory", target, f"START_SCRIPT={probe}"],
+        cwd=ROOT, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = "false" if target == "test-sdk-rust" else (parent_env or "unset")
+    assert f"telemetry={expected}" in result.stdout
 
 
 @pytest.mark.parametrize("name", WORKFLOWS)

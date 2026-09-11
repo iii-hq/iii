@@ -370,7 +370,7 @@ mod tests {
         let mode = match std::env::var(CHILD) {
             Ok(mode) => mode,
             Err(_) => {
-                for mode in ["disabled", "enabled"] {
+                for mode in ["disabled", "enabled", "default"] {
                     let home = tempfile::tempdir().unwrap();
                     let mut child = std::process::Command::new(std::env::current_exe().unwrap());
                     child.args(["--exact", "workers::telemetry::amplitude::tests::direct_clients_respect_opt_out_at_the_transport_boundary"])
@@ -378,6 +378,9 @@ mod tests {
                         .env("HOME", home.path()).env("USERPROFILE", home.path())
                         .env("III_TELEMETRY_ENABLED", if mode == "disabled" { "false" } else { "true" })
                         .env_remove("III_TELEMETRY_DEV");
+                    if mode == "default" {
+                        child.env_remove("III_TELEMETRY_ENABLED");
+                    }
                     for key in iii_telemetry_policy::CI_ENV_VARS {
                         child.env_remove(key);
                     }
