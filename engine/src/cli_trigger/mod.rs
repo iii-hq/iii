@@ -127,9 +127,11 @@ fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)>
 /// won, so a flag can retarget one component and inherit the other.
 ///
 /// A URL that cannot be used fails the call, whichever source carried it: a
-/// `wss://` one with its own message, anything else as malformed. An empty or
-/// blank value is not a URL at all and is skipped, so an exported but unset
-/// `III_URL` still resolves to the default.
+/// `wss://` one with its own message, anything else as malformed. A blank
+/// `III_URL` is the exception, read as unset rather than as a URL, so an
+/// exported but empty variable still resolves to the default. A blank
+/// `--engine` is not: the caller typed the flag, so it fails like any other
+/// value that names no engine.
 ///
 /// Takes the environment value as an argument rather than reading it, so the
 /// precedence is testable without mutating process state.
@@ -139,14 +141,21 @@ fn resolve_endpoint(
     engine_flag: Option<&str>,
     engine_url: Option<&str>,
 ) -> anyhow::Result<(String, u16)> {
-    let named = [(engine_flag, "--engine"), (engine_url, "III_URL")]
-        .into_iter()
-        .find_map(|(value, source)| {
-            value
-                .map(str::trim)
-                .filter(|url| !url.is_empty())
-                .map(|url| (url, source))
-        });
+    let named = match engine_flag {
+        // Typed by the caller, so even an empty value is a statement: it names
+        // no engine, and quietly reading another source would send the call
+        // somewhere they did not ask for. Blank values from the other sources
+        // mean the opposite, that nothing was set.
+        Some(flag) => Some((flag, "--engine")),
+        None => [(engine_url, "III_URL")]
+            .into_iter()
+            .find_map(|(value, source)| {
+                value
+                    .map(str::trim)
+                    .filter(|url| !url.is_empty())
+                    .map(|url| (url, source))
+            }),
+    };
     let (source_host, source_port) = match named {
         Some((url, source)) => {
             let (host, port) = engine_url_endpoint(url, source)?;
@@ -390,7 +399,7 @@ mod tests {
     fn an_unusable_engine_flag_errors_instead_of_falling_back() {
         // The caller typed this one, so silence would send the call to
         // localhost while the operator believes it went somewhere else.
-        for url in ["not a url", "http://127.0.0.1:49734", "ws://"] {
+        for url in ["", "   ", "not a url", "http://127.0.0.1:49734", "ws://"] {
             let err = resolve_endpoint(None, None, Some(url), None)
                 .unwrap_err()
                 .to_string();
@@ -399,6 +408,14 @@ mod tests {
                 "unexpected error for --engine {url:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn a_blank_engine_flag_does_not_fall_through_to_the_environment() {
+        let err = resolve_endpoint(None, None, Some("  "), Some("ws://127.0.0.1:49734"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("--engine"), "unexpected error: {err}");
     }
 
     #[tokio::test]
