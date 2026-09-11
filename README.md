@@ -39,11 +39,12 @@
 
 ## What is iii?
 
-iii is the easiest way to compose, extend, and observe every service in your stack in real time.
+iii is the easiest way to compose, observe, discover, extend, and react (CODER) to every service in
+your stack in real time.
 
 Every backend starts as a project before the first line of business logic. Queues, cron, HTTP,
-state, observability, agents, and sandboxes each usually bring their own integration story. iii
-collapses that into one live system surface.
+state, observability, agents, and sandboxes each usually bring their own integration story that
+complicates CODER. iii solves all of these concerns with one live system surface.
 
 ```bash
 iii compose --namespace dev --up
@@ -61,7 +62,7 @@ uses.
 
 ### Three Primitives
 
-Worker _ Function _ Trigger is the entire mental model.
+iii is powered by 3 primitives:
 
 **Workers** are processes that register with the iii engine and then register triggers and
 functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
@@ -101,28 +102,13 @@ use the same catalog and the same function calls.
 Extending iii is adding a Compose worker. Composing iii is calling functions. Observing iii is
 opening the trace.
 
-## Quick Start
-
-<a href="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4">
-  <img src=".github/assets/iii-intro-preview.gif" alt="Watch the iii intro (click to play)" width="720"/>
-</a>
+## Install iii
 
 Install `iii`:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
-
-Then scaffold and start a project:
-
-```bash
-iii project init myapp    # scaffold a project
-cd myapp
-# declare project workers in worker-compose.yaml
-iii compose --up          # start the engine and project workers
-```
-
-Full walkthrough at the [Quickstart guide](https://iii.dev/docs/quickstart).
 
 ## Add Workers
 
@@ -144,9 +130,11 @@ Browse packages at [workers.iii.dev](https://workers.iii.dev/) and see the
 | Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                         |
 | Go       | [`iii-sdk`](sdk/packages/go/iii)                       | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
 
-## Agent Skills
+## Agent Skills for 3rd party harnesses
 
-Install iii's agent-readable reference material for the engine primitives:
+If you're using the iii harness then agent skills are automatically available.
+
+If you're using another harness you can install iii's skills via:
 
 ```bash
 npx skills add iii-hq/iii/skills
@@ -189,10 +177,6 @@ triggers, queues, traces, logs, and real-time state. See the
 | `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
 
 See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain, and CI/CD details.
-
-## Examples
-
-See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
 
 ## Resources
 
