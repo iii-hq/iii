@@ -53,8 +53,6 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-unknown-linux-gnu",
             "aarch64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
         ],
         commands: &[],
         tag_prefix: Some("iii"),
@@ -204,6 +202,21 @@ mod tests {
     fn test_console_has_checksum() {
         let (spec, _) = resolve_command("console").unwrap();
         assert!(spec.has_checksum);
+    }
+
+    #[test]
+    fn test_init_supported_targets_match_linux_guest_release_matrix() {
+        let init = resolve_binary_for_update("iii-init").unwrap();
+
+        assert_eq!(
+            init.supported_targets,
+            &[
+                "x86_64-unknown-linux-musl",
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-musl",
+                "aarch64-unknown-linux-gnu",
+            ]
+        );
     }
 
     #[test]

@@ -204,6 +204,13 @@ install_companion_from_tarball() {
   return 0
 }
 
+init_target_for_host() {
+  case "$1:$2" in
+    Linux:x86_64|Darwin:x86_64) printf '%s' 'x86_64-unknown-linux-musl' ;;
+    Linux:aarch64|Darwin:aarch64) printf '%s' 'aarch64-unknown-linux-gnu' ;;
+  esac
+}
+
 # Test-mode hook: when this var is set, stop here so unit tests can source
 # the helper functions above without running the installer.
 if [ -n "${III_INSTALL_SH_TEST_MODE:-}" ]; then
@@ -561,21 +568,7 @@ trap cleanup EXIT INT TERM
 # ---------------------------------------------------------------------------
 
 # iii-init: Linux ELF that runs inside VMs; macOS hosts also need it for libkrun guests.
-init_target=""
-case "$uname_s" in
-  Linux)
-    case "$arch" in
-      x86_64)  init_target="x86_64-unknown-linux-musl" ;;
-      aarch64) init_target="aarch64-unknown-linux-gnu" ;;
-    esac
-    ;;
-  Darwin)
-    case "$arch" in
-      x86_64)  init_target="x86_64-apple-darwin" ;;
-      aarch64) init_target="aarch64-apple-darwin" ;;
-    esac
-    ;;
-esac
+init_target=$(init_target_for_host "$uname_s" "$arch")
 
 # iii-worker: needs glibc on Linux (KVM/libkrun); not available for x86_64-apple-darwin.
 worker_target=""
