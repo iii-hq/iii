@@ -63,6 +63,7 @@ const CLEAR_LINE: &str = "\r\x1b[2K";
 #[derive(Default)]
 struct Console {
     startup: Option<StartupRows>,
+    downloads: Vec<Row>,
     rows: Vec<Row>,
     /// How many lines the block occupies on screen, so the next draw knows how
     /// far up to go. Zero when nothing is drawn.
@@ -96,6 +97,16 @@ enum RowState {
         total: u32,
         phase: RetryPhase,
     },
+    Downloading {
+        downloaded: u64,
+        total: Option<u64>,
+        began: Instant,
+    },
+    Downloaded {
+        downloaded: u64,
+        total: Option<u64>,
+        elapsed: Duration,
+    },
     Ready {
         what: String,
         elapsed: Duration,
@@ -117,6 +128,7 @@ enum RetryPhase {
 
 struct StartupRows {
     engine: Row,
+    downloads: Row,
     containers: Row,
 }
 
@@ -165,13 +177,13 @@ impl StartupProgress {
         redraw(&mut state);
     }
 
-    pub(crate) fn containers_starting(&self) {
+    pub(crate) fn downloads_starting(&self) {
         let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
         let Some(startup) = &mut state.startup else {
             return;
         };
-        startup.containers.state = RowState::Starting {
-            what: "Starting".to_string(),
+        startup.downloads.state = RowState::Starting {
+            what: "Checking".to_string(),
             began: Instant::now(),
         };
         redraw(&mut state);
@@ -189,15 +201,19 @@ impl StartupProgress {
         startup.finish(success, message);
         // Pending/active child rows cannot keep spinning after a failed or
         // cancelled operation.
-        for row in &mut state.rows {
-            match row.state {
-                RowState::Waiting => row.state = RowState::Skipped("Not started".to_string()),
-                RowState::Starting { .. } | RowState::Retrying { .. } => {
-                    row.state = RowState::Skipped("Cancelled".to_string());
-                }
-                _ => {}
+        let settle = |row: &mut Row| match row.state {
+            RowState::Waiting => row.state = RowState::Skipped("Not started".to_string()),
+            RowState::Starting { .. } | RowState::Retrying { .. } => {
+                row.state = RowState::Skipped("Cancelled".to_string());
             }
-        }
+            RowState::Downloading { .. } if message == "Cancelled" => {
+                row.state = RowState::Skipped("Cancelled".to_string());
+            }
+            RowState::Downloading { .. } => row.state = RowState::Failed,
+            _ => {}
+        };
+        state.downloads.iter_mut().for_each(settle);
+        state.rows.iter_mut().for_each(settle);
         redraw(&mut state);
         *state = Console::default();
     }
@@ -220,6 +236,11 @@ impl StartupRows {
                     began: Instant::now(),
                 },
             },
+            downloads: Row {
+                key: "Downloads".to_string(),
+                depth: 0,
+                state: RowState::Waiting,
+            },
             containers: Row {
                 key: "Containers".to_string(),
                 depth: 0,
@@ -229,16 +250,26 @@ impl StartupRows {
     }
 
     fn finish(&mut self, success: bool, message: &str) {
-        let row = if matches!(self.containers.state, RowState::Waiting)
-            && !matches!(self.engine.state, RowState::Ready { .. })
+        let row = if !matches!(self.engine.state, RowState::Ready { .. })
+            && matches!(self.downloads.state, RowState::Waiting)
         {
+            self.downloads.state = RowState::Skipped("Not started".to_string());
             self.containers.state = RowState::Skipped("Not started".to_string());
             &mut self.engine
+        } else if matches!(self.downloads.state, RowState::Starting { .. }) {
+            if matches!(self.engine.state, RowState::Starting { .. }) {
+                self.engine.state = RowState::Skipped("Not connected".to_string());
+            }
+            self.containers.state = RowState::Skipped("Not started".to_string());
+            &mut self.downloads
         } else {
             // An empty project can finish even while an external engine is
             // unavailable. Completing that project does not prove connection.
             if matches!(self.engine.state, RowState::Starting { .. }) {
                 self.engine.state = RowState::Skipped("Not connected".to_string());
+            }
+            if matches!(self.downloads.state, RowState::Waiting) {
+                self.downloads.state = RowState::Skipped("No downloads".to_string());
             }
             &mut self.containers
         };
@@ -260,6 +291,123 @@ impl StartupRows {
             }
         };
     }
+}
+
+/// Adds one registry artefact to the startup download section.
+pub(crate) fn download_started(key: &str, total: Option<u64>) {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    if state.startup.is_none() {
+        return;
+    }
+    let began = Instant::now();
+    if let Some(row) = state.downloads.iter_mut().find(|row| row.key == key) {
+        row.state = RowState::Downloading {
+            downloaded: 0,
+            total,
+            began,
+        };
+    } else {
+        state.downloads.push(Row {
+            key: key.to_string(),
+            depth: 1,
+            state: RowState::Downloading {
+                downloaded: 0,
+                total,
+                began,
+            },
+        });
+    }
+    update_download_header(&mut state);
+    redraw(&mut state);
+}
+
+/// Advances a registry artefact's live byte counter.
+pub(crate) fn download_progress(key: &str, downloaded: u64) {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(row) = state.downloads.iter_mut().find(|row| row.key == key) else {
+        return;
+    };
+    let RowState::Downloading {
+        downloaded: current,
+        ..
+    } = &mut row.state
+    else {
+        return;
+    };
+    *current = downloaded;
+    if animated() {
+        redraw(&mut state);
+    }
+}
+
+/// Marks a registry artefact that could not be received or verified.
+pub(crate) fn download_failed(key: &str) {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(row) = state.downloads.iter_mut().find(|row| row.key == key) else {
+        return;
+    };
+    if matches!(row.state, RowState::Downloading { .. }) {
+        row.state = RowState::Failed;
+        redraw(&mut state);
+    }
+}
+
+/// Completes one registry artefact after its digest has been verified.
+pub(crate) fn download_finished(key: &str, downloaded: u64) {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(row) = state.downloads.iter_mut().find(|row| row.key == key) else {
+        return;
+    };
+    let RowState::Downloading { total, began, .. } = &row.state else {
+        return;
+    };
+    row.state = RowState::Downloaded {
+        downloaded,
+        total: *total,
+        elapsed: began.elapsed(),
+    };
+    update_download_header(&mut state);
+    redraw(&mut state);
+}
+
+fn update_download_header(state: &mut Console) {
+    let complete = state
+        .downloads
+        .iter()
+        .filter(|row| matches!(row.state, RowState::Downloaded { .. }))
+        .count();
+    let total = state.downloads.len();
+    if let Some(startup) = &mut state.startup
+        && let RowState::Starting { what, .. } = &mut startup.downloads.state
+    {
+        *what = format!("Downloading ({complete}/{total})");
+    }
+}
+
+/// Closes the download section and starts the container section.
+pub(crate) fn containers_starting() {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let download_count = state.downloads.len();
+    let Some(startup) = &mut state.startup else {
+        return;
+    };
+    let elapsed = match &startup.downloads.state {
+        RowState::Starting { began, .. } => began.elapsed(),
+        _ => Duration::ZERO,
+    };
+    startup.downloads.state = if download_count == 0 {
+        RowState::Skipped("No downloads".to_string())
+    } else {
+        RowState::Ready {
+            what: format!("Complete ({download_count})"),
+            elapsed,
+        }
+    };
+    startup.containers.state = RowState::Starting {
+        what: "Starting".to_string(),
+        began: Instant::now(),
+    };
+    redraw(&mut state);
 }
 
 fn console() -> &'static Mutex<Console> {
@@ -363,12 +511,17 @@ impl Console {
         self.observe_size(size);
         let mut rows = Vec::new();
         if let Some(startup) = &self.startup {
-            rows.extend([startup.engine.clone(), startup.containers.clone()]);
+            rows.extend([startup.engine.clone(), startup.downloads.clone()]);
+            rows.extend(self.downloads.iter().cloned());
+            rows.push(startup.containers.clone());
+            rows.extend(self.rows.iter().cloned().map(|mut row| {
+                row.depth += 1;
+                row
+            }));
+        } else {
+            rows.extend(self.downloads.iter().cloned());
+            rows.extend(self.rows.iter().cloned());
         }
-        rows.extend(self.rows.iter().cloned().map(|mut row| {
-            row.depth += usize::from(self.startup.is_some());
-            row
-        }));
         let lines: Vec<String> = rows
             .iter()
             .map(|row| render_row(row, self.frame, true))
@@ -469,6 +622,24 @@ fn render_row(row: &Row, frame: usize, animate: bool) -> String {
             what.dimmed(),
             format!("({})", format_elapsed(began.elapsed())).dimmed(),
         ),
+        RowState::Downloading {
+            downloaded,
+            total,
+            began,
+        } => render_download(
+            row,
+            *downloaded,
+            *total,
+            began.elapsed(),
+            false,
+            frame,
+            animate,
+        ),
+        RowState::Downloaded {
+            downloaded,
+            total,
+            elapsed,
+        } => render_download(row, *downloaded, *total, *elapsed, true, frame, animate),
         RowState::Retrying {
             attempt,
             total,
@@ -509,6 +680,82 @@ fn render_row(row: &Row, frame: usize, animate: bool) -> String {
             why.dimmed()
         ),
     }
+}
+
+fn render_download(
+    row: &Row,
+    downloaded: u64,
+    total: Option<u64>,
+    elapsed: Duration,
+    finished: bool,
+    frame: usize,
+    animate: bool,
+) -> String {
+    let indent = "  ".repeat(row.depth);
+    let bar = download_bar(downloaded, total, frame, animate);
+    let amount = match total.filter(|total| *total > 0) {
+        Some(total) => format!(
+            "{:>3}% {}/{}",
+            ((u128::from(downloaded.min(total)) * 100) / u128::from(total)) as u8,
+            format_bytes(downloaded),
+            format_bytes(total)
+        ),
+        None => format_bytes(downloaded),
+    };
+    let speed = format!("{}/s", format_bytes(download_speed(downloaded, elapsed)));
+    let marker = if finished {
+        OK.green()
+    } else if animate {
+        FRAMES[frame % FRAMES.len()].cyan()
+    } else {
+        RUNNING.cyan()
+    };
+    let details = format!("{bar} {amount} {speed}");
+    if finished {
+        format!("{indent}{marker} {} {}", row.key.bold(), details.green())
+    } else {
+        format!("{indent}{marker} {} {}", row.key.bold(), details.dimmed())
+    }
+}
+
+fn download_bar(downloaded: u64, total: Option<u64>, frame: usize, animate: bool) -> String {
+    const WIDTH: usize = 20;
+    let Some(total) = total.filter(|total| *total > 0) else {
+        let position = if animate { frame % WIDTH } else { 0 };
+        let mut cells = vec![' '; WIDTH];
+        cells[position] = '>';
+        return format!("[{}]", cells.into_iter().collect::<String>());
+    };
+    let filled = ((u128::from(downloaded.min(total)) * WIDTH as u128) / u128::from(total)) as usize;
+    let mut bar = "=".repeat(filled);
+    if filled < WIDTH {
+        bar.push('>');
+        bar.push_str(&" ".repeat(WIDTH - filled - 1));
+    }
+    format!("[{bar}]")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else {
+        format!("{bytes:.0} B")
+    }
+}
+
+fn download_speed(downloaded: u64, elapsed: Duration) -> u64 {
+    if elapsed.is_zero() {
+        return 0;
+    }
+    (downloaded as f64 / elapsed.as_secs_f64()) as u64
 }
 
 /// Whether progress can animate. A pipe or a file gets static lines.
@@ -563,6 +810,10 @@ fn ensure_ticker() {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let turning = !state.static_output
                     && (state.startup.is_some()
+                        || state
+                            .downloads
+                            .iter()
+                            .any(|row| matches!(row.state, RowState::Downloading { .. }))
                         || state.rows.iter().any(|row| {
                             matches!(
                                 row.state,
@@ -954,6 +1205,7 @@ mod tests {
     #[test]
     fn empty_project_does_not_claim_an_unconnected_engine_is_ready() {
         let mut startup = StartupRows::new(false);
+        startup.downloads.state = RowState::Skipped("No downloads".to_string());
         startup.containers.state = RowState::Starting {
             what: "Starting".to_string(),
             began: Instant::now(),
@@ -981,10 +1233,19 @@ mod tests {
         let starting = stderr.find("Engine Starting").unwrap();
         let waiting = stderr.find("Engine Waiting for connection").unwrap();
         let ready = stderr.find("Engine Ready").unwrap();
+        let checking = stderr.find("Downloads Checking").unwrap();
+        let downloading = stderr.find("Downloads Downloading (0/1)").unwrap();
+        let complete = stderr.find("Downloads Complete (1)").unwrap();
         let containers = stderr.find("Containers Starting").unwrap();
         let done = stderr.find("Containers Ready").unwrap();
         assert!(
-            starting < waiting && waiting < ready && ready < containers && containers < done,
+            starting < waiting
+                && waiting < ready
+                && ready < checking
+                && checking < downloading
+                && downloading < complete
+                && complete < containers
+                && containers < done,
             "{stderr}"
         );
         assert!(
@@ -1002,7 +1263,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(250)).await;
         progress.engine_ready();
         line("compose serving");
-        progress.containers_starting();
+        progress.downloads_starting();
+        download_started("api", Some(2 * 1024 * 1024));
+        download_progress("api", 1024 * 1024);
+        download_finished("api", 2 * 1024 * 1024);
+        containers_starting();
         plan(&[("api".to_string(), 0), ("redis".to_string(), 1)]);
         starting("redis", "waiting for engine registration");
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1017,6 +1282,39 @@ mod tests {
         // The finished panel must not be redrawn over subsequent output.
         line("after startup");
         tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    /// Used by the VHS PR demo to record the real startup progress renderer.
+    #[tokio::test]
+    #[ignore = "subprocess fixture for the download progress renderer"]
+    async fn download_panel_fixture() {
+        let mut progress = StartupProgress::start(false);
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        progress.engine_ready();
+        progress.downloads_starting();
+        download_started("console", Some(12 * 1024 * 1024));
+        download_started("shell", Some(8 * 1024 * 1024));
+        for step in 1..=12 {
+            download_progress("console", step * 1024 * 1024);
+            download_progress("shell", step.min(8) * 1024 * 1024);
+            if step == 8 {
+                download_finished("shell", 8 * 1024 * 1024);
+            }
+            tokio::time::sleep(Duration::from_millis(140)).await;
+        }
+        download_finished("console", 12 * 1024 * 1024);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        containers_starting();
+        plan(&[("console".to_string(), 0), ("shell".to_string(), 0)]);
+        starting("console", "waiting for engine registration");
+        starting("shell", "waiting for engine registration");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        ready("shell", Duration::from_millis(400));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        ready("console", Duration::from_millis(650));
+        plan_done();
+        progress.finish(true, "Ready");
+        tokio::time::sleep(Duration::from_millis(600)).await;
     }
 
     #[test]
@@ -1087,6 +1385,72 @@ mod tests {
     #[test]
     fn recovered_retry_names_the_successful_attempt() {
         assert_eq!(recovered_label(2, 5), "Recovered on attempt 2/5");
+    }
+
+    #[test]
+    fn known_download_size_renders_progress_amount_and_transfer_speed() {
+        let row = Row {
+            key: "console".to_string(),
+            depth: 1,
+            state: RowState::Downloading {
+                downloaded: 5 * 1024 * 1024,
+                total: Some(10 * 1024 * 1024),
+                began: Instant::now() - Duration::from_secs(2),
+            },
+        };
+
+        let rendered = render_row(&row, 0, false);
+
+        assert!(rendered.contains("[==========>         ]"), "{rendered}");
+        assert!(rendered.contains("50% 5.0 MiB/10.0 MiB"), "{rendered}");
+        assert!(rendered.contains("2.5 MiB/s"), "{rendered}");
+    }
+
+    #[test]
+    fn unknown_download_size_renders_activity_bytes_and_transfer_speed() {
+        let row = Row {
+            key: "shell".to_string(),
+            depth: 1,
+            state: RowState::Downloading {
+                downloaded: 2 * 1024,
+                total: None,
+                began: Instant::now() - Duration::from_secs(2),
+            },
+        };
+
+        let rendered = render_row(&row, 4, true);
+
+        assert!(rendered.contains("[    >               ]"), "{rendered}");
+        assert!(rendered.contains("2.0 KiB"), "{rendered}");
+        assert!(rendered.ends_with("/s"), "{rendered}");
+    }
+
+    #[test]
+    fn download_speed_uses_binary_bytes_per_second() {
+        assert_eq!(
+            download_speed(5 * 1024 * 1024, Duration::from_secs(2)),
+            2_621_440
+        );
+    }
+
+    #[test]
+    fn completed_download_keeps_its_final_transfer_speed() {
+        let row = Row {
+            key: "state".to_string(),
+            depth: 1,
+            state: RowState::Downloaded {
+                downloaded: 3 * 1024 * 1024,
+                total: Some(3 * 1024 * 1024),
+                elapsed: Duration::from_secs(3),
+            },
+        };
+
+        let first = render_row(&row, 0, false);
+        std::thread::sleep(Duration::from_millis(5));
+        let second = render_row(&row, 0, false);
+
+        assert_eq!(first, second);
+        assert!(first.contains("100% 3.0 MiB/3.0 MiB 1.0 MiB/s"), "{first}");
     }
 
     /// A container keeps its colour once it has one, and red is never handed

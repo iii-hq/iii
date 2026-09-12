@@ -968,18 +968,40 @@ async fn download_and_extract(
         .build()
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
 
-    let bytes = client
+    let mut response = client
         .get(&artifact.url)
         .send()
         .await
         .and_then(|response| response.error_for_status())
-        .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?
-        .bytes()
-        .await
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
+    crate::report::download_started(container, response.content_length());
 
-    let digest = hex::encode(Sha256::digest(&bytes));
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(8 * 1024 * 1024);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0_u64;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(err) => {
+                crate::report::download_failed(container);
+                return Err(download_error(container, &artifact.url, &err.to_string()));
+            }
+        };
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        hasher.update(&chunk);
+        bytes.extend_from_slice(&chunk);
+        crate::report::download_progress(container, downloaded);
+    }
+
+    let digest = hex::encode(hasher.finalize());
     if !digest.eq_ignore_ascii_case(&artifact.sha256) {
+        crate::report::download_failed(container);
         return Err(ComposeError::PackageDigestMismatch {
             container: container.to_string(),
             url: artifact.url.clone(),
@@ -987,6 +1009,7 @@ async fn download_and_extract(
             actual: digest,
         });
     }
+    crate::report::download_finished(container, downloaded);
 
     // Extract beside the destination and rename: a crash mid-extraction must
     // not leave a half-unpacked directory that the next run treats as a cache

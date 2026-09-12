@@ -666,7 +666,7 @@ async fn serve_daemon(
     if let (Some(project), Some(operation)) = (&mut start, startup_operation) {
         let file = &project.file;
         report::line("");
-        project.progress.containers_starting();
+        project.progress.downloads_starting();
         let operation_id = operation.id().to_string();
         let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
             operation.cancellation(),

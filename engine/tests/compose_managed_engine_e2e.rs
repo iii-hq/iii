@@ -143,12 +143,14 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     let progress = String::from_utf8_lossy(&output.stderr);
     let waiting = progress.find("Engine Waiting for connection").unwrap();
     let ready = progress.find("Engine Ready").unwrap();
-    let containers = progress.find("Containers Starting").unwrap();
-    let failed = progress.find("Containers Failed").unwrap();
+    let downloads = progress.find("Downloads Checking").unwrap();
+    let failed = progress.find("Downloads Failed").unwrap();
     assert!(
-        waiting < ready && ready < containers && containers < failed,
+        waiting < ready && ready < downloads && downloads < failed,
         "{progress}"
     );
+    assert!(progress.contains("Containers Not started"), "{progress}");
+    assert!(!progress.contains("Containers Starting"), "{progress}");
     assert!(!progress.contains("Containers Ready"), "{progress}");
     assert!(
         !progress.contains('\x1b'),
