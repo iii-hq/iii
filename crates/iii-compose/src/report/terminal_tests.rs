@@ -6,6 +6,7 @@ fn progress(workers: usize) -> Console {
         what: "Ready".to_string(),
         elapsed: Duration::from_secs(2),
     };
+    startup.downloads.state = RowState::Skipped("No downloads".to_string());
     startup.containers.state = RowState::Starting {
         what: "Starting".to_string(),
         began: Instant::now(),
@@ -274,7 +275,8 @@ fn zero_change_summaries_do_not_claim_workers_are_already_running() {
 async fn cancelled_retry_fixture() {
     let mut progress = StartupProgress::start(true);
     progress.engine_ready();
-    progress.containers_starting();
+    progress.downloads_starting();
+    containers_starting();
     plan(&[("api".to_string(), 0)]);
     retry_waiting("api", 1, 3, Duration::from_secs(10));
     progress.finish(false, "Cancelled");

@@ -504,6 +504,7 @@ impl Daemon {
         if shutdown.requested() {
             return Ok(None);
         }
+        crate::report::containers_starting();
         Ok(project
             .up_until_shutdown(container, operation_id, shutdown)
             .await)
