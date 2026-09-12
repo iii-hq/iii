@@ -460,6 +460,7 @@ async fn dispatch(
                 operation,
                 mutation,
                 "all requested workers are ready",
+                "workers that did not start",
                 "one or more workers failed",
             );
             Ok(to_value(&accepted))
@@ -497,6 +498,7 @@ async fn dispatch(
                 operation,
                 mutation,
                 "all requested workers were removed",
+                "workers that could not be removed",
                 "one or more workers could not be removed",
             );
             Ok(to_value(&accepted))
@@ -556,6 +558,7 @@ async fn dispatch(
                 operation,
                 mutation,
                 "all requested workers were updated",
+                "workers that could not be updated",
                 "one or more workers could not be updated",
             );
             Ok(to_value(&accepted))
@@ -687,10 +690,38 @@ async fn admit_mutation(
     Ok((operation, accepted))
 }
 
+/// Compose the terminal detail for a mutation that succeeded.
+///
+/// A non-required container that never reached its target state leaves the
+/// operation succeeding, which is by design — but the blanket success line
+/// then claims every worker is up while one is not, and a caller polling
+/// `compose::operation` has no other place to learn it. Name those containers
+/// instead (MOT-4761).
+///
+/// The list is the project's, not this operation's request: reconciliation
+/// reports every container it touched, so one left broken by an earlier
+/// operation keeps being named until it starts. That is the point — the
+/// alternative is a success line that is false about the project.
+fn succeeded_detail(
+    success_detail: &str,
+    partial_detail: &str,
+    not_required_failures: &[String],
+) -> String {
+    if not_required_failures.is_empty() {
+        return success_detail.to_string();
+    }
+    format!(
+        "{partial_detail}: {}. The operation still succeeded because they are not required; \
+         check compose::status and their logs before using them.",
+        not_required_failures.join(", ")
+    )
+}
+
 fn spawn_mutation<F>(
     operation: Arc<crate::operation::Operation>,
     mutation: F,
     success_detail: &'static str,
+    partial_detail: &'static str,
     failed_detail: &'static str,
 ) where
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
@@ -717,9 +748,13 @@ fn spawn_mutation<F>(
                             crate::operation::OperationStatus::Succeeded
                         },
                         if failed {
-                            failed_detail
+                            failed_detail.to_string()
                         } else {
-                            success_detail
+                            succeeded_detail(
+                                success_detail,
+                                partial_detail,
+                                outcome.not_required_failures(),
+                            )
                         },
                     )
                     .await;
@@ -1446,5 +1481,35 @@ mod tests {
                 "{function_id} exposes container internals"
             );
         }
+    }
+
+    #[test]
+    fn a_succeeding_mutation_names_the_workers_that_did_not_start() {
+        assert_eq!(
+            super::succeeded_detail(
+                "all requested workers are ready",
+                "workers that did not start",
+                &[],
+            ),
+            "all requested workers are ready",
+            "nothing failed, so the blanket line is true"
+        );
+        let partial = super::succeeded_detail(
+            "all requested workers are ready",
+            "workers that did not start",
+            &["bulk-importer".to_string(), "analytics".to_string()],
+        );
+        assert!(
+            partial.starts_with("workers that did not start: bulk-importer, analytics."),
+            "the terminal detail names them: {partial}"
+        );
+        assert!(
+            !partial.contains("all requested workers are ready"),
+            "and never claims they are ready: {partial}"
+        );
+        assert!(
+            partial.contains("compose::status"),
+            "pointing at where to look: {partial}"
+        );
     }
 }
