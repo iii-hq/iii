@@ -456,13 +456,7 @@ async fn dispatch(
                     .add_configured(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers are ready",
-                "workers that did not start",
-                "one or more workers failed",
-            );
+            spawn_mutation(operation, mutation, ADD_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Remove => {
@@ -494,13 +488,7 @@ async fn dispatch(
                     .remove(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers were removed",
-                "workers that could not be removed",
-                "one or more workers could not be removed",
-            );
+            spawn_mutation(operation, mutation, REMOVE_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Restart => match daemon
@@ -554,13 +542,7 @@ async fn dispatch(
                     .update(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers were updated",
-                "workers that could not be updated",
-                "one or more workers could not be updated",
-            );
+            spawn_mutation(operation, mutation, UPDATE_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Down => match daemon
@@ -702,27 +684,53 @@ async fn admit_mutation(
 /// reports every container it touched, so one left broken by an earlier
 /// operation keeps being named until it starts. That is the point — the
 /// alternative is a success line that is false about the project.
-fn succeeded_detail(
-    success_detail: &str,
-    partial_detail: &str,
-    not_required_failures: &[String],
-) -> String {
+fn succeeded_detail(details: MutationDetails, not_required_failures: &[String]) -> String {
     if not_required_failures.is_empty() {
-        return success_detail.to_string();
+        return details.success.to_string();
     }
     format!(
-        "{partial_detail}: {}. The operation still succeeded because they are not required; \
+        "{}: {}. The operation still succeeded because they are not required; \
          check compose::status and their logs before using them.",
+        details.partial,
         not_required_failures.join(", ")
     )
 }
 
+/// The three terminal lines one mutation can finish with. Named fields rather
+/// than three positional `&str`s: they are the same type, so a swap at a call
+/// site would compile and only show up as a wrong sentence in a live run.
+#[derive(Clone, Copy)]
+struct MutationDetails {
+    /// Every container reached its target state.
+    success: &'static str,
+    /// The operation succeeded, but some non-required container did not.
+    partial: &'static str,
+    /// A required container did not, so the operation failed.
+    failed: &'static str,
+}
+
+const ADD_DETAILS: MutationDetails = MutationDetails {
+    success: "all requested workers are ready",
+    partial: "workers that did not start",
+    failed: "one or more workers failed",
+};
+
+const REMOVE_DETAILS: MutationDetails = MutationDetails {
+    success: "all requested workers were removed",
+    partial: "workers that could not be removed",
+    failed: "one or more workers could not be removed",
+};
+
+const UPDATE_DETAILS: MutationDetails = MutationDetails {
+    success: "all requested workers were updated",
+    partial: "workers that could not be updated",
+    failed: "one or more workers could not be updated",
+};
+
 fn spawn_mutation<F>(
     operation: Arc<crate::operation::Operation>,
     mutation: F,
-    success_detail: &'static str,
-    partial_detail: &'static str,
-    failed_detail: &'static str,
+    details: MutationDetails,
 ) where
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
 {
@@ -748,13 +756,9 @@ fn spawn_mutation<F>(
                             crate::operation::OperationStatus::Succeeded
                         },
                         if failed {
-                            failed_detail.to_string()
+                            details.failed.to_string()
                         } else {
-                            succeeded_detail(
-                                success_detail,
-                                partial_detail,
-                                outcome.not_required_failures(),
-                            )
+                            succeeded_detail(details, outcome.not_required_failures())
                         },
                     )
                     .await;
@@ -1485,31 +1489,54 @@ mod tests {
 
     #[test]
     fn a_succeeding_mutation_names_the_workers_that_did_not_start() {
-        assert_eq!(
-            super::succeeded_detail(
-                "all requested workers are ready",
-                "workers that did not start",
-                &[],
-            ),
-            "all requested workers are ready",
-            "nothing failed, so the blanket line is true"
-        );
-        let partial = super::succeeded_detail(
-            "all requested workers are ready",
-            "workers that did not start",
-            &["bulk-importer".to_string(), "analytics".to_string()],
-        );
-        assert!(
-            partial.starts_with("workers that did not start: bulk-importer, analytics."),
-            "the terminal detail names them: {partial}"
-        );
-        assert!(
-            !partial.contains("all requested workers are ready"),
-            "and never claims they are ready: {partial}"
-        );
-        assert!(
-            partial.contains("compose::status"),
-            "pointing at where to look: {partial}"
-        );
+        for details in [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ] {
+            assert_eq!(
+                super::succeeded_detail(details, &[]),
+                details.success,
+                "nothing failed, so the blanket line is true"
+            );
+            let partial = super::succeeded_detail(
+                details,
+                &["bulk-importer".to_string(), "analytics".to_string()],
+            );
+            assert!(
+                partial.starts_with(&format!("{}: bulk-importer, analytics.", details.partial)),
+                "the terminal detail names them: {partial}"
+            );
+            assert!(
+                !partial.contains(details.success),
+                "and never claims they are ready: {partial}"
+            );
+            assert!(
+                partial.contains("compose::status"),
+                "pointing at where to look: {partial}"
+            );
+        }
+    }
+
+    /// The three lines are the same type, so the compiler cannot catch a swap
+    /// at a call site; distinctness is what makes a swap visible in a test.
+    #[test]
+    fn every_mutation_names_its_own_three_outcomes() {
+        let all = [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ];
+        let mut lines: Vec<&str> = all
+            .iter()
+            .flat_map(|d| [d.success, d.partial, d.failed])
+            .collect();
+        let total = lines.len();
+        lines.sort_unstable();
+        lines.dedup();
+        assert_eq!(lines.len(), total, "two mutations share a terminal line");
+        for d in all {
+            assert!(!d.partial.contains("ready") && !d.partial.contains("were "));
+        }
     }
 }
