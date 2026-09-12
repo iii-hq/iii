@@ -1284,6 +1284,39 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
+    /// Used by the VHS PR demo to record the real startup progress renderer.
+    #[tokio::test]
+    #[ignore = "subprocess fixture for the download progress renderer"]
+    async fn download_panel_fixture() {
+        let mut progress = StartupProgress::start(false);
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        progress.engine_ready();
+        progress.downloads_starting();
+        download_started("console", Some(12 * 1024 * 1024));
+        download_started("shell", Some(8 * 1024 * 1024));
+        for step in 1..=12 {
+            download_progress("console", step * 1024 * 1024);
+            download_progress("shell", step.min(8) * 1024 * 1024);
+            if step == 8 {
+                download_finished("shell", 8 * 1024 * 1024);
+            }
+            tokio::time::sleep(Duration::from_millis(140)).await;
+        }
+        download_finished("console", 12 * 1024 * 1024);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        containers_starting();
+        plan(&[("console".to_string(), 0), ("shell".to_string(), 0)]);
+        starting("console", "waiting for engine registration");
+        starting("shell", "waiting for engine registration");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        ready("shell", Duration::from_millis(400));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        ready("console", Duration::from_millis(650));
+        plan_done();
+        progress.finish(true, "Ready");
+        tokio::time::sleep(Duration::from_millis(600)).await;
+    }
+
     #[test]
     fn redirected_retry_reports_transitions_without_animation() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
