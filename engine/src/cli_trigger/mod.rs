@@ -41,19 +41,22 @@ pub struct TriggerArgs {
     #[arg(long)]
     pub json: Option<String>,
 
-    /// Engine WebSocket address (`ws://host:port`). Overrides `III_URL`. The
-    /// local default is used when neither supplies a URL. Encrypted
-    /// (`wss://`) connections are not supported.
+    /// Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and
+    /// the working directory's compose file. The local default is used when
+    /// none of them supplies a URL. Encrypted (`wss://`) connections are not
+    /// supported.
     #[arg(long, value_name = "URL")]
     pub engine: Option<String>,
 
     /// DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken
-    /// from `--engine` or `III_URL` when omitted, else `localhost`.
+    /// from `--engine`, `III_URL` or the working directory's compose file when
+    /// omitted, else `localhost`.
     #[arg(long)]
     pub address: Option<String>,
 
     /// DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken
-    /// from `--engine` or `III_URL` when omitted, else 49134.
+    /// from `--engine`, `III_URL` or the working directory's compose file when
+    /// omitted, else 49134.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -178,6 +181,23 @@ fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)>
     Ok((host, url.port().unwrap_or(DEFAULT_PORT)))
 }
 
+/// Reads `engine.url` from the compose file in the working directory.
+///
+/// Returns `None` whenever the file is absent, unreadable, invalid, or
+/// declares no engine. Finding the file is a resolution step, not a
+/// validation one: `iii trigger` has to keep working outside any project, so
+/// a broken compose file must never fail a command that did not ask about it.
+/// A file that does state an engine address is held to the same rule as every
+/// other source, and an unusable one there fails the call.
+fn compose_file_engine_url() -> Option<String> {
+    let path = std::path::Path::new(iii_compose::cli::DEFAULT_COMPOSE_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    // Only the engine section, so a container the running binary cannot parse
+    // does not cost the caller the address the file plainly states.
+    let engine = iii_compose::config::parse_engine_section(&text, path).ok()??;
+    (!engine.url.trim().is_empty()).then_some(engine.url)
+}
+
 /// Resolves the engine endpoint from the flags and `III_URL`.
 ///
 /// `III_URL` is how every managed context already names its engine: compose
@@ -185,9 +205,10 @@ fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)>
 /// This CLI used to ignore it, so on a project that does not own port 49134
 /// every call silently reached whatever engine did.
 ///
-/// Order is `--engine`, then `III_URL`, then `localhost:49134`. The deprecated
-/// `--address` and `--port` still win, each over its own half of whichever URL
-/// won, so a flag can retarget one component and inherit the other.
+/// Order is `--engine`, then `III_URL`, then the compose file in the working
+/// directory, then `localhost:49134`. The deprecated `--address` and `--port`
+/// still win, each over its own half of whichever URL won, so a flag can
+/// retarget one component and inherit the other.
 ///
 /// A URL that cannot be used fails the call, whichever source carried it: a
 /// `wss://` one with its own message, anything else as malformed. A blank
@@ -203,6 +224,7 @@ fn resolve_endpoint(
     port: Option<u16>,
     engine_flag: Option<&str>,
     engine_url: Option<&str>,
+    compose_url: Option<&str>,
 ) -> anyhow::Result<(String, u16)> {
     let named = match engine_flag {
         // Typed by the caller, so even an empty value is a statement: it names
@@ -210,14 +232,17 @@ fn resolve_endpoint(
         // somewhere they did not ask for. Blank values from the other sources
         // mean the opposite, that nothing was set.
         Some(flag) => Some((flag, "--engine")),
-        None => [(engine_url, "III_URL")]
-            .into_iter()
-            .find_map(|(value, source)| {
-                value
-                    .map(str::trim)
-                    .filter(|url| !url.is_empty())
-                    .map(|url| (url, source))
-            }),
+        None => [
+            (engine_url, "III_URL"),
+            (compose_url, "worker-compose.yaml engine.url"),
+        ]
+        .into_iter()
+        .find_map(|(value, source)| {
+            value
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(|url| (url, source))
+        }),
     };
     let (source_host, source_port) = match named {
         Some((url, source)) => {
@@ -240,11 +265,13 @@ impl TriggerArgs {
     /// The engine this invocation talks to.
     fn endpoint(&self) -> anyhow::Result<(String, u16)> {
         let engine_url = std::env::var("III_URL").ok();
+        let compose_url = compose_file_engine_url();
         resolve_endpoint(
             self.address.as_deref(),
             self.port,
             self.engine.as_deref(),
             engine_url.as_deref(),
+            compose_url.as_deref(),
         )
     }
 
@@ -308,7 +335,7 @@ mod tests {
     #[test]
     fn endpoint_defaults_when_nothing_is_set() {
         assert_eq!(
-            resolve_endpoint(None, None, None, None).unwrap(),
+            resolve_endpoint(None, None, None, None, None).unwrap(),
             ("localhost".to_string(), DEFAULT_PORT)
         );
     }
@@ -316,7 +343,7 @@ mod tests {
     #[test]
     fn endpoint_reads_engine_url() {
         assert_eq!(
-            resolve_endpoint(None, None, None, Some("ws://127.0.0.1:49734")).unwrap(),
+            resolve_endpoint(None, None, None, Some("ws://127.0.0.1:49734"), None).unwrap(),
             ("127.0.0.1".to_string(), 49734)
         );
     }
@@ -328,7 +355,8 @@ mod tests {
                 Some("example.test"),
                 Some(1234),
                 None,
-                Some("ws://127.0.0.1:49734")
+                Some("ws://127.0.0.1:49734"),
+                None
             )
             .unwrap(),
             ("example.test".to_string(), 1234)
@@ -338,7 +366,7 @@ mod tests {
     #[test]
     fn each_flag_wins_over_its_own_half() {
         assert_eq!(
-            resolve_endpoint(None, Some(1234), None, Some("ws://127.0.0.1:49734")).unwrap(),
+            resolve_endpoint(None, Some(1234), None, Some("ws://127.0.0.1:49734"), None).unwrap(),
             ("127.0.0.1".to_string(), 1234)
         );
         assert_eq!(
@@ -346,7 +374,8 @@ mod tests {
                 Some("example.test"),
                 None,
                 None,
-                Some("ws://127.0.0.1:49734")
+                Some("ws://127.0.0.1:49734"),
+                None
             )
             .unwrap(),
             ("example.test".to_string(), 49734)
@@ -357,7 +386,7 @@ mod tests {
     fn a_blank_engine_url_is_treated_as_unset() {
         for url in ["", "   "] {
             assert_eq!(
-                resolve_endpoint(None, None, None, Some(url)).unwrap(),
+                resolve_endpoint(None, None, None, Some(url), None).unwrap(),
                 ("localhost".to_string(), DEFAULT_PORT),
                 "unexpected endpoint for III_URL {url:?}"
             );
@@ -369,7 +398,7 @@ mod tests {
         // Falling back sent the call to whichever engine owned 49134 while
         // the operator believed III_URL had pointed it somewhere else.
         for url in ["not a url", "http://127.0.0.1:49734", "ws://"] {
-            let err = resolve_endpoint(None, None, None, Some(url))
+            let err = resolve_endpoint(None, None, None, Some(url), None)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -381,9 +410,15 @@ mod tests {
 
     #[test]
     fn an_unusable_engine_url_errors_even_when_both_flags_supply_the_endpoint() {
-        let err = resolve_endpoint(Some("example.test"), Some(1234), None, Some("not a url"))
-            .unwrap_err()
-            .to_string();
+        let err = resolve_endpoint(
+            Some("example.test"),
+            Some(1234),
+            None,
+            Some("not a url"),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("expected ws://host or ws://host:port"),
             "unexpected error: {err}"
@@ -393,7 +428,7 @@ mod tests {
     #[test]
     fn engine_url_without_a_port_keeps_the_engine_default() {
         assert_eq!(
-            resolve_endpoint(None, None, None, Some("ws://engine.test")).unwrap(),
+            resolve_endpoint(None, None, None, Some("ws://engine.test"), None).unwrap(),
             ("engine.test".to_string(), DEFAULT_PORT)
         );
     }
@@ -401,7 +436,7 @@ mod tests {
     #[test]
     fn engine_url_keeps_ipv6_brackets() {
         assert_eq!(
-            resolve_endpoint(None, None, None, Some("ws://[::1]:49734")).unwrap(),
+            resolve_endpoint(None, None, None, Some("ws://[::1]:49734"), None).unwrap(),
             ("[::1]".to_string(), 49734)
         );
     }
@@ -413,7 +448,8 @@ mod tests {
                 None,
                 None,
                 Some("ws://flag.test:4300"),
-                Some("ws://127.0.0.1:49734")
+                Some("ws://127.0.0.1:49734"),
+                None
             )
             .unwrap(),
             ("flag.test".to_string(), 4300)
@@ -423,7 +459,7 @@ mod tests {
     #[test]
     fn the_deprecated_flags_still_win_over_the_engine_flag() {
         assert_eq!(
-            resolve_endpoint(None, Some(1234), Some("ws://flag.test:4300"), None).unwrap(),
+            resolve_endpoint(None, Some(1234), Some("ws://flag.test:4300"), None, None).unwrap(),
             ("flag.test".to_string(), 1234)
         );
     }
@@ -432,14 +468,14 @@ mod tests {
     fn a_wss_environment_url_is_refused_rather_than_downgraded() {
         // Falling back would send the payload in the clear to an engine the
         // caller did not name.
-        let err = resolve_endpoint(None, None, None, Some("wss://engine.test:443"))
+        let err = resolve_endpoint(None, None, None, Some("wss://engine.test:443"), None)
             .expect_err("wss must not resolve");
         assert_eq!(err.to_string(), WSS_UNSUPPORTED);
     }
 
     #[test]
     fn a_wss_engine_flag_is_refused() {
-        let err = resolve_endpoint(None, None, Some("wss://engine.test:443"), None)
+        let err = resolve_endpoint(None, None, Some("wss://engine.test:443"), None, None)
             .expect_err("wss must not resolve");
         assert_eq!(err.to_string(), WSS_UNSUPPORTED);
     }
@@ -453,6 +489,7 @@ mod tests {
             Some(1234),
             None,
             Some("wss://engine.test:443"),
+            None,
         )
         .expect_err("wss must not resolve");
         assert_eq!(err.to_string(), WSS_UNSUPPORTED);
@@ -463,7 +500,7 @@ mod tests {
         // The caller typed this one, so silence would send the call to
         // localhost while the operator believes it went somewhere else.
         for url in ["", "   ", "not a url", "http://127.0.0.1:49734", "ws://"] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -474,8 +511,85 @@ mod tests {
     }
 
     #[test]
+    fn compose_file_is_used_when_no_other_source_names_an_engine() {
+        assert_eq!(
+            resolve_endpoint(None, None, None, None, Some("ws://127.0.0.1:49934")).unwrap(),
+            ("127.0.0.1".to_string(), 49934)
+        );
+    }
+
+    #[test]
+    fn engine_url_wins_over_the_compose_file() {
+        // An exported `III_URL` is the caller's live intent; the file is only
+        // what the directory happens to hold.
+        assert_eq!(
+            resolve_endpoint(
+                None,
+                None,
+                None,
+                Some("ws://127.0.0.1:49134"),
+                Some("ws://127.0.0.1:49934")
+            )
+            .unwrap(),
+            ("127.0.0.1".to_string(), 49134)
+        );
+    }
+
+    #[test]
+    fn the_engine_flag_wins_over_the_compose_file() {
+        assert_eq!(
+            resolve_endpoint(
+                None,
+                None,
+                Some("ws://flag.test:4300"),
+                None,
+                Some("ws://127.0.0.1:49934")
+            )
+            .unwrap(),
+            ("flag.test".to_string(), 4300)
+        );
+    }
+
+    #[test]
+    fn each_deprecated_flag_wins_over_its_own_half_of_the_compose_file() {
+        assert_eq!(
+            resolve_endpoint(None, Some(1234), None, None, Some("ws://127.0.0.1:49934")).unwrap(),
+            ("127.0.0.1".to_string(), 1234)
+        );
+    }
+
+    #[test]
+    fn an_unusable_compose_url_errors_and_names_the_file() {
+        // The file is the last source, so nothing is left to fall back to but
+        // the local default, which is exactly the wrong engine to reach.
+        let err = resolve_endpoint(None, None, None, None, Some("not a url"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("worker-compose.yaml engine.url"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_wss_compose_url_is_refused() {
+        let err = resolve_endpoint(None, None, None, None, Some("wss://engine.test:443"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, WSS_UNSUPPORTED);
+    }
+
+    #[test]
+    fn a_blank_compose_url_is_treated_as_unset() {
+        assert_eq!(
+            resolve_endpoint(None, None, None, None, Some("   ")).unwrap(),
+            ("localhost".to_string(), DEFAULT_PORT)
+        );
+    }
+
+    #[test]
     fn a_blank_engine_flag_does_not_fall_through_to_the_environment() {
-        let err = resolve_endpoint(None, None, Some("  "), Some("ws://127.0.0.1:49734"))
+        let err = resolve_endpoint(None, None, Some("  "), Some("ws://127.0.0.1:49734"), None)
             .unwrap_err()
             .to_string();
         assert!(err.starts_with("--engine"), "unexpected error: {err}");
@@ -493,7 +607,7 @@ mod tests {
             ("ws://user@127.0.0.1:4400", "must not carry credentials"),
             ("ws:127.0.0.1:4400", "must start with ws://"),
         ] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(detail), "unexpected error for {url:?}: {err}");
@@ -506,7 +620,7 @@ mod tests {
         // crate normalises both paths to "/".
         for url in ["ws://engine.test:4400", "ws://engine.test:4400/"] {
             assert_eq!(
-                resolve_endpoint(None, None, Some(url), None).unwrap(),
+                resolve_endpoint(None, None, Some(url), None, None).unwrap(),
                 ("engine.test".to_string(), 4400),
                 "unexpected endpoint for {url:?}"
             );
@@ -520,7 +634,7 @@ mod tests {
             "wss://engine.test/ws",
             "WSS://engine.test",
         ] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert_eq!(err, WSS_UNSUPPORTED, "unexpected error for {url:?}");
@@ -540,7 +654,7 @@ mod tests {
             "wss://user:secret@127.0.0.1:4400",
             "gibberish://user:secret@host",
         ] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -553,9 +667,15 @@ mod tests {
 
     #[test]
     fn the_redacted_value_keeps_the_part_that_helps() {
-        let err = resolve_endpoint(None, None, Some("http://user:secret@127.0.0.1:4400"), None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_endpoint(
+            None,
+            None,
+            Some("http://user:secret@127.0.0.1:4400"),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("***@127.0.0.1:4400"),
             "host and port should survive redaction: {err}"
@@ -566,7 +686,7 @@ mod tests {
     fn a_non_ascii_value_is_rejected_rather_than_panicking() {
         // `raw[..4]` panics when the index lands inside a character.
         for url in ["wssé", "ws:é", "wsé", "wss√", "é", "ws"] {
-            let err = resolve_endpoint(None, None, Some(url), None)
+            let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
                 .to_string();
             assert!(
