@@ -67,17 +67,19 @@ export function Mermaid({ chart }: { chart: string }) {
     let cancelled = false
 
     const render = async () => {
-      // lazy-load mermaid (~1.5MB) so decks without mermaid fences never ship it
-      const { default: mermaid } = await import('mermaid')
-      const dark = document.documentElement.dataset.theme === 'dark'
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: 'base',
-        fontFamily: '"Chivo Mono", ui-monospace, monospace',
-        themeVariables: themeVariables(dark),
-      })
+      // the import lives inside the try: a failed module fetch must degrade to
+      // the source fallback below, not an unhandled rejection
       try {
+        // lazy-load mermaid (~1.5MB) so decks without mermaid fences never ship it
+        const { default: mermaid } = await import('mermaid')
+        const dark = document.documentElement.dataset.theme === 'dark'
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          fontFamily: '"Chivo Mono", ui-monospace, monospace',
+          themeVariables: themeVariables(dark),
+        })
         const { svg } = await mermaid.render(id, chart)
         if (!cancelled) setSvg(svg)
       } catch {

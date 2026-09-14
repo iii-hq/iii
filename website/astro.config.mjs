@@ -39,6 +39,10 @@ export default defineConfig({
     // resolves virtual:spec-manifest (the gallery's data source) and reloads
     // on tech-specs/ edits in dev.
     plugins: [tailwindcss(), specManifestPlugin()],
+    // roadmap/src/content/mermaid.tsx lazy-imports mermaid; pre-bundle it so
+    // the dev-server dynamic import never 404s a not-yet-optimized chunk
+    // (spec diagrams would silently fall back to their source text).
+    optimizeDeps: { include: ['mermaid'] },
     resolve: {
       alias: {
         '@lib': fileURLToPath(new URL('./roadmap/src', import.meta.url)),
