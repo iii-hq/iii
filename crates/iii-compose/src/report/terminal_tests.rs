@@ -48,6 +48,22 @@ fn screen_and_history(terminal: &mut vt100::Parser) -> String {
     text
 }
 
+const DOWNLOAD_WORKERS: [(&str, usize); 13] = [
+    ("llm-router", 0),
+    ("provider-openai", 1),
+    ("provider-anthropic", 1),
+    ("context-manager", 1),
+    ("cron", 0),
+    ("harness", 2),
+    ("iii-directory", 0),
+    ("console", 0),
+    ("session-manager", 0),
+    ("queue", 0),
+    ("web", 0),
+    ("state", 0),
+    ("shell", 0),
+];
+
 #[test]
 fn downloaded_workers_keep_one_row_through_every_startup_phase() {
     for (height, width) in [(24, 80), (18, 120)] {
@@ -57,20 +73,30 @@ fn downloaded_workers_keep_one_row_through_every_startup_phase() {
             began: Instant::now(),
         };
         state.startup.as_mut().unwrap().containers.state = RowState::Waiting;
-        state.downloads = (0..13)
-            .map(|index| Row {
-                key: format!("worker-{index:02}"),
+        let mut terminal = vt100::Parser::new(height, width, 1000);
+        // Downloads register dynamically, and transfer amounts/rates grow wider
+        // as chunks arrive. Real names must fit throughout, not only at 0%.
+        for (key, _) in DOWNLOAD_WORKERS {
+            state.downloads.push(Row {
+                key: key.to_string(),
                 depth: 1,
                 state: RowState::Downloading {
-                    downloaded: 512 * 1024,
-                    total: Some(1024 * 1024),
-                    began: Instant::now(),
+                    downloaded: 0,
+                    total: Some(8 * 1024 * 1024),
+                    began: Instant::now() - Duration::from_millis(10),
                 },
-            })
-            .collect();
-        let mut terminal = vt100::Parser::new(height, width, 1000);
-        write_terminal(&mut terminal, &state.render(Some((height, width))));
-        assert!(terminal.screen().contents().contains("50%"));
+            });
+            write_terminal(&mut terminal, &state.render(Some((height, width))));
+        }
+        for step in 1..=64 {
+            for row in &mut state.downloads {
+                if let RowState::Downloading { downloaded, .. } = &mut row.state {
+                    *downloaded = step * 16 * 1024;
+                }
+            }
+            write_terminal(&mut terminal, &state.render(Some((height, width))));
+            assert!(!state.static_output, "{width}x{height}, chunk {step}");
+        }
         for index in 0..13 {
             state.downloads[index].state = RowState::Downloaded {
                 downloaded: 1024 * 1024,
@@ -87,16 +113,19 @@ fn downloaded_workers_keep_one_row_through_every_startup_phase() {
             what: "Starting (0/13)".to_string(),
             began: Instant::now(),
         };
-        state.rows = progress(13).rows;
-        for row in &mut state.rows {
-            row.state = RowState::Waiting;
-        }
+        state.rows = DOWNLOAD_WORKERS
+            .iter()
+            .map(|(key, depth)| Row {
+                key: (*key).to_string(),
+                depth: *depth,
+                state: RowState::Waiting,
+            })
+            .collect();
         write_terminal(&mut terminal, &state.render(Some((height, width))));
         let text = screen_and_history(&mut terminal);
         assert!(!state.static_output, "{width}x{height}: {text}");
         assert_eq!(text.matches("100%").count(), 13, "{text}");
-        for index in 0..13 {
-            let key = format!("worker-{index:02}");
+        for (index, (key, _)) in DOWNLOAD_WORKERS.iter().enumerate() {
             for phase in [
                 "starting",
                 "installing package",
@@ -117,7 +146,7 @@ fn downloaded_workers_keep_one_row_through_every_startup_phase() {
                 };
                 write_terminal(&mut terminal, &state.render(Some((height, width))));
                 let text = screen_and_history(&mut terminal);
-                assert_eq!(text.matches(&key).count(), 1, "{text}");
+                assert_eq!(text.matches(key).count(), 1, "{text}");
                 assert!(text.contains(&format!("{key} {phase}")), "{text}");
             }
         }
@@ -128,14 +157,81 @@ fn downloaded_workers_keep_one_row_through_every_startup_phase() {
         state.startup.as_mut().unwrap().finish(true, "Ready");
         write_terminal(&mut terminal, &state.render(Some((height, width))));
         let text = screen_and_history(&mut terminal);
-        for index in 0..13 {
-            let key = format!("worker-{index:02}");
-            assert_eq!(text.matches(&key).count(), 1, "{text}");
+        for (key, _) in DOWNLOAD_WORKERS {
+            assert_eq!(text.matches(key).count(), 1, "{text}");
             assert!(text.contains(&format!("✓ {key} ready")), "{text}");
         }
         assert!(!text.contains("100%"), "{text}");
         assert_eq!(text.matches("Engine Ready").count(), 1, "{text}");
         assert_eq!(text.matches("compose diagnostic").count(), 1, "{text}");
+    }
+}
+
+#[test]
+fn static_downloads_report_transitions_not_chunks_or_indentation_changes() {
+    for size in [None, Some((3, 80)), Some((24, 20))] {
+        let began = Instant::now();
+        let mut state = Console {
+            downloads: vec![Row {
+                key: "provider-anthropic".to_string(),
+                depth: 1,
+                state: RowState::Downloading {
+                    downloaded: 0,
+                    total: None,
+                    began,
+                },
+            }],
+            ..Console::default()
+        };
+        let mut output = if size == Some((3, 80)) {
+            // A previously animated panel becomes unsafe after a resize.
+            state.render(Some((24, 80)));
+            state.render(size)
+        } else {
+            state.render(size)
+        };
+        for chunk in 1..=512 {
+            state.downloads[0].state = RowState::Downloading {
+                downloaded: chunk * 16 * 1024,
+                total: Some(8 * 1024 * 1024),
+                began,
+            };
+            let update = state.render(size);
+            assert!(update.is_empty(), "{size:?}, chunk {chunk}: {update}");
+        }
+        state.downloads[0].state = RowState::Downloaded {
+            downloaded: 8 * 1024 * 1024,
+            total: Some(8 * 1024 * 1024),
+            elapsed: Duration::from_secs(1),
+        };
+        output.push_str(&state.render(size));
+        state.rows = vec![Row {
+            key: "provider-anthropic".to_string(),
+            depth: 3,
+            state: RowState::Waiting,
+        }];
+        assert!(
+            state.render(size).is_empty(),
+            "planning reprinted a download"
+        );
+        state.rows[0].state = RowState::Starting {
+            what: "configuring".to_string(),
+            began: Instant::now(),
+        };
+        output.push_str(&state.render(size));
+        state.rows[0].state = RowState::Ready {
+            what: "ready".to_string(),
+            elapsed: Duration::from_secs(1),
+        };
+        output.push_str(&state.render(size));
+        assert_eq!(output.matches("100%").count(), 1, "{output}");
+        assert_eq!(output.matches("configuring").count(), 1, "{output}");
+        assert_eq!(
+            output.matches("✓ provider-anthropic ready").count(),
+            1,
+            "{output}"
+        );
+        assert!(!output.contains('\x1b'), "{output:?}");
     }
 }
 

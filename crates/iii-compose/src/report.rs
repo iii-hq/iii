@@ -84,6 +84,22 @@ struct Row {
     state: RowState,
 }
 
+impl Row {
+    /// Static logs record lifecycle transitions, not byte counters or layout.
+    fn same_static_state(&self, previous: &Self) -> bool {
+        self.key == previous.key
+            && match (&self.state, &previous.state) {
+                (
+                    RowState::Downloading { began, .. },
+                    RowState::Downloading {
+                        began: previous, ..
+                    },
+                ) => began == previous,
+                _ => self.state == previous.state,
+            }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 enum RowState {
     /// Declared, and waiting on something earlier in the graph.
@@ -541,7 +557,7 @@ impl Console {
         rows.extend(workers);
         let lines: Vec<String> = rows
             .iter()
-            .map(|row| render_row(row, self.frame, true))
+            .map(|row| render_row_with_width(row, self.frame, true, size.map(|(_, width)| width)))
             .collect();
         let height = size.and_then(|(height, width)| {
             let needed = panel_height(&lines, width)?;
@@ -557,7 +573,11 @@ impl Console {
             }
             self.static_output = true;
             for row in &rows {
-                if !self.rendered.contains(row) {
+                if !self
+                    .rendered
+                    .iter()
+                    .any(|previous| row.same_static_state(previous))
+                {
                     out.push_str(&render_row(row, 0, false));
                     out.push('\n');
                 }
@@ -619,6 +639,10 @@ fn redraw(state: &mut Console) {
 }
 
 fn render_row(row: &Row, frame: usize, animate: bool) -> String {
+    render_row_with_width(row, frame, animate, None)
+}
+
+fn render_row_with_width(row: &Row, frame: usize, animate: bool, width: Option<u16>) -> String {
     let indent = "  ".repeat(row.depth);
     match &row.state {
         RowState::Waiting => format!(
@@ -649,14 +673,22 @@ fn render_row(row: &Row, frame: usize, animate: bool) -> String {
             *total,
             began.elapsed(),
             false,
-            frame,
-            animate,
+            animate.then_some(frame),
+            width,
         ),
         RowState::Downloaded {
             downloaded,
             total,
             elapsed,
-        } => render_download(row, *downloaded, *total, *elapsed, true, frame, animate),
+        } => render_download(
+            row,
+            *downloaded,
+            *total,
+            *elapsed,
+            true,
+            animate.then_some(frame),
+            width,
+        ),
         RowState::Retrying {
             attempt,
             total,
@@ -705,11 +737,10 @@ fn render_download(
     total: Option<u64>,
     elapsed: Duration,
     finished: bool,
-    frame: usize,
-    animate: bool,
+    frame: Option<usize>,
+    width: Option<u16>,
 ) -> String {
     let indent = "  ".repeat(row.depth);
-    let bar = download_bar(downloaded, total, frame, animate);
     let amount = match total.filter(|total| *total > 0) {
         Some(total) => format!(
             "{:>3}% {}/{}",
@@ -723,11 +754,21 @@ fn render_download(
     let marker = if finished {
         // A verified download is not a ready worker; reserve the check for readiness.
         RUNNING.cyan()
-    } else if animate {
+    } else if let Some(frame) = frame {
         FRAMES[frame % FRAMES.len()].cyan()
     } else {
         RUNNING.cyan()
     };
+    // Amounts and rates grow wider during a transfer. Shrink only the bar,
+    // leaving one spare column so a chunk update cannot trigger line wrapping.
+    // If even a three-cell bar will not fit, the safe static fallback applies.
+    let bar_width = width.map_or(20, |width| {
+        let fixed = format!("{indent}{marker} {} [] {amount} {speed}", row.key);
+        usize::from(width)
+            .saturating_sub(console::measure_text_width(&fixed) + 1)
+            .clamp(3, 20)
+    });
+    let bar = download_bar(downloaded, total, frame, bar_width);
     let details = format!("{bar} {amount} {speed}");
     if finished {
         format!("{indent}{marker} {} {}", row.key.bold(), details.green())
@@ -736,19 +777,18 @@ fn render_download(
     }
 }
 
-fn download_bar(downloaded: u64, total: Option<u64>, frame: usize, animate: bool) -> String {
-    const WIDTH: usize = 20;
+fn download_bar(downloaded: u64, total: Option<u64>, frame: Option<usize>, width: usize) -> String {
     let Some(total) = total.filter(|total| *total > 0) else {
-        let position = if animate { frame % WIDTH } else { 0 };
-        let mut cells = vec![' '; WIDTH];
+        let position = frame.unwrap_or_default() % width;
+        let mut cells = vec![' '; width];
         cells[position] = '>';
         return format!("[{}]", cells.into_iter().collect::<String>());
     };
-    let filled = ((u128::from(downloaded.min(total)) * WIDTH as u128) / u128::from(total)) as usize;
+    let filled = ((u128::from(downloaded.min(total)) * width as u128) / u128::from(total)) as usize;
     let mut bar = "=".repeat(filled);
-    if filled < WIDTH {
+    if filled < width {
         bar.push('>');
-        bar.push_str(&" ".repeat(WIDTH - filled - 1));
+        bar.push_str(&" ".repeat(width - filled - 1));
     }
     format!("[{bar}]")
 }
