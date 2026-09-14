@@ -339,9 +339,9 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            publish_aliases: 'x86_64-unknown-linux-gnu x86_64-apple-darwin'
+            publish_aliases: 'x86_64-unknown-linux-gnu'
           - target: aarch64-unknown-linux-musl
-            publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
+            publish_aliases: 'aarch64-unknown-linux-gnu'
     steps:
       - uses: actions/checkout@v4
         with:
