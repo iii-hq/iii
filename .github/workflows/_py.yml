@@ -35,6 +35,9 @@ on:
       SLACK_CHANNEL_ID:
         required: false
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   publish:
     name: Publish to PyPI

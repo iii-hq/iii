@@ -127,6 +127,7 @@ fn test_vm_boot_platform() {
     //    The command: /bin/sh -c "test -d /proc/self && echo VM_BOOT_OK"
     //    If init mounted /proc correctly, /proc/self exists and we see VM_BOOT_OK.
     let mut cmd = Command::new(iii_bin_path);
+    cmd.env("III_TELEMETRY_ENABLED", "false");
     cmd.arg("__vm-boot")
         .arg("--rootfs")
         .arg(&rootfs)

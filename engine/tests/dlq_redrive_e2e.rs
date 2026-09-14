@@ -561,6 +561,7 @@ fn cli_trigger_subcommand_parses_correctly() {
     use std::process::Command;
 
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["trigger", "--help"])
         .output()
         .expect("failed to execute");
@@ -585,6 +586,7 @@ fn cli_trigger_missing_required_args_fails() {
     use std::process::Command;
 
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["trigger"])
         .output()
         .expect("failed to execute");
@@ -600,6 +602,7 @@ fn cli_trigger_invalid_json_payload_fails() {
     use std::process::Command;
 
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args([
             "trigger",
             "test::fn",
@@ -629,6 +632,7 @@ fn cli_trigger_connection_refused_fails_gracefully() {
     use std::process::Command;
 
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args([
             "trigger",
             "iii::queue::redrive",
@@ -666,6 +670,7 @@ fn cli_no_subcommand_with_version_still_works() {
     use std::process::Command;
 
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["--version"])
         .output()
         .expect("failed to execute");

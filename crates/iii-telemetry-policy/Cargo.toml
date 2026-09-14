@@ -1,0 +1,13 @@
+[package]
+name = "iii-telemetry-policy"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+publish = false
+description = "Shared opt-out policy for III product analytics and process launchers"
+
+[dependencies]
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

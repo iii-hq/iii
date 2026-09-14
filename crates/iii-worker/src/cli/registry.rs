@@ -30,28 +30,9 @@ pub(crate) static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("Failed to create HTTP client")
 });
 
-/// Returns true when any standard CI environment variable is present.
-/// Matches the list used by engine telemetry and scaffolder-core.
-pub(crate) fn is_ci_environment() -> bool {
-    const CI_ENV_VARS: &[&str] = &[
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "CIRCLECI",
-        "JENKINS_URL",
-        "TRAVIS",
-        "BUILDKITE",
-        "TF_BUILD",
-        "CODEBUILD_BUILD_ID",
-        "BITBUCKET_BUILD_NUMBER",
-        "DRONE",
-        "TEAMCITY_VERSION",
-    ];
-
-    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
-}
-
-/// Append `version` and, when in CI, `ci=true` to a `GET /download/{slug}` request.
+pub(crate) use iii_telemetry_policy::is_ci_environment;
+/// Preserve artifact resolution while telling the Registry not to count an
+/// opted-out download. `ci=true` remains available to older registries.
 pub(crate) fn with_download_query(
     request: reqwest::RequestBuilder,
     version: &str,
@@ -59,6 +40,9 @@ pub(crate) fn with_download_query(
     let mut request = request.query(&[("version", version)]);
     if is_ci_environment() {
         request = request.query(&[("ci", "true")]);
+    }
+    if iii_telemetry_policy::is_telemetry_disabled() {
+        request = request.query(&[("telemetry", "false")]);
     }
     request
 }
@@ -210,12 +194,7 @@ pub async fn fetch_worker_info(
     } else {
         let url = format!("{}/download/{}", base_or_file, name);
 
-        let mut request = HTTP_CLIENT.get(&url);
-        if let Some(v) = version {
-            request = with_download_query(request, v);
-        } else if is_ci_environment() {
-            request = request.query(&[("ci", "true")]);
-        }
+        let request = with_download_query(HTTP_CLIENT.get(&url), version.unwrap_or("latest"));
 
         let resp = request
             .send()
@@ -533,6 +512,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_version_downloads_include_opt_out() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("III_TELEMETRY_ENABLED");
+        unsafe { std::env::set_var("III_TELEMETRY_ENABLED", "false") };
+        let request = with_download_query(
+            HTTP_CLIENT.get("http://127.0.0.1/download/test-worker"),
+            "1.2.3+build.5",
+        )
+        .build();
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("III_TELEMETRY_ENABLED", value),
+                None => std::env::remove_var("III_TELEMETRY_ENABLED"),
+            }
+        }
+        let request = request.unwrap();
+        let query: std::collections::HashMap<_, _> =
+            request.url().query_pairs().into_owned().collect();
+        assert_eq!(
+            query.get("version").map(String::as_str),
+            Some("1.2.3+build.5")
+        );
+        assert_eq!(query.get("telemetry").map(String::as_str), Some("false"));
+    }
+
+    #[test]
     fn is_ci_environment_false_when_no_ci_vars() {
         let _guard = crate::TEST_ENV_LOCK
             .lock()
@@ -600,7 +607,7 @@ mod tests {
         unsafe { std::env::set_var("III_API_URL", &base_url) };
         unsafe { std::env::set_var("CI", "true") };
 
-        let result = fetch_worker_info("iii-exec", Some("latest")).await;
+        let result = fetch_worker_info("iii-exec", None).await;
 
         unsafe { std::env::remove_var("III_API_URL") };
         unsafe { std::env::remove_var("CI") };
@@ -610,6 +617,10 @@ mod tests {
             "fetch_worker_info should succeed: {result:?}"
         );
         let path = rx.await.expect("request captured");
+        assert!(
+            path.contains("telemetry=false"),
+            "CI downloads must opt out: {path}"
+        );
         assert!(
             path.contains("ci=true"),
             "expected ci=true in download request, got: {path}"

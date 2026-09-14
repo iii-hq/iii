@@ -36,6 +36,7 @@ on:
         required: false
 
 env:
+  III_TELEMETRY_ENABLED: "false"
   CARGO_TERM_COLOR: always
 
 jobs:

@@ -39,6 +39,9 @@ permissions:
   contents: write # prepare tag push, go tag, GitHub prerelease + binary uploads
   id-token: write # OIDC / npm + pypi provenance (sdk-node, _py.yml)
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   prepare:
     name: Bump & tag alpha

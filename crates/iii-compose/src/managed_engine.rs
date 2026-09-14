@@ -102,6 +102,23 @@ impl ManagedEngine {
         log_path: &Path,
         namespace: &str,
     ) -> Result<Self> {
+        Self::spawn_with_paths_and_telemetry(
+            executable,
+            config_path,
+            log_path,
+            namespace,
+            iii_telemetry_policy::is_telemetry_disabled(),
+        )
+        .await
+    }
+
+    async fn spawn_with_paths_and_telemetry(
+        executable: &Path,
+        config_path: &Path,
+        log_path: &Path,
+        namespace: &str,
+        telemetry_disabled: bool,
+    ) -> Result<Self> {
         let parent = log_path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
             path: parent.to_path_buf(),
@@ -130,6 +147,9 @@ impl ManagedEngine {
             .arg("--config")
             .arg(config_path)
             .stdin(Stdio::null());
+        if telemetry_disabled {
+            command.env("III_TELEMETRY_ENABLED", "false");
+        }
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
@@ -1273,6 +1293,31 @@ port: 60123
         assert!(
             !output.contains('\u{1b}') && !output.contains("forged title"),
             "terminal escape sequence was persisted in {output:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telemetry_opt_out_reaches_managed_engine_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-iii");
+        let config = dir.path().join("config.yaml");
+        let log = dir.path().join("engine.log");
+        write_executable(
+            &script,
+            "#!/bin/sh\nprintf 'telemetry=%s\\n' \"${III_TELEMETRY_ENABLED-unset}\"\n",
+        );
+        let engine =
+            ManagedEngine::spawn_with_paths_and_telemetry(&script, &config, &log, "test", true)
+                .await
+                .unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), engine.wait())
+            .await
+            .expect("fake engine should exit");
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap().trim(),
+            "telemetry=false"
         );
     }
 

@@ -24,6 +24,7 @@ permissions:
   security-events: write
 
 env:
+  III_TELEMETRY_ENABLED: "false"
   DOCKERHUB_REPO: iiidev/iii
 
 jobs:

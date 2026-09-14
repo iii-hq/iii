@@ -76,6 +76,7 @@ rabbitmq = ["lapin"]
 test-adapters = []
 
 [dependencies]
+iii-telemetry-policy = { workspace = true }
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
 iii-helpers = { workspace = true }
