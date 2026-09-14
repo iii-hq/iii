@@ -21,19 +21,24 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::Instant,
+};
 
 use crate::{
-    config::ComposeFile,
+    config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
     lifecycle::{self, Children, LifecycleCtx, OpResult},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
+    restart,
     state::{ChildStatus, DaemonState, Reconciliation, StateStore, reconcile},
 };
 
@@ -63,11 +68,100 @@ pub struct Project {
 /// slow enough that an idle project costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Where one container is in its restart budget.
+#[derive(Debug, Clone, Copy, Default)]
+struct RestartAttempts {
+    /// Attempts already spent in this run of failures.
+    spent: u32,
+    /// When the next attempt becomes due, and `None` when none is owed — the
+    /// container came back, or an operator took it over. The supervision tick
+    /// is what makes an attempt due, so the backoff never blocks the loop.
+    ///
+    /// A container that is not owed an attempt still keeps its `spent` count.
+    /// Clearing it on every recovery would refill the budget for a worker that
+    /// comes back for a second each time, which is the busy loop wearing a
+    /// slower coat. Only [`Project::refill_budget_if_it_held`] clears it.
+    due: Option<Instant>,
+}
+
+/// Identifies one supervisor claim. Operator operations invalidate the active
+/// claim before they change the same container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestartLease(u64);
+
+#[derive(Debug, Clone, Copy)]
+enum RestartCause {
+    UnexpectedExit,
+    RetryDue,
+}
+
+/// In-memory restart state for one daemon run.
+///
+/// Deliberately not in [`DaemonState`], so not on disk. An attempt count
+/// describes one supervisor's patience with one crash loop, and a daemon that
+/// restarts re-reconciles from scratch: carrying the old count over would let
+/// a project come back with its budget already spent.
+#[derive(Debug, Default)]
+struct RestartBookkeeping {
+    attempts: BTreeMap<String, RestartAttempts>,
+    leases: BTreeMap<String, RestartLease>,
+    next_lease: u64,
+}
+
+impl RestartBookkeeping {
+    fn claim(&mut self, key: &str) -> Option<RestartLease> {
+        if self.leases.contains_key(key) {
+            return None;
+        }
+        self.next_lease = self.next_lease.wrapping_add(1);
+        let lease = RestartLease(self.next_lease);
+        self.leases.insert(key.to_string(), lease);
+        Some(lease)
+    }
+
+    fn is_current(&self, key: &str, lease: RestartLease) -> bool {
+        self.leases
+            .get(key)
+            .is_some_and(|current| *current == lease)
+    }
+
+    fn release(&mut self, key: &str, lease: RestartLease) {
+        if self.is_current(key, lease) {
+            self.leases.remove(key);
+        }
+    }
+
+    /// Transfers control from the supervisor to an operator operation without
+    /// refilling the crash-loop budget.
+    fn operator_took_control(&mut self, target: Option<&str>) {
+        match target {
+            Some(key) => {
+                self.leases.remove(key);
+                if let Some(attempt) = self.attempts.get_mut(key) {
+                    attempt.due = None;
+                }
+            }
+            None => {
+                self.leases.clear();
+                for attempt in self.attempts.values_mut() {
+                    attempt.due = None;
+                }
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.attempts.remove(key);
+        self.leases.remove(key);
+    }
+}
+
 /// The parts that change together. One lock: a caller must never see the
 /// children and the records disagree.
 struct Inner {
     children: Children,
     state: DaemonState,
+    restarts: RestartBookkeeping,
 }
 
 impl Project {
@@ -114,6 +208,7 @@ impl Project {
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
                 state,
+                restarts: RestartBookkeeping::default(),
             }),
         });
 
@@ -225,55 +320,315 @@ impl Project {
     /// observes the gaps between operations — a deliberate stop removes the
     /// child from the map before signalling it, and is never seen here.
     pub(crate) async fn reap_unexpected_exits(&self) {
-        let dead: Vec<(String, i32)> = {
+        let dead: Vec<(String, ExitStatus)> = {
             let inner = self.inner.lock().await;
             inner
                 .children
                 .iter()
                 .filter_map(|(key, child)| match child.poll() {
-                    crate::process::Outcome::Exited(status) => {
-                        Some((key.clone(), status.code().unwrap_or(-1)))
-                    }
+                    crate::process::Outcome::Exited(status) => Some((key.clone(), status)),
                     crate::process::Outcome::Running => None,
                 })
                 .collect()
         };
 
-        for (key, code) in dead {
-            let reason = format!("exited unexpectedly with {code}");
+        for (key, status) in dead {
+            let clean_exit = status.success();
+            let reason = if clean_exit {
+                format!("exited successfully ({status})")
+            } else {
+                format!("exited unexpectedly ({status})")
+            };
             daemon_line(
                 &self.project_namespace,
                 &format!("{key} {reason}"),
-                Tone::Warn,
+                if clean_exit { Tone::Plain } else { Tone::Warn },
             );
 
-            // Cascade through the same path a targeted `down` takes: it stops
-            // the dependents first and ends on the dead container itself, which
-            // fires its `post_run` and drops it from the map. Leaving dependents
-            // running would leave them talking to something that is gone.
-            let file = self.file.read().await;
-            let dependents = crate::dag::transitive_dependents(&file, &key);
-            drop(file);
-            if !dependents.is_empty() {
-                daemon_line(
-                    &self.project_namespace,
-                    &format!("stopping what depended on {key}: {}", dependents.join(", ")),
-                    Tone::Warn,
-                );
+            // A container that asked to be restarted gets the first attempt
+            // immediately: its dependents stay up, and the exit only cascades
+            // once the budget below is spent.
+            if self
+                .restart_config(&key)
+                .await
+                .wants_restart(status.code().unwrap_or(-1))
+            {
+                if let Some(lease) = self.claim_restart(&key, RestartCause::UnexpectedExit).await {
+                    self.run_restart_attempt(&key, lease, RestartCause::UnexpectedExit)
+                        .await;
+                }
+                continue;
             }
-            self.down(Some(&key), format!("supervisor:{key}")).await;
 
-            // After the cascade, so `down` marking everything Stopped does not
-            // erase why this one went.
-            let mut inner = self.inner.lock().await;
-            if let Some(entry) = inner.state.containers.get_mut(&key) {
-                entry.status = ChildStatus::Failed;
-                entry.last_error = Some(reason);
+            if clean_exit {
+                self.cascade_stop(&key).await;
+            } else {
+                self.cascade_failure(&key, reason).await;
+            }
+        }
+    }
+
+    /// Takes the attempts that came due since the last tick.
+    ///
+    /// The waiting happens here rather than in [`Self::run_restart_attempt`] so
+    /// a backoff never blocks the supervision loop, and so a project whose
+    /// worker is in a crash loop does not stop the daemon noticing anything
+    /// else. The tick interval is the granularity of the backoff.
+    pub(crate) async fn drive_restarts(&self) {
+        let now = Instant::now();
+        let due: Vec<String> = {
+            let inner = self.inner.lock().await;
+            inner
+                .restarts
+                .attempts
+                .iter()
+                .filter(|(_, attempt)| attempt.due.is_some_and(|due| due <= now))
+                .map(|(key, _)| key.clone())
+                .collect()
+        };
+
+        for key in due {
+            if let Some(lease) = self.claim_restart(&key, RestartCause::RetryDue).await {
+                self.run_restart_attempt(&key, lease, RestartCause::RetryDue)
+                    .await;
+            }
+        }
+    }
+
+    /// Claims the right to restart under the same lock used by operator
+    /// operations. The attempt is not spent until the claim is checked again
+    /// immediately before the bounce.
+    async fn claim_restart(&self, key: &str, cause: RestartCause) -> Option<RestartLease> {
+        let mut inner = self.inner.lock().await;
+        if !Self::restart_is_eligible(&inner, key, cause, Instant::now()) {
+            if matches!(cause, RestartCause::RetryDue)
+                && !inner
+                    .state
+                    .containers
+                    .get(key)
+                    .is_some_and(|record| record.status == ChildStatus::Restarting)
+                && let Some(attempt) = inner.restarts.attempts.get_mut(key)
+            {
+                attempt.due = None;
+            }
+            return None;
+        }
+        inner.restarts.claim(key)
+    }
+
+    fn restart_is_eligible(inner: &Inner, key: &str, cause: RestartCause, now: Instant) -> bool {
+        match cause {
+            RestartCause::UnexpectedExit => inner
+                .children
+                .get(key)
+                .is_some_and(|child| matches!(child.poll(), crate::process::Outcome::Exited(_))),
+            RestartCause::RetryDue => {
+                inner
+                    .state
+                    .containers
+                    .get(key)
+                    .is_some_and(|record| record.status == ChildStatus::Restarting)
+                    && inner
+                        .restarts
+                        .attempts
+                        .get(key)
+                        .is_some_and(|attempt| attempt.due.is_some_and(|due| due <= now))
+            }
+        }
+    }
+
+    /// One attempt: the same stop-then-start that `compose::restart` performs,
+    /// so a supervised restart and an operator's restart are the same act and
+    /// cannot drift apart. It also means the attempt inherits the rule that a
+    /// restart touches one container and not a graph, which is what keeps the
+    /// dependents up while this one is gone.
+    async fn run_restart_attempt(&self, key: &str, lease: RestartLease, cause: RestartCause) {
+        let restart_config = self.restart_config(key).await;
+        let mut inner = self.inner.lock().await;
+        if !inner.restarts.is_current(key, lease)
+            || !Self::restart_is_eligible(&inner, key, cause, Instant::now())
+        {
+            inner.restarts.release(key, lease);
+            return;
+        }
+
+        if matches!(cause, RestartCause::UnexpectedExit)
+            && inner
+                .state
+                .containers
+                .get(key)
+                .map_or(Duration::ZERO, |record| {
+                    Duration::from_secs(seconds_since(record.started_at))
+                })
+                >= restart_config.window
+        {
+            inner.restarts.attempts.remove(key);
+        }
+
+        let spent = {
+            let attempt = inner.restarts.attempts.entry(key.to_string()).or_default();
+            if attempt.spent >= restart_config.max_attempts {
+                None
+            } else {
+                attempt.spent += 1;
+                Some(attempt.spent)
+            }
+        };
+        let Some(spent) = spent else {
+            inner.restarts.release(key, lease);
+            drop(inner);
+            self.report_gave_up(key, restart_config.max_attempts).await;
+            self.cascade_failure(key, Self::exhausted_reason(restart_config.max_attempts))
+                .await;
+            return;
+        };
+
+        daemon_line(
+            &self.project_namespace,
+            &format!(
+                "restarting {key} (attempt {spent} of {})",
+                restart_config.max_attempts
+            ),
+            Tone::Warn,
+        );
+
+        // Written before the start so a `compose::status` racing the attempt
+        // says `restarting` rather than the `failed` this is trying to undo.
+        if let Some(entry) = inner.state.containers.get_mut(key) {
+            entry.status = ChildStatus::Restarting;
+        }
+        let restarting = inner.state.clone();
+        let _ = self.store.save(&restarting);
+
+        let result = self
+            .restart_one_locked(
+                &mut inner,
+                key,
+                format!("supervisor:{key}"),
+                Some((spent, restart_config.max_attempts)),
+            )
+            .await;
+        let ready = result
+            .containers
+            .iter()
+            .any(|result| result.container == key && result.state == ChildStatus::Ready);
+        inner.restarts.release(key, lease);
+        if ready {
+            // The record is already `Ready` and nothing more is owed. The spent
+            // count survives, so a worker that comes back for a moment each
+            // time still runs out of attempts.
+            if let Some(attempt) = inner.restarts.attempts.get_mut(key) {
+                attempt.due = None;
             }
             let snapshot = inner.state.clone();
             drop(inner);
             let _ = self.store.save(&snapshot);
+            return;
         }
+
+        // Only wait if there is something to wait for. Backing off after the
+        // last attempt would hold the container in `restarting` for a wait
+        // nobody is going to use, and delay the operator's answer by it.
+        let next_retry = match inner.restarts.attempts.get_mut(key) {
+            Some(attempt) if attempt.spent < restart_config.max_attempts => {
+                let delay = restart::backoff(&restart_config, attempt.spent);
+                attempt.due = Some(Instant::now() + delay);
+                Some((attempt.spent + 1, delay))
+            }
+            _ => None,
+        };
+
+        if next_retry.is_some()
+            && let Some(entry) = inner.state.containers.get_mut(key)
+        {
+            entry.status = ChildStatus::Restarting;
+        }
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+
+        if let Some((next_attempt, delay)) = next_retry {
+            crate::report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
+        } else {
+            self.report_gave_up(key, restart_config.max_attempts).await;
+            self.cascade_failure(key, Self::exhausted_reason(restart_config.max_attempts))
+                .await;
+        }
+    }
+
+    /// Fails the container and takes its transitive dependents with it: what
+    /// compose did for every unexpected exit before there was a policy, and
+    /// what it still does once one has run out of attempts.
+    async fn cascade_failure(&self, key: &str, reason: String) {
+        self.stop_with_dependents(key).await;
+
+        // After the cascade, so `down` marking everything Stopped does not
+        // erase why this one went.
+        self.mark(key, ChildStatus::Failed, Some(reason)).await;
+    }
+
+    /// Records a successful exit that its policy does not restart as stopped.
+    async fn cascade_stop(&self, key: &str) {
+        self.stop_with_dependents(key).await;
+        self.mark(key, ChildStatus::Stopped, None).await;
+    }
+
+    async fn stop_with_dependents(&self, key: &str) {
+        self.inner.lock().await.restarts.remove(key);
+
+        // Cascade through the same path a targeted `down` takes: it stops
+        // the dependents first and ends on the dead container itself, which
+        // fires its `post_run` and drops it from the map. Leaving dependents
+        // running would leave them talking to something that is gone.
+        let file = self.file.read().await;
+        let dependents = crate::dag::transitive_dependents(&file, key);
+        drop(file);
+        if !dependents.is_empty() {
+            daemon_line(
+                &self.project_namespace,
+                &format!("stopping what depended on {key}: {}", dependents.join(", ")),
+                Tone::Warn,
+            );
+        }
+        self.down(Some(key), format!("supervisor:{key}")).await;
+    }
+
+    /// This container's declared answer to exiting after it was ready. A
+    /// container the file no longer declares gets `no`, matching `is_required`:
+    /// the rule that stops is the one to fall back on.
+    async fn restart_config(&self, key: &str) -> RestartConfig {
+        self.file
+            .read()
+            .await
+            .containers
+            .get(key)
+            .map(|container| container.restart.clone())
+            .unwrap_or_default()
+    }
+
+    fn exhausted_reason(max_attempts: u32) -> String {
+        format!("did not stay up after {max_attempts} restart attempts")
+    }
+
+    async fn report_gave_up(&self, key: &str, max_attempts: u32) {
+        daemon_line(
+            &self.project_namespace,
+            &format!("{key} {}: giving up", Self::exhausted_reason(max_attempts)),
+            Tone::Warn,
+        );
+    }
+
+    /// Writes a container's status and persists it on the same path, which is
+    /// the rule the whole module is built on.
+    async fn mark(&self, key: &str, status: ChildStatus, last_error: Option<String>) {
+        let mut inner = self.inner.lock().await;
+        if let Some(entry) = inner.state.containers.get_mut(key) {
+            entry.status = status;
+            entry.last_error = last_error;
+        }
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
     }
 
     /// Fatal registration rejection, if the engine refused this daemon —
@@ -402,7 +757,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -437,7 +795,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -483,7 +844,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(None);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
 
         {
             let mut current = self.file.write().await;
@@ -545,6 +909,7 @@ impl Project {
                 status: crate::lifecycle::OpStatus::Failed,
                 changed: false,
                 containers: Vec::new(),
+                primary_error: None,
             }
         } else if let Some(shutdown) = shutdown {
             let result = lifecycle::up_until_shutdown(
@@ -564,6 +929,7 @@ impl Project {
                 status: crate::lifecycle::OpStatus::Failed,
                 changed: false,
                 containers: Vec::new(),
+                primary_error: None,
             })
         } else {
             lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
@@ -592,7 +958,12 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(None);
+        let Inner {
+            children,
+            state,
+            restarts,
+        } = &mut *inner;
 
         let stopped = {
             let current = self.file.read().await;
@@ -620,6 +991,7 @@ impl Project {
                     )
                     .await,
                 );
+                restarts.remove(worker);
             }
             stopped
         };
@@ -660,13 +1032,32 @@ impl Project {
     /// Bounces one container. See [`lifecycle::restart_one`] for why this does
     /// not take the container's graph with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
+        let mut inner = self.inner.lock().await;
+        inner.restarts.operator_took_control(Some(key));
+        let result = self
+            .restart_one_locked(&mut inner, key, operation_id, None)
+            .await;
+
+        let snapshot = inner.state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        result
+    }
+
+    async fn restart_one_locked(
+        &self,
+        inner: &mut Inner,
+        key: &str,
+        operation_id: String,
+        supervised_attempt: Option<(u32, u32)>,
+    ) -> OpResult {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        let Inner {
+            children, state, ..
+        } = inner;
         let file = self.file.read().await;
-
         let ctx = LifecycleCtx {
             file: &file,
             engine: &self.engine,
@@ -680,13 +1071,20 @@ impl Project {
             vm_dir: &vm_dir,
         };
 
-        let result =
-            lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await;
-
-        let snapshot = state.clone();
-        drop(inner);
-        let _ = self.store.save(&snapshot);
-        result
+        if let Some((attempt, total_attempts)) = supervised_attempt {
+            lifecycle::restart_one_supervised(
+                &ctx,
+                children,
+                &mut state.containers,
+                key,
+                operation_id,
+                attempt,
+                total_attempts,
+            )
+            .await
+        } else {
+            lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await
+        }
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -694,7 +1092,10 @@ impl Project {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
-        let Inner { children, state } = &mut *inner;
+        inner.restarts.operator_took_control(target);
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
@@ -740,14 +1141,15 @@ impl Project {
                         matches!(child.poll(), crate::process::Outcome::Running)
                     })
                 });
+                let state = match (running, record.map(|record| record.status)) {
+                    (true, _) => ChildStatus::Ready,
+                    (false, Some(status)) => status,
+                    (false, None) => ChildStatus::Stopped,
+                };
                 ContainerStatus {
                     container: key.clone(),
-                    state: match (running, record.map(|record| record.status)) {
-                        (true, _) => ChildStatus::Ready,
-                        (false, Some(status)) => status,
-                        (false, None) => ChildStatus::Stopped,
-                    },
-                    pid: record.map(|record| record.pid),
+                    state,
+                    pid: record.filter(|_| running).map(|record| record.pid),
                     owned: inner
                         .as_ref()
                         .is_some_and(|inner| inner.children.contains_key(key)),
@@ -853,6 +1255,15 @@ pub struct ContainerStatus {
     pub last_error: Option<String>,
 }
 
+/// How long ago a `started_at` was, in seconds. Saturating, so a clock that
+/// went backwards reads as "just now" rather than as a very old container.
+fn seconds_since(unix_secs: u64) -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|now| now.as_secs().saturating_sub(unix_secs))
+        .unwrap_or_default()
+}
+
 /// Severity of a project log line. Amber means "look at this", not "it broke".
 enum Tone {
     Plain,
@@ -868,5 +1279,60 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
     match tone {
         Tone::Plain => crate::report::line(&format!("{prefix} {message}")),
         Tone::Warn => crate::report::line(&format!("{prefix} {}", message.yellow())),
+    }
+}
+
+#[cfg(test)]
+mod restart_backoff_tests {
+    use super::{RestartAttempts, RestartBookkeeping};
+
+    #[test]
+    fn operator_control_invalidates_a_supervisor_lease() {
+        let mut restarts = RestartBookkeeping::default();
+        let lease = restarts.claim("api").expect("claim restart");
+
+        restarts.operator_took_control(Some("api"));
+
+        assert!(!restarts.is_current("api", lease));
+    }
+
+    #[test]
+    fn operator_control_pauses_retries_without_refilling_the_budget() {
+        let mut restarts = RestartBookkeeping::default();
+        restarts.attempts.insert(
+            "api".to_string(),
+            RestartAttempts {
+                spent: 3,
+                due: Some(tokio::time::Instant::now()),
+            },
+        );
+
+        restarts.operator_took_control(Some("api"));
+
+        let attempt = restarts.attempts["api"];
+        assert_eq!((attempt.spent, attempt.due), (3, None));
+    }
+
+    #[test]
+    fn removing_a_container_forgets_its_restart_bookkeeping() {
+        let mut restarts = RestartBookkeeping::default();
+        restarts.attempts.insert(
+            "api".to_string(),
+            RestartAttempts {
+                spent: 3,
+                due: Some(tokio::time::Instant::now()),
+            },
+        );
+        let lease = restarts.claim("api").expect("claim restart");
+
+        restarts.remove("api");
+
+        assert_eq!(
+            (
+                restarts.attempts.contains_key("api"),
+                restarts.is_current("api", lease),
+            ),
+            (false, false)
+        );
     }
 }

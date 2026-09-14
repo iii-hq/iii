@@ -64,9 +64,17 @@ pub enum ChildStatus {
     Starting,
     /// Registered in the engine under `(namespace, container)`.
     Ready,
-    /// Exited unexpectedly, or a hook failed.
+    /// Exited after it was ready, declared a `restart` policy, and is inside
+    /// the wait before the supervisor's next attempt. Nothing is running under
+    /// this name right now, which is what separates it from `Ready`, and the
+    /// supervisor has not given up on it, which is what separates it from
+    /// `Failed`.
+    Restarting,
+    /// Exited unsuccessfully with no eligible retry, exhausted its retries, or
+    /// a hook failed.
     Failed,
-    /// Stopped on purpose by this daemon.
+    /// Stopped by the daemon, or exited successfully without an eligible
+    /// restart.
     Stopped,
 }
 

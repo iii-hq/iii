@@ -22,7 +22,7 @@ use std::{
 
 use indexmap::IndexMap;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     dag,
@@ -40,6 +40,18 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
+
+/// Default base wait between failed replacement attempts.
+pub const DEFAULT_RESTART_DELAY: Duration = Duration::from_millis(500);
+
+/// Default ceiling for the exponential restart delay.
+pub const DEFAULT_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// Default replacement attempts available after a failed start or exit.
+pub const DEFAULT_RESTART_MAX_ATTEMPTS: u32 = 5;
+
+/// Default time a ready container must hold before its restart budget refills.
+pub const DEFAULT_RESTART_WINDOW: Duration = Duration::from_secs(60);
 
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
@@ -96,6 +108,84 @@ impl Default for Scripts {
     }
 }
 
+/// What Compose does when a start fails or a ready container exits.
+///
+/// [`Container::required`] still controls the operation outcome: after the
+/// retry budget is spent, a required failure fails and rolls back `up`, while
+/// a non-required failure is reported and lets the rest of the graph start.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, PartialOrd, Ord,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    /// Leave it down and take its transitive dependents with it. The default,
+    /// and what compose did before this field existed.
+    #[default]
+    No,
+    /// Restart it when it exited with a non-zero status.
+    OnFailure,
+    /// Restart it whenever it exits, a clean exit included. For a worker that
+    /// is only correct while it is running, exit code 0 is still an outage.
+    Always,
+}
+
+impl RestartPolicy {
+    /// Whether an exit with this status should be answered with a restart.
+    pub fn wants_restart(self, exit_code: i32) -> bool {
+        match self {
+            Self::No => false,
+            Self::OnFailure => exit_code != 0,
+            Self::Always => true,
+        }
+    }
+}
+
+/// Restart behavior and retry limits for one container.
+///
+/// A scalar `restart` value uses these defaults. The object form can override
+/// each limit while keeping the same restart conditions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartConfig {
+    /// Which exits cause a restart.
+    pub condition: RestartPolicy,
+    /// Base delay used by exponential backoff.
+    pub delay: Duration,
+    /// Longest delay between two replacement attempts.
+    pub max_delay: Duration,
+    /// Replacement attempts available after a failed start or exit.
+    pub max_attempts: u32,
+    /// Time a ready container must hold before its restart budget refills.
+    pub window: Duration,
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self {
+            condition: RestartPolicy::No,
+            delay: DEFAULT_RESTART_DELAY,
+            max_delay: DEFAULT_RESTART_MAX_DELAY,
+            max_attempts: DEFAULT_RESTART_MAX_ATTEMPTS,
+            window: DEFAULT_RESTART_WINDOW,
+        }
+    }
+}
+
+impl From<RestartPolicy> for RestartConfig {
+    fn from(condition: RestartPolicy) -> Self {
+        Self {
+            condition,
+            ..Self::default()
+        }
+    }
+}
+
+impl RestartConfig {
+    /// Whether an exit with this status should be answered with a restart.
+    pub fn wants_restart(&self, exit_code: i32) -> bool {
+        self.condition.wants_restart(exit_code)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Container {
     pub worker: WorkerSource,
@@ -126,6 +216,26 @@ pub struct Container {
     pub env_file: Vec<PathBuf>,
     /// Readiness budget for this container: its own override, else the file's.
     pub startup_timeout: Duration,
+    /// Whether a failed start fails the operation that started it.
+    ///
+    /// A container declaration wins over [`ComposeFile::required_default`].
+    /// When neither is present, this is `false`: the project runs without a
+    /// container that failed to start. `true` makes the `up` refuse and undo
+    /// what it started.
+    ///
+    /// Dependents carry on too. `start_after` is a start order, not a claim
+    /// that the dependent cannot run without the dependency, so a container
+    /// that waited on a non-required one starts as if it had come up. A
+    /// dependent that genuinely needs it says so by failing on its own.
+    pub required: bool,
+    /// What happens when this container fails to start or exits after it was
+    /// ready.
+    ///
+    /// `no` is the default. A failed first start settles immediately, while a
+    /// run-time exit takes the container's transitive dependents down. Anything
+    /// else asks Compose to try the container again, with backoff and a capped
+    /// number of attempts.
+    pub restart: RestartConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +259,9 @@ pub struct ComposeFile {
     pub startup_timeout: Duration,
     /// Grace between the polite stop and the forced kill, project-wide.
     pub stop_timeout: Duration,
+    /// Fallback for containers that do not declare `required` themselves.
+    /// Defaults to `false`.
+    pub required_default: bool,
     /// Present when this Compose invocation owns the engine process. Absent
     /// projects must connect to an externally managed engine.
     pub engine: Option<EngineSpec>,
@@ -233,13 +346,20 @@ impl ComposeFile {
             DEFAULT_STARTUP_TIMEOUT,
         )?;
         let stop_timeout = file_duration("stop_timeout", &raw.stop_timeout, DEFAULT_STOP_TIMEOUT)?;
+        let required_default = raw.required_default;
         let engine = raw.engine.map(validate_engine).transpose()?;
 
         let mut containers = IndexMap::with_capacity(raw_containers.len());
         for (key, raw_container) in &raw_containers {
             containers.insert(
                 key.clone(),
-                validate_container(key, raw_container, &base_dir, startup_timeout)?,
+                validate_container(
+                    key,
+                    raw_container,
+                    &base_dir,
+                    startup_timeout,
+                    required_default,
+                )?,
             );
         }
 
@@ -249,6 +369,7 @@ impl ComposeFile {
             base_dir,
             startup_timeout,
             stop_timeout,
+            required_default,
             engine,
             containers,
         };
@@ -341,6 +462,7 @@ fn validate_container(
     raw: &RawContainer,
     base_dir: &Path,
     file_startup_timeout: Duration,
+    required_default: bool,
 ) -> Result<Container> {
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
@@ -432,7 +554,32 @@ fn validate_container(
             .map(|path| resolve_relative(base_dir, path))
             .collect(),
         startup_timeout,
+        required: raw.required.unwrap_or(required_default),
+        restart: validate_restart(key, &raw.restart)?,
     })
+}
+
+fn validate_restart(key: &str, raw: &RawRestart) -> Result<RestartConfig> {
+    match raw {
+        RawRestart::Condition(condition) => Ok((*condition).into()),
+        RawRestart::Config(raw) => Ok(RestartConfig {
+            condition: raw.condition,
+            delay: restart_duration(key, &raw.delay, DEFAULT_RESTART_DELAY)?,
+            max_delay: restart_duration(key, &raw.max_delay, DEFAULT_RESTART_MAX_DELAY)?,
+            max_attempts: raw.max_attempts.unwrap_or(DEFAULT_RESTART_MAX_ATTEMPTS),
+            window: restart_duration(key, &raw.window, DEFAULT_RESTART_WINDOW)?,
+        }),
+    }
+}
+
+fn restart_duration(key: &str, raw: &Option<String>, default: Duration) -> Result<Duration> {
+    match raw {
+        None => Ok(default),
+        Some(value) => parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
+            container: key.to_string(),
+            value: value.clone(),
+        }),
+    }
 }
 
 impl Container {
@@ -603,6 +750,11 @@ struct RawComposeFile {
     startup_timeout: Option<String>,
     #[serde(default)]
     stop_timeout: Option<String>,
+    /// Fallback for containers that omit `required`. The default keeps
+    /// containers optional unless the project chooses the strict rule.
+    #[serde(default)]
+    #[schemars(default)]
+    required_default: bool,
     #[serde(default)]
     engine: Option<RawEngineSpec>,
     #[serde(default, deserialize_with = "deserialize_optional_unique_map")]
@@ -734,6 +886,57 @@ pub(crate) struct RawContainer {
     env_file: Vec<PathBuf>,
     #[serde(default)]
     startup_timeout: Option<String>,
+    /// Absent inherits the file's `required_default`. Deserialization keeps the
+    /// absence visible until the container is validated.
+    // Schemars uses this serialization rule to omit the raw `None` default from
+    // the schema. The YAML value is still a non-nullable boolean.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    required: Option<bool>,
+    /// Absent means `no`: a file written before this field existed keeps the
+    /// behaviour it was written against, which is that a ready container that
+    /// exits stays down.
+    #[serde(default)]
+    #[schemars(default)]
+    restart: RawRestart,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum RawRestart {
+    Condition(RestartPolicy),
+    Config(RawRestartConfig),
+}
+
+impl Default for RawRestart {
+    fn default() -> Self {
+        Self::Condition(RestartPolicy::No)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawRestartConfig {
+    condition: RestartPolicy,
+    #[serde(default)]
+    delay: Option<String>,
+    #[serde(default)]
+    max_delay: Option<String>,
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    window: Option<String>,
+}
+
+fn deserialize_optional_bool<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -849,5 +1052,52 @@ containers:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    #[test]
+    fn worker_compose_schema_exposes_required_inheritance() {
+        let schema = worker_compose_schema_json();
+        let container = &schema["definitions"]["RawContainer"];
+
+        assert_eq!(
+            (
+                schema["properties"]["required_default"]["type"].as_str(),
+                schema["properties"]["required_default"]["default"].as_bool(),
+                container["properties"]["required"]["type"].as_str(),
+                container["properties"]["required"].get("default").is_some(),
+                container["required"].as_array().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| field.as_str() == Some("required"))
+                }),
+            ),
+            (Some("boolean"), Some(false), Some("boolean"), false, false,)
+        );
+    }
+
+    #[test]
+    fn worker_compose_schema_exposes_both_restart_forms() {
+        let schema = worker_compose_schema_json();
+        let restart = &schema["definitions"]["RawRestart"];
+        let restart_config = &schema["definitions"]["RawRestartConfig"];
+        let properties = &restart_config["properties"];
+
+        assert_eq!(
+            (
+                restart["anyOf"].as_array().map(Vec::len),
+                restart_config["required"]
+                    .as_array()
+                    .is_some_and(|required| {
+                        required
+                            .iter()
+                            .any(|field| field.as_str() == Some("condition"))
+                    }),
+                properties.get("delay").is_some(),
+                properties.get("max_delay").is_some(),
+                properties.get("max_attempts").is_some(),
+                properties.get("window").is_some(),
+            ),
+            (Some(2), true, true, true, true, true)
+        );
     }
 }
