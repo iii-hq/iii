@@ -6,7 +6,7 @@ This directory contains the Dockerfile for the Node.js sandbox image used as roo
 
 | Target | Contents | Suggested tag |
 | --- | --- | --- |
-| `runtime` (default) | Node.js 24 with npm, CA certificates and the non-root `node` user. No build toolchain or linters. | `iiidev/node:latest` |
+| `runtime` (default) | Node.js 24 with npm and tsx, CA certificates and the non-root `node` user. No build toolchain or linters. | `iiidev/node:latest` |
 | `builder` | Runtime plus `build-essential` and `python3` for node-gyp and the existing development tools. | `iiidev/node:builder` |
 
 Use the builder when a dependency requires native compilation instead of a prebuilt binary or wheel. Runtime and builder share the same base image.
@@ -21,6 +21,10 @@ docker build --target builder -t iiidev/node:builder crates/iii-worker/images/no
 ```
 
 These commands build local images. Publish both tags to an accessible registry before using them with iii: workers pull their rootfs from the registry, not from the local Docker daemon.
+
+## Publishing
+
+The [image publishing workflow](../../../../.github/workflows/docker-worker-images.yml) validates both targets on pull requests. Changes to these images or the workflow on `main` publish `latest` (runtime) and `builder` to Docker Hub for `linux/amd64` and `linux/arm64`. The workflow can also be run manually on `main`. Builds pull the current upstream base image.
 
 ## Using the Builder Image
 

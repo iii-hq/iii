@@ -6,6 +6,8 @@ ENV NODE_ENV=development \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && npm install -g tsx \
+    && npm cache clean --force \
     && mkdir -p /home/node/work \
     && chown -R node:node /home/node
 

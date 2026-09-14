@@ -22,6 +22,10 @@ docker build --target builder -t iiidev/python:builder crates/iii-worker/images/
 
 These commands build local images. Publish both tags to an accessible registry before using them with iii: workers pull their rootfs from the registry, not from the local Docker daemon.
 
+## Publishing
+
+The [image publishing workflow](../../../../.github/workflows/docker-worker-images.yml) validates both targets on pull requests. Changes to these images or the workflow on `main` publish `latest` (runtime) and `builder` to Docker Hub for `linux/amd64` and `linux/arm64`. The workflow can also be run manually on `main`. Builds pull the current upstream base image.
+
 ## Using the Builder Image
 
 Set `runtime.base_image` in the worker's existing `iii.worker.yaml`, keeping its install and start scripts:

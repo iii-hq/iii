@@ -1,0 +1,95 @@
+name: Docker worker images
+
+on:
+  pull_request:
+    paths:
+      - crates/iii-worker/images/**
+      - .github/workflows/docker-worker-images.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/iii-worker/images/**
+      - .github/workflows/docker-worker-images.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-worker-images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.language }} ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [node, python]
+        target: [runtime, builder]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build local image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: crates/iii-worker/images/${{ matrix.language }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          pull: true
+          load: true
+          tags: worker-smoke:${{ matrix.language }}-${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.language }}-${{ matrix.target }}
+
+      - name: Smoke test
+        env:
+          IMAGE_TAG: worker-smoke:${{ matrix.language }}-${{ matrix.target }}
+          IMAGE_LANGUAGE: ${{ matrix.language }}
+          IMAGE_TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm --entrypoint sh "$IMAGE_TAG" -ec '
+            test "$(id -u)" -ne 0
+            touch .smoke-write && rm .smoke-write
+            test -s /etc/ssl/certs/ca-certificates.crt
+            if [ "$1" = node ]; then
+              node -e "if (!require(\"tls\").rootCertificates.length) process.exit(1)"
+              tsx -e "const value: number = 42; if (value !== 42) process.exit(1)"
+              if [ "$2" = runtime ]; then
+                ! command -v gcc && ! command -v make && ! command -v eslint
+              else
+                command -v gcc && command -v make && command -v eslint
+              fi
+            else
+              python -c "import os, ssl; assert os.path.isfile(ssl.get_default_verify_paths().cafile)"
+              python -m venv /tmp/smoke-venv
+              if [ "$2" = runtime ]; then
+                ! command -v gcc && ! command -v make && ! command -v black
+              else
+                command -v gcc && command -v make && command -v black
+              fi
+            fi
+          ' sh "$IMAGE_LANGUAGE" "$IMAGE_TARGET"
+
+      - name: Login to Docker Hub
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Build both platforms and publish from main
+        uses: docker/build-push-action@v6
+        with:
+          context: crates/iii-worker/images/${{ matrix.language }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+          tags: iiidev/${{ matrix.language }}:${{ matrix.target == 'runtime' && 'latest' || 'builder' }}
+          cache-from: type=gha,scope=${{ matrix.language }}-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.language }}-${{ matrix.target }}
