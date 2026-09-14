@@ -511,17 +511,34 @@ impl Console {
         self.observe_size(size);
         let mut rows = Vec::new();
         if let Some(startup) = &self.startup {
-            rows.extend([startup.engine.clone(), startup.downloads.clone()]);
-            rows.extend(self.downloads.iter().cloned());
-            rows.push(startup.containers.clone());
-            rows.extend(self.rows.iter().cloned().map(|mut row| {
-                row.depth += 1;
-                row
-            }));
-        } else {
-            rows.extend(self.downloads.iter().cloned());
-            rows.extend(self.rows.iter().cloned());
+            rows.extend([
+                startup.engine.clone(),
+                startup.downloads.clone(),
+                startup.containers.clone(),
+            ]);
         }
+        let mut workers: Vec<Row> = self
+            .rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.depth += usize::from(self.startup.is_some());
+                row
+            })
+            .collect();
+        for download in &self.downloads {
+            if let Some(worker) = workers.iter_mut().find(|row| row.key == download.key) {
+                // Keep download completion visible until this worker actually
+                // starts, then replace it with the worker's lifecycle status.
+                if matches!(worker.state, RowState::Waiting) {
+                    worker.state = download.state.clone();
+                }
+            } else {
+                // Downloads can arrive before the lifecycle plan is available.
+                workers.push(download.clone());
+            }
+        }
+        rows.extend(workers);
         let lines: Vec<String> = rows
             .iter()
             .map(|row| render_row(row, self.frame, true))
@@ -704,7 +721,8 @@ fn render_download(
     };
     let speed = format!("{}/s", format_bytes(download_speed(downloaded, elapsed)));
     let marker = if finished {
-        OK.green()
+        // A verified download is not a ready worker; reserve the check for readiness.
+        RUNNING.cyan()
     } else if animate {
         FRAMES[frame % FRAMES.len()].cyan()
     } else {
@@ -1288,33 +1306,60 @@ mod tests {
     #[tokio::test]
     #[ignore = "subprocess fixture for the download progress renderer"]
     async fn download_panel_fixture() {
+        let workers = [
+            "llm-router",
+            "provider-openai",
+            "provider-anthropic",
+            "context-manager",
+            "cron",
+            "harness",
+            "iii-directory",
+            "console",
+            "session-manager",
+            "queue",
+            "web",
+            "state",
+            "shell",
+        ];
         let mut progress = StartupProgress::start(false);
         tokio::time::sleep(Duration::from_millis(350)).await;
         progress.engine_ready();
         progress.downloads_starting();
-        download_started("console", Some(12 * 1024 * 1024));
-        download_started("shell", Some(8 * 1024 * 1024));
-        for step in 1..=12 {
-            download_progress("console", step * 1024 * 1024);
-            download_progress("shell", step.min(8) * 1024 * 1024);
-            if step == 8 {
-                download_finished("shell", 8 * 1024 * 1024);
-            }
-            tokio::time::sleep(Duration::from_millis(140)).await;
+        for (index, worker) in workers.iter().enumerate() {
+            download_started(worker, Some((8 + index as u64 % 5) * 1024 * 1024));
         }
-        download_finished("console", 12 * 1024 * 1024);
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        for step in 1..=12 {
+            for (index, worker) in workers.iter().enumerate() {
+                let total = 8 + index as u64 % 5;
+                download_progress(worker, step.min(total) * 1024 * 1024);
+                if step == total {
+                    download_finished(worker, total * 1024 * 1024);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
         containers_starting();
-        plan(&[("console".to_string(), 0), ("shell".to_string(), 0)]);
-        starting("console", "waiting for engine registration");
-        starting("shell", "waiting for engine registration");
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        ready("shell", Duration::from_millis(400));
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        ready("console", Duration::from_millis(650));
+        plan(
+            &workers
+                .iter()
+                .map(|worker| (worker.to_string(), 0))
+                .collect::<Vec<_>>(),
+        );
+        for phase in ["starting", "configuring", "waiting for engine registration"] {
+            for worker in &workers {
+                starting(worker, phase);
+                tokio::time::sleep(Duration::from_millis(45)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+        }
+        for worker in &workers {
+            ready(worker, Duration::from_millis(2800));
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        }
         plan_done();
         progress.finish(true, "Ready");
-        tokio::time::sleep(Duration::from_millis(600)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
     #[test]

@@ -1,16 +1,21 @@
-Output .github/assets/compose-download-progress.gif
+# Keep generated media outside the repository:
+# vhs --output /tmp/compose-download-progress.gif .github/vhs/compose-download-progress.tape
+# vhs publish /tmp/compose-download-progress.gif
+# This records the real renderer with simulated events, not a live compose project.
 
 Require cargo
 
 Set Shell "bash"
 Set Theme "Catppuccin Mocha"
-Set FontSize 24
-Set Width 1200
-Set Height 720
+Set FontSize 20
+Set Width 1400
+Set Height 1000
 Set Padding 24
 Set WindowBar "Rings"
-Set TypingSpeed 35ms
-Set Framerate 30
+Set TypingSpeed 15ms
+Set Framerate 20
 
-Type "iii compose --up" Sleep 400ms Enter
-Sleep 5s
+Type "cargo test -q -p iii-compose --lib download_panel_fixture -- --ignored --nocapture"
+Sleep 400ms
+Enter
+Sleep 12s

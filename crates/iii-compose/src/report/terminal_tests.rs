@@ -49,6 +49,113 @@ fn screen_and_history(terminal: &mut vt100::Parser) -> String {
 }
 
 #[test]
+fn downloaded_workers_keep_one_row_through_every_startup_phase() {
+    for (height, width) in [(24, 80), (18, 120)] {
+        let mut state = progress(0);
+        state.startup.as_mut().unwrap().downloads.state = RowState::Starting {
+            what: "Downloading (0/13)".to_string(),
+            began: Instant::now(),
+        };
+        state.startup.as_mut().unwrap().containers.state = RowState::Waiting;
+        state.downloads = (0..13)
+            .map(|index| Row {
+                key: format!("worker-{index:02}"),
+                depth: 1,
+                state: RowState::Downloading {
+                    downloaded: 512 * 1024,
+                    total: Some(1024 * 1024),
+                    began: Instant::now(),
+                },
+            })
+            .collect();
+        let mut terminal = vt100::Parser::new(height, width, 1000);
+        write_terminal(&mut terminal, &state.render(Some((height, width))));
+        assert!(terminal.screen().contents().contains("50%"));
+        for index in 0..13 {
+            state.downloads[index].state = RowState::Downloaded {
+                downloaded: 1024 * 1024,
+                total: Some(1024 * 1024),
+                elapsed: Duration::from_secs(1),
+            };
+            write_terminal(&mut terminal, &state.render(Some((height, width))));
+        }
+        state.startup.as_mut().unwrap().downloads.state = RowState::Ready {
+            what: "Complete (13)".to_string(),
+            elapsed: Duration::from_secs(1),
+        };
+        state.startup.as_mut().unwrap().containers.state = RowState::Starting {
+            what: "Starting (0/13)".to_string(),
+            began: Instant::now(),
+        };
+        state.rows = progress(13).rows;
+        for row in &mut state.rows {
+            row.state = RowState::Waiting;
+        }
+        write_terminal(&mut terminal, &state.render(Some((height, width))));
+        let text = screen_and_history(&mut terminal);
+        assert!(!state.static_output, "{width}x{height}: {text}");
+        assert_eq!(text.matches("100%").count(), 13, "{text}");
+        for index in 0..13 {
+            let key = format!("worker-{index:02}");
+            for phase in [
+                "starting",
+                "installing package",
+                "configuring",
+                "waiting for engine registration",
+                "ready",
+            ] {
+                state.rows[index].state = if phase == "ready" {
+                    RowState::Ready {
+                        what: phase.to_string(),
+                        elapsed: Duration::from_secs(1),
+                    }
+                } else {
+                    RowState::Starting {
+                        what: phase.to_string(),
+                        began: Instant::now(),
+                    }
+                };
+                write_terminal(&mut terminal, &state.render(Some((height, width))));
+                let text = screen_and_history(&mut terminal);
+                assert_eq!(text.matches(&key).count(), 1, "{text}");
+                assert!(text.contains(&format!("{key} {phase}")), "{text}");
+            }
+        }
+        write_terminal(
+            &mut terminal,
+            &state.line("compose diagnostic", Some((height, width))),
+        );
+        state.startup.as_mut().unwrap().finish(true, "Ready");
+        write_terminal(&mut terminal, &state.render(Some((height, width))));
+        let text = screen_and_history(&mut terminal);
+        for index in 0..13 {
+            let key = format!("worker-{index:02}");
+            assert_eq!(text.matches(&key).count(), 1, "{text}");
+            assert!(text.contains(&format!("✓ {key} ready")), "{text}");
+        }
+        assert!(!text.contains("100%"), "{text}");
+        assert_eq!(text.matches("Engine Ready").count(), 1, "{text}");
+        assert_eq!(text.matches("compose diagnostic").count(), 1, "{text}");
+    }
+}
+
+#[test]
+fn completed_download_does_not_claim_worker_readiness() {
+    let row = Row {
+        key: "api".to_string(),
+        depth: 1,
+        state: RowState::Downloaded {
+            downloaded: 1024,
+            total: Some(1024),
+            elapsed: Duration::from_secs(1),
+        },
+    };
+    let text = render_row(&row, 0, false);
+    assert!(text.contains("100%"), "{text}");
+    assert!(!text.contains(OK), "{text}");
+}
+
+#[test]
 fn startup_preserves_one_ready_line_per_worker_and_engine_at_small_terminal_sizes() {
     for (height, width) in [
         (24, 120),
