@@ -499,7 +499,8 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
   re-throw anything else (a timeout, a worker that is down). Return
   the imported and skipped counts.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
-  of links to the importer.
+  of links to the importer. Take the CSV path as an OPTIONAL argument that defaults to test.csv, so
+  `node channel-client/import-links.js` runs with no arguments.
 - Create an example CSV for the user (example.csv). Do not import it. For the client's test run,
   create test.csv with exactly two rows whose codes are mylink and mydocslink (any https URLs).
 
