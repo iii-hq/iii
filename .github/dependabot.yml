@@ -1,0 +1,55 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-npm-root:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/console"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-npm-console:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-cargo:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "gomod"
+    directory: "/sdk/packages/go/iii"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-gomod:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "pip"
+    directory: "/sdk/packages/python/iii"
+    schedule:
+      interval: "weekly"
+    groups:
+      all-pip:
+        patterns:
+          - "*"

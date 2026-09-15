@@ -52,7 +52,7 @@ jobs:
       dry_run: ${{ inputs.dry_run }}
     steps:
       - name: Checkout selected branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           # Default GITHUB_TOKEN (contents: write) is persisted in git config
@@ -78,7 +78,7 @@ jobs:
             --counter-tag-prefix iii-alpha \
             --current-version-file engine/Cargo.toml
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Configure git identity
         run: |
@@ -119,15 +119,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -277,7 +278,7 @@ jobs:
       # The tag was already pushed by `prepare`; this attaches a prerelease
       # to it. Uses the default GITHUB_TOKEN (contents: write).
       - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: iii ${{ needs.prepare.outputs.version }} (alpha)
@@ -343,7 +344,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
           # Build runs checked-out code; uploads go through softprops (token
@@ -356,11 +357,11 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: iii-init-${{ matrix.target }}
 
@@ -368,7 +369,7 @@ jobs:
         run: cargo build -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: iii-init-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/iii-init
@@ -387,7 +388,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.prepare.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
