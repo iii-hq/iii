@@ -542,10 +542,11 @@ else
 fi
 
 # Idempotency: if already at target version, skip the download and move on.
+# Nothing was installed, so nothing is announced: the harness offer and the
+# quickstart link below are for someone who has just arrived, not for a
+# re-run that changed nothing.
 if [ -n "$from_version" ] && [ "$from_version" = "$release_version" ]; then
   info "$BIN_NAME is already at v$release_version — nothing to do"
-  echo ""
-  echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"
   exit 0
 fi
 
