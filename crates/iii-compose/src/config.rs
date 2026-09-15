@@ -412,14 +412,47 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
     })
 }
 
+/// Reads `engine.url` from a Compose document, and nothing else.
+///
+/// `parse_engine_section` also deserializes and validates `engine.workers`, so
+/// an unsupported worker name there throws away an address the file plainly
+/// states. A caller that only needs to reach the engine does not care: a
+/// running engine answers on its address whatever the rest of the file says.
+///
+/// Only the URL value is expanded, so an unresolved variable elsewhere in the
+/// section costs nothing. One in the URL itself is an error, because the
+/// alternative is to report no address and let the caller fall back to a
+/// default endpoint that belongs to some other engine.
+pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    let engine_key = serde_yaml::Value::String("engine".to_string());
+    let url_key = serde_yaml::Value::String("url".to_string());
+    let Some(mut url) = document
+        .as_mapping()
+        .and_then(|mapping| mapping.get(&engine_key))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|engine| engine.get(&url_key))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    crate::interpolate::expand_tree(&mut url, path, &|name| std::env::var(name).ok())?;
+    match url {
+        serde_yaml::Value::String(url) => Ok(Some(url.trim().to_string())),
+        _ => Err(ComposeError::InvalidManagedEngineUrl),
+    }
+}
+
 /// Reads only the engine ownership section from a Compose document.
 ///
 /// Mutation preflight and teardown paths use this to reject ownership changes
 /// without requiring the container graph to be valid first. A cached project
 /// must still be stoppable or repairable when an unrelated container edit is
-/// temporarily invalid. `iii trigger` reads the engine address through it for
-/// the same reason: the address a caller needs does not depend on whether the
-/// containers parse.
+/// temporarily invalid.
 pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
@@ -1001,6 +1034,37 @@ containers:
 
         assert_eq!(engine.url, "ws://127.0.0.1:49134");
         assert!(engine.workers.contains_key("iii-stream"));
+    }
+
+    #[test]
+    fn the_engine_url_survives_an_unsupported_worker_name() {
+        // `parse_engine_section` rejects the whole section over this, which
+        // used to leave a caller with no address and a silent fall back to
+        // some other engine on the default port.
+        let text = r#"
+engine:
+  url: ws://127.0.0.1:49934
+  workers:
+    not-an-engine-worker:
+      port: 1234
+"#;
+        let path = Path::new("worker-compose.yaml");
+
+        assert!(parse_engine_section(text, path).is_err());
+        assert_eq!(
+            parse_engine_url(text, path).expect("the address does not depend on the worker list"),
+            Some("ws://127.0.0.1:49934".to_string())
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_engine_url_reports_no_address() {
+        let path = Path::new("worker-compose.yaml");
+        assert_eq!(parse_engine_url("containers: {}", path).unwrap(), None);
+        assert_eq!(
+            parse_engine_url("engine:\n  workers: {}", path).unwrap(),
+            None
+        );
     }
 
     #[test]

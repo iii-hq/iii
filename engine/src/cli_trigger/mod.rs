@@ -96,6 +96,15 @@ fn redact_credentials(raw: &str) -> String {
             None => 0,
         },
     };
+    // A typo can put extra slashes in front of the authority or leave one
+    // out, and `Url::parse` reads credentials past those either way. This has
+    // to find them in the same place or it hands the password back in the
+    // error it was written to prevent.
+    let rest_start = rest_start
+        + raw[rest_start..]
+            .bytes()
+            .take_while(|byte| *byte == b'/')
+            .count();
     let rest = &raw[rest_start..];
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
@@ -178,24 +187,55 @@ fn engine_url_endpoint(raw: &str, source: &str) -> anyhow::Result<(String, u16)>
         url::Host::Ipv6(address) => format!("[{address}]"),
         host => host.to_string(),
     };
-    Ok((host, url.port().unwrap_or(DEFAULT_PORT)))
+    Ok((
+        host,
+        url.port()
+            .or_else(|| explicit_port(raw))
+            .unwrap_or(DEFAULT_PORT),
+    ))
+}
+
+/// Reads the port out of a URL's authority, or `None` when it states none.
+///
+/// `Url::port` returns `None` for a port that matches the scheme's default,
+/// and 80 is the default for `ws`. Trusting it would turn an explicit
+/// `ws://host:80` into `host:49134` and send the call to a different engine on
+/// the same host, which is the silent misdirection this whole path exists to
+/// stop. `port_or_known_default` is not the answer either: it reports 80 for a
+/// URL that named no port, where this engine's default is 49134.
+fn explicit_port(raw: &str) -> Option<u16> {
+    let authority = raw.split_once("://")?.1;
+    let authority = authority.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    // A bracketed IPv6 host is full of colons; only one past the bracket is a
+    // port.
+    let tail = match authority.rfind(']') {
+        Some(bracket) => &authority[bracket + 1..],
+        None => authority,
+    };
+    tail.rsplit_once(':')?.1.parse().ok()
 }
 
 /// Reads `engine.url` from the compose file in the working directory.
 ///
-/// Returns `None` whenever the file is absent, unreadable, invalid, or
-/// declares no engine. Finding the file is a resolution step, not a
-/// validation one: `iii trigger` has to keep working outside any project, so
-/// a broken compose file must never fail a command that did not ask about it.
-/// A file that does state an engine address is held to the same rule as every
-/// other source, and an unusable one there fails the call.
-fn compose_file_engine_url() -> Option<String> {
+/// Returns `None` when there is no file to read or it declares no engine
+/// address. `iii trigger` has to keep working outside any project, so the
+/// absence of a compose file is never an error.
+///
+/// A file that does name an address but cannot be read for one is a different
+/// case, and it fails the call. Reporting no address there would send the
+/// invocation to `localhost:49134` while the operator believed it went where
+/// the file says, which is the bug this resolution order exists to close.
+/// Only `engine.url` is parsed, so an unsupported worker name or an
+/// unresolved variable elsewhere in the section still costs nothing.
+fn compose_file_engine_url() -> anyhow::Result<Option<String>> {
     let path = std::path::Path::new(iii_compose::cli::DEFAULT_COMPOSE_FILE);
-    let text = std::fs::read_to_string(path).ok()?;
-    // Only the engine section, so a container the running binary cannot parse
-    // does not cost the caller the address the file plainly states.
-    let engine = iii_compose::config::parse_engine_section(&text, path).ok()??;
-    (!engine.url.trim().is_empty()).then_some(engine.url)
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    let url = iii_compose::config::parse_engine_url(&text, path)
+        .map_err(|err| anyhow::anyhow!("worker-compose.yaml engine.url is unusable: {err}"))?;
+    Ok(url.filter(|url| !url.trim().is_empty()))
 }
 
 /// Resolves the engine endpoint from the flags and `III_URL`.
@@ -265,7 +305,7 @@ impl TriggerArgs {
     /// The engine this invocation talks to.
     fn endpoint(&self) -> anyhow::Result<(String, u16)> {
         let engine_url = std::env::var("III_URL").ok();
-        let compose_url = compose_file_engine_url();
+        let compose_url = compose_file_engine_url()?;
         resolve_endpoint(
             self.address.as_deref(),
             self.port,
@@ -430,6 +470,31 @@ mod tests {
         assert_eq!(
             resolve_endpoint(None, None, None, Some("ws://engine.test"), None).unwrap(),
             ("engine.test".to_string(), DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn an_explicitly_named_port_80_survives() {
+        // `Url::port` drops it as the `ws` scheme default, which used to turn
+        // this into `engine.test:49134` and reach a different engine.
+        for source in ["ws://engine.test:80", "ws://engine.test:80/"] {
+            assert_eq!(
+                resolve_endpoint(None, None, Some(source), None, None).unwrap(),
+                ("engine.test".to_string(), 80),
+                "port 80 lost for {source:?}"
+            );
+        }
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://[::1]:80"), None, None).unwrap(),
+            ("[::1]".to_string(), 80)
+        );
+    }
+
+    #[test]
+    fn a_non_default_explicit_port_is_kept() {
+        assert_eq!(
+            resolve_endpoint(None, None, Some("ws://engine.test:4300"), None, None).unwrap(),
+            ("engine.test".to_string(), 4300)
         );
     }
 
@@ -653,6 +718,10 @@ mod tests {
             "ws://user:secret@127.0.0.1:4400/path",
             "wss://user:secret@127.0.0.1:4400",
             "gibberish://user:secret@host",
+            // A slash too many or too few: the parser still reads these as
+            // credentials, so the redaction has to as well.
+            "ws:///user:secret@engine.test:4300",
+            "ws:/user:secret@engine.test:4300",
         ] {
             let err = resolve_endpoint(None, None, Some(url), None, None)
                 .unwrap_err()
