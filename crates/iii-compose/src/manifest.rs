@@ -6,12 +6,16 @@
 
 //! `iii.worker.yaml` subset parser and start-command resolution.
 //!
-//! Compose reads only `scripts.start` and `runtime.base_image`. The manifest is
-//! another tool's file, so unknown keys are tolerated here — the opposite of
-//! the compose file's strictness. This parser is deliberately independent from
-//! `crates/iii-worker`: compose must not inherit the legacy lifecycle system.
+//! Compose reads only the manifest fields needed to start local workers and
+//! host bundles. The manifest is another tool's file, so unknown keys are
+//! tolerated here — the opposite of the compose file's strictness. This parser
+//! is deliberately independent from `crates/iii-worker`: Compose must not
+//! inherit the legacy lifecycle system.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 
@@ -20,6 +24,7 @@ use crate::{
     error::{ComposeError, Result},
 };
 
+const MAX_BUNDLE_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const MANIFEST_FILE: &str = "iii.worker.yaml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +34,9 @@ pub enum StartSpec {
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
+    /// An installed registry bundle explicitly allowed to run on the host.
+    /// Its private workspace is prepared before this spec reaches spawn.
+    HostBundle(HostBundleSpec),
     /// A worker started in a VM. The source decides which validation and
     /// workspace rules `iii-worker` applies before it builds the boot command.
     Vm(VmSpec),
@@ -48,10 +56,23 @@ pub enum VmSpec {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBundleSpec {
+    pub install_dir: PathBuf,
+    pub install: Option<String>,
+    pub run: String,
+    pub env: BTreeMap<String, String>,
+    pub has_base_image: bool,
+    pub has_resources: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub start: Option<String>,
     pub base_image: Option<String>,
+    pub install: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub has_resources: bool,
 }
 
 /// Reads the manifest in `dir`, if there is one. A missing manifest is not an
@@ -85,12 +106,116 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
         .filter(|image| !image.is_empty())
         .map(str::to_string);
 
+    let scripts = raw.scripts.unwrap_or_default();
     Ok(Some(Manifest {
-        start: raw.scripts.and_then(|scripts| scripts.start),
+        start: scripts.start,
+        install: None,
         base_image,
+        env: BTreeMap::new(),
+        has_resources: false,
     }))
 }
 
+/// Reads the installed bundle fields needed by host execution while preserving
+/// the same mandatory rails as the VM path.
+pub fn read_host_bundle_manifest(dir: &Path, expected_name: &str) -> Result<Manifest> {
+    let path = dir.join(MANIFEST_FILE);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|source| ComposeError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: "bundle manifest must be a regular file".to_string(),
+        });
+    }
+    if metadata.len() > MAX_BUNDLE_MANIFEST_BYTES {
+        return Err(ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: format!(
+                "bundle manifest is {} bytes; maximum is {MAX_BUNDLE_MANIFEST_BYTES}",
+                metadata.len()
+            ),
+        });
+    }
+    let text = std::fs::read_to_string(&path).map_err(|source| ComposeError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let raw: RawHostManifest =
+        serde_yaml::from_str(&text).map_err(|err| ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
+
+    let name = raw
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    if name != Some(expected_name) {
+        return Err(ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: format!(
+                "`name` must match the container key {expected_name:?}, got {}",
+                name.map(|name| format!("{name:?}"))
+                    .unwrap_or_else(|| "nothing".to_string())
+            ),
+        });
+    }
+
+    let scripts = raw.scripts.unwrap_or_default();
+    if scripts
+        .setup
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|setup| !setup.is_empty())
+    {
+        return Err(ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: "bundle manifests must not declare `scripts.setup`".to_string(),
+        });
+    }
+    let start = scripts
+        .start
+        .map(|start| start.trim().to_string())
+        .filter(|start| !start.is_empty())
+        .ok_or_else(|| ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: "bundle manifest must declare `scripts.start` as a non-empty string"
+                .to_string(),
+        })?;
+    let install = scripts
+        .install
+        .map(|install| install.trim().to_string())
+        .filter(|install| !install.is_empty());
+    let base_image = raw
+        .runtime
+        .as_ref()
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|runtime| runtime.get("base_image"))
+        .map(|value| {
+            value.as_str().ok_or_else(|| ComposeError::InvalidManifest {
+                path: path.clone(),
+                message: "`runtime.base_image` must be a string".to_string(),
+            })
+        })
+        .transpose()?
+        .map(str::trim)
+        .filter(|image| !image.is_empty())
+        .map(str::to_string);
+
+    let mut env = raw.env.unwrap_or_default();
+    env.retain(|name, _| !crate::spawn::RESERVED_ENV.contains(&name.as_str()));
+    Ok(Manifest {
+        start: Some(start),
+        install,
+        base_image,
+        env,
+        has_resources: raw.resources.is_some(),
+    })
+}
 /// Resolves how a container starts.
 ///
 /// The rule is general, not a decision per field: **where the compose file and
@@ -276,9 +401,6 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
-    // `name` is deliberately absent: the manifest may carry one and compose
-    // does not read it. Unknown keys are tolerated here, so it is ignored
-    // rather than rejected.
     #[serde(default)]
     scripts: Option<RawManifestScripts>,
     /// Kept as a value so legacy scalar forms remain ignored. Compose only
@@ -287,8 +409,141 @@ struct RawManifest {
     runtime: Option<serde_yaml::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct RawManifestScripts {
     #[serde(default)]
     start: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHostManifest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    scripts: Option<RawHostManifestScripts>,
+    #[serde(default)]
+    runtime: Option<serde_yaml::Value>,
+    #[serde(default)]
+    env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    resources: Option<serde_yaml::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawHostManifestScripts {
+    #[serde(default)]
+    setup: Option<String>,
+    #[serde(default)]
+    install: Option<String>,
+    #[serde(default)]
+    start: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_bundle_manifest_reads_install_start_env_and_vm_only_options() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            r#"
+name: state
+runtime:
+  base_image: docker.io/iiidev/node:latest
+scripts:
+  install: npm install
+  start: npm start
+env:
+  FROM_MANIFEST: yes
+resources:
+  cpus: 2
+"#,
+        )
+        .unwrap();
+
+        let manifest = read_host_bundle_manifest(dir.path(), "state").unwrap();
+        assert_eq!(manifest.install.as_deref(), Some("npm install"));
+        assert_eq!(manifest.start.as_deref(), Some("npm start"));
+        assert_eq!(
+            manifest.env.get("FROM_MANIFEST").map(String::as_str),
+            Some("yes")
+        );
+        assert!(manifest.base_image.is_some());
+        assert!(manifest.has_resources);
+    }
+
+    #[test]
+    fn host_bundle_manifest_rejects_setup_and_wrong_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            "name: other\nscripts:\n  setup: apt install curl\n  start: node index.js\n",
+        )
+        .unwrap();
+        assert!(read_host_bundle_manifest(dir.path(), "state").is_err());
+
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            "name: state\nscripts:\n  setup: apt install curl\n  start: node index.js\n",
+        )
+        .unwrap();
+        let error = read_host_bundle_manifest(dir.path(), "state").unwrap_err();
+        assert!(error.to_string().contains("scripts.setup"));
+    }
+
+    #[test]
+    fn host_bundle_manifest_limits_size_and_filters_reserved_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            "name: state\nscripts:\n  start: node index.js\nenv:\n  III_URL: ws://publisher\n  III_ISOLATION: publisher\n  ORDINARY: kept\n",
+        )
+        .unwrap();
+        let manifest = read_host_bundle_manifest(dir.path(), "state").unwrap();
+        assert_eq!(
+            manifest.env.get("ORDINARY").map(String::as_str),
+            Some("kept")
+        );
+        assert!(!manifest.env.contains_key("III_URL"));
+        assert!(!manifest.env.contains_key("III_ISOLATION"));
+
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            vec![b'a'; MAX_BUNDLE_MANIFEST_BYTES as usize + 1],
+        )
+        .unwrap();
+        let error = read_host_bundle_manifest(dir.path(), "state").unwrap_err();
+        assert!(error.to_string().contains("maximum is 65536"));
+    }
+
+    #[test]
+    fn local_manifest_keeps_ignoring_host_only_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MANIFEST_FILE),
+            "name: [not, a, string]\nscripts:\n  install: {not: a string}\n  start: node index.js\nenv: [not, a, map]\nresources: invalid-but-ignored\n",
+        )
+        .unwrap();
+        let manifest = read_manifest(dir.path()).unwrap().unwrap();
+        assert_eq!(manifest.start.as_deref(), Some("node index.js"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_bundle_manifest_must_not_be_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            outside.path(),
+            "name: state\nscripts:\n  start: node index.js\n",
+        )
+        .unwrap();
+        symlink(outside.path(), dir.path().join(MANIFEST_FILE)).unwrap();
+        let error = read_host_bundle_manifest(dir.path(), "state").unwrap_err();
+        assert!(error.to_string().contains("regular file"));
+    }
 }

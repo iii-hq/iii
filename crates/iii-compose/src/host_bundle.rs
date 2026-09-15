@@ -1,0 +1,591 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! Private, persistent workspaces for registry bundles that run on the host.
+//!
+//! The registry cache is shared and integrity-checked, so publisher commands
+//! must never run inside it. A host bundle gets a project/container-owned copy;
+//! its source fingerprint decides when that copy is replaced and its prepared
+//! marker decides when the publisher's install command runs again.
+
+use std::{
+    fs, io,
+    path::{Component, Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    error::{ComposeError, Result},
+    manifest::HostBundleSpec,
+};
+
+const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
+const WORKSPACE_META: &str = ".iii-compose-host-workspace.json";
+const PREPARED_FILE: &str = ".iii-compose-host-prepared.json";
+const FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceMeta {
+    format_version: u32,
+    source_fingerprint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PreparedMeta {
+    format_version: u32,
+    source_fingerprint: String,
+    install_fingerprint: String,
+    os: String,
+    arch: String,
+}
+
+#[derive(Debug)]
+pub struct PreparedHostBundle {
+    pub workspace: PathBuf,
+    pub install_required: bool,
+}
+
+/// Materializes or reuses one container's private workspace.
+pub fn prepare(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<PreparedHostBundle> {
+    let container_dir = container_dir(host_root, key)?;
+    let source_fingerprint = source_fingerprint(&spec.install_dir)?;
+    ensure_private_dir(host_root)?;
+    ensure_private_dir(&container_dir)?;
+    let workspace = container_dir.join("workspace");
+    let expected_workspace = WorkspaceMeta {
+        format_version: FORMAT_VERSION,
+        source_fingerprint: source_fingerprint.clone(),
+    };
+
+    let workspace_replaced = !workspace_matches(&workspace, &expected_workspace);
+    if workspace_replaced {
+        let staging = container_dir.join(format!("workspace.tmp-{}", uuid::Uuid::new_v4()));
+        remove_any(&staging)?;
+        ensure_private_dir(&staging)?;
+        if let Err(error) = copy_tree(&spec.install_dir, &staging)
+            .and_then(|_| write_json_atomic(&staging.join(WORKSPACE_META), &expected_workspace))
+            .and_then(|_| harden_tree(&staging))
+        {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        promote_workspace(&staging, &workspace)?;
+    }
+
+    let expected_prepared = PreparedMeta {
+        format_version: FORMAT_VERSION,
+        source_fingerprint,
+        install_fingerprint: install_fingerprint(spec.install.as_deref()),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+    };
+    let prepared_path = container_dir.join(PREPARED_FILE);
+    let install_required = spec.install.is_some()
+        && (workspace_replaced || !json_matches(&prepared_path, &expected_prepared));
+
+    Ok(PreparedHostBundle {
+        workspace,
+        install_required,
+    })
+}
+
+/// Makes the workspace owner-only immediately before executing bundle code.
+pub fn harden_for_execution(host_root: &Path, key: &str) -> Result<()> {
+    let container_dir = container_dir(host_root, key)?;
+    ensure_private_dir(host_root)?;
+    ensure_private_dir(&container_dir)?;
+    harden_tree(&container_dir.join("workspace"))
+}
+
+/// Records a successful install after hardening everything it created. An
+/// absent install is already prepared by definition and needs no marker.
+pub fn mark_prepared(spec: &HostBundleSpec, host_root: &Path, key: &str) -> Result<()> {
+    let container_dir = container_dir(host_root, key)?;
+    let Some(_) = spec.install else {
+        return Ok(());
+    };
+    harden_for_execution(host_root, key)?;
+    let meta = PreparedMeta {
+        format_version: FORMAT_VERSION,
+        source_fingerprint: source_fingerprint(&spec.install_dir)?,
+        install_fingerprint: install_fingerprint(spec.install.as_deref()),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+    };
+    write_json_atomic(&container_dir.join(PREPARED_FILE), &meta)
+}
+
+/// Resolves one container-owned directory without allowing the key to become a path.
+fn container_dir(host_root: &Path, key: &str) -> Result<PathBuf> {
+    let mut components = Path::new(key).components();
+    if matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() {
+        return Ok(host_root.join(key));
+    }
+    Err(ComposeError::InvalidHostBundleContainerKey {
+        container: key.to_string(),
+    })
+}
+
+/// Replaces a workspace and removes the completed staging copy if either step fails.
+fn promote_workspace(staging: &Path, workspace: &Path) -> Result<()> {
+    let result = remove_any(workspace)
+        .and_then(|_| fs::rename(staging, workspace).map_err(|source| io_error(workspace, source)));
+    if result.is_err() {
+        let _ = remove_any(staging);
+    }
+    result
+}
+
+fn source_fingerprint(install_dir: &Path) -> Result<String> {
+    let path = install_dir.join(INTEGRITY_FILE);
+    let bytes = fs::read(&path).map_err(|source| io_error(&path, source))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn install_fingerprint(install: Option<&str>) -> String {
+    hex::encode(Sha256::digest(install.unwrap_or("").as_bytes()))
+}
+
+fn workspace_matches(path: &Path, expected: &WorkspaceMeta) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        && json_matches(&path.join(WORKSPACE_META), expected)
+        && tree_is_owner_only(path)
+}
+
+fn json_matches<T>(path: &Path, expected: &T) -> bool
+where
+    T: for<'de> Deserialize<'de> + PartialEq,
+{
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<T>(&bytes).ok())
+        .as_ref()
+        == Some(expected)
+}
+
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+    let temp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
+    let bytes =
+        serde_json::to_vec(value).map_err(|source| io_error(path, io::Error::other(source)))?;
+    fs::write(&temp, bytes).map_err(|source| io_error(&temp, source))?;
+    harden_path(&temp)?;
+    fs::rename(&temp, path).map_err(|source| {
+        let _ = fs::remove_file(&temp);
+        io_error(path, source)
+    })
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+    let source_root = fs::canonicalize(source).map_err(|error| io_error(source, error))?;
+    copy_tree_from(&source_root, destination, &source_root)
+}
+
+fn copy_tree_from(source: &Path, destination: &Path, source_root: &Path) -> Result<()> {
+    let mut entries = fs::read_dir(source)
+        .map_err(|error| io_error(source, error))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| io_error(source, error))?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+
+    for entry in entries {
+        if entry.file_name() == INTEGRITY_FILE {
+            continue;
+        }
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&from).map_err(|error| io_error(&from, error))?;
+        if metadata.is_dir() {
+            fs::create_dir(&to).map_err(|error| io_error(&to, error))?;
+            harden_path(&to)?;
+            copy_tree_from(&from, &to, source_root)?;
+        } else if metadata.is_file() {
+            fs::copy(&from, &to).map_err(|error| io_error(&to, error))?;
+            harden_path(&to)?;
+        } else if metadata.file_type().is_symlink() {
+            copy_symlink(&from, &to, source_root)?;
+        } else {
+            return Err(io_error(
+                &from,
+                io::Error::other("bundle contains an unsupported file type"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path, source_root: &Path) -> Result<()> {
+    let target = fs::read_link(source).map_err(|error| io_error(source, error))?;
+    if target.is_absolute() {
+        return Err(unsafe_symlink(source, "has an absolute target"));
+    }
+    let resolved = source.parent().unwrap_or(source_root).join(&target);
+    let canonical = fs::canonicalize(&resolved).map_err(|error| {
+        unsafe_symlink(
+            source,
+            &format!("has an unresolved or cyclic target {target:?}: {error}"),
+        )
+    })?;
+    if !canonical.starts_with(source_root) {
+        return Err(unsafe_symlink(source, "escapes the bundle root"));
+    }
+    std::os::unix::fs::symlink(target, destination).map_err(|error| io_error(destination, error))
+}
+
+#[cfg(unix)]
+fn unsafe_symlink(source: &Path, reason: &str) -> ComposeError {
+    io_error(source, io::Error::other(format!("bundle symlink {reason}")))
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(source: &Path, _destination: &Path, _source_root: &Path) -> Result<()> {
+    Err(io_error(
+        source,
+        io::Error::new(io::ErrorKind::Unsupported, "bundle symlinks require unix"),
+    ))
+}
+
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path).map_err(|source| io_error(path, source))?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !metadata.is_dir() {
+        return Err(io_error(
+            path,
+            io::Error::other("host bundle state path must be a directory, not a symlink or file"),
+        ));
+    }
+    harden_path(path)
+}
+
+fn harden_tree(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    harden_path(path)?;
+    if metadata.is_dir() {
+        let entries = fs::read_dir(path).map_err(|source| io_error(path, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(path, source))?;
+            harden_tree(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn harden_path(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    let mode = if metadata.is_dir() {
+        0o700
+    } else if metadata.is_file() {
+        0o600 | u32::from(metadata.permissions().mode() & 0o100 != 0) * 0o100
+    } else {
+        return Err(io_error(
+            path,
+            io::Error::other("host bundle workspace contains an unsupported file type"),
+        ));
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|source| io_error(path, source))
+}
+
+#[cfg(not(unix))]
+fn harden_path(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn tree_is_owner_only(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    let expected = if metadata.is_dir() {
+        0o700
+    } else if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+        0o700
+    } else if metadata.is_file() {
+        0o600
+    } else {
+        return false;
+    };
+    if mode != expected {
+        return false;
+    }
+    !metadata.is_dir()
+        || fs::read_dir(path).is_ok_and(|entries| {
+            entries.into_iter().all(|entry| {
+                entry
+                    .ok()
+                    .is_some_and(|entry| tree_is_owner_only(&entry.path()))
+            })
+        })
+}
+
+#[cfg(not(unix))]
+fn tree_is_owner_only(_path: &Path) -> bool {
+    true
+}
+
+fn remove_any(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(path).map_err(|source| io_error(path, source))
+        }
+        Ok(_) => fs::remove_file(path).map_err(|source| io_error(path, source)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(io_error(path, source)),
+    }
+}
+
+fn io_error(path: &Path, source: io::Error) -> ComposeError {
+    ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn bundle(root: &Path, identity: &str, install: Option<&str>) -> HostBundleSpec {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join(INTEGRITY_FILE), identity).unwrap();
+        fs::write(root.join("worker.js"), "first").unwrap();
+        HostBundleSpec {
+            install_dir: root.to_path_buf(),
+            install: install.map(str::to_string),
+            run: "node worker.js".to_string(),
+            env: BTreeMap::new(),
+            has_base_image: false,
+            has_resources: false,
+        }
+    }
+
+    #[test]
+    fn unsafe_container_keys_cannot_escape_the_host_root() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+
+        for key in ["", "/tmp", "../x", "a/b", ".", ".."] {
+            let prepare_error = prepare(&spec, state.path(), key).unwrap_err();
+            assert_eq!(prepare_error.code(), "INVALID_HOST_BUNDLE_CONTAINER_KEY");
+            let marker_error = mark_prepared(&spec, state.path(), key).unwrap_err();
+            assert_eq!(marker_error.code(), "INVALID_HOST_BUNDLE_CONTAINER_KEY");
+        }
+        assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copied_and_installed_workspace_content_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        fs::set_permissions(
+            source.path().join("worker.js"),
+            fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        let prepared = prepare(&spec, state.path(), "worker").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&prepared.workspace), 0o700);
+        assert_eq!(mode(&prepared.workspace.join("worker.js")), 0o700);
+
+        let installed = prepared.workspace.join("node_modules");
+        fs::create_dir(&installed).unwrap();
+        fs::write(installed.join("dependency.js"), "installed").unwrap();
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(
+            installed.join("dependency.js"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+        assert_eq!(mode(&installed), 0o700);
+        assert_eq!(mode(&installed.join("dependency.js")), 0o600);
+        assert!(
+            !prepare(&spec, state.path(), "worker")
+                .unwrap()
+                .install_required
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insecure_reused_workspace_is_rebuilt_before_execution() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&spec, state.path(), "worker").unwrap();
+        fs::write(first.workspace.join("untrusted"), "discard").unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+        fs::set_permissions(&first.workspace, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let rebuilt = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(rebuilt.install_required);
+        assert!(!rebuilt.workspace.join("untrusted").exists());
+        assert_eq!(
+            fs::metadata(&rebuilt.workspace)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_run_output_is_hardened_even_without_an_install_script() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", None);
+        let prepared = prepare(&spec, state.path(), "worker").unwrap();
+        let generated = prepared.workspace.join("generated-by-pre-run");
+        fs::write(&generated, "hook output").unwrap();
+        fs::set_permissions(&generated, fs::Permissions::from_mode(0o666)).unwrap();
+
+        harden_for_execution(state.path(), "worker").unwrap();
+        assert_eq!(
+            fs::metadata(generated).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn failed_workspace_promotion_removes_completed_staging_data() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("workspace.tmp-test");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("worker.js"), "complete copy").unwrap();
+        let workspace = root.path().join("missing-parent/workspace");
+
+        let error = promote_workspace(&staging, &workspace).unwrap_err();
+        assert_eq!(error.code(), "IO_ERROR");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn copies_bundle_and_reuses_mutable_workspace() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(first.install_required);
+        fs::write(first.workspace.join("generated"), "keep").unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+
+        let second = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(!second.install_required);
+        assert_eq!(
+            fs::read_to_string(second.workspace.join("generated")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn changed_bundle_replaces_workspace_and_requires_install() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&spec, state.path(), "worker").unwrap();
+        fs::write(first.workspace.join("generated"), "discard").unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+
+        fs::write(source.path().join(INTEGRITY_FILE), "two").unwrap();
+        fs::write(source.path().join("worker.js"), "second").unwrap();
+        let second = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(second.install_required);
+        assert!(!second.workspace.join("generated").exists());
+        assert_eq!(
+            fs::read_to_string(second.workspace.join("worker.js")).unwrap(),
+            "second"
+        );
+    }
+
+    #[test]
+    fn recreated_workspace_requires_install_even_with_a_current_marker() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&spec, state.path(), "worker").unwrap();
+        mark_prepared(&spec, state.path(), "worker").unwrap();
+        fs::remove_dir_all(&first.workspace).unwrap();
+
+        let recreated = prepare(&spec, state.path(), "worker").unwrap();
+        assert!(recreated.install_required);
+    }
+
+    #[test]
+    fn changed_install_requires_install_without_replacing_workspace() {
+        let source = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let first_spec = bundle(source.path(), "one", Some("npm install"));
+        let first = prepare(&first_spec, state.path(), "worker").unwrap();
+        fs::write(first.workspace.join("generated"), "keep").unwrap();
+        mark_prepared(&first_spec, state.path(), "worker").unwrap();
+
+        let mut second_spec = first_spec.clone();
+        second_spec.install = Some("npm ci".to_string());
+        let second = prepare(&second_spec, state.path(), "worker").unwrap();
+        assert!(second.install_required);
+        assert!(second.workspace.join("generated").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_stay_private_and_cannot_escape_the_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let outer = tempfile::tempdir().unwrap();
+        let source = outer.path().join("safe-bundle");
+        let state = tempfile::tempdir().unwrap();
+        let spec = bundle(&source, "one", None);
+        symlink("worker.js", source.join("worker-link.js")).unwrap();
+
+        let prepared = prepare(&spec, state.path(), "safe").unwrap();
+        fs::write(prepared.workspace.join("worker-link.js"), "workspace").unwrap();
+        assert_eq!(
+            fs::read_to_string(source.join("worker.js")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(prepared.workspace.join("worker.js")).unwrap(),
+            "workspace"
+        );
+
+        let unsafe_source = outer.path().join("unsafe-bundle");
+        let unsafe_spec = bundle(&unsafe_source, "two", None);
+        fs::write(outer.path().join("outside"), "shared").unwrap();
+        symlink("../outside", unsafe_source.join("outside-link")).unwrap();
+        let error = prepare(&unsafe_spec, state.path(), "unsafe").unwrap_err();
+        assert!(error.to_string().contains("escapes the bundle root"));
+    }
+}

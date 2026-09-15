@@ -29,6 +29,7 @@ pub mod edit;
 pub mod engine;
 pub mod error;
 pub mod hooks;
+mod host_bundle;
 pub mod interpolate;
 pub mod lifecycle;
 mod lockfile;
@@ -50,9 +51,11 @@ pub mod spawn;
 pub mod state;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
-pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
+pub use config::{
+    BundleRuntime, ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource,
+};
 pub use error::{ComposeError, Result};
-pub use manifest::{StartSpec, ValidationReport, VmSpec};
+pub use manifest::{HostBundleSpec, StartSpec, ValidationReport, VmSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineMode {

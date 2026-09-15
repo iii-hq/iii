@@ -89,6 +89,17 @@ pub enum WorkerSource {
     Path { dir: PathBuf, declared: String },
 }
 
+/// Where an installed registry bundle executes.
+///
+/// The field is intentionally optional on a container: absence preserves the
+/// bundle default (`vm`), while non-bundle sources reject either value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BundleRuntime {
+    Host,
+    Vm,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripts {
     pub pre_run: Option<String>,
@@ -193,6 +204,9 @@ pub struct Container {
     /// Registry result selected by `worker-compose.lock` for this declaration.
     /// It is runtime state and is never read from `worker-compose.yaml`.
     pub resolved_package: Option<crate::registry::ResolvedPackage>,
+    /// Explicit execution choice for registry bundles. An omitted value means
+    /// `vm`; local paths and binary package payloads reject this field.
+    pub runtime: Option<BundleRuntime>,
     pub start_after: Vec<String>,
     /// The configuration entry this container owns.
     ///
@@ -467,6 +481,12 @@ fn validate_container(
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
 
+    if !is_package && raw.runtime.is_some() {
+        return Err(ComposeError::RuntimeOnlyForBundles {
+            container: key.to_string(),
+        });
+    }
+
     if is_package && raw.version.is_none() {
         return Err(ComposeError::MissingVersionForPackage {
             container: key.to_string(),
@@ -486,8 +506,8 @@ fn validate_container(
     let scripts = match &raw.scripts {
         None => Scripts::default(),
         Some(raw_scripts) => {
-            if raw_scripts.run.is_some() && is_package {
-                return Err(ComposeError::RunNotAllowedForPackage {
+            if raw_scripts.run.is_some() && is_package && raw.runtime != Some(BundleRuntime::Host) {
+                return Err(ComposeError::PackageRunRequiresHostRuntime {
                     container: key.to_string(),
                 });
             }
@@ -537,6 +557,7 @@ fn validate_container(
 
     Ok(Container {
         worker,
+        runtime: raw.runtime,
         version: raw.version.clone(),
         resolved_package: None,
         start_after: raw.start_after.clone(),
@@ -869,6 +890,8 @@ pub(crate) struct RawContainer {
     #[serde(default)]
     pub(crate) version: Option<String>,
     #[serde(default)]
+    runtime: Option<BundleRuntime>,
+    #[serde(default)]
     pub(crate) start_after: Vec<String>,
     #[serde(default)]
     config_name: Option<String>,
@@ -1017,6 +1040,55 @@ containers:
             }
             other => panic!("expected a path source, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn package_bundle_runtime_defaults_to_vm_and_accepts_explicit_host() {
+        let default = ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        assert_eq!(default.containers["state"].runtime, None);
+
+        let host = ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n    runtime: host\n    scripts:\n      run: node direct.js\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        assert_eq!(host.containers["state"].runtime, Some(BundleRuntime::Host));
+        assert_eq!(
+            host.containers["state"].scripts.run.as_deref(),
+            Some("node direct.js")
+        );
+    }
+
+    #[test]
+    fn runtime_is_rejected_for_path_workers() {
+        let error = ComposeFile::parse(
+            "containers:\n  local:\n    worker: path://./local\n    runtime: host\n    scripts:\n      run: node index.js\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "RUNTIME_ONLY_FOR_BUNDLES");
+    }
+
+    #[test]
+    fn package_run_requires_explicit_host_runtime() {
+        let error = ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n    scripts:\n      run: node direct.js\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "PACKAGE_RUN_REQUIRES_HOST_RUNTIME");
+    }
+
+    #[test]
+    fn worker_compose_schema_exposes_bundle_runtime() {
+        let schema = worker_compose_schema_json();
+        let runtime = &schema["definitions"]["BundleRuntime"];
+        assert_eq!(runtime["enum"], serde_json::json!(["host", "vm"]));
+        assert!(schema["definitions"]["RawContainer"]["properties"]["runtime"].is_object());
     }
 
     #[test]
