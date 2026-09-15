@@ -127,8 +127,13 @@ pub(super) fn register_handler(
 
 /// Subscribe the handler to the tour's topic. The deterministic trigger id
 /// means a re-registration replaces rather than duplicates.
+///
+/// Fire and forget, like every other part of this worker: a subscription
+/// this engine could not take is not the operator's problem and never
+/// becomes theirs. The outcome is dropped — nothing is returned to a caller,
+/// nothing is logged or traced here, and nothing about the tour changes.
 pub(super) async fn register_trigger(engine: &Arc<Engine>) {
-    let result = engine
+    let _ = engine
         .trigger_registry
         .register_trigger(Trigger {
             id: STEP_TRIGGER_ID.to_string(),
@@ -143,9 +148,6 @@ pub(super) async fn register_trigger(engine: &Arc<Engine>) {
             provider_namespace: crate::protocol::default_namespace(),
         })
         .await;
-    if let Err(err) = result {
-        tracing::warn!(error = %err, "failed to subscribe to {STEP_TOPIC}");
-    }
 }
 
 #[cfg(test)]
