@@ -1,0 +1,57 @@
+---
+// iii.dev/engine — a single-column, blog-style companion to /harness. Where
+// /harness is a comparative landing page (two-column hero, one claim per
+// screen, built for a visitor coming from another harness), /engine is for
+// someone who wants the architecture explained in reading order: the three
+// primitives, the protocol, the live registry, and the harness worker,
+// mostly text with a couple of visual breaks instead of a feature grid.
+// Construction mirrors harness.astro: shared HtmlShell, SiteNav, ScrollNav,
+// one Astro component for the body (EngineArticle, needed because it embeds
+// a real <HarnessConsole>), and raw-HTML fragments for the closer/footer.
+import SiteNav from '../components/SiteNav.astro'
+import ScrollNav from '../components/ScrollNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import EngineArticle from '../components/landing/sections/engine/EngineArticle.astro'
+import '../styles/landing.css'
+import '../styles/engine.css'
+
+import headExtras from '../components/landing/head-extras.html?raw'
+import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+
+// Raw-HTML sections (no component inside).
+import closer from '../components/landing/sections/engine/13-engine-closer.html?raw'
+
+// Homepage sections reused verbatim — the footer.
+import footer from '../components/landing/sections/11-footer.html?raw'
+
+// Behavior scripts these sections need: page behaviors (install-copy buttons,
+// footer email/discord) guard every lookup on element presence, so including
+// it is safe even though only some of its targets exist on this page.
+import pageBehaviors from '../components/landing/scripts/02-page-behaviors.html?raw'
+
+const body = [closer, footer, pageBehaviors].join('')
+---
+
+<HtmlShell
+  title="iii — three primitives, one live system"
+  description="Worker, function, trigger: the minimal model underneath iii. How the protocol, the live registry, and the harness worker turn a static system into one agents can discover, extend, and observe while it runs."
+  canonicalPath="/engine"
+  keywords="iii, agent harness, worker, function, trigger, protocol, worker registry, live discovery, agent runtime, backend architecture"
+>
+  <Fragment slot="head" set:html={headExtras} />
+  <Fragment set:html={sheetOpen} />
+  <SiteNav pageTitle="engine" />
+  <ScrollNav
+    links={[
+      { id: 'harness', label: 'harness' },
+      { id: 'primitives', label: 'primitives' },
+      { id: 'protocol', label: 'protocol' },
+      { id: 'surface', label: 'surface' },
+      { id: 'registry', label: 'registry' },
+      { id: 'harness-worker', label: 'harness worker' },
+      { id: 'in-total', label: 'in total' },
+    ]}
+  />
+  <EngineArticle />
+  <Fragment set:html={body} />
+</HtmlShell>

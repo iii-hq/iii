@@ -1,0 +1,56 @@
+<!-- FAQ — the questions a pi user landing on iii actually asks, answered from
+     the harness angle rather than the comparison-table angle of /pi. -->
+<section class="hz-section hz-body" id="faq" aria-label="FAQ">
+  <header class="hz-section-head">
+    <h2 class="hz-section-title">
+      <span class="accent">questions.</span>
+      <span class="mute">the ones a harness user actually asks.</span>
+    </h2>
+  </header>
+  <div class="hz-faq">
+    <details>
+      <summary><span>is iii a harness?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <div class="a">
+        <p>it does what a harness does, from the layer below. most harnesses solve one slice — a chat loop, a tool sandbox, a chained workflow. iii is the runtime the whole system already runs on, built on three engine primitives: <span class="accent">worker, function, trigger.</span></p>
+        <dl class="hz-faq-primitives">
+          <div class="hz-faq-primitive">
+            <dt>the iii engine primitives</dt>
+            <dd>think of it like React's component model, but for traditional and agentic services. a minimal, common mental model for building systems — less cognitive complexity, fewer tokens, easier to reason about and scale.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>protocol</dt>
+            <dd>allows any runtime, language, process, endpoint, browser, or device to become a worker and expose its functions and reactive triggers through the same typed interface.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>live system surface</dt>
+            <dd>as workers connect, their functions and triggers become part of a live, typed catalog that the rest of the system can immediately discover and use. developers and agents operate against the same model.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>worker connection + communication management</dt>
+            <dd>manages worker connections, discovery, routing, and serialization, so an agent is a worker that can, with permission, act on every part of the system.</dd>
+          </div>
+        </dl>
+      </div>
+    </details>
+    <details>
+      <summary><span>do i give up my current harness?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <p class="a">no. run it as a worker. your harness keeps its interface; iii becomes the system underneath it, so the tools it calls are real functions and the work it starts outlives the turn.</p>
+    </details>
+    <details>
+      <summary><span>is this MCP?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <p class="a">no. functions with live, published schemas are the contract, and one protocol replaces a per-tool server for each integration. it's software that works, not a config file pointed at a vibe.</p>
+    </details>
+    <details>
+      <summary><span>what happens when the agent's turn ends?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <p class="a">the work doesn't. triggers are durable and replay engine-side; workers reconnect and re-register invisibly. a turn is just one cause among many — cron, state, and events keep going without it.</p>
+    </details>
+    <details>
+      <summary><span>do i lose my model choice or my keys?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <p class="a">no. model calls route through the <a href="/roadmap/2026-06-08-agentic/">llm-router worker</a> on the engine. adding a provider is a router config, and your keys stay in the engine's configuration — not in a harness process or a dotfile.</p>
+    </details>
+    <details>
+      <summary><span>isn't a runtime heavier than a harness?</span><span class="q-ico" aria-hidden="true">+</span></summary>
+      <p class="a">base iii is about 50MB for an entire production-capable system, harness included — no external dependencies, no extra upkeep. you get the harness <span class="accent">and</span> the backend it builds on for roughly the footprint of a harness alone.</p>
+    </details>
+  </div>
+</section>

@@ -1,0 +1,276 @@
+---
+// HARNESS CONSOLE — a static, presentational rendering of the iii console
+// (the harness interface), extracted from the IiiWindow in
+// animation/split-race-styled.jsx and frozen: no scene engine, no clock, no
+// typing — just the chrome (workers bar, agent status, transcript, trigger
+// bar, input) plus whatever transcript lines the caller threads in.
+//
+// Unlike SplitRaceStyled this is pure Astro/CSS, so it renders with zero
+// client JS and follows the page theme through the design tokens
+// (--bg/--paper/--ink/--accent/...). Content comes in through the default
+// slot as .hc-line rows; the optional `workers` prop fills the WORKERS bar.
+
+interface Chip {
+  label: string
+  on?: boolean
+}
+interface Props {
+  /** worker chip labels for the WORKERS bar; pass { label, on:true } to latch one orange */
+  workers?: Chip[]
+  /** right-aligned agent status text, e.g. "12% · 48k/1.0M" */
+  status?: string
+  /** trigger bar text */
+  triggers?: string
+  /** input placeholder */
+  placeholder?: string
+  /** model picker label */
+  model?: string
+}
+const {
+  workers = [
+    { label: 'http' },
+    { label: 'state' },
+    { label: 'database', on: true },
+    { label: 'queue' },
+    { label: 'storage' },
+  ],
+  status = '18% · 92k/1.0M',
+  triggers = '2 triggers registered',
+  placeholder = 'send a message…',
+  model = 'claude sonnet 5',
+} = Astro.props
+---
+
+<div class="hc" role="img" aria-label="The iii harness console">
+  {/* top bar */}
+  <div class="hc-top">
+    <span class="hc-logo">&gt; iii</span>
+    <span class="hc-tag">CONSOLE</span>
+  </div>
+
+  {/* agent status row */}
+  <div class="hc-status">
+    <span class="hc-status-right">
+      <span class="hc-ctx-label">CTX</span>
+      <span class="hc-ctx-bar"><span class="hc-ctx-fill"></span></span>
+      <span class="hc-ctx-num">{status}</span>
+      <span class="hc-conn"><span class="hc-conn-dot"></span>CONNECTED</span>
+    </span>
+  </div>
+
+  {/* workers bar */}
+  <div class="hc-workers">
+    <span class="hc-workers-label">WORKERS</span>
+    {workers.map((w) => (
+      <span class:list={['hc-chip', { on: w.on }]}>{w.label}</span>
+    ))}
+  </div>
+
+  {/* transcript — the caller's .hc-line rows */}
+  <div class="hc-transcript">
+    <slot />
+  </div>
+
+  {/* trigger bar */}
+  <div class="hc-triggers">
+    <span class="hc-bolt">&#9889;</span> {triggers}
+  </div>
+
+  {/* input */}
+  <div class="hc-input">
+    <div class="hc-input-box">{placeholder}</div>
+    <div class="hc-input-row">
+      <span class="hc-agent-sel">&#8646; agent &#9662;</span>
+      <span class="hc-model-sel">{model} &#9662;</span>
+      <span class="hc-send">&#8593;</span>
+    </div>
+  </div>
+</div>
+
+<style is:global>
+  /* Static iii console. Mirrors IiiWindow's chrome one-for-one, in the page's
+     own tokens so it tracks the theme toggle. Sharp rectangles, 1px rules,
+     Chivo Mono — no shadows except the window's own lift. */
+  .hc {
+    --hc-mono: 'Chivo Mono', ui-monospace, monospace;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    overflow: hidden;
+    text-align: left;
+    font-family: var(--hc-mono);
+  }
+  .hc-top {
+    height: 46px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 20px;
+    flex-shrink: 0;
+  }
+  .hc-logo { font-size: 18px; color: var(--ink); letter-spacing: 0.04em; }
+  .hc-tag { font-size: 13px; letter-spacing: 0.14em; color: var(--ink-ghost); }
+
+  .hc-status {
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    padding: 12px 20px;
+    flex-shrink: 0;
+  }
+  .hc-status-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .hc-ctx-label { letter-spacing: 0.1em; color: var(--ink-ghost); }
+  .hc-ctx-bar {
+    width: 90px;
+    height: 12px;
+    border: 1px solid var(--rule);
+    position: relative;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .hc-ctx-fill {
+    position: absolute;
+    inset: 0;
+    width: 18%;
+    background: var(--ink-ghost);
+  }
+  .hc-conn { display: flex; align-items: center; gap: 7px; letter-spacing: 0.06em; }
+  .hc-conn-dot { width: 9px; height: 9px; border-radius: 9px; background: #2fae5a; }
+
+  .hc-workers {
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  .hc-workers-label {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink-ghost);
+    margin-right: 4px;
+  }
+  .hc-chip {
+    border: 1px solid var(--rule);
+    background: var(--paper-2);
+    color: var(--ink);
+    padding: 5px 12px;
+    font-size: 13px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .hc-chip.on {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .hc-transcript {
+    flex: 1;
+    padding: 22px 20px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 11px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  /* The transcript row vocabulary. One class per line kind, all sharing the
+     base mono rhythm; colored entirely from tokens + the one green. */
+  .hc-line { font-size: 14px; line-height: 1.5; letter-spacing: -0.01em; white-space: pre-wrap; }
+  .hc-line .ghost { color: var(--ink-ghost); }
+  .hc-prompt { color: var(--ink); font-weight: 500; }
+  .hc-muted  { color: var(--ink-faint); }
+  .hc-ok     { color: var(--ink); }
+  .hc-warn   { color: var(--accent); }
+  .hc-fn {
+    border-left: 2px solid var(--rule);
+    padding-left: 14px;
+  }
+  .hc-fn .sig { color: var(--ink-2); font-size: 13.5px; line-height: 1.35; }
+  .hc-fn .doc { color: var(--ink-faint); font-size: 12.5px; line-height: 1.35; }
+  .hc-badge {
+    margin-left: 8px;
+    color: #2fae5a;
+    font-weight: 600;
+    padding: 1px 9px;
+    border: 1px solid #2fae5a;
+    font-size: 12px;
+  }
+  .hc-worker {
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .hc-worker .dot { width: 9px; height: 9px; border-radius: 9px; background: var(--accent); flex-shrink: 0; }
+  .hc-worker .name { color: var(--ink); font-size: 15px; }
+  .hc-worker .kind { color: var(--ink-faint); font-size: 12.5px; }
+  .hc-worker .tag { margin-left: auto; color: var(--ink-faint); font-size: 11px; letter-spacing: 0.1em; }
+
+  .hc-triggers {
+    border-top: 1px solid var(--rule);
+    background: var(--paper);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    flex-shrink: 0;
+  }
+  .hc-bolt { color: var(--accent); }
+
+  .hc-input {
+    padding: 14px 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .hc-input-box {
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    padding: 13px 16px;
+    font-size: 13px;
+    color: var(--ink-ghost);
+  }
+  .hc-input-row { display: flex; align-items: center; gap: 10px; }
+  .hc-agent-sel, .hc-model-sel {
+    border: 1px solid var(--rule);
+    padding: 6px 12px;
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .hc-agent-sel { color: var(--ink); }
+  .hc-model-sel { color: var(--ink-faint); flex: 1; }
+  .hc-send {
+    border: 1px solid var(--ink);
+    width: 34px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    color: var(--ink);
+  }
+</style>

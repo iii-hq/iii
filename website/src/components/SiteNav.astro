@@ -149,6 +149,12 @@ document.addEventListener('DOMContentLoaded', function () {
   const footInstallBtn = document.getElementById('foot-install');
   const footInstallCmd = footInstallBtn ? footInstallBtn.querySelector('.cmd') : null;
   const FOOT_INSTALL_DEFAULT = footInstallCmd ? footInstallCmd.textContent : '';
+  // Other pages (e.g. /pi) can carry their own install command bar in the
+  // hero, styled like the footer's but scoped to that page — same
+  // click-to-copy flash, keyed off its own id so it doesn't fight foot-install.
+  const heroInstallBtn = document.getElementById('hero-install');
+  const heroInstallCmd = heroInstallBtn ? heroInstallBtn.querySelector('.cmd') : null;
+  const HERO_INSTALL_DEFAULT = heroInstallCmd ? heroInstallCmd.textContent : '';
   const COPIED_TEXT = 'copied';
   const COPIED_MS = 4000;
 
@@ -160,6 +166,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (installLabelM) installLabelM.textContent = COPIED_TEXT;
     if (footInstallBtn) footInstallBtn.classList.add('copied');
     if (footInstallCmd) footInstallCmd.textContent = COPIED_TEXT;
+    if (heroInstallBtn) heroInstallBtn.classList.add('copied');
+    if (heroInstallCmd) heroInstallCmd.textContent = COPIED_TEXT;
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       if (installBtn) installBtn.classList.remove('copied');
@@ -168,6 +176,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (installLabelM) installLabelM.textContent = 'install.sh';
       if (footInstallBtn) footInstallBtn.classList.remove('copied');
       if (footInstallCmd) footInstallCmd.textContent = FOOT_INSTALL_DEFAULT;
+      if (heroInstallBtn) heroInstallBtn.classList.remove('copied');
+      if (heroInstallCmd) heroInstallCmd.textContent = HERO_INSTALL_DEFAULT;
     }, COPIED_MS);
   }
   function copyInstall(){
