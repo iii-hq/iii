@@ -9,7 +9,7 @@ The telemetry worker collects anonymous usage data from the engine to help impro
 - Respecting opt-out settings configured by the user
 
 It also follows the guided tour: the `onboarding` worker publishes each
-completed step on the `onboarding:step` topic, and this worker subscribes to
+completed step on the `onboarding:steps:complete` topic, and this worker subscribes to
 that topic (with the internal handler `iii-telemetry::on-onboarding-step`) and
 reports each message as an `onboarding_step` event with the published payload.
 

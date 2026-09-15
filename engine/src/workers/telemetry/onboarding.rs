@@ -7,9 +7,9 @@
 //! The onboarding tour reports its own progress.
 //!
 //! The `onboarding` worker publishes one message per closed tour step on the
-//! `onboarding:step` topic. The engine subscribes to that topic and reports
-//! each message as an `onboarding_step` product event, with the payload the
-//! worker sent.
+//! `onboarding:steps:complete` topic. The engine subscribes to that topic
+//! and reports each message as an `onboarding_step` product event, with the
+//! payload the worker sent.
 //!
 //! The topic is a durable queue subscription, not fire-and-forget pub/sub: a
 //! step closes once, and the message waits in the queue and is retried until
@@ -44,7 +44,7 @@ use crate::{
 };
 
 /// Topic the `onboarding` worker publishes each closed step on.
-pub const STEP_TOPIC: &str = "onboarding:step";
+pub const STEP_TOPIC: &str = "onboarding:steps:complete";
 pub const STEP_FN_ID: &str = "iii-telemetry::on-onboarding-step";
 pub const STEP_TRIGGER_ID: &str = "iii-telemetry::onboarding-step-watch";
 pub const STEP_EVENT: &str = "onboarding_step";
