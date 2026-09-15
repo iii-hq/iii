@@ -1,6 +1,6 @@
 ---
 title: "Worker manifest"
-description: "Complete field reference for iii.worker.yaml."
+description: "Field reference for iii.worker.yaml: name, dependencies, runtime base image, setup and start scripts, env, resources, and publish metadata."
 owner: "devrel"
 type: "reference"
 ---
@@ -195,7 +195,7 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 
-## Publish metadata: `iii`, `deploy`, `manifest`, `tags`
+## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
 Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
 accepts these keys (so a manifest published from the workers repo also works with a local Compose
@@ -205,12 +205,15 @@ worker) but never reads them at runtime.
 iii: v1 # manifest format marker
 deploy: image # release artifact type: binary | image | bundle
 manifest: pyproject.toml # file the release version is read from
+license: Apache-2.0 # SPDX license id the registry publishes the worker under
 tags: # search aliases sent to the workers registry
   - http
   - rest
   - api
 ```
 
-`iii`, `deploy`, and `manifest` are strings. `tags` is a list of strings used for agent and user
-discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone would
-search for rather than repeating the worker description.
+`iii`, `deploy`, `manifest`, and `license` are strings. `license` is the SPDX identifier the
+workers registry publishes the worker under and is required by the workers-repository release CI.
+`tags` is a list of strings used for agent and user discovery in the workers registry. Keep tags
+short, lowercase, and focused on terms someone would search for rather than repeating the worker
+description.
