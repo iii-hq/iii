@@ -61,16 +61,12 @@ def test_trigger_registration_result_success_does_not_log(caplog):
     client.shutdown()
 
 
-def test_trigger_registration_error_is_readable_by_the_caller():
-    """A retry loop has to branch on the cause, and a log line cannot be
-    branched on. ``Trigger.registration_error`` is that programmatic half."""
-    client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
-
+def _reject(client: III, trigger_id: str) -> None:
     _send_message(
         client,
         {
             "type": "triggerregistrationresult",
-            "id": "trig-1",
+            "id": trigger_id,
             "trigger_type": "harness::hook::pre-generate",
             "function_id": "memory::on-pre-generate",
             "error": {
@@ -80,11 +76,55 @@ def test_trigger_registration_error_is_readable_by_the_caller():
         },
     )
 
-    recorded = client._trigger_registration_errors["trig-1"]
-    assert recorded["code"] == "trigger_type_not_found"
+
+def test_trigger_registration_error_is_readable_by_the_caller():
+    """A retry loop has to branch on the cause, and a log line cannot be
+    branched on. ``Trigger.registration_error`` is that programmatic half."""
+    client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
+
+    trigger = client.register_trigger(
+        {
+            "type": "harness::hook::pre-generate",
+            "function_id": "memory::on-pre-generate",
+            "config": {},
+        }
+    )
+    assert trigger.registration_error is None
+
+    # The engine keys its ack by the id the SDK generated, so read that off the
+    # registration the client recorded rather than inventing one.
+    (trigger_id,) = client._triggers.keys()
+    _reject(client, trigger_id)
+
+    assert trigger.registration_error is not None
+    assert trigger.registration_error["code"] == "trigger_type_not_found"
     # Another binding's id is unaffected: the record is per-trigger, which is
     # the whole point of the change.
     assert "trig-2" not in client._trigger_registration_errors
+
+    client.shutdown()
+
+
+def test_ack_for_an_unregistered_trigger_is_ignored():
+    """``unregister`` drops the trigger and its error together. An ack racing
+    that pair would otherwise strand an error for a binding that no longer
+    exists -- one nothing is left to clear."""
+    client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
+
+    trigger = client.register_trigger(
+        {
+            "type": "harness::hook::pre-generate",
+            "function_id": "memory::on-pre-generate",
+            "config": {},
+        }
+    )
+    (trigger_id,) = client._triggers.keys()
+    trigger.unregister()
+
+    _reject(client, trigger_id)
+
+    assert trigger.registration_error is None
+    assert client._trigger_registration_errors == {}
 
     client.shutdown()
 

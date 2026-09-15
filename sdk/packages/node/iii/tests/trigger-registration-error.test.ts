@@ -52,7 +52,7 @@ describe('trigger registration error surfacing', () => {
 
   it('logs to console.error on TriggerRegistrationResult with error', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    sdk = registerWorker(url)
+    sdk = registerWorker(url, { otel: { enabled: false } })
     const sock = await waitFor(() => serverSocket)
 
     sock.send(
@@ -69,9 +69,12 @@ describe('trigger registration error surfacing', () => {
       }),
     )
 
-    await waitFor(() => (spy.mock.calls.length > 0 ? true : undefined))
-    expect(spy).toHaveBeenCalled()
-    const formatted = spy.mock.calls.map((args) => args.join(' ')).join('\n')
+    // Wait for the registration log itself, not merely for any console.error:
+    // an unrelated line arriving first would end the wait before the one under
+    // test was written.
+    const logs = () => spy.mock.calls.map((args) => args.join(' ')).join('\n')
+    await waitFor(() => (logs().includes('Trigger registration failed') ? true : undefined))
+    const formatted = logs()
     expect(formatted).toContain('trig-1')
     expect(formatted).toContain('http')
     expect(formatted).toContain('<compose-daemon-namespace>')
@@ -81,7 +84,7 @@ describe('trigger registration error surfacing', () => {
 
   it('records the cause on the trigger handle so a retry loop can read it', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    sdk = registerWorker(url)
+    sdk = registerWorker(url, { otel: { enabled: false } })
     const sock = await waitFor(() => serverSocket)
 
     const trigger = sdk.registerTrigger({
@@ -115,9 +118,67 @@ describe('trigger registration error surfacing', () => {
     expect(trigger.registrationError).toBeUndefined()
   })
 
+  it('ignores an ack that arrives after the trigger was unregistered', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    sdk = registerWorker(url, { otel: { enabled: false } })
+    const sock = await waitFor(() => serverSocket)
+
+    const trigger = sdk.registerTrigger({ type: 'http', function_id: 'fn', config: {} })
+    const sent = await waitFor(
+      () => received.find((m) => m.type === 'registertrigger')?.id as string | undefined,
+    )
+    trigger.unregister()
+
+    // The binding is gone, so this rejection describes nothing. Recording it
+    // would strand an error no unregister is left to clear.
+    sock.send(
+      JSON.stringify({
+        type: 'triggerregistrationresult',
+        id: sent,
+        trigger_type: 'http',
+        function_id: 'fn',
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      }),
+    )
+
+    await new Promise((r) => setTimeout(r, 100))
+    expect(trigger.registrationError).toBeUndefined()
+  })
+
+  it('exposes the bound trigger from the trigger-type registerFunction helper', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    sdk = registerWorker(url, { otel: { enabled: false } })
+    const sock = await waitFor(() => serverSocket)
+
+    const webhook = sdk.registerTriggerType<{ path: string }>(
+      { id: 'webhook', description: 'Webhook' },
+      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+    )
+    const fn = webhook.registerFunction('on-hook', async () => ({}), { path: '/hook' })
+    expect(fn.trigger.registrationError).toBeUndefined()
+
+    const sent = await waitFor(
+      () => received.find((m) => m.type === 'registertrigger')?.id as string | undefined,
+    )
+    sock.send(
+      JSON.stringify({
+        type: 'triggerregistrationresult',
+        id: sent,
+        trigger_type: 'webhook',
+        function_id: 'on-hook',
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      }),
+    )
+
+    // The binding this helper made is the caller's only handle on it; without
+    // it a rejected trigger is invisible to everything but the logs.
+    await waitFor(() => fn.trigger.registrationError)
+    expect(fn.trigger.registrationError?.code).toBe('trigger_type_not_found')
+  })
+
   it('leaves registrationError undefined for a different trigger id', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    sdk = registerWorker(url)
+    sdk = registerWorker(url, { otel: { enabled: false } })
     const sock = await waitFor(() => serverSocket)
 
     const trigger = sdk.registerTrigger({ type: 'http', function_id: 'fn', config: {} })
@@ -138,7 +199,7 @@ describe('trigger registration error surfacing', () => {
 
   it('does not log on TriggerRegistrationResult success (no error field)', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    sdk = registerWorker(url)
+    sdk = registerWorker(url, { otel: { enabled: false } })
     const sock = await waitFor(() => serverSocket)
 
     sock.send(

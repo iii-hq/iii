@@ -960,7 +960,14 @@ class III:
         message = error.get("message", "")
         # Record it so a caller polling ``Trigger.registration_error`` sees the
         # cause, not just an operator reading the logs.
-        self._trigger_registration_errors[trigger_id] = error
+        #
+        # Only while the binding is still live: ``unregister`` drops the
+        # trigger and then its error, so an ack arriving after that would
+        # otherwise strand an error for a binding that no longer exists -- one
+        # nothing ever removes. This handler is synchronous, so the check and
+        # the insert cannot be interleaved with ``unregister`` by the loop.
+        if trigger_id in self._triggers:
+            self._trigger_registration_errors[trigger_id] = error
         log.error(
             "[iii] Trigger registration failed for %r (%s): %s",
             trigger_id,

@@ -2128,10 +2128,20 @@ impl IIIClient {
                 );
                 // Record it so a caller polling `Trigger::registration_error`
                 // sees the cause, not just an operator reading the logs.
-                self.inner
-                    .trigger_registration_errors
-                    .lock_or_recover()
-                    .insert(id, err);
+                //
+                // Gated on the binding still being live, and holding the
+                // `triggers` lock across the insert: `unregister` drops the
+                // trigger and then its error, so an ack racing that pair would
+                // otherwise strand an error for a binding that no longer
+                // exists — one nothing ever removes. Locks are taken in the
+                // same order as `unregister` (triggers, then errors).
+                let triggers = self.inner.triggers.lock_or_recover();
+                if triggers.contains_key(&id) {
+                    self.inner
+                        .trigger_registration_errors
+                        .lock_or_recover()
+                        .insert(id, err);
+                }
             }
             _ => {}
         }
@@ -3577,6 +3587,84 @@ mod tests {
         assert!(logs_contain("<compose-daemon-namespace>"));
         assert!(logs_contain("compose::add worker=http"));
         assert!(logs_contain("trig-1"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_error_is_readable_by_the_caller() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let trigger = iii
+            .register_trigger(RegisterTriggerInput::new(
+                "harness::hook::pre-generate",
+                "memory::on-pre-generate",
+                json!({}),
+            ))
+            .unwrap();
+        assert!(trigger.registration_error().is_none());
+
+        // The engine keys its ack by the id the SDK generated, so read that off
+        // the registration the client recorded rather than inventing one.
+        let id = iii
+            .inner
+            .triggers
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        iii.handle_message(&trigger_rejected(&id)).unwrap();
+
+        let err = trigger.registration_error().expect("error recorded");
+        assert_eq!(err.code, "trigger_type_not_found");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_for_an_unregistered_trigger_is_ignored() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let trigger = iii
+            .register_trigger(RegisterTriggerInput::new(
+                "harness::hook::pre-generate",
+                "memory::on-pre-generate",
+                json!({}),
+            ))
+            .unwrap();
+        let id = iii
+            .inner
+            .triggers
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        // `unregister` drops the trigger and its error together. An ack racing
+        // that pair would otherwise strand an error for a binding that no
+        // longer exists -- one nothing is left to clear.
+        trigger.unregister();
+        iii.handle_message(&trigger_rejected(&id)).unwrap();
+
+        assert!(trigger.registration_error().is_none());
+        assert!(
+            iii.inner
+                .trigger_registration_errors
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn trigger_rejected(id: &str) -> String {
+        serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": id,
+            "trigger_type": "harness::hook::pre-generate",
+            "function_id": "memory::on-pre-generate",
+            "error": { "code": "trigger_type_not_found", "message": "Trigger type not found" },
+        })
+        .to_string()
     }
 
     #[tokio::test]

@@ -1,2 +1,2 @@
 export type { IIIConnectionState } from './iii-constants'
-export type { FunctionRef, TriggerTypeRef } from './types'
+export type { FunctionRef, TriggerBoundFunctionRef, TriggerTypeRef } from './types'
