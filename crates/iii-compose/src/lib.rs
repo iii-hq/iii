@@ -147,12 +147,15 @@ pub async fn run(cli: ComposeCli) -> i32 {
             file,
             start,
             frozen,
+            follow,
+            stream,
         } => match serve(
             explicit_engine_url,
             explicit_daemon_namespace,
             file,
             start,
             frozen,
+            follow.then_some(FollowOutput { stream }),
         )
         .await
         {
@@ -371,6 +374,12 @@ fn print_worker_logs(
     stdout.flush()
 }
 
+/// `--follow`: worker output is echoed to the terminal while the daemon serves.
+#[derive(Debug, Clone, Copy)]
+struct FollowOutput {
+    stream: Option<logs::LogStream>,
+}
+
 /// Serves `compose::*` until asked to stop.
 ///
 /// `file` configures the daemon when it exists. `start` controls only whether
@@ -381,6 +390,7 @@ async fn serve(
     file: std::path::PathBuf,
     start: bool,
     frozen: bool,
+    follow: Option<FollowOutput>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -493,6 +503,7 @@ async fn serve(
             managed_engine.as_ref(),
             engine_policy,
             shutdown,
+            follow,
         )
         .await
     };
@@ -552,6 +563,7 @@ struct InitialProject {
     progress: report::StartupProgress,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
@@ -560,6 +572,7 @@ async fn serve_daemon(
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
     shutdown: shutdown::ShutdownSignal,
+    follow: Option<FollowOutput>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -750,9 +763,18 @@ async fn serve_daemon(
     // two operations' cursor movement.
     remote::register_mutations(&daemon);
 
+    // Started only now: the startup tree above owns the terminal until it is
+    // complete, and worker lines drawn through it would tear the block.
+    let follower = follow.map(|follow| {
+        tokio::spawn(follow_project_output(
+            std::sync::Arc::clone(&daemon),
+            follow.stream,
+        ))
+    });
+
     // Serve until asked to stop, or until the engine refuses this identity.
     //
-    loop {
+    let result = loop {
         let mut interrupted = shutdown.clone();
         let stop = tokio::select! {
             _ = interrupted.wait() => true,
@@ -762,7 +784,7 @@ async fn serve_daemon(
         // `compose::stop` answered its caller a moment ago; leaving now is
         // what makes that answer true.
         if stop || daemon.stop_requested() {
-            break;
+            break Ok(());
         }
 
         if let Some(engine) = managed_engine
@@ -773,20 +795,108 @@ async fn serve_daemon(
                 "managed engine exited; stopping every project...".dimmed()
             );
             daemon.shutdown().await;
-            return Err(engine_exited(engine, status).await);
+            break Err(engine_exited(engine, status).await);
         }
 
         if let Some(error) = daemon.fatal_error() {
             // Not `shutdown`: children recorded under these ids may belong to
             // the daemon that already holds them.
             daemon.abandon().await;
-            return Err(rejected(&daemon, &error));
+            break Err(rejected(&daemon, &error));
         }
+    };
+    if let Some(follower) = follower {
+        follower.abort();
     }
+    result?;
 
     println!("{}", "stopping every project...".dimmed());
     daemon.shutdown().await;
     Ok(())
+}
+
+/// Echoes worker output for every project this daemon has loaded, through the
+/// same retained log store `iii compose logs` reads. Each project is polled
+/// with a short wait so one silent project cannot hold back another's lines.
+async fn follow_project_output(
+    daemon: std::sync::Arc<daemon::Daemon>,
+    stream: Option<logs::LogStream>,
+) {
+    use colored::Colorize;
+    use std::collections::BTreeMap;
+
+    const POLL_WAIT_MS: u64 = 1_000;
+    let mut cursors: BTreeMap<std::path::PathBuf, BTreeMap<String, logs::LogCursor>> =
+        BTreeMap::new();
+    let mut failed: std::collections::BTreeSet<std::path::PathBuf> =
+        std::collections::BTreeSet::new();
+    loop {
+        let projects = daemon.loaded().await;
+        if projects.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(POLL_WAIT_MS)).await;
+            continue;
+        }
+        for project in projects {
+            let path = project.file_path().to_path_buf();
+            let entry = cursors.entry(path.clone()).or_default();
+            // `tail` is a per-container limit, applied to whichever of the two
+            // reads a container needs: the last N retained lines for one this
+            // follower has no cursor for, at most N new lines for one it does.
+            // A container starting after the first poll therefore still shows
+            // what it printed while starting, and passing 0 here would have
+            // read nothing at all, for anyone, after the first poll.
+            //
+            // ponytail: 100 lines per container per second; raise the limit if
+            // a chatty worker is seen falling behind.
+            let outcome = project
+                .logs(
+                    None,
+                    entry.clone(),
+                    logs::DEFAULT_TAIL_LINES,
+                    stream,
+                    POLL_WAIT_MS,
+                )
+                .await;
+            match outcome {
+                Ok(outcome) => print_followed_output(outcome, entry),
+                Err(error) => {
+                    // `Project::logs` reports a filesystem failure before its
+                    // own wait, so retrying straight away is a hot loop on an
+                    // unreadable log directory. Said once per project, because
+                    // the condition lasts.
+                    if failed.insert(path) {
+                        report::line(&format!(
+                            "{}",
+                            format!("cannot follow this project's output: {error}").dimmed()
+                        ));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(POLL_WAIT_MS)).await;
+                }
+            }
+        }
+    }
+}
+
+fn print_followed_output(
+    outcome: logs::LogsOutcome,
+    cursors: &mut std::collections::BTreeMap<String, logs::LogCursor>,
+) {
+    use colored::Colorize;
+
+    for batch in outcome.containers {
+        let color = report::container_color(&batch.container);
+        for entry in batch.entries {
+            let tag = format!("[{}:{}]", batch.container, entry.stream.as_str()).color(color);
+            let tag = match entry.stream {
+                logs::LogStream::Stdout => tag,
+                logs::LogStream::Stderr => tag.bold(),
+            };
+            report::line(&format!("{tag} {}", entry.message));
+        }
+        if let Some(cursor) = batch.cursor {
+            cursors.insert(batch.container, cursor);
+        }
+    }
 }
 
 async fn engine_exited(
@@ -906,7 +1016,7 @@ mod tests {
         let compose_path = path.canonicalize().unwrap();
         let state = crate::state::StateStore::for_project(&namespace, &compose_path).unwrap();
 
-        let error = serve(None, None, path, true, true).await.unwrap_err();
+        let error = serve(None, None, path, true, true, None).await.unwrap_err();
 
         assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
         assert!(!state.dir().exists());
