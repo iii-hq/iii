@@ -345,14 +345,17 @@ class Sdk implements IIIClient {
       },
       registerFunction: (functionId, handler, config, metadata?) => {
         const ref = this.registerFunction(functionId, handler)
-        this.registerTrigger({
+        // Hand the trigger back rather than dropping it: this call makes a
+        // binding the caller never sees otherwise, and a binding the engine
+        // rejects is only readable through its own handle.
+        const trigger = this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
           metadata,
           namespace: this.namespace,
         })
-        return ref
+        return { ...ref, trigger }
       },
       unregister: () => {
         this.unregisterTriggerType(triggerType)
@@ -1356,7 +1359,13 @@ class Sdk implements IIIClient {
     const triggerType = message.trigger_type ?? message.type ?? ''
     // Record before logging so a caller polling `trigger.registrationError`
     // sees the cause, not just an operator reading stderr.
-    this.triggerRegistrationErrors.set(message.id, message.error)
+    //
+    // Only while the binding is still live: `unregister` drops the trigger and
+    // then its error, so an ack arriving after that would otherwise strand an
+    // error for a binding that no longer exists — one nothing ever removes.
+    if (this.triggers.has(message.id)) {
+      this.triggerRegistrationErrors.set(message.id, message.error)
+    }
     console.error(
       `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
     )

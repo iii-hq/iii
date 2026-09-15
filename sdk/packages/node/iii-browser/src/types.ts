@@ -256,6 +256,19 @@ export type FunctionRef = {
 }
 
 /**
+ * Handle returned by {@link TriggerTypeRef.registerFunction}, which registers a
+ * function and binds a trigger to it in one call.
+ *
+ * Carries the {@link Trigger} that call created, so a failed binding is
+ * observable through `trigger.registrationError` the same way it is when the
+ * two registrations are made separately.
+ */
+export type TriggerBoundFunctionRef = FunctionRef & {
+  /** The trigger bound to this function by the same call. */
+  trigger: Trigger
+}
+
+/**
  * Typed handle returned by {@link ISdk.registerTriggerType}.
  *
  * Provides convenience methods to register triggers and functions scoped
@@ -300,9 +313,15 @@ export type TriggerTypeRef<TConfig = unknown> = {
    * @param functionId - Unique function identifier.
    * @param handler - Local function handler.
    * @param config - Trigger-specific configuration.
-   * @returns A {@link FunctionRef} handle.
+   * @returns A {@link TriggerBoundFunctionRef}: the function handle plus the
+   *   `trigger` this call bound, whose `registrationError` reports a rejected
+   *   binding.
    */
-  registerFunction(functionId: string, handler: RemoteFunctionHandler, config: TConfig): FunctionRef
+  registerFunction(
+    functionId: string,
+    handler: RemoteFunctionHandler,
+    config: TConfig,
+  ): TriggerBoundFunctionRef
   /**
    * Unregister this trigger type from the engine.
    */
