@@ -859,18 +859,31 @@ esac
 start_cmd="$BIN_NAME project init --learn-iii"
 quickstart_url="https://iii.dev/docs/quickstart"
 
-if [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+# Does the binary we just installed know `--learn-iii`? Ask the parser rather
+# than reading the help text: the help is a rendered table whose column widths
+# follow the longest flag, so whether a given flag survives as one string is a
+# property of the other flags beside it. `--help` short-circuits in the parser,
+# so an accepted flag prints help and scaffolds nothing.
+#
+# Probed ONCE, above the prompt. The check used to guard only the `exec`, so
+# answering `n` — or running with no terminal — still printed a command an
+# older binary rejects with `unexpected argument '--learn-iii'`.
+has_learn_iii=0
+if "$bin_dir/$BIN_NAME" project init --learn-iii --help >/dev/null 2>&1; then
+  has_learn_iii=1
+fi
+
+if [ "$has_learn_iii" = 0 ]; then
+  # Never offer what this binary cannot run, and never name the command.
+  echo ""
+  echo "If you're new to iii, get started quickly here: $quickstart_url"
+elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
   printf 'Would you like to start the iii harness and take a quick look at what iii can do? [Y/n] ' >/dev/tty
   read -r _harness_answer </dev/tty || _harness_answer="n"
   case "$_harness_answer" in
     ""|[Yy]|[Yy][Ee][Ss])
-      if "$bin_dir/$BIN_NAME" project init --help 2>/dev/null | grep -q -- '--learn-iii'; then
-        exec "$bin_dir/$BIN_NAME" project init --learn-iii
-      fi
-      # Older binaries lack --learn-iii; fall back to the quickstart URL.
-      echo ""
-      echo "If you're new to iii, get started quickly here: $quickstart_url"
+      exec "$bin_dir/$BIN_NAME" project init --learn-iii
       ;;
     *)
       echo "No problem. Start the harness anytime with:"
