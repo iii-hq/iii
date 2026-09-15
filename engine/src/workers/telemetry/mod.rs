@@ -7,6 +7,7 @@
 pub mod amplitude;
 pub mod collector;
 pub mod environment;
+pub mod onboarding;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -211,6 +212,7 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("iii-cron::")
         || id.starts_with("iii-queue::")
         || id.starts_with("iii-observability::")
+        || id.starts_with("iii-telemetry::")
         || id.starts_with("bridge.")
         || id.starts_with("motia::")
         || id == "publish"
@@ -904,6 +906,15 @@ impl Worker for TelemetryWorker {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
+        // The onboarding tour reports each completed step on its own topic.
+        onboarding::register_handler(
+            &self.engine,
+            self.ctx.clone(),
+            Arc::clone(self.active_client()),
+            self.posthog_client.clone(),
+        );
+        onboarding::register_trigger(&self.engine).await;
+
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
         let posthog_client = self.posthog_client.clone();
