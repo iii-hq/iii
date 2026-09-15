@@ -1,0 +1,57 @@
+# OpenTelemetry Collector config for the Go observability example. Receives OTLP from the
+# worker and forwards logs/traces/metrics to OpenObserve (a single-binary observability UI),
+# while also printing them to the collector's own console via the debug exporter. Mirrors
+# sdk/packages/node/iii-example/otel-collector-config.yaml.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+exporters:
+  # Forward to OpenObserve via OTLP HTTP. The default credentials below match the
+  # docker-compose service (root@example.com / Complexpass#123).
+  otlphttp/openobserve:
+    endpoint: http://openobserve:5080/api/default
+    headers:
+      Authorization: "Basic cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM="
+      stream-name: "default"
+    compression: gzip
+    timeout: 30s
+
+  # Also print to the collector console so `docker compose logs otel-collector` shows
+  # records arriving, even without opening the UI.
+  debug:
+    verbosity: detailed
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve, debug]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/openobserve, debug]
