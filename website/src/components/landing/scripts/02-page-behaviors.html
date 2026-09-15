@@ -71,23 +71,31 @@
     });
   });
 
-  // ============= Hero rotating descriptor =============
-  const rotatingDescriptors = [
+  // ============= Hero rotating descriptors =============
+  // Both carousels hold their first word long enough to be read as a claim
+  // before anything starts moving.
+  const HERO_HOLD_MS = 8000;
+  function rotateWords(el, words, period){
+    if (!el) return;
+    let i = 0;
+    const tick = () => {
+      el.classList.add('is-anim');
+      setTimeout(() => {
+        i = (i + 1) % words.length;
+        el.textContent = words[i];
+        el.classList.remove('is-anim');
+      }, 400);
+    };
+    setTimeout(() => { tick(); setInterval(tick, period); }, HERO_HOLD_MS);
+  }
+  rotateWords(document.getElementById('hero-desc'), [
     'simple','scalable','durable','extensible','fast',
     'composable','observable','reliable','interoperable'
-  ];
-  const heroDesc = document.getElementById('hero-desc');
-  if (heroDesc){
-    let rotIdx = 0;
-    setInterval(() => {
-      heroDesc.classList.add('is-anim');
-      setTimeout(() => {
-        rotIdx = (rotIdx + 1) % rotatingDescriptors.length;
-        heroDesc.textContent = rotatingDescriptors[rotIdx];
-        heroDesc.classList.remove('is-anim');
-      }, 400);
-    }, 3000);
-  }
+  ], 3000);
+  // Subheader verb.
+  rotateWords(document.getElementById('hero-verb'), [
+    'discover','compose','extend','observe'
+  ], 3000);
 
   // ============= Email signup helpers =============
   function getMailmodoFormUrl(){

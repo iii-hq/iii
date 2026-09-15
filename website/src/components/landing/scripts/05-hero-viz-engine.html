@@ -5,10 +5,11 @@
     if (!root) return;
 
     const N = 10;
-    const VB = 400,
-      cx = VB / 2,
-      cy = VB / 2,
-      R = 144;
+    // A wide band rather than a square: two staggered rows of five, so the
+    // panel can sit beside the headline without the drawing being scaled down.
+    const VBW = 400,
+      VBH = 118;
+    const ROW_Y = [38, 80];
     const NODE_LABELS = [
       "agent",
       "orchestrator",
@@ -22,13 +23,17 @@
       "memory",
     ];
 
-    // Node positions on the unit circle (top-clockwise)
+    // Two rows of five. The bottom row is offset by half a step and every other
+    // node is nudged vertically, so same-row edges never run straight through a
+    // node between their endpoints.
+    const STEP = 72.5;
     const nodes = Array.from({ length: N }, (_, i) => {
-      const a = (i / N) * Math.PI * 2 - Math.PI / 2;
+      const row = i < 5 ? 0 : 1;
+      const k = i % 5;
       return {
-        x: cx + R * Math.cos(a),
-        y: cy + R * Math.sin(a),
-        angle: a,
+        x: (row === 0 ? 40 : 40 + STEP / 2) + k * STEP,
+        y: ROW_Y[row] + (k % 2 ? (row === 0 ? -6 : 6) : 0),
+        row,
         label: NODE_LABELS[i] || "w" + i,
       };
     });
@@ -105,17 +110,13 @@
       const d = mk("circle", { cx: n.x, cy: n.y, r: 2, class: "hv-node-dot" });
       $nodes.appendChild(d);
     }
-    // Labels (positioned slightly outside the ring)
+    // Labels sit outside the band: above the top row, below the bottom row.
     for (const n of nodes) {
-      const lr = R + 22;
-      const lx = cx + lr * Math.cos(n.angle);
-      const ly = cy + lr * Math.sin(n.angle);
       const t = mk("text", {
-        x: lx,
-        y: ly,
+        x: n.x,
+        y: n.row === 0 ? n.y - 17 : n.y + 19,
         class: "hv-node-label",
-        "text-anchor":
-          Math.abs(Math.cos(n.angle)) < 0.2 ? "middle" : Math.cos(n.angle) > 0 ? "start" : "end",
+        "text-anchor": "middle",
         "dominant-baseline": "middle",
       });
       t.textContent = n.label;
@@ -133,7 +134,7 @@
         formulaSub: "",
       },
       actual: {
-        name: "implementation",
+        name: "current approach",
         count: String(actualEdges.length),
         accentCount: false,
         formula:
@@ -141,7 +142,7 @@
         formulaSub: "",
       },
       iii: {
-        name: "iii",
+        name: "iii solution",
         count: "0",
         accentCount: true,
         formula: "<math><mi>O</mi><mo>(</mo><mn>0</mn><mo>)</mo></math>",
@@ -325,7 +326,7 @@
     function buildTriptych() {
       if (triptychBuilt) return;
       triptychBuilt = true;
-      const labels = ["problem space", "implementation", "iii"];
+      const labels = ["problem space", "current approach", "iii solution"];
       const counts = ["45", String(actualEdges.length), "0"];
       const stages = ["mesh", "actual", "iii"];
       for (let s = 0; s < 3; s++) {
@@ -343,7 +344,7 @@
 
         const svg = mk("svg", {
           class: "hv-mini-svg",
-          viewBox: "0 0 400 400",
+          viewBox: "0 0 " + VBW + " " + VBH,
           preserveAspectRatio: "xMidYMid meet",
         });
         const gMesh = mk("g", {});

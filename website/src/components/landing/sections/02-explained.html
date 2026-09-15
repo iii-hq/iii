@@ -1,0 +1,641 @@
+<!-- EXPLAINED — "iii is many things. one system."
+
+       Two sections sharing one visual idea: a lens.
+
+       §01 gathers the seven ways people describe iii and refracts them onto a
+       single focus, which resolves into the three primitives. The diagram
+       never changes as you move between claims; only the lit beam does. That
+       is the argument.
+
+       §02 riffs on the same lens from its other face: what leaves the focus is
+       one continuous surface, against a ghosted "today" rail where
+       development, integration, and production are three separate places.
+
+       Fully self-contained: markup, styles, and script all live in this file. -->
+<section class="lens" id="explained" aria-label="iii explained">
+  <style>
+    .lens {
+      position: relative;
+      padding: 0 0 40px;
+    }
+    .lens-head {
+      padding: 80px 36px 32px;
+    }
+    .lens-idx {
+      display: block;
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--mute);
+      margin-bottom: 14px;
+    }
+    .lens-title {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-weight: 500;
+      font-size: clamp(20px, 4.2vw, 28px);
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin: 0;
+      max-width: 80%;
+    }
+    .lens-title .accent {
+      color: var(--accent);
+    }
+    .lens-title .mute {
+      color: var(--ink-faint);
+    }
+
+    .lens-body {
+      display: grid;
+      grid-template-columns: minmax(280px, 400px) 1fr;
+      gap: 32px;
+      align-items: start;
+      margin: 0 36px;
+      max-width: 1128px;
+    }
+
+    /* ---- claim list ---- */
+    .lens-claims {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .lens-claim {
+      border-bottom: 1px solid var(--rule);
+    }
+    .lens-claim button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: 0;
+      padding: 14px 0;
+      cursor: pointer;
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      color: var(--ink-faint);
+      transition: color 0.2s ease;
+    }
+    .lens-claim button:focus-visible {
+      outline: 1px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .lens-claim-name {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+    .lens-claim-num {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: var(--ink-ghost);
+      min-width: 22px;
+    }
+    .lens-claim[data-on="1"] button {
+      color: var(--ink);
+    }
+    .lens-claim[data-on="1"] .lens-claim-num {
+      color: var(--accent);
+    }
+    /* Every explanation stays expanded. Selecting a claim only moves the
+       highlight, so nothing reflows as the beams switch. */
+    .lens-claim-why > span {
+      display: block;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink-ghost);
+      padding: 6px 0 0 32px;
+      transition: color 0.2s ease;
+    }
+    .lens-claim[data-on="1"] .lens-claim-why > span {
+      color: var(--ink-faint);
+    }
+
+    /* ---- diagram ---- */
+    .lens-stage {
+      position: sticky;
+      top: 96px;
+    }
+    .lens-svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .lens-rail {
+      stroke: var(--rule);
+      stroke-width: 1;
+    }
+    .lens-src {
+      fill: var(--rule);
+      transition: fill 0.25s ease;
+    }
+    .lens-src.on {
+      fill: var(--accent);
+    }
+    .lens-beam {
+      fill: none;
+      stroke: var(--rule);
+      stroke-width: 1;
+      transition:
+        stroke 0.25s ease,
+        stroke-width 0.25s ease,
+        opacity 0.25s ease;
+      opacity: 0.7;
+    }
+    .lens-beam.on {
+      stroke: var(--accent);
+      stroke-width: 1.6;
+      opacity: 1;
+    }
+    .lens-glass {
+      fill: var(--panel);
+      fill-opacity: 0.55;
+      stroke: var(--ink-faint);
+      stroke-width: 1;
+    }
+    .lens-focus {
+      fill: var(--accent);
+    }
+    .lens-focus-halo {
+      fill: var(--accent);
+      opacity: 0.14;
+    }
+    .lens-exit {
+      fill: none;
+      stroke: var(--rule);
+      stroke-width: 1;
+      transition:
+        stroke 0.25s ease,
+        opacity 0.25s ease;
+    }
+    .lens-exit.on {
+      stroke: var(--ink-faint);
+    }
+    .lens-prim {
+      opacity: 0.22;
+      transition: opacity 0.25s ease;
+    }
+    .lens-prim.on {
+      opacity: 1;
+    }
+    .lens-prim-label {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 13px;
+      fill: var(--ink-faint);
+      transition: fill 0.25s ease;
+    }
+    .lens-prim.on .lens-prim-label {
+      fill: var(--ink);
+    }
+    /* No uppercase transform here: these captions include the word iii,
+         which is always lowercase. */
+    .lens-cap {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      fill: var(--ink-ghost);
+    }
+
+    @media (max-width: 900px) {
+      .lens-body {
+        grid-template-columns: 1fr;
+        margin: 0 18px;
+      }
+      .lens-stage {
+        position: static;
+        order: -1;
+      }
+      .lens-head {
+        padding: 56px 18px 24px;
+      }
+      .lens-title {
+        max-width: 100%;
+      }
+    }
+  </style>
+
+  <header class="lens-head">
+    <span class="lens-idx">§ 04 · EXPLAINED</span>
+    <h2 class="lens-title">
+      <span class="accent">iii is many things.</span>
+      <span class="mute"
+        ><b style="color: var(--ink); font-weight: 500">one system.</b><br />every description below
+        is the same three primitives seen from a different angle.</span
+      >
+    </h2>
+  </header>
+
+  <div class="lens-body">
+    <ul class="lens-claims" id="lens-claims">
+      <li class="lens-claim" data-on="1" data-i="0" data-prim="trigger">
+        <button type="button" aria-pressed="true">
+          <span class="lens-claim-name"><span class="lens-claim-num">01</span>a protocol</span>
+          <span class="lens-claim-why"
+            ><span
+              >one wire format that every language and every service already speaks.</span
+            ></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="1" data-prim="worker trigger function">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"
+            ><span class="lens-claim-num">02</span>a small set of primitives</span
+          >
+          <span class="lens-claim-why"
+            ><span
+              >worker, trigger, function. everything else is a composition of the three.</span
+            ></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="2" data-prim="worker">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"
+            ><span class="lens-claim-num">03</span>a worker orchestrator</span
+          >
+          <span class="lens-claim-why"
+            ><span>starts, supervises, and restarts every process that connects.</span></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="3" data-prim="worker">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"><span class="lens-claim-num">04</span>a registry</span>
+          <span class="lens-claim-why"
+            ><span>iii worker add stripe. a capability installs like a package.</span></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="4" data-prim="worker">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"
+            ><span class="lens-claim-num">05</span>a compose file, and a swarm</span
+          >
+          <span class="lens-claim-why"
+            ><span>declare the system once, run it on one machine or on a hundred.</span></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="5" data-prim="function">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"
+            ><span class="lens-claim-num">06</span>an agentic development environment</span
+          >
+          <span class="lens-claim-why"
+            ><span
+              >agents read a live system's functions and triggers instead of guessing at them.</span
+            ></span
+          >
+        </button>
+      </li>
+      <li class="lens-claim" data-on="0" data-i="6" data-prim="worker trigger function">
+        <button type="button" aria-pressed="false">
+          <span class="lens-claim-name"
+            ><span class="lens-claim-num">07</span>a self-extensible application</span
+          >
+          <span class="lens-claim-why"
+            ><span>a running system gains capability without being redesigned.</span></span
+          >
+        </button>
+      </li>
+    </ul>
+
+    <div class="lens-stage">
+      <svg
+        class="lens-svg"
+        viewBox="0 0 800 440"
+        role="img"
+        aria-label="Seven descriptions of iii refracting through a lens onto three primitives: worker, trigger, and function."
+      >
+        <text class="lens-cap" x="60" y="24">descriptions</text>
+        <text class="lens-cap" x="332" y="24" text-anchor="middle">iii</text>
+        <text class="lens-cap" x="640" y="24" text-anchor="middle">primitives</text>
+
+        <line class="lens-rail" x1="60" y1="45" x2="60" y2="375" />
+
+        <!-- Beams bend at the lens's left face. The bend x is the face curve
+               sampled at each source height, so the refraction reads true. -->
+        <g id="lens-beams">
+          <path class="lens-beam on" data-i="0" d="M 60 45 L 356.9 45 L 560 210" />
+          <path class="lens-beam" data-i="1" d="M 60 100 L 343.1 100 L 560 210" />
+          <path class="lens-beam" data-i="2" d="M 60 155 L 334.8 155 L 560 210" />
+          <path class="lens-beam" data-i="3" d="M 60 210 L 332 210 L 560 210" />
+          <path class="lens-beam" data-i="4" d="M 60 265 L 334.8 265 L 560 210" />
+          <path class="lens-beam" data-i="5" d="M 60 320 L 343.1 320 L 560 210" />
+          <path class="lens-beam" data-i="6" d="M 60 375 L 356.9 375 L 560 210" />
+        </g>
+
+        <g id="lens-srcs">
+          <circle class="lens-src on" data-i="0" cx="60" cy="45" r="4" />
+          <circle class="lens-src" data-i="1" cx="60" cy="100" r="4" />
+          <circle class="lens-src" data-i="2" cx="60" cy="155" r="4" />
+          <circle class="lens-src" data-i="3" cx="60" cy="210" r="4" />
+          <circle class="lens-src" data-i="4" cx="60" cy="265" r="4" />
+          <circle class="lens-src" data-i="5" cx="60" cy="320" r="4" />
+          <circle class="lens-src" data-i="6" cx="60" cy="375" r="4" />
+        </g>
+
+        <path class="lens-glass" d="M 360 35 Q 388 210 360 385 Q 332 210 360 35 Z" />
+
+        <circle class="lens-focus-halo" cx="560" cy="210" r="18" />
+        <circle class="lens-focus" cx="560" cy="210" r="4" />
+
+        <g class="lens-prim on" data-prim="worker">
+          <path class="lens-exit on" d="M 560 210 L 628 150" />
+          <circle cx="640" cy="140" r="15" fill="#42e7e7" />
+          <text class="lens-prim-label" x="668" y="146">worker</text>
+        </g>
+        <g class="lens-prim on" data-prim="trigger">
+          <path class="lens-exit on" d="M 560 210 L 626 210" />
+          <rect x="626" y="196" width="28" height="28" fill="#f3943d" />
+          <text class="lens-prim-label" x="668" y="216">trigger</text>
+        </g>
+        <g class="lens-prim on" data-prim="function">
+          <path class="lens-exit on" d="M 560 210 L 628 268" />
+          <rect
+            x="626"
+            y="266"
+            width="28"
+            height="28"
+            fill="#ef2e61"
+            transform="rotate(45 640 280)"
+          />
+          <text class="lens-prim-label" x="668" y="286">function</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ONE SURFACE — the same lens, read from its other face. -->
+<section class="surf" id="one-surface" aria-label="One surface">
+  <style>
+    .surf {
+      position: relative;
+      padding: 0 0 96px;
+    }
+    .surf-head {
+      padding: 72px 36px 28px;
+    }
+    .surf-idx {
+      display: block;
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--mute);
+      margin-bottom: 14px;
+    }
+    .surf-title {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-weight: 500;
+      font-size: clamp(20px, 4.2vw, 28px);
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      margin: 0;
+      max-width: 80%;
+    }
+    .surf-title .accent {
+      color: var(--accent);
+    }
+    .surf-title .mute {
+      color: var(--ink-faint);
+    }
+    .surf-stage {
+      margin: 0 36px;
+      max-width: 1128px;
+    }
+    .surf-svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    /* Same as .lens-cap: no uppercase, "with iii" must stay lowercase. */
+    .surf-cap {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      fill: var(--ink-ghost);
+    }
+    .surf-stage-label {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 13px;
+      fill: var(--ink-faint);
+    }
+    .surf-box {
+      fill: none;
+      stroke: var(--rule);
+      stroke-width: 1;
+    }
+    .surf-seam {
+      stroke: var(--ink-ghost);
+      stroke-width: 1;
+      stroke-dasharray: 3 4;
+    }
+    .surf-seam-label {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      fill: var(--ink-ghost);
+    }
+    .surf-glass {
+      fill: var(--panel);
+      fill-opacity: 0.55;
+      stroke: var(--ink-faint);
+      stroke-width: 1;
+    }
+    .surf-cone {
+      fill: var(--accent);
+      opacity: 0.1;
+    }
+    .surf-band {
+      fill: var(--accent);
+      opacity: 0.08;
+    }
+    .surf-line {
+      stroke: var(--accent);
+      stroke-width: 1.6;
+      fill: none;
+    }
+    /* One packet runs the full length of the band, never stopping at a
+         boundary. That continuity is the whole point of the section. */
+    .surf-packet {
+      fill: var(--accent);
+    }
+    .surf-packet-path {
+      fill: none;
+      stroke: none;
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .surf-packet {
+        animation: surf-run 5.4s linear infinite;
+      }
+    }
+    @keyframes surf-run {
+      from {
+        transform: translateX(0);
+      }
+      to {
+        transform: translateX(560px);
+      }
+    }
+    .surf-live-label {
+      font-family: "Chivo Mono", ui-monospace, monospace;
+      font-size: 13px;
+      fill: var(--ink);
+    }
+    @media (max-width: 900px) {
+      .surf-head {
+        padding: 56px 18px 24px;
+      }
+      .surf-title {
+        max-width: 100%;
+      }
+      .surf-stage {
+        margin: 0 18px;
+      }
+    }
+  </style>
+
+  <header class="surf-head">
+    <span class="surf-idx">§ 05 · ONE SURFACE</span>
+    <h2 class="surf-title">
+      <span class="accent">one system.</span>
+      <span class="mute"
+        ><b style="color: var(--ink); font-weight: 500">one surface.</b><br />
+        development, integration, and production stop being three different places with handoffs
+        between them.</span
+      >
+    </h2>
+  </header>
+
+  <div class="surf-stage">
+    <svg
+      class="surf-svg"
+      viewBox="0 0 800 330"
+      role="img"
+      aria-label="Today, development, integration, and production are three separate boxes with handoffs between them. With iii they sit on one continuous beam leaving the lens."
+    >
+      <!-- today: three places, two handoffs -->
+      <text class="surf-cap" x="100" y="34">today</text>
+
+      <rect class="surf-box" x="100" y="52" width="160" height="66" />
+      <text class="surf-stage-label" x="180" y="90" text-anchor="middle">development</text>
+
+      <line class="surf-seam" x1="290" y1="46" x2="290" y2="124" />
+      <text class="surf-seam-label" x="290" y="140" text-anchor="middle">handoff</text>
+
+      <rect class="surf-box" x="320" y="52" width="160" height="66" />
+      <text class="surf-stage-label" x="400" y="90" text-anchor="middle">integration</text>
+
+      <line class="surf-seam" x1="510" y1="46" x2="510" y2="124" />
+      <text class="surf-seam-label" x="510" y="140" text-anchor="middle">handoff</text>
+
+      <rect class="surf-box" x="540" y="52" width="160" height="66" />
+      <text class="surf-stage-label" x="620" y="90" text-anchor="middle">production</text>
+
+      <!-- iii: the lens's far face, one beam, no seams -->
+      <text class="surf-cap" x="100" y="196">with iii</text>
+
+      <path class="surf-glass" d="M 60 190 Q 78 232 60 274 Q 42 232 60 190 Z" />
+      <path class="surf-cone" d="M 68 232 L 140 202 L 140 262 Z" />
+      <rect class="surf-band" x="140" y="202" width="560" height="60" />
+      <line class="surf-line" x1="140" y1="232" x2="700" y2="232" />
+
+      <circle class="surf-packet" cx="140" cy="232" r="4" />
+
+      <circle cx="240" cy="232" r="9" fill="#42e7e7" />
+      <rect x="391" y="223" width="18" height="18" fill="#f3943d" />
+      <rect x="591" y="223" width="18" height="18" fill="#ef2e61" transform="rotate(45 600 232)" />
+
+      <text class="surf-live-label" x="240" y="292" text-anchor="middle">development</text>
+      <text class="surf-live-label" x="400" y="292" text-anchor="middle">integration</text>
+      <text class="surf-live-label" x="600" y="292" text-anchor="middle">production</text>
+    </svg>
+  </div>
+</section>
+
+<script>
+  (function () {
+    var list = document.getElementById("lens-claims");
+    if (!list) return;
+    var claims = Array.prototype.slice.call(list.querySelectorAll(".lens-claim"));
+    var beams = Array.prototype.slice.call(document.querySelectorAll(".lens-beam"));
+    var srcs = Array.prototype.slice.call(document.querySelectorAll(".lens-src"));
+    var prims = Array.prototype.slice.call(document.querySelectorAll(".lens-prim"));
+    var timer = null;
+    var manual = false;
+
+    function select(i) {
+      var lit = (claims[i].getAttribute("data-prim") || "").split(" ");
+      claims.forEach(function (c, n) {
+        c.setAttribute("data-on", n === i ? "1" : "0");
+        c.querySelector("button").setAttribute("aria-pressed", n === i ? "true" : "false");
+      });
+      beams.forEach(function (b, n) {
+        b.classList.toggle("on", n === i);
+      });
+      srcs.forEach(function (s, n) {
+        s.classList.toggle("on", n === i);
+      });
+      prims.forEach(function (p) {
+        var on = lit.indexOf(p.getAttribute("data-prim")) !== -1;
+        p.classList.toggle("on", on);
+        p.querySelector(".lens-exit").classList.toggle("on", on);
+      });
+    }
+
+    function stop() {
+      manual = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+
+    claims.forEach(function (c, i) {
+      var btn = c.querySelector("button");
+      btn.addEventListener("click", function () {
+        stop();
+        select(i);
+      });
+      btn.addEventListener("focus", function () {
+        stop();
+        select(i);
+      });
+    });
+
+    // Markup ships with every primitive lit so the diagram is complete
+    // without JS; sync it to the active claim as soon as we can drive it.
+    select(0);
+
+    var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (still || !("IntersectionObserver" in window)) return;
+
+    var i = 0;
+    new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (e) {
+          if (manual) return;
+          if (e.isIntersecting && !timer) {
+            timer = setInterval(function () {
+              i = (i + 1) % claims.length;
+              select(i);
+            }, 3200);
+          } else if (!e.isIntersecting && timer) {
+            clearInterval(timer);
+            timer = null;
+          }
+        });
+      },
+      { threshold: 0.35 },
+    ).observe(list);
+  })();
+</script>
