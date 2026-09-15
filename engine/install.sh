@@ -884,7 +884,11 @@ elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   read -r _harness_answer </dev/tty || _harness_answer="n"
   case "$_harness_answer" in
     ""|[Yy]|[Yy][Ee][Ss])
-      exec "$bin_dir/$BIN_NAME" project init --learn-iii
+      # stdin is the script itself under `curl ... | sh`, and `exec` hands
+      # that pipe to init. Init asks for a provider API key only when stdin
+      # is a terminal, so piped installs skipped the question in silence.
+      # The enclosing `if` has already established /dev/tty is usable.
+      exec "$bin_dir/$BIN_NAME" project init --learn-iii </dev/tty
       ;;
     *)
       echo "No problem. Start the harness anytime with:"
