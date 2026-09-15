@@ -571,9 +571,12 @@ fn find_containers(lines: &[&str]) -> Result<Block> {
     let start = key + 1;
     let mut end = start;
     for (offset, line) in lines[start..].iter().enumerate() {
-        // A blank line may sit between entries, so it does not end the mapping;
-        // the first line at column zero does.
-        if line.trim().is_empty() || line.starts_with([' ', '\t']) {
+        // YAML comments have no structural indentation. Only a non-comment
+        // line at column zero ends the mapping, not a note between entries.
+        if line.trim().is_empty()
+            || line.trim_start().starts_with('#')
+            || line.starts_with([' ', '\t'])
+        {
             end = start + offset + 1;
         } else {
             break;
@@ -587,8 +590,8 @@ fn find_containers(lines: &[&str]) -> Result<Block> {
 fn entry_indent(lines: &[&str], containers: &Block) -> String {
     lines[containers.start..containers.end]
         .iter()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line[..line.len() - line.trim_start().len()].to_string())
+        .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .map(|line| leading_whitespace(line).to_string())
         .unwrap_or_else(|| "  ".to_string())
 }
 
@@ -1286,6 +1289,86 @@ containers:
     fn a_file_without_a_trailing_newline_keeps_not_having_one() {
         let out = added(FILE.trim_end());
         assert!(!out.ends_with('\n'), "gained a trailing newline");
+    }
+
+    #[test]
+    fn removing_finds_workers_after_unindented_comments() {
+        let text = concat!(
+            "containers:\n",
+            "# The guided tour.\n",
+            "  # Opens beside the chat.\n",
+            "  onboarding:\n",
+            "    worker: package://onboarding\n",
+            "    version: \"latest\"\n",
+            "    start_after: [state]\n",
+            "\n",
+            "  state:\n",
+            "    worker: package://state\n",
+            "    version: \"latest\"\n",
+        );
+        let parsed = crate::ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
+        assert!(parsed.containers.contains_key("onboarding"));
+
+        let out = remove_container(text, "onboarding")
+            .unwrap()
+            .expect("a YAML comment must not hide a declared worker");
+        assert_eq!(
+            out,
+            "containers:\n\n  state:\n    worker: package://state\n    version: \"latest\"\n"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+    }
+
+    #[test]
+    fn removing_ignores_comment_indentation_when_finding_entries() {
+        let text = concat!(
+            "containers:\n",
+            "      # A comment is not a container key.\n",
+            "  onboarding:\n",
+            "    worker: path://./onboarding\n",
+            "  state:\n",
+            "    worker: path://./state\n",
+        );
+        let out = remove_container(text, "onboarding")
+            .unwrap()
+            .expect("entry indentation must come from the first container key");
+        assert_eq!(out, "containers:\n  state:\n    worker: path://./state\n");
+    }
+
+    #[test]
+    fn removing_finds_workers_after_comments_between_entries() {
+        let text = concat!(
+            "containers:\n",
+            "  state:\n",
+            "    worker: path://./state\n",
+            "# Optional workers\n",
+            "  onboarding:\n",
+            "    worker: path://./onboarding\n",
+            "namespace: default\n",
+        );
+        let out = remove_container(text, "onboarding")
+            .unwrap()
+            .expect("a comment between entries must not end the mapping");
+        assert_eq!(
+            out,
+            "containers:\n  state:\n    worker: path://./state\nnamespace: default\n"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+    }
+
+    #[test]
+    fn upserting_after_unindented_comments_does_not_duplicate_existing_workers() {
+        let text = concat!(
+            "containers:\n",
+            "# The guided tour.\n",
+            "  onboarding:\n",
+            "    worker: package://api.workers.iii.dev/onboarding\n",
+            "    version: \"1.0.0\"\n",
+        );
+        assert_eq!(
+            upsert_container(text, &parse_worker("onboarding@1.0.0").unwrap()).unwrap(),
+            Outcome::Unchanged
+        );
     }
 
     #[test]
