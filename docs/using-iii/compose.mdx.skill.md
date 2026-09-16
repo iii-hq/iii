@@ -568,7 +568,7 @@ Each key under `containers` is the name the worker registers under.
 | `version`         | string         | absent               | Version range. Required for `package://`.                                                                  |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
-| `config_override` | mapping        | absent               | Merged on top of the fetched configuration.                                                                |
+| `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |
 | `working_dir`     | path           | the worker directory | Resolved against the compose file's directory.                                                             |
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
@@ -628,7 +628,9 @@ worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails
 ### Configuration precedence
 
 Lowest to highest: the configuration a package ships, the entry in the configuration worker, then
-`config_override`. The merged result is written to an owner-only file and its path is passed to the
+`config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
+override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
+merged result is written to an owner-only file and its path is passed to the
 worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
 the error is `CONFIG_FETCH_FAILED`.
 

@@ -27,7 +27,9 @@ worker-compose.yaml (config_override)
    than booting on wrong defaults — an http worker on the wrong port is worse
    than no http worker).
 3. `config_override` merges over the base: maps merge per key, arrays and
-   scalars replace, `null` is an explicit value.
+   scalars replace, `null` is an explicit value. A mapping whose `name` the
+   override changes is replaced whole: the keys beside `name` belong to the
+   variant it picks.
 4. The finalized config reaches the worker through the standard CLI/env
    contract (`--config` / env; see cli-contract.md).
 
