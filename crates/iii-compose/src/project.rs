@@ -61,6 +61,7 @@ pub struct Project {
     logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
+    shutdown: crate::shutdown::ShutdownController,
 }
 
 /// How often the supervisor checks whether a ready child is still alive.
@@ -177,6 +178,25 @@ impl Project {
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
+        Self::open_with_shutdown(
+            daemon_namespace,
+            project_namespace,
+            file,
+            engine,
+            engine_url,
+            crate::shutdown::ShutdownController::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn open_with_shutdown(
+        daemon_namespace: &str,
+        project_namespace: String,
+        file: ComposeFile,
+        engine: Arc<EngineClient>,
+        engine_url: String,
+        shutdown: crate::shutdown::ShutdownController,
+    ) -> Result<Arc<Self>> {
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
         let file_path = file.path.clone();
 
@@ -202,6 +222,7 @@ impl Project {
             project_namespace,
             engine_url,
             engine,
+            shutdown,
             post_runs: crate::hooks::PostRunSupervisor::default(),
             logs,
             store,
@@ -452,7 +473,12 @@ impl Project {
     /// dependents up while this one is gone.
     async fn run_restart_attempt(&self, key: &str, lease: RestartLease, cause: RestartCause) {
         let restart_config = self.restart_config(key).await;
-        let mut inner = self.inner.lock().await;
+        let Some(mut inner) = self.shutdown.signal().run(self.inner.lock()).await else {
+            return;
+        };
+        if self.shutdown.signal().requested() {
+            return;
+        }
         if !inner.restarts.is_current(key, lease)
             || !Self::restart_is_eligible(&inner, key, cause, Instant::now())
         {
@@ -521,6 +547,12 @@ impl Project {
             .iter()
             .any(|result| result.container == key && result.state == ChildStatus::Ready);
         inner.restarts.release(key, lease);
+        if self.shutdown.signal().requested() {
+            let snapshot = inner.state.clone();
+            drop(inner);
+            let _ = self.store.save(&snapshot);
+            return;
+        }
         if ready {
             // The record is already `Ready` and nothing more is owed. The spent
             // count survives, so a worker that comes back for a moment each
@@ -761,36 +793,9 @@ impl Project {
     }
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {
-        let config_dir = self.config_dir();
-        let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
-        inner.restarts.operator_took_control(target);
-        let Inner {
-            children, state, ..
-        } = &mut *inner;
-        let file = self.file.read().await;
-
-        let ctx = LifecycleCtx {
-            file: &file,
-            engine: &self.engine,
-            post_runs: &self.post_runs,
-            compose_namespace: &self.compose_namespace,
-            project_namespace: &self.project_namespace,
-            engine_url: &self.engine_url,
-            config_dir: &config_dir,
-            logs: &self.logs,
-            package_cache: &package_cache,
-            vm_dir: &vm_dir,
-        };
-
-        let result =
-            lifecycle::up(&ctx, children, &mut state.containers, target, operation_id).await;
-
-        let snapshot = state.clone();
-        drop(inner);
-        let _ = self.store.save(&snapshot);
-        result
+        self.up_until_shutdown(target, operation_id.clone(), self.shutdown.signal())
+            .await
+            .unwrap_or_else(|| lifecycle::cancelled_op(operation_id))
     }
 
     pub(crate) async fn up_until_shutdown(
@@ -799,17 +804,19 @@ impl Project {
         operation_id: String,
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Option<OpResult> {
+        let shutdown = shutdown.or(self.shutdown.signal());
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
+        let mut inner = shutdown.run(self.inner.lock()).await?;
         inner.restarts.operator_took_control(target);
         let Inner {
             children, state, ..
         } = &mut *inner;
-        let file = self.file.read().await;
+        let file = shutdown.run(self.file.read()).await?;
 
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -863,6 +870,7 @@ impl Project {
         }
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -876,34 +884,25 @@ impl Project {
         };
 
         let operation = crate::operation::active(&operation_id);
-        let shutdown = operation.as_ref().map(|operation| {
-            crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation())
-        });
+        let signal = self.shutdown.signal();
+        let shutdown = match operation.as_ref() {
+            Some(operation) => signal.or(crate::shutdown::ShutdownSignal::from_receiver(
+                operation.cancellation(),
+            )),
+            None => signal,
+        };
         let mut restarted = Vec::with_capacity(restart.len());
         let mut interrupted = false;
         for key in restart {
-            let result = if let Some(shutdown) = shutdown.clone() {
-                lifecycle::restart_one_until_shutdown(
-                    &ctx,
-                    children,
-                    &mut state.containers,
-                    key,
-                    format!("{operation_id}-restart-{key}"),
-                    shutdown,
-                )
-                .await
-            } else {
-                Some(
-                    lifecycle::restart_one(
-                        &ctx,
-                        children,
-                        &mut state.containers,
-                        key,
-                        format!("{operation_id}-restart-{key}"),
-                    )
-                    .await,
-                )
-            };
+            let result = lifecycle::restart_one_until_shutdown(
+                &ctx,
+                children,
+                &mut state.containers,
+                key,
+                format!("{operation_id}-restart-{key}"),
+                shutdown.clone(),
+            )
+            .await;
             let Some(result) = result else {
                 interrupted = true;
                 break;
@@ -912,14 +911,8 @@ impl Project {
         }
         let up_operation_id = format!("{operation_id}-up");
         let up = if interrupted {
-            OpResult {
-                operation_id: up_operation_id,
-                status: crate::lifecycle::OpStatus::Failed,
-                changed: false,
-                containers: Vec::new(),
-                primary_error: None,
-            }
-        } else if let Some(shutdown) = shutdown {
+            lifecycle::cancelled_op(up_operation_id)
+        } else {
             let result = lifecycle::up_until_shutdown(
                 &ctx,
                 children,
@@ -929,18 +922,8 @@ impl Project {
                 shutdown,
             )
             .await;
-            if result.is_none() {
-                interrupted = true;
-            }
-            result.unwrap_or_else(|| OpResult {
-                operation_id: up_operation_id,
-                status: crate::lifecycle::OpStatus::Failed,
-                changed: false,
-                containers: Vec::new(),
-                primary_error: None,
-            })
-        } else {
-            lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
+            interrupted = result.is_none();
+            result.unwrap_or_else(|| lifecycle::cancelled_op(up_operation_id))
         };
 
         let snapshot = state.clone();
@@ -976,6 +959,7 @@ impl Project {
         let stopped = {
             let current = self.file.read().await;
             let ctx = LifecycleCtx {
+                shutdown: &self.shutdown,
                 file: &current,
                 engine: &self.engine,
                 post_runs: &self.post_runs,
@@ -1010,6 +994,7 @@ impl Project {
         }
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1067,6 +1052,7 @@ impl Project {
         } = inner;
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1107,6 +1093,7 @@ impl Project {
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1241,6 +1228,7 @@ impl Project {
     /// Intentional shutdown: stop every local child, then clear the state.
     /// A daemon that exits on purpose leaves nothing behind to reconcile.
     pub async fn shutdown(&self) {
+        self.shutdown.cancel();
         let operation_id = "shutdown".to_string();
         self.down(None, operation_id).await;
         self.post_runs.shutdown().await;

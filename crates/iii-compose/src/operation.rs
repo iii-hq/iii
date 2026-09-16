@@ -238,7 +238,7 @@ impl Operation {
         *self.cancel.borrow()
     }
     pub fn cancel(&self) {
-        let _ = self.cancel.send(true);
+        self.cancel.send_replace(true);
     }
     pub async fn emit_tree(&self, container: &str, depth: usize, detail: impl Into<String>) {
         self.emit_progress(
@@ -411,6 +411,17 @@ impl OperationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancellation_is_latched_before_a_receiver_subscribes() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let manager = OperationManager::new(&client);
+        let operation = manager.create(1).await;
+        operation.cancel();
+        assert!(operation.is_cancelled());
+        assert!(*operation.cancellation().borrow());
+        client.shutdown_async().await;
+    }
 
     #[tokio::test]
     async fn alias_warnings_are_emitted_once_per_operation_even_with_concurrent_installs() {

@@ -6,16 +6,60 @@
 
 //! Process shutdown shared by every phase of foreground compose startup.
 
+use std::{
+    future::Future,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio::sync::watch;
 
-#[cfg(any(unix, windows))]
 use crate::error::ComposeError;
 use crate::error::Result;
 
 /// A latched signal: once interrupted, every clone observes it immediately.
 #[derive(Clone)]
 pub(crate) struct ShutdownSignal {
-    receiver: watch::Receiver<bool>,
+    receivers: Vec<watch::Receiver<bool>>,
+}
+
+/// One cancellation source owned by the daemon, never a second OS handler.
+#[derive(Clone)]
+pub(crate) struct ShutdownController {
+    sender: watch::Sender<bool>,
+    parent: Option<ShutdownSignal>,
+}
+
+impl Default for ShutdownController {
+    fn default() -> Self {
+        Self {
+            sender: watch::channel(false).0,
+            parent: None,
+        }
+    }
+}
+
+impl ShutdownController {
+    pub(crate) fn with_parent(parent: ShutdownSignal) -> Self {
+        Self {
+            parent: Some(parent),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn signal(&self) -> ShutdownSignal {
+        let signal = ShutdownSignal::from_receiver(self.sender.subscribe());
+        match &self.parent {
+            Some(parent) => signal.or(parent.clone()),
+            None => signal,
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.sender.send_replace(true);
+    }
 }
 
 impl ShutdownSignal {
@@ -63,47 +107,127 @@ impl ShutdownSignal {
             }
         });
 
-        Ok(Self { receiver })
+        Ok(Self::from_receiver(receiver))
     }
 
     /// Adapts an existing latched cancellation source to lifecycle shutdown.
     pub(crate) fn from_receiver(receiver: watch::Receiver<bool>) -> Self {
-        Self { receiver }
+        Self {
+            receivers: vec![receiver],
+        }
     }
 
-    /// Returns a signal that latches when either input is requested.
-    pub(crate) fn or(mut self, mut other: Self) -> Self {
-        let requested = self.requested() || other.requested();
-        let (sender, receiver) = watch::channel(requested);
-        if !requested {
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = self.wait() => {}
-                    _ = other.wait() => {}
-                }
-                let _ = sender.send(true);
-            });
-        }
-        Self { receiver }
+    /// Combines sources without spawning a forwarding task. Already-requested
+    /// cancellation is visible synchronously, including before the first poll.
+    pub(crate) fn or(mut self, other: Self) -> Self {
+        self.receivers.extend(other.receivers);
+        self
     }
 
     pub(crate) fn requested(&self) -> bool {
-        *self.receiver.borrow()
+        self.receivers.iter().any(|receiver| *receiver.borrow())
     }
 
     pub(crate) async fn wait(&mut self) {
-        if self.requested() {
-            return;
-        }
-        while self.receiver.changed().await.is_ok() {
-            if self.requested() {
-                return;
-            }
-        }
-        // The sender lives until it publishes a shutdown request. A closed
-        // channel here only happens while the runtime itself is going away.
-        std::future::pending::<()>().await;
+        let waits = self.receivers.iter_mut().map(|receiver| {
+            Box::pin(async move {
+                loop {
+                    if *receiver.borrow_and_update() {
+                        return;
+                    }
+                    if receiver.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            })
+        });
+        futures::future::select_all(waits).await;
     }
+
+    /// Only for cancellation-safe work: preparation and waiting for locks.
+    /// Lifecycle futures must observe the signal themselves and reap children.
+    pub(crate) async fn run<T>(&self, work: impl Future<Output = T>) -> Option<T> {
+        let mut signal = self.clone();
+        tokio::select! {
+            biased;
+            _ = signal.wait() => None,
+            result = work => Some(result),
+        }
+    }
+}
+
+/// Cancellation for synchronous disk work moved off the async executor.
+#[derive(Clone, Default)]
+pub(crate) struct BlockingCancellation(Arc<AtomicBool>);
+
+impl BlockingCancellation {
+    #[cfg(test)]
+    pub(crate) fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn check(&self, path: &Path) -> Result<()> {
+        if self.0.load(Ordering::Acquire) {
+            return Err(ComposeError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "preparation cancelled",
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Dropping the future requests cooperative cancellation of its blocking job.
+/// The job owns any artifact lock and temporary-directory guard until it exits.
+/// Aborting a JoinHandle alone would not stop a running spawn_blocking closure.
+pub(crate) async fn blocking<T: Send + 'static>(
+    path: std::path::PathBuf,
+    work: impl FnOnce(BlockingCancellation) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    struct CancelOnDrop(BlockingCancellation);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.0.store(true, Ordering::Release);
+        }
+    }
+    let guard = CancelOnDrop(BlockingCancellation::default());
+    let active = BlockingJob::new();
+    let cancel = guard.0.clone();
+    tokio::task::spawn_blocking(move || {
+        let _active = active;
+        work(cancel)
+    })
+    .await
+    .map_err(|error| ComposeError::Io {
+        path,
+        source: std::io::Error::other(error),
+    })?
+}
+
+// The CLI exits explicitly rather than dropping its Tokio runtime. Wait for
+// cancelled disk jobs to release artifact locks and staging directories first.
+struct BlockingJob;
+fn blocking_jobs() -> &'static watch::Sender<usize> {
+    static JOBS: std::sync::OnceLock<watch::Sender<usize>> = std::sync::OnceLock::new();
+    JOBS.get_or_init(|| watch::channel(0).0)
+}
+impl BlockingJob {
+    fn new() -> Self {
+        blocking_jobs().send_modify(|count| *count += 1);
+        Self
+    }
+}
+impl Drop for BlockingJob {
+    fn drop(&mut self) {
+        blocking_jobs().send_modify(|count| *count -= 1);
+    }
+}
+pub(crate) async fn drain_blocking_jobs() {
+    let mut jobs = blocking_jobs().subscribe();
+    let _ = jobs.wait_for(|count| *count == 0).await;
 }
 
 // Tokio keeps its handler installed even after a signal stream is dropped.
@@ -126,6 +250,46 @@ fn signal_error(error: std::io::Error) -> ComposeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn controller_latches_without_receivers_and_combines_synchronously() {
+        let controller = ShutdownController::default();
+        controller.cancel();
+        let other = ShutdownController::default();
+        let mut signal = other.signal().or(controller.signal());
+        assert!(signal.requested());
+        assert!(signal.run(std::future::ready(42)).await.is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(1), signal.wait())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_blocking_work_requests_cancellation_and_releases_owned_resources() {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (resume, gate) = std::sync::mpsc::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let mut job = Box::pin(blocking("blocking-test".into(), move |cancel| {
+            started.send(()).unwrap();
+            gate.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let cancelled = cancel.check(Path::new("blocking-test")).is_err();
+            let _ = finished.send(cancelled);
+            Ok(())
+        }));
+        tokio::select! {
+            result = &mut job => panic!("blocking job exited before cancellation: {result:?}"),
+            result = ready => result.unwrap(),
+        }
+        drop(job);
+        resume.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), done)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
