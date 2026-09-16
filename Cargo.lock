@@ -2736,6 +2736,7 @@ dependencies = [
  "iii-compose",
  "iii-helpers",
  "iii-sdk",
+ "iii-telemetry-policy",
  "indexmap 2.14.0",
  "indicatif 0.17.11",
  "inventory",
@@ -2811,6 +2812,7 @@ dependencies = [
  "futures",
  "hex",
  "iii-sdk",
+ "iii-telemetry-policy",
  "indexmap 2.14.0",
  "jsonschema",
  "nix 0.31.2",
@@ -3001,6 +3003,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-telemetry-policy"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "tempfile",
+]
+
+[[package]]
 name = "iii-worker"
 version = "0.23.2-rc.1"
 dependencies = [
@@ -3028,6 +3038,7 @@ dependencies = [
  "iii-shell-client",
  "iii-shell-proto",
  "iii-supervisor",
+ "iii-telemetry-policy",
  "indicatif 0.17.11",
  "libc",
  "msb_krun",
@@ -5478,6 +5489,7 @@ dependencies = [
  "colored",
  "console 0.15.11",
  "dirs 6.0.0",
+ "iii-telemetry-policy",
  "open",
  "reqwest 0.12.28",
  "semver",

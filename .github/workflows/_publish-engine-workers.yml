@@ -41,6 +41,9 @@ on:
         description: 'API key for the workers registry'
         required: false
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   publish:
     name: POST /publish (${{ inputs.worker }})

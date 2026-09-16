@@ -13,6 +13,7 @@ services:
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker
+      - III_TELEMETRY_ENABLED=${III_TELEMETRY_ENABLED:-true}
     depends_on:
       redis:
         condition: service_healthy

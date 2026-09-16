@@ -6,6 +6,7 @@ authors.workspace = true
 description = "Core library for project scaffolding with template support"
 
 [dependencies]
+iii-telemetry-policy = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

@@ -253,7 +253,7 @@ impl AmplitudeClient {
     /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
     /// and must never block or fail the caller.
     pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
-        if self.api_key.is_empty() {
+        if iii_telemetry_policy::is_telemetry_disabled() || self.api_key.is_empty() {
             return Ok(());
         }
 
@@ -325,7 +325,10 @@ impl PostHogClient {
     /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
     /// and must never block or fail the caller.
     pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
-        if self.api_key.is_empty() || events.is_empty() {
+        if iii_telemetry_policy::is_telemetry_disabled()
+            || self.api_key.is_empty()
+            || events.is_empty()
+        {
             return Ok(());
         }
 
@@ -360,6 +363,66 @@ impl PostHogClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn direct_clients_respect_opt_out_at_the_transport_boundary() {
+        const CHILD: &str = "III_TRANSPORT_TEST_MODE";
+        let mode = match std::env::var(CHILD) {
+            Ok(mode) => mode,
+            Err(_) => {
+                for mode in ["disabled", "enabled", "default"] {
+                    let home = tempfile::tempdir().unwrap();
+                    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                    child.args(["--exact", "workers::telemetry::amplitude::tests::direct_clients_respect_opt_out_at_the_transport_boundary"])
+                        .env(CHILD, mode)
+                        .env("HOME", home.path()).env("USERPROFILE", home.path())
+                        .env("III_TELEMETRY_ENABLED", if mode == "disabled" { "false" } else { "true" })
+                        .env_remove("III_TELEMETRY_DEV");
+                    if mode == "default" {
+                        child.env_remove("III_TELEMETRY_ENABLED");
+                    }
+                    for key in iii_telemetry_policy::CI_ENV_VARS {
+                        child.env_remove(key);
+                    }
+                    let output = child.output().unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{mode}: {}{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                return;
+            }
+        };
+        let disabled = mode == "disabled";
+        assert_eq!(iii_telemetry_policy::is_telemetry_disabled(), disabled);
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/batch/"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(if disabled { 0 } else { 2 })
+            .mount(&server)
+            .await;
+        let client = PostHogClient::new("phc_test".into(), server.uri());
+        client.send_event(sample_event()).await.unwrap();
+        client.send_batch(vec![sample_event()]).await.unwrap();
+        if disabled {
+            // A local proxy records any attempted Amplitude transport without
+            // allowing a connection to the real analytics endpoint.
+            let amplitude = AmplitudeClient {
+                api_key: "test-key".into(),
+                client: reqwest::Client::builder()
+                    .proxy(reqwest::Proxy::all(server.uri()).unwrap())
+                    .timeout(std::time::Duration::from_millis(20))
+                    .build()
+                    .unwrap(),
+            };
+            amplitude.send_event(sample_event()).await.unwrap();
+            amplitude.send_batch(vec![sample_event()]).await.unwrap();
+            assert!(server.received_requests().await.unwrap().is_empty());
+        }
+    }
 
     fn sample_event() -> AmplitudeEvent {
         AmplitudeEvent {
@@ -635,6 +698,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_batch_retries_and_drops_on_transport_errors() {
+        const CHILD: &str = "III_AMPLITUDE_RETRY_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "workers::telemetry::amplitude::tests::test_send_batch_retries_and_drops_on_transport_errors"])
+                .env(CHILD, "true")
+                .env("HOME", home.path()).env("USERPROFILE", home.path())
+                .env("III_TELEMETRY_ENABLED", "true").env_remove("III_TELEMETRY_DEV");
+            for key in iii_telemetry_policy::CI_ENV_VARS {
+                command.env_remove(key);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        assert!(!iii_telemetry_policy::is_telemetry_disabled());
         let client = AmplitudeClient {
             api_key: "test-key".to_string(),
             client: reqwest::Client::builder()

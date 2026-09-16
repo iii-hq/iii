@@ -11,7 +11,10 @@ III_HTTP_URL        := http://localhost:3199
 PYTHON_SDK_DIR      := sdk/packages/python/iii
 LOCAL_BIN           := $(HOME)/.local/bin
 
-export III_TELEMETRY_ENABLED := false
+# Only dedicated test/CI targets opt out automatically. Local development
+# preserves the caller's environment and the product's enabled default.
+engine-test coverage test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
+ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-console ci-local: export III_TELEMETRY_ENABLED := false
 
 .PHONY: install install-node install-python install-hooks \
         engine-build engine-test coverage install-iii-worker engine-fmt-check \
@@ -57,11 +60,15 @@ install-iii-worker:
 # (--all-features would pull in the KVM-only integration-vm/-oci suites); iii
 # runs with --all-features. cargo test includes doctests.
 engine-test: install-iii-worker
+	cargo test -p iii-telemetry-policy
+	cargo test -p scaffolder-core --lib
 	cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
 	cargo test -p iii --all-features
 
 coverage: install-iii-worker ## Run the engine test suite under llvm-cov (same as CI), prints a report
 	@eval "$$(cargo llvm-cov show-env --export-prefix)" && \
+		cargo test -p iii-telemetry-policy && \
+		cargo test -p scaffolder-core --lib && \
 		cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init && \
 		cargo test -p iii --all-features && \
 		cargo llvm-cov report

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -34,6 +35,7 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
         text=True,
         capture_output=True,
         timeout=60,
+        env={**os.environ, "III_TELEMETRY_ENABLED": "false"},
     )
     return json.loads(completed.stdout)
 

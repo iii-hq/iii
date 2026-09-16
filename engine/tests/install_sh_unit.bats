@@ -3,6 +3,8 @@
 # Sources install.sh in test mode so the main flow doesn't execute.
 
 setup() {
+  export III_TELEMETRY_ENABLED=false
+
   # Resolve repo root relative to this test file
   BATS_TEST_DIRNAME="${BATS_TEST_DIRNAME:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   INSTALL_SH="$BATS_TEST_DIRNAME/../install.sh"

@@ -11,6 +11,9 @@
 # outside this repo and is not covered.)
 set -euo pipefail
 
+# Documentation generation is a contributor task, including direct invocation.
+export III_TELEMETRY_ENABLED=false
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 

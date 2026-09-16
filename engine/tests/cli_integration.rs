@@ -6,7 +6,9 @@
 use std::process::Command;
 
 fn iii_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_iii"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
+    command.env("III_TELEMETRY_ENABLED", "false");
+    command
 }
 
 // ── Version & help ──────────────────────────────────────────────────

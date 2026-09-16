@@ -149,6 +149,20 @@ impl ExternalWorker {
         slot: &mut Option<Child>,
         config_path: Option<&Path>,
     ) -> anyhow::Result<()> {
+        self.spawn_child_into_with_telemetry(
+            slot,
+            config_path,
+            iii_telemetry_policy::is_telemetry_disabled(),
+        )
+        .await
+    }
+
+    async fn spawn_child_into_with_telemetry(
+        &self,
+        slot: &mut Option<Child>,
+        config_path: Option<&Path>,
+        telemetry_disabled: bool,
+    ) -> anyhow::Result<()> {
         let mut cmd = tokio::process::Command::new(&self.binary_path);
         for arg in &self.extra_args {
             cmd.arg(arg);
@@ -158,6 +172,11 @@ impl ExternalWorker {
         }
         for (key, value) in &self.env {
             cmd.env(key, value);
+        }
+        // Preserve the effective engine opt-out across respawns and child
+        // overrides, including CI and developer markers absent in descendants.
+        if telemetry_disabled {
+            cmd.env("III_TELEMETRY_ENABLED", "false");
         }
         // Pipe stdio instead of inheriting the engine's TTY fds. External
         // workers (notably iii-sandbox) load libkrun, which raws the host
@@ -754,6 +773,47 @@ mod tests {
         // Should not panic or error
         kill_child(&child_handle).await;
         assert!(child_handle.lock().await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn telemetry_opt_out_reaches_external_worker_after_env_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        for (disabled, declared, expected) in [
+            (true, "true", "false"),
+            (false, "true", "true"),
+            (false, "false", "false"),
+        ] {
+            let log = dir.path().join("telemetry.txt");
+            let info = ExternalWorkerInfo {
+                name: "telemetry-probe".into(),
+                binary_path: PathBuf::from("/bin/sh"),
+                extra_args: vec![
+                    "-c".into(),
+                    "printf '%s' \"$III_TELEMETRY_ENABLED\" > \"$1\"".into(),
+                    "telemetry-probe".into(),
+                    log.to_string_lossy().into_owned(),
+                ],
+                env: vec![("III_TELEMETRY_ENABLED".into(), declared.into())],
+            };
+            let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
+            let mut slot = worker.child.lock().await;
+            worker
+                .spawn_child_into_with_telemetry(&mut slot, None, disabled)
+                .await
+                .unwrap();
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                slot.as_mut().unwrap().wait(),
+            )
+            .await
+            .expect("probe should exit")
+            .unwrap();
+            drop(slot);
+            worker.destroy().await.unwrap();
+            assert!(status.success());
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), expected);
+        }
     }
 
     #[test]
