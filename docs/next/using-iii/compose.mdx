@@ -619,7 +619,7 @@ containers:
 | Field              | Type    | Default | Description                                                                                         |
 | ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------- |
 | `namespace`        | string  | absent  | Namespace the project's workers register in. A project that declares none lands in `default`.       |
-| `startup_timeout`  | string  | `60s`   | Readiness budget for every worker. A worker may override it.                                        |
+| `startup_timeout`  | string  | `600s`  | Readiness budget for every worker. A worker may override it.                                        |
 | `stop_timeout`     | string  | `10s`   | Grace between the polite stop and the forced kill.                                                  |
 | `required_default` | boolean | `false` | Fallback for workers that omit `required`. An explicit worker value wins.                            |
 | `engine`           | map     | absent  | Present when this Compose invocation owns and configures the engine.                                |

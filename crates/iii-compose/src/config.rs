@@ -36,7 +36,12 @@ pub const DEFAULT_PRE_RUN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default readiness budget: how long `up` waits for a spawned container to
 /// show up in the engine before calling it failed.
-pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+///
+/// A host bundle gets this same budget twice, once for the publisher's install
+/// command and once for registration. A failed install is not resumed, it is
+/// discarded and repeated from a fresh copy, so a budget that is too small for
+/// a cold dependency install never converges however many times it retries.
+pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;

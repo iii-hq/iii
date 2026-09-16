@@ -553,11 +553,11 @@ containers:
     )
     .unwrap();
 
-    assert_eq!(file.startup_timeout, std::time::Duration::from_secs(60));
+    assert_eq!(file.startup_timeout, std::time::Duration::from_secs(600));
     assert_eq!(file.stop_timeout, std::time::Duration::from_secs(10));
     assert_eq!(
         file.containers["api"].startup_timeout,
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(600),
         "a container inherits the file's readiness budget"
     );
 }

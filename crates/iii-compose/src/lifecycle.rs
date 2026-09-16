@@ -1000,7 +1000,7 @@ async fn start_one_until_shutdown(
     let mut prepared_host = None;
     let working_dir = match &start {
         StartSpec::HostBundle(spec) => {
-            report_host_bundle_warnings(key, container, spec);
+            report_host_bundle_notes(key, container, spec);
             let prepared = crate::host_bundle::prepare(spec, ctx.host_dir, key)?;
             let workspace = prepared.workspace.clone();
             let mut merged = spec.env.clone();
@@ -1159,29 +1159,43 @@ async fn start_one_until_shutdown(
     Ok((record, child))
 }
 
-fn report_host_bundle_warnings(key: &str, container: &Container, spec: &HostBundleSpec) {
-    report::line(&format!(
-        "warning: {key} is a registry bundle running on the host without VM isolation"
-    ));
+/// Reports what `runtime: host` changes about a container.
+///
+/// These lines state the runtime contract the operator opted into, so they are
+/// daemon information rather than warnings: nothing here is a fault, and a
+/// yellow line per start would train the operator to ignore the block.
+fn report_host_bundle_notes(key: &str, container: &Container, spec: &HostBundleSpec) {
+    report::daemon_line(
+        &format!("{key} is a registry bundle running on the host without VM isolation"),
+        false,
+    );
     if spec.has_base_image {
-        report::line(&format!(
-            "warning: {key} uses runtime: host; iii.worker.yaml runtime.base_image is ignored"
-        ));
+        report::daemon_line(
+            &format!("{key} uses runtime: host; iii.worker.yaml runtime.base_image is ignored"),
+            false,
+        );
     }
     if spec.has_resources {
-        report::line(&format!(
-            "warning: {key} uses runtime: host; VM CPU and memory settings are ignored"
-        ));
+        report::daemon_line(
+            &format!("{key} uses runtime: host; VM CPU and memory settings are ignored"),
+            false,
+        );
     }
     if container.scripts.run.is_some() {
-        report::line(&format!(
-            "warning: {key} worker-compose.yaml scripts.run overrides iii.worker.yaml scripts.start"
-        ));
+        report::daemon_line(
+            &format!(
+                "{key} worker-compose.yaml scripts.run overrides iii.worker.yaml scripts.start"
+            ),
+            false,
+        );
     }
     if container.working_dir.is_some() {
-        report::line(&format!(
-            "warning: {key} uses runtime: host; working_dir is ignored so dependencies stay in the private bundle workspace"
-        ));
+        report::daemon_line(
+            &format!(
+                "{key} uses runtime: host; working_dir is ignored so dependencies stay in the private bundle workspace"
+            ),
+            false,
+        );
     }
 }
 
