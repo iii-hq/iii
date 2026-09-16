@@ -305,6 +305,27 @@ async fn prepare_metadata_with_versions(
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
 ) -> Result<PreparedLock> {
+    prepare_metadata_with_resolver(
+        compose,
+        force,
+        selected_versions,
+        |key, reference, range| async move {
+            crate::registry::resolve_package(&key, &reference, &range).await
+        },
+    )
+    .await
+}
+
+async fn prepare_metadata_with_resolver<F, Fut>(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    selected_versions: &BTreeMap<String, String>,
+    resolve: F,
+) -> Result<PreparedLock>
+where
+    F: Fn(String, String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<ResolvedPackage>>,
+{
     let path = lock_path(&compose.path);
     let previous = load(&path)?;
     let mut containers = BTreeMap::new();
@@ -312,31 +333,40 @@ async fn prepare_metadata_with_versions(
 
     let declarations = package_declarations(compose);
 
-    for (key, reference, requested) in declarations {
-        let worker = format!("package://{reference}");
-        let reusable = previous
-            .as_ref()
-            .and_then(|lock| lock.containers.get(&key))
-            .filter(|entry| {
-                !force.contains(&key) && entry.worker == worker && entry.requested == requested
-            });
-        let entry = match reusable {
-            Some(entry) => entry.clone(),
-            None => LockedContainer {
-                worker,
-                requested: requested.clone(),
-                resolved: crate::registry::resolve_package(
-                    &key,
-                    &reference,
-                    selected_versions
-                        .get(&key)
-                        .map(String::as_str)
-                        .unwrap_or(&requested),
-                )
-                .await?,
-            },
-        };
+    let mut resolutions =
+        futures::stream::iter(declarations.into_iter().map(|(key, reference, requested)| {
+            let previous = &previous;
+            let resolve = &resolve;
+            async move {
+                let worker = format!("package://{reference}");
+                let reusable = previous
+                    .as_ref()
+                    .and_then(|lock| lock.containers.get(&key))
+                    .filter(|entry| {
+                        !force.contains(&key)
+                            && entry.worker == worker
+                            && entry.requested == requested
+                    });
+                let entry = match reusable {
+                    Some(entry) => entry.clone(),
+                    None => {
+                        let range = selected_versions.get(&key).unwrap_or(&requested).clone();
+                        let resolved = resolve(key.clone(), reference, range).await?;
+                        LockedContainer {
+                            worker,
+                            requested,
+                            resolved,
+                        }
+                    }
+                };
+                Ok::<_, ComposeError>((key, entry))
+            }
+        }))
+        // Overlap registry requests without changing which declared failure is reported first.
+        .buffered(crate::parallelism::max_parallel_workers());
 
+    while let Some(result) = resolutions.next().await {
+        let (key, entry) = result?;
         if previous
             .as_ref()
             .and_then(|lock| lock.containers.get(&key))
@@ -730,6 +760,160 @@ mod tests {
             "https://mirror.example.com/state.tar.gz".to_string();
 
         assert!(!runtime_package_changed(&previous, &next));
+    }
+
+    #[tokio::test]
+    async fn metadata_resolution_overlaps_requests_with_the_compose_limit() {
+        use std::cell::Cell;
+
+        let dir = tempfile::tempdir().unwrap();
+        let limit = crate::parallelism::max_parallel_workers();
+        let count = limit + 1;
+        let mut yaml = String::from("containers:\n");
+        for index in 0..count {
+            yaml.push_str(&format!(
+                "  worker-{index}:\n    worker: package://worker-{index}\n    version: latest\n"
+            ));
+        }
+        let mut compose =
+            ComposeFile::parse(&yaml, dir.path().join("worker-compose.yaml")).unwrap();
+        let started = Cell::new(0);
+        let permits = tokio::sync::Semaphore::new(0);
+        let force = BTreeSet::new();
+        let versions = BTreeMap::new();
+        let package = lock().containers.remove("state").unwrap().resolved;
+        let prepare =
+            prepare_metadata_with_resolver(&mut compose, &force, &versions, |key, _, _| {
+                let started = &started;
+                let permits = &permits;
+                let mut package = package.clone();
+                async move {
+                    started.set(started.get() + 1);
+                    permits.acquire().await.unwrap().forget();
+                    package.name = key;
+                    Ok(package)
+                }
+            });
+        tokio::pin!(prepare);
+
+        // No clock-based assertion: all slots must start before any can finish.
+        assert!(futures::poll!(prepare.as_mut()).is_pending());
+        assert_eq!(started.get(), limit);
+        permits.add_permits(1);
+        assert!(futures::poll!(prepare.as_mut()).is_pending());
+        assert_eq!(started.get(), count);
+        permits.add_permits(limit);
+        let prepared = prepare.await.unwrap();
+
+        assert_eq!(prepared.lock.containers.len(), count);
+        for (key, entry) in &prepared.lock.containers {
+            assert_eq!(&entry.resolved.name, key);
+            assert_eq!(entry.requested, "latest");
+        }
+        prepared.write_if_changed().unwrap();
+        assert_eq!(load(prepared.path()).unwrap(), Some(prepared.lock));
+    }
+
+    #[tokio::test]
+    async fn metadata_resolution_reuses_locks_and_honors_forced_selected_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        let mut previous = lock();
+        let mut queue = previous.containers["state"].clone();
+        queue.worker = "package://queue".to_string();
+        queue.resolved.name = "queue".to_string();
+        previous.containers.insert("queue".to_string(), queue);
+        write_atomically(
+            &lock_path(&compose_path),
+            &serde_yaml::to_string(&previous).unwrap(),
+        )
+        .unwrap();
+        let mut compose = ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n  queue:\n    worker: package://queue\n    version: next\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n",
+            &compose_path,
+        ).unwrap();
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut updated = previous.containers["queue"].resolved.clone();
+        updated.version = "0.23.0".to_string();
+        updated.artifacts.values_mut().next().unwrap().sha256 = "b".repeat(64);
+        let force = BTreeSet::from(["queue".to_string()]);
+        let versions = BTreeMap::from([("queue".to_string(), "0.23.0".to_string())]);
+
+        let prepared = prepare_metadata_with_resolver(
+            &mut compose,
+            &force,
+            &versions,
+            |key, reference, range| {
+                calls.borrow_mut().push((key, reference, range));
+                std::future::ready(Ok(updated.clone()))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            calls.into_inner(),
+            vec![(
+                "queue".to_string(),
+                "queue".to_string(),
+                "0.23.0".to_string()
+            )]
+        );
+        assert_eq!(
+            prepared.lock.containers["state"],
+            previous.containers["state"]
+        );
+        assert_eq!(prepared.lock.containers["queue"].requested, "next");
+        assert_eq!(
+            prepared.package_changes,
+            BTreeSet::from(["queue".to_string()])
+        );
+        assert_eq!(
+            compose.containers["queue"].resolved_package.as_ref(),
+            Some(&updated)
+        );
+        assert!(!prepared.lock.containers.contains_key("local"));
+    }
+
+    #[tokio::test]
+    async fn metadata_resolution_reports_first_declared_failure_and_preserves_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let compose_path = dir.path().join("worker-compose.yaml");
+        let before = serde_yaml::to_string(&lock()).unwrap();
+        write_atomically(&lock_path(&compose_path), &before).unwrap();
+        let mut compose = ComposeFile::parse(
+            "containers:\n  first:\n    worker: package://first\n    version: latest\n  second:\n    worker: package://second\n    version: latest\n",
+            &compose_path,
+        ).unwrap();
+        let error = match prepare_metadata_with_resolver(
+            &mut compose,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |key, _, range| async move {
+                if key == "first" {
+                    tokio::task::yield_now().await;
+                }
+                Err(ComposeError::PackageNotResolved {
+                    container: key.clone(),
+                    name: key,
+                    range,
+                    message: "resolution failed".to_string(),
+                })
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("failed resolutions must not produce a lock"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, ComposeError::PackageNotResolved { container, .. } if container == "first")
+        );
+        assert_eq!(
+            std::fs::read_to_string(lock_path(&compose_path)).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]
