@@ -887,9 +887,18 @@ elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   # the default yes. Falls back to line input where stty is unavailable.
   _saved_stty=$(stty -g </dev/tty 2>/dev/null) || _saved_stty=""
   if [ -n "$_saved_stty" ]; then
+    # A signal during `dd` must not leave the terminal without echo, so the
+    # traps restore it first and then hand back to the usual cleanup.
+    _restore_tty() { stty "$_saved_stty" </dev/tty 2>/dev/null || :; }
+    trap '_restore_tty; cleanup' EXIT
+    trap '_restore_tty; exit 129' HUP
+    trap '_restore_tty; exit 130' INT
+    trap '_restore_tty; exit 143' TERM
     stty -icanon -echo min 1 time 0 </dev/tty
     _harness_answer=$(dd bs=1 count=1 </dev/tty 2>/dev/null)
-    stty "$_saved_stty" </dev/tty
+    _restore_tty
+    trap cleanup EXIT INT TERM
+    trap - HUP
     printf '%s\n' "$_harness_answer" >/dev/tty
   else
     read -r _harness_answer </dev/tty || _harness_answer="n"
