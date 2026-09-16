@@ -358,26 +358,26 @@ impl Daemon {
         )
     }
 
-    /// Resolves, acquires, and persists package locks before loading a project.
+    /// Resolves and acquires packages, then commits their lock to a loaded project.
     ///
-    /// The caller holds this compose file's mutation lock through this call, so
-    /// another mutation cannot replace the lock between persistence and the
-    /// resolved-package attachment.
+    /// The caller holds this compose file's mutation lock through this call.
+    /// Keep the candidate in memory until loading and metadata-lock acquisition
+    /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
         let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
-        if frozen {
-            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
+        let prepared = if frozen {
+            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?
         } else {
-            let prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
-            prepared.write_if_changed()?;
-        }
+            crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?
+        };
         let project = self.project(file).await?;
-        project.attach_resolved_packages(&compose).await;
+        project
+            .commit_prepared_packages(&compose, &prepared)
+            .await?;
         Ok(project)
     }
 
@@ -1935,6 +1935,100 @@ mod tests {
             .unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_missing_lock_when_project_load_is_cancelled() {
+        assert_cancelled_project_load_preserves_lock(None).await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_existing_lock_when_project_load_is_cancelled() {
+        // Preparation would prune this undeclared package and replace the lock.
+        let previous = serde_yaml::to_string(&serde_json::json!({
+            "version": 1,
+            "containers": {
+                "removed": {
+                    "worker": "package://example.invalid/removed",
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "removed",
+                        "registry": "https://example.invalid",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            "test-target": {
+                                "url": "https://example.invalid/artifact",
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_cancelled_project_load_preserves_lock(Some(&previous)).await;
+    }
+
+    async fn assert_cancelled_project_load_preserves_lock(previous: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let lock_path = crate::lockfile::lock_path(&path);
+        if let Some(text) = previous {
+            std::fs::write(&lock_path, text).unwrap();
+        }
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-project-load-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        {
+            // No packages need resolving: the first pending await is the
+            // project map lock, after a changed lock candidate is prepared.
+            let _projects = daemon.projects.lock().await;
+            let up = daemon.up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-project-load".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            );
+            tokio::pin!(up);
+            let polled = futures::poll!(up.as_mut());
+            assert!(
+                polled.is_pending(),
+                "startup must wait for the project: {polled:?}"
+            );
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+                .await
+                .expect("shutdown must not wait for project loading")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        match previous {
+            Some(text) => assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), text),
+            None => assert!(!lock_path.exists()),
+        }
+        assert!(daemon.loaded().await.is_empty());
+
+        // A subsequent attempt must still commit the prepared lock and load
+        // the project once the contended lock is available again.
+        let _mutation = daemon.lock_mutation(&path).await;
+        daemon.prepare_start_project(&path, false).await.unwrap();
+        let lock: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert!(lock["containers"].as_mapping().unwrap().is_empty());
+        assert!(lock.get("graphs").is_none());
+        assert_eq!(daemon.loaded().await.len(), 1);
+        daemon.shutdown().await;
     }
 
     #[tokio::test]

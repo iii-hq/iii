@@ -222,10 +222,17 @@ impl Project {
         &self.file_path
     }
 
-    /// Refreshes only the locked package metadata used by future starts.
+    /// Commits the package lock and refreshes the metadata used by future starts.
     /// Existing declarations and running child supervision stay unchanged.
-    pub(crate) async fn attach_resolved_packages(&self, resolved: &ComposeFile) {
+    /// Cancellation while waiting for the metadata lock leaves disk untouched;
+    /// after it is acquired, persistence and attachment have no cancellation point.
+    pub(crate) async fn commit_prepared_packages(
+        &self,
+        resolved: &ComposeFile,
+        prepared: &crate::lockfile::PreparedLock,
+    ) -> Result<()> {
         let mut current = self.file.write().await;
+        prepared.write_if_changed()?;
         for (key, container) in &mut current.containers {
             let Some(source) = resolved.containers.get(key) else {
                 continue;
@@ -234,6 +241,7 @@ impl Project {
                 container.resolved_package = source.resolved_package.clone();
             }
         }
+        Ok(())
     }
 
     /// Re-checks every ready container against the engine after the connection
