@@ -33,11 +33,13 @@ impl ShutdownSignal {
             let mut interrupted = signal(SignalKind::interrupt()).map_err(signal_error)?;
             let mut terminated = signal(SignalKind::terminate()).map_err(signal_error)?;
             tokio::spawn(async move {
-                tokio::select! {
-                    _ = interrupted.recv() => {}
-                    _ = terminated.recv() => {}
+                loop {
+                    let exit_code = tokio::select! {
+                        Some(()) = interrupted.recv() => 130,
+                        Some(()) = terminated.recv() => 143,
+                    };
+                    request_shutdown(&sender, exit_code);
                 }
-                let _ = sender.send(true);
             });
         }
 
@@ -48,15 +50,17 @@ impl ShutdownSignal {
             // receive its first poll.
             let mut interrupted = tokio::signal::windows::ctrl_c().map_err(signal_error)?;
             tokio::spawn(async move {
-                let _ = interrupted.recv().await;
-                let _ = sender.send(true);
+                while interrupted.recv().await.is_some() {
+                    request_shutdown(&sender, 130);
+                }
             });
         }
 
         #[cfg(not(any(unix, windows)))]
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            let _ = sender.send(true);
+            while tokio::signal::ctrl_c().await.is_ok() {
+                request_shutdown(&sender, 130);
+            }
         });
 
         Ok(Self { receiver })
@@ -102,6 +106,15 @@ impl ShutdownSignal {
     }
 }
 
+// Tokio keeps its handler installed even after a signal stream is dropped.
+// Keep listening through teardown so another Ctrl+C remains an escape hatch,
+// including when no ShutdownSignal receivers remain alive.
+fn request_shutdown(sender: &watch::Sender<bool>, exit_code: i32) {
+    if sender.send_replace(true) {
+        std::process::exit(exit_code);
+    }
+}
+
 #[cfg(any(unix, windows))]
 fn signal_error(error: std::io::Error) -> ComposeError {
     ComposeError::SpawnFailed {
@@ -113,6 +126,90 @@ fn signal_error(error: std::io::Error) -> ComposeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn second_interrupt_exits_during_shutdown() {
+        assert_second_signal_exits(nix::sys::signal::Signal::SIGINT).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_after_sigterm_exits_during_shutdown() {
+        assert_second_signal_exits(nix::sys::signal::Signal::SIGTERM).await;
+    }
+
+    #[cfg(unix)]
+    async fn assert_second_signal_exits(first: nix::sys::signal::Signal) {
+        use nix::{
+            sys::signal::{Signal, kill},
+            unistd::Pid,
+        };
+        use std::{process::Stdio, time::Duration};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        // Never install process-wide handlers or send signals in the test runner.
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "shutdown::tests::signal_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = Pid::from_raw(child.id().unwrap() as i32);
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if line == "signals-ready" {
+                    return;
+                }
+            }
+            panic!("fixture exited before installing its signal handlers");
+        })
+        .await
+        .expect("fixture should install its handlers");
+
+        kill(pid, first).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if line == "shutdown-requested" {
+                    return;
+                }
+            }
+            panic!("the first signal must request graceful shutdown, not exit");
+        })
+        .await
+        .expect("the first signal should latch shutdown");
+
+        kill(pid, Signal::SIGINT).unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("the second Ctrl+C must exit even during stalled teardown")
+            .unwrap();
+        assert_eq!(status.code(), Some(130));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess fixture for process-wide signal handling"]
+    async fn signal_fixture() {
+        use std::io::Write;
+
+        let mut shutdown = ShutdownSignal::install().unwrap();
+        println!("signals-ready");
+        std::io::stdout().flush().unwrap();
+        shutdown.wait().await;
+        // The escape hatch must outlive the last receiver during teardown.
+        drop(shutdown);
+        println!("shutdown-requested");
+        std::io::stdout().flush().unwrap();
+        std::future::pending::<()>().await;
+    }
 
     #[tokio::test]
     async fn combined_signal_latches_when_second_source_is_requested() {

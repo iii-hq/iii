@@ -495,12 +495,23 @@ impl Daemon {
         file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
-        shutdown: crate::shutdown::ShutdownSignal,
+        mut shutdown: crate::shutdown::ShutdownSignal,
         frozen: bool,
     ) -> Result<Option<OpResult>> {
         let file = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(file).await;
-        let project = self.prepare_start_project(file, frozen).await?;
+        let _mutation = tokio::select! {
+            biased;
+            _ = shutdown.wait() => return Ok(None),
+            mutation = self.lock_mutation(file) => mutation,
+        };
+        // Dropping preparation cancels in-flight registry requests and downloads.
+        // Keep lifecycle startup outside this select: it must roll back children
+        // it has already started rather than just dropping their futures.
+        let project = tokio::select! {
+            biased;
+            _ = shutdown.wait() => return Ok(None),
+            project = self.prepare_start_project(file, frozen) => project?,
+        };
         if shutdown.requested() {
             return Ok(None);
         }
@@ -1867,6 +1878,162 @@ pub(crate) fn expand_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn foreground_startup_skips_preparation_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        // A latched shutdown must win even over a missing compose file.
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-before-prepare-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (_sender, receiver) = tokio::sync::watch::channel(true);
+
+        let result = daemon
+            .up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-before-prepare".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_while_waiting_for_the_mutation_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-mutation-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let _mutation = daemon.lock_mutation(&path).await;
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-mutation".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            false,
+        );
+        tokio::pin!(up);
+        assert!(futures::poll!(up.as_mut()).is_pending());
+        sender.send(true).unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+            .await
+            .expect("shutdown must not wait for the mutation lock")
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(false).await;
+    }
+
+    #[tokio::test]
+    async fn frozen_foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(true).await;
+    }
+
+    async fn assert_download_cancelled(frozen: bool) {
+        use std::time::Duration;
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let server = MockServer::start().await;
+        let downloading = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&downloading);
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                started.notify_one();
+                ResponseTemplate::new(200).set_delay(Duration::from_secs(30))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        // A unique registry gives this fixture a cold cache without changing
+        // process-wide HOME or depending on the operator's installed packages.
+        let host = format!("cancel-{}.invalid", uuid::Uuid::new_v4());
+        let worker = format!("package://{host}/worker");
+        std::fs::write(
+            &path,
+            format!("containers:\n  worker:\n    worker: {worker}\n    version: '1.0.0'\n"),
+        )
+        .unwrap();
+        let lock = serde_json::json!({
+            "version": 1,
+            "containers": {
+                "worker": {
+                    "worker": worker,
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "worker",
+                        "registry": format!("https://{host}"),
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            (crate::registry::host_target()): {
+                                "url": format!("{}/artifact", server.uri()),
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let lock_path = crate::lockfile::lock_path(&path);
+        let before = serde_yaml::to_string(&lock).unwrap();
+        std::fs::write(&lock_path, &before).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-download-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-download".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            frozen,
+        );
+        {
+            tokio::pin!(up);
+            tokio::select! {
+                result = &mut up => panic!("startup ended before downloading: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(5), downloading.notified()) => {
+                    result.expect("the artifact download should start");
+                }
+            }
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), &mut up)
+                .await
+                .expect("shutdown must not wait for the download response")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        assert_eq!(std::fs::read_to_string(lock_path).unwrap(), before);
+        assert!(daemon.loaded().await.is_empty());
+        let _mutation = tokio::time::timeout(Duration::from_secs(1), daemon.lock_mutation(&path))
+            .await
+            .expect("cancelled preparation must release the mutation lock");
+        daemon.shutdown().await;
+    }
 
     #[test]
     fn update_without_workers_selects_packages_with_their_declared_references() {
