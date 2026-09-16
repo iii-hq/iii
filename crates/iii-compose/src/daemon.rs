@@ -297,6 +297,8 @@ pub struct Daemon {
     /// diverge in what they tear down.
     stop_requested: std::sync::atomic::AtomicBool,
     shutdown: crate::shutdown::ShutdownController,
+    /// Joined before project state is cleared; supervision must not write later.
+    supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Daemon {
@@ -354,9 +356,11 @@ impl Daemon {
             operations: crate::operation::OperationManager::new(engine.client()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown,
+            supervisor: Mutex::new(None),
         });
 
-        Self::supervise(&daemon);
+        *daemon.supervisor.try_lock().expect("new supervisor slot") =
+            Some(Self::supervise(&daemon));
         daemon
     }
 
@@ -1299,9 +1303,16 @@ impl Daemon {
             .down(Some(path), container, format!("{operation_id}-down"))
             .await?;
         self.forget(path).await;
+        // Once down has completed, operation cancellation must not strand the
+        // project. Finish its replacement, but still honor process shutdown.
         let project = self
-            .prepare(operation_id, self.prepare_start_project(path, false))
-            .await??;
+            .shutdown
+            .signal()
+            .run(self.prepare_start_project(path, false))
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            })??;
         let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
@@ -1438,11 +1449,22 @@ impl Daemon {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Drain supervision rather than aborting it: an in-flight lifecycle call
+    /// owns processes and must finish reaping them before state is removed.
+    async fn stop_supervisor(&self) {
+        let mut supervisor = self.supervisor.lock().await;
+        if let Some(task) = supervisor.as_mut() {
+            let _ = task.await;
+        }
+        *supervisor = None;
+    }
+
     /// Intentional shutdown: every project goes down, then the connection.
     pub async fn shutdown(&self) {
         // Publish before waiting for any project lock held by active work.
         self.shutdown.cancel();
         self.operations.cancel_all().await;
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.shutdown().await;
@@ -1453,6 +1475,8 @@ impl Daemon {
     /// Leaves without touching what was not started here. Used when the engine
     /// refuses this daemon's registration.
     pub async fn abandon(&self) {
+        self.shutdown.cancel();
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.abandon().await;
@@ -1466,12 +1490,19 @@ impl Daemon {
     /// One loop for every project rather than one per project: it holds each
     /// project's lock for microseconds at a time, and a daemon with ten
     /// projects should not cost ten timers.
-    fn supervise(daemon: &Arc<Self>) {
+    fn supervise(daemon: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let weak = Arc::downgrade(daemon);
+        let shutdown = daemon.shutdown.signal();
         tokio::spawn(async move {
             let mut was_connected = true;
             loop {
-                tokio::time::sleep(SUPERVISION_INTERVAL).await;
+                if shutdown
+                    .run(tokio::time::sleep(SUPERVISION_INTERVAL))
+                    .await
+                    .is_none()
+                {
+                    return;
+                }
                 let Some(daemon) = weak.upgrade() else { return };
                 if daemon.shutdown.signal().requested() {
                     return;
@@ -1486,14 +1517,20 @@ impl Daemon {
                     if reconnected {
                         project.reconcile_after_reconnect().await;
                     }
+                    if shutdown.requested() {
+                        return;
+                    }
                     project.reap_unexpected_exits().await;
+                    if shutdown.requested() {
+                        return;
+                    }
                     // After the reap, so a container that has just exited
                     // spends its first attempt on the tick that noticed rather
                     // than waiting for the next one.
                     project.drive_restarts().await;
                 }
             }
-        });
+        })
     }
 }
 
@@ -1974,6 +2011,95 @@ pub(crate) fn expand_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn whole_project_restart_finishes_replacement_after_operation_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("restart-cancel-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let original = daemon.project(&path).await.unwrap();
+        let operation = daemon.operations.create(1).await;
+        // Call the committed restart phase directly: admission already passed,
+        // and cancellation must not stop the up half once down begins.
+        operation.cancel();
+        let mut restart = Box::pin(daemon.restart_project(&path, None, operation.id()));
+        let polled = futures::poll!(restart.as_mut());
+        assert!(
+            polled.is_pending(),
+            "restart must reach replacement startup: {polled:?}"
+        );
+        let loaded = daemon.loaded().await;
+        assert_eq!(loaded.len(), 1);
+        assert!(
+            !Arc::ptr_eq(&loaded[0], &original),
+            "replacement project was not loaded"
+        );
+        assert!(crate::lockfile::lock_path(&path).exists());
+
+        // Unlike operation cancellation, process shutdown must still interrupt
+        // the replacement while it waits for the disconnected engine.
+        daemon.request_stop().await;
+        let (_down, up) = tokio::time::timeout(Duration::from_secs(1), restart)
+            .await
+            .expect("daemon shutdown must interrupt replacement")
+            .unwrap();
+        assert_eq!(up.primary_error.unwrap().code, "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_supervision_before_clearing_project_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("supervisor-drain-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        daemon.project(&path).await.unwrap();
+        // Replace only the idle test supervisor with a deterministic in-flight
+        // writer. Production shutdown must join it, not abort it or race it.
+        let original = daemon.supervisor.lock().await.take().unwrap();
+        original.abort();
+        let _ = original.await;
+        let store = crate::state::StateStore::for_project(&daemon.daemon_namespace, &path).unwrap();
+        let writer_store = store.clone();
+        let snapshot = crate::state::DaemonState::new(&path, "default");
+        let mut shutdown = daemon.shutdown.signal();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let did_complete = Arc::clone(&completed);
+        *daemon.supervisor.lock().await = Some(tokio::spawn(async move {
+            shutdown.wait().await;
+            tokio::task::yield_now().await;
+            writer_store.save(&snapshot).unwrap();
+            did_complete.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        tokio::time::timeout(Duration::from_secs(1), daemon.shutdown())
+            .await
+            .unwrap();
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(daemon.supervisor.lock().await.is_none());
+        assert!(
+            !store.path().exists(),
+            "supervision recreated state after cleanup"
+        );
+    }
 
     #[tokio::test]
     async fn daemon_shutdown_cancels_registered_operations_before_project_cleanup() {

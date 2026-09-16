@@ -274,6 +274,10 @@ impl Project {
     /// cascaded, exactly like a container that exited — from the project's side
     /// the two are the same outage.
     pub(crate) async fn reconcile_after_reconnect(&self) {
+        let shutdown = self.shutdown.signal();
+        if shutdown.requested() {
+            return;
+        }
         daemon_line(
             &self.project_namespace,
             "engine connection restored; re-checking the project",
@@ -281,8 +285,12 @@ impl Project {
         );
 
         let running: Vec<(String, Duration)> = {
-            let inner = self.inner.lock().await;
-            let file = self.file.read().await;
+            let Some(inner) = shutdown.run(self.inner.lock()).await else {
+                return;
+            };
+            let Some(file) = shutdown.run(self.file.read()).await else {
+                return;
+            };
             inner
                 .children
                 .iter()
@@ -299,8 +307,13 @@ impl Project {
         };
 
         for (key, budget) in running {
-            if self.wait_for_reregistration(&key, budget).await {
-                continue;
+            match self.wait_for_reregistration(&key, budget).await {
+                Some(true) => continue,
+                Some(false) => {}
+                None => return,
+            }
+            if shutdown.requested() {
+                return;
             }
 
             daemon_line(
@@ -310,7 +323,12 @@ impl Project {
             );
             self.down(Some(&key), format!("reconnect:{key}")).await;
 
-            let mut inner = self.inner.lock().await;
+            let Some(mut inner) = shutdown.run(self.inner.lock()).await else {
+                return;
+            };
+            if shutdown.requested() {
+                return;
+            }
             if let Some(entry) = inner.state.containers.get_mut(&key) {
                 entry.status = ChildStatus::Failed;
                 entry.last_error =
@@ -325,22 +343,33 @@ impl Project {
     /// Polls the engine until `key` is registered again, or the budget runs
     /// out. Never holds the lock across the wait — `up` and `status` have to
     /// stay answerable while a reconnect settles.
-    pub(crate) async fn wait_for_reregistration(&self, key: &str, budget: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + budget;
-        loop {
-            if self
-                .engine
-                .is_registered(&self.project_namespace, key)
-                .await
-                .unwrap_or(false)
-            {
-                return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(SUPERVISION_INTERVAL).await;
-        }
+    pub(crate) async fn wait_for_reregistration(
+        &self,
+        key: &str,
+        budget: Duration,
+    ) -> Option<bool> {
+        // None is intentional shutdown, not a registration failure. Do not
+        // cascade down or persist a failure record after cancellation.
+        self.shutdown
+            .signal()
+            .run(async {
+                let deadline = tokio::time::Instant::now() + budget;
+                loop {
+                    if self
+                        .engine
+                        .is_registered(&self.project_namespace, key)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    tokio::time::sleep(SUPERVISION_INTERVAL).await;
+                }
+            })
+            .await
     }
 
     /// Reacts to children that ended without anybody asking them to.
@@ -477,6 +506,7 @@ impl Project {
             return;
         };
         if self.shutdown.signal().requested() {
+            inner.restarts.release(key, lease);
             return;
         }
         if !inner.restarts.is_current(key, lease)
@@ -1275,6 +1305,61 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
     match tone {
         Tone::Plain => crate::report::line(&format!("{prefix} {message}")),
         Tone::Warn => crate::report::line(&format!("{prefix} {}", message.yellow())),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod reconnect_shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_interrupts_reconnect_wait_without_recreating_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path,
+            "startup_timeout: 60s\nstop_timeout: 100ms\ncontainers:\n  worker:\n    worker: path://.\n    scripts: { run: sleep 60 }\n").unwrap();
+        let engine = Arc::new(EngineClient::connect(
+            "ws://127.0.0.1:1/ws",
+            "compose",
+            "reconnect-test",
+        ));
+        let project = Project::open(
+            &format!("reconnect-{}", uuid::Uuid::new_v4()),
+            "default".into(),
+            ComposeFile::load(&path).unwrap(),
+            engine,
+            "ws://127.0.0.1:1/ws".into(),
+        )
+        .await
+        .unwrap();
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("60");
+        let child = crate::process::spawn_supervised(command).unwrap();
+        let pid = child.pid;
+        {
+            let mut inner = project.inner.lock().await;
+            inner.state.containers.insert(
+                "worker".into(),
+                crate::state::ChildRecord::from_supervised(&child, ChildStatus::Ready),
+            );
+            inner.children.insert("worker".into(), child);
+            project.store.save(&inner.state).unwrap();
+        }
+        let mut reconnect = Box::pin(project.reconcile_after_reconnect());
+        assert!(futures::poll!(reconnect.as_mut()).is_pending());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(reconnect, project.shutdown());
+        })
+        .await
+        .expect("shutdown must not wait for the 60-second reconnect budget");
+        assert!(!crate::process::is_running(pid));
+        assert!(!project.store.path().exists());
+        assert_eq!(
+            project
+                .wait_for_reregistration("worker", Duration::from_secs(60))
+                .await,
+            None
+        );
     }
 }
 
