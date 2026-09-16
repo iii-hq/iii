@@ -170,11 +170,10 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
     }
 }
 
-pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
+pub fn send_project_init_succeeded(project_id: &str) {
     if let Some(event) = build_event(
         "project_init_succeeded",
         serde_json::json!({
-            "with_docker": with_docker,
             "project_id": project_id,
             "install_method": environment::detect_install_method(),
         }),
