@@ -424,7 +424,7 @@ jobs:
       dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
       features: embed-init,embed-libkrunfw
       init_artifacts: true
-      targets: '["aarch64-apple-darwin","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]'
+      targets: '["aarch64-apple-darwin","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","x86_64-unknown-linux-musl","aarch64-unknown-linux-musl"]'
       system_deps: libcap-ng-dev
     secrets:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}

@@ -204,6 +204,16 @@ install_companion_from_tarball() {
   return 0
 }
 
+# Unlike the static engine, the worker needs the host libc for dlopen.
+# Keep this decision separate from TARGET / III_USE_GLIBC (engine overrides).
+worker_target_for_host() {
+  case "$1:$2:$3" in
+    Linux:x86_64:musl|Linux:aarch64:musl) printf '%s-unknown-linux-musl' "$2" ;;
+    Linux:x86_64:*|Linux:aarch64:*) printf '%s-unknown-linux-gnu' "$2" ;;
+    Darwin:aarch64:*) printf 'aarch64-apple-darwin' ;;
+  esac
+}
+
 # Test-mode hook: when this var is set, stop here so unit tests can source
 # the helper functions above without running the installer.
 if [ -n "${III_INSTALL_SH_TEST_MODE:-}" ]; then
@@ -578,21 +588,13 @@ case "$uname_s" in
     ;;
 esac
 
-# iii-worker: needs glibc on Linux (KVM/libkrun); not available for x86_64-apple-darwin.
-worker_target=""
-case "$uname_s" in
-  Linux)
-    case "$arch" in
-      x86_64)  worker_target="x86_64-unknown-linux-gnu" ;;
-      aarch64) worker_target="aarch64-unknown-linux-gnu" ;;
-    esac
-    ;;
-  Darwin)
-    case "$arch" in
-      aarch64) worker_target="aarch64-apple-darwin" ;;
-    esac
-    ;;
-esac
+# The engine's default x86_64 musl build is static and also runs on glibc.
+# The worker uses dynamic musl for firmware loading, so match the host loader.
+worker_libc=gnu
+if [ -e "/lib/ld-musl-${arch}.so.1" ]; then
+  worker_libc=musl
+fi
+worker_target=$(worker_target_for_host "$uname_s" "$arch" "$worker_libc")
 
 # Pre-resolve companion URLs so we know what we're downloading before we start.
 main_tarball="$tmpdir/$asset_name"

@@ -61,7 +61,7 @@ on:
         type: string
         default: ''
       targets:
-        description: 'JSON array of target triples to build. When provided, only matching targets from the default matrix are built. Leave empty for full 9-target matrix.'
+        description: 'JSON array of target triples to build (also supports aarch64-unknown-linux-musl on a native ARM runner). Leave empty for the default 9-target matrix.'
         required: false
         type: string
         default: ''
@@ -113,8 +113,10 @@ jobs:
             echo "matrix=$DEFAULT" >> "$GITHUB_OUTPUT"
             echo "Using default 9-target matrix"
           else
-            # Filter default matrix to only include targets in the provided JSON array
+            # Keep the default engine matrix unchanged. ARM musl workers need
+            # a native runner and are enabled only by an explicit target list.
             FILTERED=$(echo "$DEFAULT" | jq -c --argjson targets "$TARGETS_INPUT" '
+              .include += [{"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm"}] |
               .include |= [ .[] | select(.target as $t | $targets | index($t)) ]
             ')
             echo "matrix=$FILTERED" >> "$GITHUB_OUTPUT"
@@ -288,7 +290,25 @@ jobs:
           TAG_NAME: ${{ inputs.tag_name }}
         run: bash .github/scripts/validate_rust_release_version.sh "$MANIFEST_PATH" "$TAG_NAME" "$BIN_NAME"
 
+      # The worker needs dynamic musl for dlopen and static libcap-ng. The
+      # generic cross image does not provide this native Alpine toolchain.
+      - name: Build and smoke-test musl worker
+        if: inputs.bin_name == 'iii-worker' && contains(matrix.target, '-musl')
+        run: bash scripts/build-worker-musl.sh "${{ matrix.target }}"
+
+      - name: Upload musl worker
+        if: inputs.bin_name == 'iii-worker' && contains(matrix.target, '-musl') && !inputs.dry_run
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          tag_name: ${{ inputs.tag_name }}
+          fail_on_unmatched_files: true
+          files: |
+            target/worker-musl/${{ matrix.target }}/iii-worker-${{ matrix.target }}.tar.gz
+            target/worker-musl/${{ matrix.target }}/iii-worker-${{ matrix.target }}.sha256
+
       - name: Build and upload binary
+        if: inputs.bin_name != 'iii-worker' || !contains(matrix.target, '-musl')
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: ${{ inputs.bin_name }}
