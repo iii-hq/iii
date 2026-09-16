@@ -881,7 +881,19 @@ if [ "$has_learn_iii" = 0 ]; then
 elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
   printf 'Would you like to start the iii harness and take a quick look at what iii can do? [Y/n] ' >/dev/tty
-  read -r _harness_answer </dev/tty || _harness_answer="n"
+  # Accept a single keypress: no Enter needed. `read` is line-buffered, so
+  # drop the terminal out of canonical mode and take one byte. Enter then
+  # arrives as a newline that `$(...)` strips, which the `""` case reads as
+  # the default yes. Falls back to line input where stty is unavailable.
+  _saved_stty=$(stty -g </dev/tty 2>/dev/null) || _saved_stty=""
+  if [ -n "$_saved_stty" ]; then
+    stty -icanon -echo min 1 time 0 </dev/tty
+    _harness_answer=$(dd bs=1 count=1 </dev/tty 2>/dev/null)
+    stty "$_saved_stty" </dev/tty
+    printf '%s\n' "$_harness_answer" >/dev/tty
+  else
+    read -r _harness_answer </dev/tty || _harness_answer="n"
+  fi
   case "$_harness_answer" in
     ""|[Yy]|[Yy][Ee][Ss])
       # stdin is the script itself under `curl ... | sh`, and `exec` hands
