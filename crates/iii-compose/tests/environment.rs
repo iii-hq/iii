@@ -66,6 +66,148 @@ fn env_files_apply_in_order_and_environment_wins() {
 }
 
 #[test]
+fn blank_environment_values_preserve_the_last_env_file_value() {
+    for value in ["\"\"", "''", "", "null", "~"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = format!(
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, override.env]\n    environment:\n      TOKEN: {value}\n"
+        );
+        let file = project(
+            tmp.path(),
+            &compose,
+            &[
+                ("base.env", "TOKEN=base\nUNLISTED=preserved\n"),
+                ("override.env", "TOKEN=override\n"),
+            ],
+        );
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(
+            env,
+            std::collections::BTreeMap::from([
+                ("TOKEN".to_string(), "override".to_string()),
+                ("UNLISTED".to_string(), "preserved".to_string()),
+            ]),
+            "environment value: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn nonempty_environment_values_still_override_env_files() {
+    for (value, expected) in [
+        ("literal", "literal"),
+        ("\"null\"", "null"),
+        ("false", "false"),
+        ("0", "0"),
+        ("\"  \"", "  "),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = format!(
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env]\n    environment:\n      TOKEN: {value}\n"
+        );
+        let file = project(tmp.path(), &compose, &[("base.env", "TOKEN=fromfile\n")]);
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(env["TOKEN"], expected, "environment value: {value:?}");
+    }
+}
+
+#[test]
+fn without_an_env_file_empty_strings_remain_empty_and_null_keys_are_omitted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+containers:
+  api:
+    worker: path://./api
+    environment:
+      EMPTY: ""
+      BARE:
+      NULL_VALUE: null
+      TILDE: ~
+      LITERAL_NULL: "null"
+"#,
+        &[],
+    );
+
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+    assert_eq!(
+        env,
+        std::collections::BTreeMap::from([
+            ("EMPTY".to_string(), String::new()),
+            ("LITERAL_NULL".to_string(), "null".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn optional_interpolation_preserves_env_files_unless_the_host_value_is_nonempty() {
+    for (host_value, expected) in [
+        (None, "fromfile"),
+        (Some(""), "fromfile"),
+        (Some("fromhost"), "fromhost"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut document: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+containers:
+  api:
+    worker: path://./api
+    env_file: [base.env]
+    environment:
+      TOKEN: ${TOKEN:-}
+"#,
+        )
+        .unwrap();
+        // Inject the lookup instead of mutating the process-wide environment.
+        iii_compose::interpolate::expand_tree(
+            &mut document,
+            &tmp.path().join("worker-compose.yaml"),
+            &|_| host_value.map(str::to_string),
+        )
+        .unwrap();
+        let compose = serde_yaml::to_string(&document).unwrap();
+        let file = project(tmp.path(), &compose, &[("base.env", "TOKEN=fromfile\n")]);
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(env["TOKEN"], expected, "host value: {host_value:?}");
+    }
+}
+
+#[test]
+fn blank_environment_values_cannot_bypass_reserved_key_validation() {
+    for reserved in iii_compose::spawn::RESERVED_ENV {
+        for value in ["\"\"", "", "null", "~"] {
+            let compose = format!(
+                "containers:\n  api:\n    worker: path://./api\n    environment:\n      {reserved}: {value}\n"
+            );
+
+            let err = ComposeFile::parse(&compose, "/tmp/worker-compose.yaml")
+                .expect_err("reserved keys must be rejected even without a value");
+
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{reserved}: {value}");
+        }
+    }
+}
+
+#[test]
+fn duplicate_environment_keys_are_rejected_even_when_null() {
+    let err = ComposeFile::parse(
+        "containers:\n  api:\n    worker: path://./api\n    environment:\n      TOKEN:\n      TOKEN: value\n",
+        "/tmp/worker-compose.yaml",
+    )
+    .expect_err("a null value must not hide a duplicate key");
+
+    assert!(err.to_string().contains("duplicate"), "{err}");
+}
+
+#[test]
 fn env_files_tolerate_comments_blanks_quotes_and_export() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(

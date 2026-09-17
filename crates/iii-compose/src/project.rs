@@ -61,6 +61,7 @@ pub struct Project {
     logs: LogStore,
     store: StateStore,
     inner: Mutex<Inner>,
+    shutdown: crate::shutdown::ShutdownController,
 }
 
 /// How often the supervisor checks whether a ready child is still alive.
@@ -177,6 +178,25 @@ impl Project {
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
+        Self::open_with_shutdown(
+            daemon_namespace,
+            project_namespace,
+            file,
+            engine,
+            engine_url,
+            crate::shutdown::ShutdownController::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn open_with_shutdown(
+        daemon_namespace: &str,
+        project_namespace: String,
+        file: ComposeFile,
+        engine: Arc<EngineClient>,
+        engine_url: String,
+        shutdown: crate::shutdown::ShutdownController,
+    ) -> Result<Arc<Self>> {
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
         let file_path = file.path.clone();
 
@@ -202,6 +222,7 @@ impl Project {
             project_namespace,
             engine_url,
             engine,
+            shutdown,
             post_runs: crate::hooks::PostRunSupervisor::default(),
             logs,
             store,
@@ -222,10 +243,17 @@ impl Project {
         &self.file_path
     }
 
-    /// Refreshes only the locked package metadata used by future starts.
+    /// Commits the package lock and refreshes the metadata used by future starts.
     /// Existing declarations and running child supervision stay unchanged.
-    pub(crate) async fn attach_resolved_packages(&self, resolved: &ComposeFile) {
+    /// Cancellation while waiting for the metadata lock leaves disk untouched;
+    /// after it is acquired, persistence and attachment have no cancellation point.
+    pub(crate) async fn commit_prepared_packages(
+        &self,
+        resolved: &ComposeFile,
+        prepared: &crate::lockfile::PreparedLock,
+    ) -> Result<()> {
         let mut current = self.file.write().await;
+        prepared.write_if_changed()?;
         for (key, container) in &mut current.containers {
             let Some(source) = resolved.containers.get(key) else {
                 continue;
@@ -234,6 +262,7 @@ impl Project {
                 container.resolved_package = source.resolved_package.clone();
             }
         }
+        Ok(())
     }
 
     /// Re-checks every ready container against the engine after the connection
@@ -245,6 +274,10 @@ impl Project {
     /// cascaded, exactly like a container that exited — from the project's side
     /// the two are the same outage.
     pub(crate) async fn reconcile_after_reconnect(&self) {
+        let shutdown = self.shutdown.signal();
+        if shutdown.requested() {
+            return;
+        }
         daemon_line(
             &self.project_namespace,
             "engine connection restored; re-checking the project",
@@ -252,8 +285,12 @@ impl Project {
         );
 
         let running: Vec<(String, Duration)> = {
-            let inner = self.inner.lock().await;
-            let file = self.file.read().await;
+            let Some(inner) = shutdown.run(self.inner.lock()).await else {
+                return;
+            };
+            let Some(file) = shutdown.run(self.file.read()).await else {
+                return;
+            };
             inner
                 .children
                 .iter()
@@ -270,8 +307,13 @@ impl Project {
         };
 
         for (key, budget) in running {
-            if self.wait_for_reregistration(&key, budget).await {
-                continue;
+            match self.wait_for_reregistration(&key, budget).await {
+                Some(true) => continue,
+                Some(false) => {}
+                None => return,
+            }
+            if shutdown.requested() {
+                return;
             }
 
             daemon_line(
@@ -281,7 +323,12 @@ impl Project {
             );
             self.down(Some(&key), format!("reconnect:{key}")).await;
 
-            let mut inner = self.inner.lock().await;
+            let Some(mut inner) = shutdown.run(self.inner.lock()).await else {
+                return;
+            };
+            if shutdown.requested() {
+                return;
+            }
             if let Some(entry) = inner.state.containers.get_mut(&key) {
                 entry.status = ChildStatus::Failed;
                 entry.last_error =
@@ -296,22 +343,33 @@ impl Project {
     /// Polls the engine until `key` is registered again, or the budget runs
     /// out. Never holds the lock across the wait — `up` and `status` have to
     /// stay answerable while a reconnect settles.
-    pub(crate) async fn wait_for_reregistration(&self, key: &str, budget: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + budget;
-        loop {
-            if self
-                .engine
-                .is_registered(&self.project_namespace, key)
-                .await
-                .unwrap_or(false)
-            {
-                return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(SUPERVISION_INTERVAL).await;
-        }
+    pub(crate) async fn wait_for_reregistration(
+        &self,
+        key: &str,
+        budget: Duration,
+    ) -> Option<bool> {
+        // None is intentional shutdown, not a registration failure. Do not
+        // cascade down or persist a failure record after cancellation.
+        self.shutdown
+            .signal()
+            .run(async {
+                let deadline = tokio::time::Instant::now() + budget;
+                loop {
+                    if self
+                        .engine
+                        .is_registered(&self.project_namespace, key)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    tokio::time::sleep(SUPERVISION_INTERVAL).await;
+                }
+            })
+            .await
     }
 
     /// Reacts to children that ended without anybody asking them to.
@@ -444,7 +502,13 @@ impl Project {
     /// dependents up while this one is gone.
     async fn run_restart_attempt(&self, key: &str, lease: RestartLease, cause: RestartCause) {
         let restart_config = self.restart_config(key).await;
-        let mut inner = self.inner.lock().await;
+        let Some(mut inner) = self.shutdown.signal().run(self.inner.lock()).await else {
+            return;
+        };
+        if self.shutdown.signal().requested() {
+            inner.restarts.release(key, lease);
+            return;
+        }
         if !inner.restarts.is_current(key, lease)
             || !Self::restart_is_eligible(&inner, key, cause, Instant::now())
         {
@@ -513,6 +577,12 @@ impl Project {
             .iter()
             .any(|result| result.container == key && result.state == ChildStatus::Ready);
         inner.restarts.release(key, lease);
+        if self.shutdown.signal().requested() {
+            let snapshot = inner.state.clone();
+            drop(inner);
+            let _ = self.store.save(&snapshot);
+            return;
+        }
         if ready {
             // The record is already `Ready` and nothing more is owed. The spent
             // count survives, so a worker that comes back for a moment each
@@ -753,36 +823,9 @@ impl Project {
     }
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {
-        let config_dir = self.config_dir();
-        let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
-        inner.restarts.operator_took_control(target);
-        let Inner {
-            children, state, ..
-        } = &mut *inner;
-        let file = self.file.read().await;
-
-        let ctx = LifecycleCtx {
-            file: &file,
-            engine: &self.engine,
-            post_runs: &self.post_runs,
-            compose_namespace: &self.compose_namespace,
-            project_namespace: &self.project_namespace,
-            engine_url: &self.engine_url,
-            config_dir: &config_dir,
-            logs: &self.logs,
-            package_cache: &package_cache,
-            vm_dir: &vm_dir,
-        };
-
-        let result =
-            lifecycle::up(&ctx, children, &mut state.containers, target, operation_id).await;
-
-        let snapshot = state.clone();
-        drop(inner);
-        let _ = self.store.save(&snapshot);
-        result
+        self.up_until_shutdown(target, operation_id.clone(), self.shutdown.signal())
+            .await
+            .unwrap_or_else(|| lifecycle::cancelled_op(operation_id))
     }
 
     pub(crate) async fn up_until_shutdown(
@@ -791,17 +834,19 @@ impl Project {
         operation_id: String,
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Option<OpResult> {
+        let shutdown = shutdown.or(self.shutdown.signal());
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
-        let mut inner = self.inner.lock().await;
+        let mut inner = shutdown.run(self.inner.lock()).await?;
         inner.restarts.operator_took_control(target);
         let Inner {
             children, state, ..
         } = &mut *inner;
-        let file = self.file.read().await;
+        let file = shutdown.run(self.file.read()).await?;
 
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -855,6 +900,7 @@ impl Project {
         }
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -868,34 +914,25 @@ impl Project {
         };
 
         let operation = crate::operation::active(&operation_id);
-        let shutdown = operation.as_ref().map(|operation| {
-            crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation())
-        });
+        let signal = self.shutdown.signal();
+        let shutdown = match operation.as_ref() {
+            Some(operation) => signal.or(crate::shutdown::ShutdownSignal::from_receiver(
+                operation.cancellation(),
+            )),
+            None => signal,
+        };
         let mut restarted = Vec::with_capacity(restart.len());
         let mut interrupted = false;
         for key in restart {
-            let result = if let Some(shutdown) = shutdown.clone() {
-                lifecycle::restart_one_until_shutdown(
-                    &ctx,
-                    children,
-                    &mut state.containers,
-                    key,
-                    format!("{operation_id}-restart-{key}"),
-                    shutdown,
-                )
-                .await
-            } else {
-                Some(
-                    lifecycle::restart_one(
-                        &ctx,
-                        children,
-                        &mut state.containers,
-                        key,
-                        format!("{operation_id}-restart-{key}"),
-                    )
-                    .await,
-                )
-            };
+            let result = lifecycle::restart_one_until_shutdown(
+                &ctx,
+                children,
+                &mut state.containers,
+                key,
+                format!("{operation_id}-restart-{key}"),
+                shutdown.clone(),
+            )
+            .await;
             let Some(result) = result else {
                 interrupted = true;
                 break;
@@ -904,14 +941,8 @@ impl Project {
         }
         let up_operation_id = format!("{operation_id}-up");
         let up = if interrupted {
-            OpResult {
-                operation_id: up_operation_id,
-                status: crate::lifecycle::OpStatus::Failed,
-                changed: false,
-                containers: Vec::new(),
-                primary_error: None,
-            }
-        } else if let Some(shutdown) = shutdown {
+            lifecycle::cancelled_op(up_operation_id)
+        } else {
             let result = lifecycle::up_until_shutdown(
                 &ctx,
                 children,
@@ -921,18 +952,8 @@ impl Project {
                 shutdown,
             )
             .await;
-            if result.is_none() {
-                interrupted = true;
-            }
-            result.unwrap_or_else(|| OpResult {
-                operation_id: up_operation_id,
-                status: crate::lifecycle::OpStatus::Failed,
-                changed: false,
-                containers: Vec::new(),
-                primary_error: None,
-            })
-        } else {
-            lifecycle::up(&ctx, children, &mut state.containers, None, up_operation_id).await
+            interrupted = result.is_none();
+            result.unwrap_or_else(|| lifecycle::cancelled_op(up_operation_id))
         };
 
         let snapshot = state.clone();
@@ -968,6 +989,7 @@ impl Project {
         let stopped = {
             let current = self.file.read().await;
             let ctx = LifecycleCtx {
+                shutdown: &self.shutdown,
                 file: &current,
                 engine: &self.engine,
                 post_runs: &self.post_runs,
@@ -1002,6 +1024,7 @@ impl Project {
         }
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1059,6 +1082,7 @@ impl Project {
         } = inner;
         let file = self.file.read().await;
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1099,6 +1123,7 @@ impl Project {
         let file = self.file.read().await;
 
         let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
             file: &file,
             engine: &self.engine,
             post_runs: &self.post_runs,
@@ -1233,6 +1258,7 @@ impl Project {
     /// Intentional shutdown: stop every local child, then clear the state.
     /// A daemon that exits on purpose leaves nothing behind to reconcile.
     pub async fn shutdown(&self) {
+        self.shutdown.cancel();
         let operation_id = "shutdown".to_string();
         self.down(None, operation_id).await;
         self.post_runs.shutdown().await;
@@ -1279,6 +1305,61 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
     match tone {
         Tone::Plain => crate::report::line(&format!("{prefix} {message}")),
         Tone::Warn => crate::report::line(&format!("{prefix} {}", message.yellow())),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod reconnect_shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_interrupts_reconnect_wait_without_recreating_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path,
+            "startup_timeout: 60s\nstop_timeout: 100ms\ncontainers:\n  worker:\n    worker: path://.\n    scripts: { run: sleep 60 }\n").unwrap();
+        let engine = Arc::new(EngineClient::connect(
+            "ws://127.0.0.1:1/ws",
+            "compose",
+            "reconnect-test",
+        ));
+        let project = Project::open(
+            &format!("reconnect-{}", uuid::Uuid::new_v4()),
+            "default".into(),
+            ComposeFile::load(&path).unwrap(),
+            engine,
+            "ws://127.0.0.1:1/ws".into(),
+        )
+        .await
+        .unwrap();
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("60");
+        let child = crate::process::spawn_supervised(command).unwrap();
+        let pid = child.pid;
+        {
+            let mut inner = project.inner.lock().await;
+            inner.state.containers.insert(
+                "worker".into(),
+                crate::state::ChildRecord::from_supervised(&child, ChildStatus::Ready),
+            );
+            inner.children.insert("worker".into(), child);
+            project.store.save(&inner.state).unwrap();
+        }
+        let mut reconnect = Box::pin(project.reconcile_after_reconnect());
+        assert!(futures::poll!(reconnect.as_mut()).is_pending());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(reconnect, project.shutdown());
+        })
+        .await
+        .expect("shutdown must not wait for the 60-second reconnect budget");
+        assert!(!crate::process::is_running(pid));
+        assert!(!project.store.path().exists());
+        assert_eq!(
+            project
+                .wait_for_reregistration("worker", Duration::from_secs(60))
+                .await,
+            None
+        );
     }
 }
 

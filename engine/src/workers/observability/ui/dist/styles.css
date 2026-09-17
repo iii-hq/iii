@@ -1,5 +1,5 @@
 /* styles.css */
-@scope ([data-iii-ui="iii-observability"]) {
+@scope ([data-iii-ui=iii-observability]) {
   .iii-observability-ui {
     --obs-bg: var(--color-panel, #f9f9f9);
     --obs-card: var(--color-panel-raised, #ffffff);

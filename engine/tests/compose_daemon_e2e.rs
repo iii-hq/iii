@@ -1134,6 +1134,144 @@ async fn one_file_is_one_project_however_it_is_spelled() {
     daemon.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_cancels_remote_up_pre_run_and_reaps_its_process() {
+    assert_shutdown_during_start(false, true).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_cancels_remote_up_readiness_and_reaps_its_process() {
+    assert_shutdown_during_start(false, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_cancels_restart_pre_run_and_reaps_its_process() {
+    assert_shutdown_during_start(true, true).await;
+}
+
+#[cfg(unix)]
+async fn assert_shutdown_during_start(restart: bool, hook: bool) {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("pending.sh"),
+        "echo $$ > pending.tmp; mv pending.tmp pending.pid; exec sleep 60\n",
+    )
+    .unwrap();
+    let script = "exec sh pending.sh";
+    let scripts = if hook {
+        json!({ "pre_run": script, "pre_run_timeout": "60s", "run": "echo unexpected > ran" })
+    } else {
+        json!({ "run": script })
+    };
+    let file = project(
+        tmp.path(),
+        &serde_yaml::to_string(&json!({
+            "namespace": "cancel-start", "startup_timeout": "60s", "stop_timeout": "100ms",
+            "containers": { "worker": { "worker": "path://.", "scripts": scripts } }
+        }))
+        .unwrap(),
+        &[],
+    );
+    let project = daemon.project(&file).await.unwrap();
+    let pending = tokio::spawn(async move {
+        if restart {
+            project.restart_one("worker", "cancel-restart".into()).await
+        } else {
+            project.up(None, "cancel-up".into()).await
+        }
+    });
+    let marker = tmp.path().join("pending.pid");
+    wait_for_start_markers(&[&marker]).await;
+    let pid: u32 = std::fs::read_to_string(&marker)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let stopped = tokio::time::timeout(Duration::from_secs(5), daemon.shutdown()).await;
+    // Failure cleanup must not leave a test fixture alive on a regression.
+    if stopped.is_err() {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        pending.abort();
+        daemon.shutdown().await;
+    }
+    stopped.expect("shutdown must not wait for the 60-second startup timeout");
+    let result = pending.await.unwrap();
+    assert_eq!(result.status, iii_compose::lifecycle::OpStatus::Failed);
+    assert!(
+        !iii_compose::process::is_running(pid),
+        "pending process survived shutdown"
+    );
+    assert!(
+        !tmp.path().join("ran").exists(),
+        "run started after the hook was cancelled"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_interrupts_a_supervised_replacement_waiting_for_readiness() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("worker.sh"),
+        "echo $$ >> pids; while [ ! -f die ]; do sleep 0.05; done; rm -f die; exit 1\n",
+    )
+    .unwrap();
+    let file = project(
+        tmp.path(),
+        &serde_yaml::to_string(&json!({
+            "namespace": "cancel-supervisor", "startup_timeout": "60s", "stop_timeout": "100ms",
+            "containers": { "worker": { "worker": "path://.", "restart": "on-failure",
+                "scripts": { "run": "exec sh worker.sh" }
+            } }
+        }))
+        .unwrap(),
+        &[],
+    );
+    let pids = tmp.path().join("pids");
+    let ready = async {
+        wait_for_attempts(&pids, 1).await;
+        let worker = register_test_worker(port, "cancel-supervisor", "worker");
+        wait_for_worker_state(&daemon, "cancel-supervisor", "worker", true).await;
+        worker
+    };
+    let (up, worker) = tokio::join!(daemon.up(Some(&file), None, "initial".into()), ready);
+    assert_eq!(up.unwrap().status, iii_compose::lifecycle::OpStatus::Ok);
+    worker.shutdown_async().await;
+    wait_for_worker_state(&daemon, "cancel-supervisor", "worker", false).await;
+    std::fs::write(tmp.path().join("die"), "").unwrap();
+    wait_for_attempts(&pids, 2).await;
+    let pid: u32 = std::fs::read_to_string(&pids)
+        .unwrap()
+        .lines()
+        .last()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let stopped = tokio::time::timeout(Duration::from_secs(5), daemon.shutdown()).await;
+    if stopped.is_err() {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(pid as i32)),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        daemon.shutdown().await;
+    }
+    stopped.expect("the supervisor must release its lock when daemon shutdown is requested");
+    assert!(!iii_compose::process::is_running(pid));
+    assert_eq!(std::fs::read_to_string(&pids).unwrap().lines().count(), 2);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_child_that_never_registers_times_out_and_rolls_back() {
     isolate_state();

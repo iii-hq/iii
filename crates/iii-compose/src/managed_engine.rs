@@ -84,8 +84,19 @@ impl ManagedEngine {
         log_path: &Path,
         namespace: &str,
     ) -> Result<Self> {
+        // Cancellation before spawn must remove the materialized configuration.
+        struct PendingConfig(Option<PathBuf>);
+        impl Drop for PendingConfig {
+            fn drop(&mut self) {
+                if let Some(path) = &self.0 {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        let mut pending = PendingConfig(Some(config_path.to_path_buf()));
         match Self::spawn_with_paths(executable, config_path, log_path, namespace).await {
             Ok(mut engine) => {
+                pending.0 = None;
                 engine.remove_config_on_stop = true;
                 Ok(engine)
             }

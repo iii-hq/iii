@@ -24,9 +24,16 @@ use crate::error::{ComposeError, Result};
 ///
 /// Maps merge key by key. Arrays and scalars replace wholesale — half-merged
 /// lists are never what an operator means. An explicit `null` is a value that
-/// replaces, not a delete operator.
+/// replaces, not a delete operator. A mapping whose `name` the override
+/// changes is replaced whole: the keys beside `name` belong to the variant it
+/// picks (see [`picks_another_variant`]).
 pub fn merge(base: serde_yaml::Value, override_value: serde_yaml::Value) -> serde_yaml::Value {
     match (base, override_value) {
+        (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(overrides))
+            if picks_another_variant(&base, &overrides) =>
+        {
+            serde_yaml::Value::Mapping(overrides)
+        }
         (serde_yaml::Value::Mapping(mut base), serde_yaml::Value::Mapping(overrides)) => {
             for (key, value) in overrides {
                 // Merged in place so an override never reshuffles the document:
@@ -45,6 +52,21 @@ pub fn merge(base: serde_yaml::Value, override_value: serde_yaml::Value) -> serd
         }
         (_, override_value) => override_value,
     }
+}
+
+/// `{name: …, config: …}` is how a variant is chosen everywhere in iii: the
+/// adapters of state, queue, cron, pubsub and the engine's own configuration
+/// worker. The keys beside `name` belong to the variant it picks, so an
+/// override that picks another one replaces the mapping whole. Merging would
+/// carry the old variant's keys into the new one, and a closed schema then
+/// rejects the result (iii-hq/iii#2138: `store_method` from `kv` leaking into
+/// `redis`).
+fn picks_another_variant(base: &serde_yaml::Mapping, overrides: &serde_yaml::Mapping) -> bool {
+    let key = serde_yaml::Value::from("name");
+    matches!(
+        (base.get(&key), overrides.get(&key)),
+        (Some(serde_yaml::Value::String(a)), Some(serde_yaml::Value::String(b))) if a != b
+    )
 }
 
 /// A resolved configuration file owned by the daemon.
@@ -160,6 +182,42 @@ mod tests {
     fn new_keys_are_added() {
         let merged = merge(yaml("a: 1\n"), yaml("b: 2\n"));
         assert_eq!(merged, yaml("a: 1\nb: 2\n"));
+    }
+
+    #[test]
+    fn changing_a_variant_name_replaces_its_mapping() {
+        // iii-hq/iii#2138: the kv default must not leak into the redis config.
+        let merged = merge(
+            yaml("adapter:\n  name: kv\n  config:\n    store_method: file_based\n"),
+            yaml("adapter:\n  name: redis\n  config:\n    redis_url: redis://127.0.0.1:6379\n"),
+        );
+        assert_eq!(
+            merged,
+            yaml("adapter:\n  name: redis\n  config:\n    redis_url: redis://127.0.0.1:6379\n")
+        );
+    }
+
+    #[test]
+    fn keeping_the_variant_name_still_merges() {
+        let merged = merge(
+            yaml("adapter:\n  name: kv\n  config:\n    store_method: file_based\n"),
+            yaml("adapter:\n  name: kv\n  config:\n    file_path: /data\n"),
+        );
+        assert_eq!(
+            merged,
+            yaml(
+                "adapter:\n  name: kv\n  config:\n    store_method: file_based\n    file_path: /data\n"
+            )
+        );
+    }
+
+    #[test]
+    fn a_name_alone_drops_the_old_variant_config() {
+        let merged = merge(
+            yaml("adapter:\n  name: kv\n  config:\n    store_method: file_based\n"),
+            yaml("adapter:\n  name: redis\n"),
+        );
+        assert_eq!(merged, yaml("adapter:\n  name: redis\n"));
     }
 
     #[test]

@@ -88,8 +88,16 @@ impl From<&ComposeError> for OpError {
     }
 }
 
+pub(crate) fn cancelled_op(operation_id: String) -> OpResult {
+    let error = ComposeError::OperationCancelled {
+        operation_id: operation_id.clone(),
+    };
+    failed_op(operation_id, None, &error)
+}
+
 /// Everything `up`/`down` need that is not the compose file itself.
 pub struct LifecycleCtx<'a> {
+    pub(crate) shutdown: &'a crate::shutdown::ShutdownController,
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
     pub post_runs: &'a hooks::PostRunSupervisor,
@@ -152,9 +160,16 @@ pub async fn up(
     target: Option<&str>,
     operation_id: String,
 ) -> OpResult {
-    up_inner(ctx, children, records, target, operation_id, None)
-        .await
-        .expect("up without a shutdown signal cannot be interrupted")
+    up_inner(
+        ctx,
+        children,
+        records,
+        target,
+        operation_id.clone(),
+        Some(ctx.shutdown.signal()),
+    )
+    .await
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 /// Starts the foreground project's graph, rolling back this operation when an
@@ -167,7 +182,15 @@ pub(crate) async fn up_until_shutdown(
     operation_id: String,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> Option<OpResult> {
-    up_inner(ctx, children, records, target, operation_id, Some(shutdown)).await
+    up_inner(
+        ctx,
+        children,
+        records,
+        target,
+        operation_id,
+        Some(shutdown.or(ctx.shutdown.signal())),
+    )
+    .await
 }
 
 async fn up_inner(
@@ -407,9 +430,17 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
-    restart_one_inner(ctx, children, records, key, operation_id, None, None)
-        .await
-        .expect("restart without a shutdown signal cannot be interrupted")
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id.clone(),
+        None,
+        None,
+    )
+    .await
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 pub(crate) async fn restart_one_supervised(
@@ -426,12 +457,12 @@ pub(crate) async fn restart_one_supervised(
         children,
         records,
         key,
-        operation_id,
+        operation_id.clone(),
         None,
         Some((attempt, total_attempts)),
     )
     .await
-    .expect("supervised restart without a shutdown signal cannot be interrupted")
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 pub(crate) async fn restart_one_until_shutdown(
@@ -471,7 +502,9 @@ async fn restart_one_inner(
         report::summary_failed("restart", error.code(), began.elapsed());
         return Some(failed_op(operation_id, Some(key), &error));
     }
-    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+    if ctx.shutdown.signal().requested()
+        || shutdown.as_ref().is_some_and(|signal| signal.requested())
+    {
         return None;
     }
 
@@ -488,7 +521,16 @@ async fn restart_one_inner(
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    if let Err(error) = await_name_release(ctx, key).await {
+    let Some(released) = ctx
+        .shutdown
+        .signal()
+        .run(await_name_release(ctx, key))
+        .await
+    else {
+        report::plan_done();
+        return None;
+    };
+    if let Err(error) = released {
         report::failed(key, error.code(), &error.to_string());
         report::plan_done();
         report::summary_failed("restart", error.code(), began.elapsed());
@@ -497,9 +539,11 @@ async fn restart_one_inner(
 
     report::starting(key, "starting");
     let started = Instant::now();
-    // Once the old worker has stopped, finish its replacement before observing
-    // cancellation again. Returning early here would persist a stopped worker.
-    let outcome = start_one_attempt(ctx, key, None, Some(&operation_id)).await;
+    // An individual operation cancellation still finishes its replacement.
+    // Daemon shutdown is different: the target state is stopped, so interrupt
+    // preparation/readiness and reap any child already started by this attempt.
+    let outcome =
+        start_one_attempt(ctx, key, Some(ctx.shutdown.signal()), Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
@@ -556,7 +600,8 @@ async fn restart_one_inner(
             });
         }
         StartAttempt::Interrupted => {
-            unreachable!("replacement startup has no interrupt signal")
+            report::plan_done();
+            return None;
         }
     };
 
@@ -856,10 +901,9 @@ async fn start_one_until_shutdown(
     macro_rules! wait_or_interrupt {
         ($future:expr) => {{
             if let Some(signal) = shutdown.as_mut() {
-                tokio::select! {
-                    biased;
-                    _ = signal.wait() => return Err(StartFailure::Interrupted),
-                    result = $future => result,
+                match signal.run($future).await {
+                    Some(result) => result,
+                    None => return Err(StartFailure::Interrupted),
                 }
             } else {
                 $future.await

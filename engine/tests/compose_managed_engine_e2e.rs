@@ -7,7 +7,13 @@ use std::{process::Stdio, time::Duration, time::Instant};
 
 fn iii_bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
-    command.env_remove("CLICOLOR_FORCE").env("NO_COLOR", "1");
+    // These fixtures own their engine endpoint. Never inherit the operator's
+    // engine URL: it would override a managed engine and invalidate the test.
+    command
+        .env_remove("III_URL")
+        .env_remove("III_COMPOSE_NAMESPACE")
+        .env_remove("CLICOLOR_FORCE")
+        .env("NO_COLOR", "1");
     command
 }
 

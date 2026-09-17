@@ -296,6 +296,9 @@ pub struct Daemon {
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
     stop_requested: std::sync::atomic::AtomicBool,
+    shutdown: crate::shutdown::ShutdownController,
+    /// Joined before project state is cleared; supervision must not write later.
+    supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Daemon {
@@ -308,6 +311,22 @@ impl Daemon {
         daemon_namespace: String,
         project_namespace_override: Option<String>,
         engine_policy: EnginePolicy,
+    ) -> Arc<Self> {
+        Self::start_with_shutdown(
+            requested_engine_url,
+            daemon_namespace,
+            project_namespace_override,
+            engine_policy,
+            crate::shutdown::ShutdownController::default(),
+        )
+    }
+
+    pub(crate) fn start_with_shutdown(
+        requested_engine_url: String,
+        daemon_namespace: String,
+        project_namespace_override: Option<String>,
+        engine_policy: EnginePolicy,
+        shutdown: crate::shutdown::ShutdownController,
     ) -> Arc<Self> {
         // A managed file is the sole engine source. Public callers receive the
         // same guarantee as the CLI: workers and policy checks cannot point at
@@ -336,10 +355,37 @@ impl Daemon {
             mutations: Mutex::new(BTreeMap::new()),
             operations: crate::operation::OperationManager::new(engine.client()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
+            shutdown,
+            supervisor: Mutex::new(None),
         });
 
-        Self::supervise(&daemon);
+        *daemon.supervisor.try_lock().expect("new supervisor slot") =
+            Some(Self::supervise(&daemon));
         daemon
+    }
+
+    fn cancellation(&self, operation_id: &str) -> crate::shutdown::ShutdownSignal {
+        let signal = self.shutdown.signal();
+        match crate::operation::active(operation_id) {
+            Some(operation) => signal.or(crate::shutdown::ShutdownSignal::from_receiver(
+                operation.cancellation(),
+            )),
+            None => signal,
+        }
+    }
+
+    /// Preparation is safe to drop; lifecycle work instead drains and rolls back.
+    async fn prepare<T>(
+        &self,
+        operation_id: &str,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        self.cancellation(operation_id)
+            .run(work)
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            })
     }
 
     pub fn engine(&self) -> &EngineClient {
@@ -358,26 +404,26 @@ impl Daemon {
         )
     }
 
-    /// Resolves, acquires, and persists package locks before loading a project.
+    /// Resolves and acquires packages, then commits their lock to a loaded project.
     ///
-    /// The caller holds this compose file's mutation lock through this call, so
-    /// another mutation cannot replace the lock between persistence and the
-    /// resolved-package attachment.
+    /// The caller holds this compose file's mutation lock through this call.
+    /// Keep the candidate in memory until loading and metadata-lock acquisition
+    /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
         let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
-        if frozen {
-            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
+        let prepared = if frozen {
+            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?
         } else {
-            let prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
-            prepared.write_if_changed()?;
-        }
+            crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?
+        };
         let project = self.project(file).await?;
-        project.attach_resolved_packages(&compose).await;
+        project
+            .commit_prepared_packages(&compose, &prepared)
+            .await?;
         Ok(project)
     }
 
@@ -413,12 +459,13 @@ impl Daemon {
 
             crate::lockfile::attach(&mut compose)?;
 
-            let project = Project::open(
+            let project = Project::open_with_shutdown(
                 &self.daemon_namespace,
                 namespace.clone(),
                 compose,
                 Arc::clone(&self.engine),
                 self.engine_url.clone(),
+                self.shutdown.clone(),
             )
             .await?;
 
@@ -468,10 +515,15 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let file = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(file).await;
-        let project = self.prepare_start_project(file, false).await?;
-        Ok(project.up(container, operation_id).await)
+        self.up_until_shutdown(
+            file,
+            container,
+            operation_id.clone(),
+            self.cancellation(&operation_id),
+            false,
+        )
+        .await?
+        .ok_or(ComposeError::OperationCancelled { operation_id })
     }
 
     /// Brings a project up using only a matching existing lock.
@@ -481,15 +533,18 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let file = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(file).await;
-        let project = self.prepare_start_project(file, true).await?;
-        Ok(project.up(container, operation_id).await)
+        self.up_until_shutdown(
+            file,
+            container,
+            operation_id.clone(),
+            self.cancellation(&operation_id),
+            true,
+        )
+        .await?
+        .ok_or(ComposeError::OperationCancelled { operation_id })
     }
 
-    /// Brings the initial foreground project up until the process is asked to
-    /// stop. Remote `compose::up` calls use [`Self::up`] and are not tied to a
-    /// signal received by the foreground CLI.
+    /// Shared foreground and remote startup, cancelled by the same daemon source.
     pub(crate) async fn up_until_shutdown(
         &self,
         file: Option<&Path>,
@@ -498,9 +553,16 @@ impl Daemon {
         shutdown: crate::shutdown::ShutdownSignal,
         frozen: bool,
     ) -> Result<Option<OpResult>> {
+        let shutdown = shutdown.or(self.cancellation(&operation_id));
         let file = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(file).await;
-        let project = self.prepare_start_project(file, frozen).await?;
+        let Some(_mutation) = shutdown.run(self.lock_mutation(file)).await else {
+            return Ok(None);
+        };
+        // Drop only preparation; lifecycle startup must roll back owned children.
+        let Some(project) = shutdown.run(self.prepare_start_project(file, frozen)).await else {
+            return Ok(None);
+        };
+        let project = project?;
         if shutdown.requested() {
             return Ok(None);
         }
@@ -573,9 +635,14 @@ impl Daemon {
                 selected_versions,
                 resolved_graphs,
             } = self
-                .plan_add(path, &declarations, &asked_keys, &operation_id)
+                .prepare(
+                    &operation_id,
+                    self.plan_add(path, &declarations, &asked_keys, &operation_id),
+                )
+                .await??;
+            let mutation = self
+                .prepare(&operation_id, self.lock_mutation(path))
                 .await?;
-            let mutation = self.lock_mutation(path).await;
             if operation
                 .as_ref()
                 .is_some_and(|operation| operation.is_cancelled())
@@ -651,13 +718,17 @@ impl Daemon {
         let mut current = crate::ComposeFile::parse(&edited, path)?;
         let package_cache = crate::state::StateStore::package_cache()?;
         let force = selected_versions.keys().cloned().collect();
-        let mut prepared = crate::lockfile::prepare_with_versions(
-            &mut current,
-            &package_cache,
-            &force,
-            &selected_versions,
-        )
-        .await?;
+        let mut prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_with_versions(
+                    &mut current,
+                    &package_cache,
+                    &force,
+                    &selected_versions,
+                ),
+            )
+            .await??;
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -684,6 +755,7 @@ impl Daemon {
             ));
         }
 
+        self.prepare(&operation_id, std::future::ready(())).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
@@ -836,7 +908,9 @@ impl Daemon {
         operation_id: String,
     ) -> Result<MutationOutcome> {
         let path = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(path).await;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -917,12 +991,21 @@ impl Daemon {
         }
 
         let path_workers = &path_workers;
-        let mut expanded = futures::stream::iter(roots.into_iter().enumerate().map(
-            |(index, worker)| async move { (index, self.expand(&worker, path_workers).await) },
-        ))
-        .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
+        let mut expanded = self
+            .prepare(
+                &operation_id,
+                futures::stream::iter(
+                    roots
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, worker)| async move {
+                            (index, self.expand(&worker, path_workers).await)
+                        }),
+                )
+                .buffer_unordered(4)
+                .collect::<Vec<_>>(),
+            )
+            .await?;
         expanded.sort_by_key(|(index, _)| *index);
 
         let mut wanted = Vec::new();
@@ -991,13 +1074,17 @@ impl Daemon {
         let topology_changed = runtime_topology_changed(&compose, &current);
         let package_cache = crate::state::StateStore::package_cache()?;
         let force = selected_versions.keys().cloned().collect();
-        let mut prepared = crate::lockfile::prepare_with_versions(
-            &mut current,
-            &package_cache,
-            &force,
-            &selected_versions,
-        )
-        .await?;
+        let mut prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_with_versions(
+                    &mut current,
+                    &package_cache,
+                    &force,
+                    &selected_versions,
+                ),
+            )
+            .await??;
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -1019,6 +1106,7 @@ impl Daemon {
             ));
         }
 
+        self.prepare(&operation_id, std::future::ready(())).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
@@ -1081,7 +1169,9 @@ impl Daemon {
             .collect::<Result<Vec<_>>>()?;
 
         let path = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(path).await;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -1108,11 +1198,17 @@ impl Daemon {
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
-        let prepared = crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()).await?;
+        let prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()),
+            )
+            .await??;
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
+        self.prepare(&operation_id, std::future::ready(())).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
@@ -1158,8 +1254,12 @@ impl Daemon {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
-            let _mutation = self.lock_mutation(path).await;
-            let project = self.prepare_start_project(path, false).await?;
+            let _mutation = self
+                .prepare(&operation_id, self.lock_mutation(path))
+                .await?;
+            let project = self
+                .prepare(&operation_id, self.prepare_start_project(path, false))
+                .await??;
             let result = project.restart_one(key, operation_id).await;
             return Ok(MutationOutcome::from_operations(
                 result.status,
@@ -1171,7 +1271,9 @@ impl Daemon {
             ));
         }
 
-        let _mutation = self.lock_mutation(path).await;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
         let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
@@ -1201,7 +1303,16 @@ impl Daemon {
             .down(Some(path), container, format!("{operation_id}-down"))
             .await?;
         self.forget(path).await;
-        let project = self.prepare_start_project(path, false).await?;
+        // Once down has completed, operation cancellation must not strand the
+        // project. Finish its replacement, but still honor process shutdown.
+        let project = self
+            .shutdown
+            .signal()
+            .run(self.prepare_start_project(path, false))
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            })??;
         let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
@@ -1320,6 +1431,7 @@ impl Daemon {
     /// down mid-reply would leave them holding a broken socket instead of an
     /// answer.
     pub async fn request_stop(&self) -> serde_json::Value {
+        self.shutdown.cancel();
         self.operations.cancel_all().await;
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1337,8 +1449,22 @@ impl Daemon {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Drain supervision rather than aborting it: an in-flight lifecycle call
+    /// owns processes and must finish reaping them before state is removed.
+    async fn stop_supervisor(&self) {
+        let mut supervisor = self.supervisor.lock().await;
+        if let Some(task) = supervisor.as_mut() {
+            let _ = task.await;
+        }
+        *supervisor = None;
+    }
+
     /// Intentional shutdown: every project goes down, then the connection.
     pub async fn shutdown(&self) {
+        // Publish before waiting for any project lock held by active work.
+        self.shutdown.cancel();
+        self.operations.cancel_all().await;
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.shutdown().await;
@@ -1349,6 +1475,8 @@ impl Daemon {
     /// Leaves without touching what was not started here. Used when the engine
     /// refuses this daemon's registration.
     pub async fn abandon(&self) {
+        self.shutdown.cancel();
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.abandon().await;
@@ -1362,13 +1490,23 @@ impl Daemon {
     /// One loop for every project rather than one per project: it holds each
     /// project's lock for microseconds at a time, and a daemon with ten
     /// projects should not cost ten timers.
-    fn supervise(daemon: &Arc<Self>) {
+    fn supervise(daemon: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let weak = Arc::downgrade(daemon);
+        let shutdown = daemon.shutdown.signal();
         tokio::spawn(async move {
             let mut was_connected = true;
             loop {
-                tokio::time::sleep(SUPERVISION_INTERVAL).await;
+                if shutdown
+                    .run(tokio::time::sleep(SUPERVISION_INTERVAL))
+                    .await
+                    .is_none()
+                {
+                    return;
+                }
                 let Some(daemon) = weak.upgrade() else { return };
+                if daemon.shutdown.signal().requested() {
+                    return;
+                }
 
                 let connected = daemon.engine.is_connected();
                 let reconnected = connected && !was_connected;
@@ -1379,14 +1517,20 @@ impl Daemon {
                     if reconnected {
                         project.reconcile_after_reconnect().await;
                     }
+                    if shutdown.requested() {
+                        return;
+                    }
                     project.reap_unexpected_exits().await;
+                    if shutdown.requested() {
+                        return;
+                    }
                     // After the reap, so a container that has just exited
                     // spends its first attempt on the tick that noticed rather
                     // than waiting for the next one.
                     project.drive_restarts().await;
                 }
             }
-        });
+        })
     }
 }
 
@@ -1867,6 +2011,427 @@ pub(crate) fn expand_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn whole_project_restart_finishes_replacement_after_operation_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("restart-cancel-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let original = daemon.project(&path).await.unwrap();
+        let operation = daemon.operations.create(1).await;
+        // Call the committed restart phase directly: admission already passed,
+        // and cancellation must not stop the up half once down begins.
+        operation.cancel();
+        let mut restart = Box::pin(daemon.restart_project(&path, None, operation.id()));
+        let polled = futures::poll!(restart.as_mut());
+        assert!(
+            polled.is_pending(),
+            "restart must reach replacement startup: {polled:?}"
+        );
+        let loaded = daemon.loaded().await;
+        assert_eq!(loaded.len(), 1);
+        assert!(
+            !Arc::ptr_eq(&loaded[0], &original),
+            "replacement project was not loaded"
+        );
+        assert!(crate::lockfile::lock_path(&path).exists());
+
+        // Unlike operation cancellation, process shutdown must still interrupt
+        // the replacement while it waits for the disconnected engine.
+        daemon.request_stop().await;
+        let (_down, up) = tokio::time::timeout(Duration::from_secs(1), restart)
+            .await
+            .expect("daemon shutdown must interrupt replacement")
+            .unwrap();
+        assert_eq!(up.primary_error.unwrap().code, "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_supervision_before_clearing_project_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("supervisor-drain-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        daemon.project(&path).await.unwrap();
+        // Replace only the idle test supervisor with a deterministic in-flight
+        // writer. Production shutdown must join it, not abort it or race it.
+        let original = daemon.supervisor.lock().await.take().unwrap();
+        original.abort();
+        let _ = original.await;
+        let store = crate::state::StateStore::for_project(&daemon.daemon_namespace, &path).unwrap();
+        let writer_store = store.clone();
+        let snapshot = crate::state::DaemonState::new(&path, "default");
+        let mut shutdown = daemon.shutdown.signal();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let did_complete = Arc::clone(&completed);
+        *daemon.supervisor.lock().await = Some(tokio::spawn(async move {
+            shutdown.wait().await;
+            tokio::task::yield_now().await;
+            writer_store.save(&snapshot).unwrap();
+            did_complete.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        tokio::time::timeout(Duration::from_secs(1), daemon.shutdown())
+            .await
+            .unwrap();
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(daemon.supervisor.lock().await.is_none());
+        assert!(
+            !store.path().exists(),
+            "supervision recreated state after cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_cancels_registered_operations_before_project_cleanup() {
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-operations-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let operation = daemon.operations.create(1).await;
+        daemon.shutdown().await;
+        assert!(operation.is_cancelled());
+        assert!(*operation.cancellation().borrow());
+        assert!(daemon.shutdown.signal().requested());
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_unblocks_remote_up() {
+        assert_shutdown_unblocks_project(false).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_unblocks_restart() {
+        assert_shutdown_unblocks_project(true).await;
+    }
+
+    async fn assert_shutdown_unblocks_project(restart: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-project-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let project = daemon.project(&path).await.unwrap();
+        let mut work: std::pin::Pin<Box<dyn std::future::Future<Output = OpResult>>> = if restart {
+            Box::pin(project.restart_one("worker", "cancel-restart".into()))
+        } else {
+            Box::pin(project.up(None, "cancel-up".into()))
+        };
+        assert!(futures::poll!(work.as_mut()).is_pending());
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(work, daemon.shutdown())
+        })
+        .await
+        .expect("shutdown must cancel the operation holding the project lock");
+        assert_eq!(result.status, OpStatus::Failed);
+        assert_eq!(result.primary_error.unwrap().code, "OPERATION_CANCELLED");
+    }
+
+    #[tokio::test]
+    async fn remote_stop_cancels_pending_and_future_preparation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-admission-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let _lock = daemon.lock_mutation(&path).await;
+        let mut up = Box::pin(daemon.up(Some(&path), None, "queued".into()));
+        assert!(futures::poll!(up.as_mut()).is_pending());
+        daemon.request_stop().await;
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        let error = daemon
+            .up_frozen(Some(&path), None, "later".into())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_skips_preparation_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        // A latched shutdown must win even over a missing compose file.
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-before-prepare-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (_sender, receiver) = tokio::sync::watch::channel(true);
+
+        let result = daemon
+            .up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-before-prepare".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_while_waiting_for_the_mutation_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-mutation-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let _mutation = daemon.lock_mutation(&path).await;
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-mutation".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            false,
+        );
+        tokio::pin!(up);
+        assert!(futures::poll!(up.as_mut()).is_pending());
+        sender.send(true).unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+            .await
+            .expect("shutdown must not wait for the mutation lock")
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_missing_lock_when_project_load_is_cancelled() {
+        assert_cancelled_project_load_preserves_lock(None).await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_existing_lock_when_project_load_is_cancelled() {
+        // Preparation would prune this undeclared package and replace the lock.
+        let previous = serde_yaml::to_string(&serde_json::json!({
+            "version": 1,
+            "containers": {
+                "removed": {
+                    "worker": "package://example.invalid/removed",
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "removed",
+                        "registry": "https://example.invalid",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            "test-target": {
+                                "url": "https://example.invalid/artifact",
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_cancelled_project_load_preserves_lock(Some(&previous)).await;
+    }
+
+    async fn assert_cancelled_project_load_preserves_lock(previous: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let lock_path = crate::lockfile::lock_path(&path);
+        if let Some(text) = previous {
+            std::fs::write(&lock_path, text).unwrap();
+        }
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-project-load-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        {
+            // No packages need resolving: the first pending await is the
+            // project map lock, after a changed lock candidate is prepared.
+            let _projects = daemon.projects.lock().await;
+            let up = daemon.up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-project-load".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            );
+            tokio::pin!(up);
+            let polled = futures::poll!(up.as_mut());
+            assert!(
+                polled.is_pending(),
+                "startup must wait for the project: {polled:?}"
+            );
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+                .await
+                .expect("shutdown must not wait for project loading")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        match previous {
+            Some(text) => assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), text),
+            None => assert!(!lock_path.exists()),
+        }
+        assert!(daemon.loaded().await.is_empty());
+
+        // A subsequent attempt must still commit the prepared lock and load
+        // the project once the contended lock is available again.
+        let _mutation = daemon.lock_mutation(&path).await;
+        daemon.prepare_start_project(&path, false).await.unwrap();
+        let lock: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert!(lock["containers"].as_mapping().unwrap().is_empty());
+        assert!(lock.get("graphs").is_none());
+        assert_eq!(daemon.loaded().await.len(), 1);
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(false).await;
+    }
+
+    #[tokio::test]
+    async fn frozen_foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(true).await;
+    }
+
+    async fn assert_download_cancelled(frozen: bool) {
+        use std::time::Duration;
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let server = MockServer::start().await;
+        let downloading = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&downloading);
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                started.notify_one();
+                ResponseTemplate::new(200).set_delay(Duration::from_secs(30))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        // A unique registry gives this fixture a cold cache without changing
+        // process-wide HOME or depending on the operator's installed packages.
+        let host = format!("cancel-{}.invalid", uuid::Uuid::new_v4());
+        let worker = format!("package://{host}/worker");
+        std::fs::write(
+            &path,
+            format!("containers:\n  worker:\n    worker: {worker}\n    version: '1.0.0'\n"),
+        )
+        .unwrap();
+        let lock = serde_json::json!({
+            "version": 1,
+            "containers": {
+                "worker": {
+                    "worker": worker,
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "worker",
+                        "registry": format!("https://{host}"),
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            (crate::registry::host_target()): {
+                                "url": format!("{}/artifact", server.uri()),
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let lock_path = crate::lockfile::lock_path(&path);
+        let before = serde_yaml::to_string(&lock).unwrap();
+        std::fs::write(&lock_path, &before).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-download-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-download".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            frozen,
+        );
+        {
+            tokio::pin!(up);
+            tokio::select! {
+                result = &mut up => panic!("startup ended before downloading: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(5), downloading.notified()) => {
+                    result.expect("the artifact download should start");
+                }
+            }
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), &mut up)
+                .await
+                .expect("shutdown must not wait for the download response")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        assert_eq!(std::fs::read_to_string(lock_path).unwrap(), before);
+        assert!(daemon.loaded().await.is_empty());
+        let _mutation = tokio::time::timeout(Duration::from_secs(1), daemon.lock_mutation(&path))
+            .await
+            .expect("cancelled preparation must release the mutation lock");
+        daemon.shutdown().await;
+    }
 
     #[test]
     fn update_without_workers_selects_packages_with_their_declared_references() {

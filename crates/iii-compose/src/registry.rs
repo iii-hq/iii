@@ -509,13 +509,11 @@ async fn install_binary(
         resolved.version,
         target
     ));
-    let _lock = lock_artifact(&install_dir).await?;
-    if cache_matches(&install_dir, &digest)?
-        && let Some(existing) = installed_binary(&install_dir)
-    {
+    let (lock, cached) = checked_cache(&install_dir, &digest).await?;
+    if cached && let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
     }
-    download_and_extract(container, artifact, &install_dir, &digest).await?;
+    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
@@ -571,14 +569,14 @@ async fn install_bundle(
         resolved.alias_of.as_deref().unwrap_or(&resolved.name),
         resolved.version
     ));
-    let _lock = lock_artifact(&install_dir).await?;
+    let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
-    if cache_matches(&install_dir, &digest)? && install_dir.join(BUNDLE_MANIFEST).is_file() {
+    if cached && install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Ok((install_dir, InstallStatus::Cached));
     }
-    download_and_extract(container, artifact, &install_dir, &digest).await?;
+    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Err(ComposeError::PackageArtifactEmpty {
@@ -659,8 +657,25 @@ fn remove_invalid_install(path: &Path) -> Result<()> {
     })
 }
 
+/// The blocking job retains the artifact lock even when its caller is dropped.
+async fn checked_cache(install_dir: &Path, digest: &str) -> Result<(fslock::LockFile, bool)> {
+    let lock = lock_artifact(install_dir).await?;
+    let path = install_dir.to_path_buf();
+    let digest = digest.to_string();
+    crate::shutdown::blocking(path.clone(), move |cancel| {
+        let cached = cache_matches(&path, &digest, &cancel)?;
+        Ok((lock, cached))
+    })
+    .await
+}
+
 /// Verifies both the archive identity and the extracted files in one cache entry.
-fn cache_matches(install_dir: &Path, archive_sha256: &str) -> Result<bool> {
+fn cache_matches(
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<bool> {
+    cancel.check(install_dir)?;
     let marker = install_dir.join(INTEGRITY_FILE);
     let bytes = match std::fs::read(&marker) {
         Ok(bytes) => bytes,
@@ -682,12 +697,18 @@ fn cache_matches(install_dir: &Path, archive_sha256: &str) -> Result<bool> {
     {
         return Ok(false);
     }
-    Ok(tree_digest(install_dir)? == integrity.tree_sha256)
+    Ok(tree_digest(install_dir, cancel)? == integrity.tree_sha256)
 }
 
 /// Hashes the extracted tree in stable path order, excluding its own marker.
-fn tree_digest(root: &Path) -> Result<String> {
-    fn visit(root: &Path, directory: &Path, hasher: &mut Sha256) -> Result<()> {
+fn tree_digest(root: &Path, cancel: &crate::shutdown::BlockingCancellation) -> Result<String> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        hasher: &mut Sha256,
+        cancel: &crate::shutdown::BlockingCancellation,
+    ) -> Result<()> {
+        cancel.check(directory)?;
         let mut entries = std::fs::read_dir(directory)
             .map_err(|source| ComposeError::Io {
                 path: directory.to_path_buf(),
@@ -701,6 +722,7 @@ fn tree_digest(root: &Path) -> Result<String> {
         entries.sort_by_key(std::fs::DirEntry::file_name);
 
         for entry in entries {
+            cancel.check(directory)?;
             let path = entry.path();
             if path == root.join(INTEGRITY_FILE) {
                 continue;
@@ -721,7 +743,7 @@ fn tree_digest(root: &Path) -> Result<String> {
 
             if metadata.file_type().is_dir() {
                 hasher.update(b"directory");
-                visit(root, &path, hasher)?;
+                visit(root, &path, hasher, cancel)?;
             } else if metadata.file_type().is_file() {
                 hasher.update(b"file");
                 let mut file = std::fs::File::open(&path).map_err(|source| ComposeError::Io {
@@ -730,6 +752,7 @@ fn tree_digest(root: &Path) -> Result<String> {
                 })?;
                 let mut buffer = [0_u8; 64 * 1024];
                 loop {
+                    cancel.check(&path)?;
                     let read = file.read(&mut buffer).map_err(|source| ComposeError::Io {
                         path: path.clone(),
                         source,
@@ -752,15 +775,19 @@ fn tree_digest(root: &Path) -> Result<String> {
     }
 
     let mut hasher = Sha256::new();
-    visit(root, root, &mut hasher)?;
+    visit(root, root, &mut hasher, cancel)?;
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn write_integrity_marker(install_dir: &Path, archive_sha256: &str) -> Result<()> {
+fn write_integrity_marker(
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
     let marker = install_dir.join(INTEGRITY_FILE);
     let integrity = CacheIntegrity {
         archive_sha256: archive_sha256.to_ascii_lowercase(),
-        tree_sha256: tree_digest(install_dir)?,
+        tree_sha256: tree_digest(install_dir, cancel)?,
     };
     let bytes = serde_json::to_vec(&integrity).map_err(|source| ComposeError::Io {
         path: marker.clone(),
@@ -962,6 +989,7 @@ async fn download_and_extract(
     artifact: &RegistryArtifact,
     install_dir: &Path,
     archive_sha256: &str,
+    lock: fslock::LockFile,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
@@ -1011,6 +1039,52 @@ async fn download_and_extract(
     }
     crate::report::download_finished(container, downloaded);
 
+    let install_dir = install_dir.to_path_buf();
+    let archive_sha256 = archive_sha256.to_string();
+    crate::shutdown::blocking(install_dir.clone(), move |cancel| {
+        let _lock = lock;
+        extract_and_publish(bytes, &install_dir, &archive_sha256, &cancel)
+    })
+    .await
+}
+
+/// Checks between chunks of one large tar entry, not only between files.
+/// ErrorKind::Interrupted must not be used: std::io::copy retries it.
+struct ArchiveReader<'a, R> {
+    inner: R,
+    cancel: &'a crate::shutdown::BlockingCancellation,
+    path: &'a Path,
+}
+impl<R: Read> Read for ArchiveReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.cancel
+            .check(self.path)
+            .map_err(std::io::Error::other)?;
+        self.inner.read(buffer)
+    }
+}
+
+fn extract_and_publish(
+    bytes: Vec<u8>,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    unpack_and_publish(
+        flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
+        install_dir,
+        archive_sha256,
+        cancel,
+    )
+}
+
+fn unpack_and_publish(
+    decoder: impl Read,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    cancel.check(install_dir)?;
     // Extract beside the destination and rename: a crash mid-extraction must
     // not leave a half-unpacked directory that the next run treats as a cache
     // hit.
@@ -1025,7 +1099,19 @@ async fn download_and_extract(
         });
     }
 
-    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
+    // A successful publish renames this directory away before drop.
+    struct Staging(std::path::PathBuf);
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _staging = Staging(staging.clone());
+    let decoder = ArchiveReader {
+        inner: decoder,
+        cancel,
+        path: &staging,
+    };
     if let Err(source) = tar::Archive::new(decoder).unpack(&staging) {
         let error = ComposeError::Io {
             path: staging.clone(),
@@ -1034,7 +1120,7 @@ async fn download_and_extract(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    if let Err(error) = write_integrity_marker(&staging, archive_sha256) {
+    if let Err(error) = write_integrity_marker(&staging, archive_sha256, cancel) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
@@ -1049,7 +1135,8 @@ async fn download_and_extract(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    let result = publish(&staging, install_dir, archive_sha256);
+    cancel.check(install_dir)?;
+    let result = publish(&staging, install_dir, archive_sha256, cancel);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -1067,10 +1154,15 @@ async fn download_and_extract(
 ///
 /// A directory left half-written by an interrupted run is the one case worth
 /// clearing: it is not another writer's, and nothing can start from it.
-fn publish(staging: &Path, install_dir: &Path, archive_sha256: &str) -> Result<()> {
+fn publish(
+    staging: &Path,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
     match std::fs::rename(staging, install_dir) {
         Ok(()) => return Ok(()),
-        Err(_) if cache_matches(install_dir, archive_sha256)? => {
+        Err(_) if cache_matches(install_dir, archive_sha256, cancel)? => {
             let _ = std::fs::remove_dir_all(staging);
             return Ok(());
         }
@@ -1161,6 +1253,46 @@ mod tests {
 
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    #[test]
+    fn cancellation_during_archive_extraction_removes_staging_without_publishing() {
+        struct CancelAfterRead<R> {
+            inner: R,
+            cancel: crate::shutdown::BlockingCancellation,
+        }
+        impl<R: Read> Read for CancelAfterRead<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.inner.read(buf)?;
+                self.cancel.cancel();
+                Ok(count)
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        let cancel = crate::shutdown::BlockingCancellation::default();
+        let decoder = CancelAfterRead {
+            inner: flate2::read::GzDecoder::new(std::io::Cursor::new(executable_archive(
+                &vec![42; 128 * 1024],
+            ))),
+            cancel: cancel.clone(),
+        };
+        assert!(unpack_and_publish(decoder, &install, "digest", &cancel).is_err());
+        assert!(!install.exists());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cancelled_cache_verification_preserves_the_installed_files() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        let active = crate::shutdown::BlockingCancellation::default();
+        extract_and_publish(executable_archive(b"original"), &install, "digest", &active).unwrap();
+        let cancelled = crate::shutdown::BlockingCancellation::default();
+        cancelled.cancel();
+        assert!(cache_matches(&install, "digest", &cancelled).is_err());
+        assert!(tree_digest(&install, &cancelled).is_err());
+        assert!(cache_matches(&install, "digest", &active).unwrap());
+    }
 
     fn executable_archive(body: &[u8]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

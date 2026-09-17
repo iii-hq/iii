@@ -559,7 +559,11 @@ fn validate_container(
                 name: name.clone(),
             });
         }
-        environment.insert(name.clone(), value.clone());
+        // A bare YAML key is unset, not the literal string "null". Check
+        // reserved names before omitting it so an unset key cannot bypass validation.
+        if let Some(value) = value {
+            environment.insert(name.clone(), value.clone());
+        }
     }
 
     let startup_timeout = match &raw.startup_timeout {
@@ -628,7 +632,9 @@ impl Container {
     }
 
     /// The user-defined environment for this container: env files in listed
-    /// order, then literal `environment` values on top.
+    /// order, then nonempty `environment` values on top. An empty string only
+    /// supplies a value when no env file defines the key; unset YAML keys are
+    /// omitted during validation.
     ///
     /// Read at spawn time, not at parse time: env files hold secrets, and
     /// holding them in memory for the daemon's whole life buys nothing.
@@ -649,7 +655,14 @@ impl Container {
                 env.insert(name, value);
             }
         }
-        env.extend(self.environment.clone());
+        for (name, value) in &self.environment {
+            if value.is_empty() {
+                // Optional host references must not erase a value from an env file.
+                env.entry(name.clone()).or_default();
+            } else {
+                env.insert(name.clone(), value.clone());
+            }
+        }
         Ok(env)
     }
 }
@@ -897,6 +910,18 @@ where
     deserializer.deserialize_option(OptionalUniqueMap(std::marker::PhantomData))
 }
 
+/// Schema-only representation of YAML environment scalars. The parser keeps
+/// `Option<String>` so serde_yaml still converts booleans and numbers to strings.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)] // Only used to generate the schema, never constructed at runtime.
+enum EnvironmentValueSchema {
+    String(String),
+    Boolean(bool),
+    Number(serde_json::Number),
+    Null,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawContainer {
@@ -915,8 +940,8 @@ pub(crate) struct RawContainer {
     #[serde(default)]
     working_dir: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
-    #[schemars(with = "BTreeMap<String, String>")]
-    environment: IndexMap<String, String>,
+    #[schemars(with = "BTreeMap<String, EnvironmentValueSchema>")]
+    environment: IndexMap<String, Option<String>>,
     #[serde(default)]
     env_file: Vec<PathBuf>,
     #[serde(default)]
@@ -1121,6 +1146,50 @@ engine:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    #[test]
+    fn worker_compose_schema_accepts_supported_environment_scalars() {
+        let schema = worker_compose_schema_json();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let text = r#"
+containers:
+  api:
+    worker: path://./api
+    environment:
+      BARE:
+      EMPTY: ""
+      LITERAL_NULL: "null"
+      BOOL_FALSE: false
+      BOOL_TRUE: true
+      ZERO: 0
+      NEGATIVE: -1
+      DECIMAL: 1.5
+"#;
+        let mut document: serde_json::Value = serde_yaml::from_str(text).unwrap();
+
+        assert!(validator.is_valid(&document));
+        let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
+        let env = parsed.containers["api"].resolve_user_env("api").unwrap();
+        assert!(!env.contains_key("BARE"));
+        for (key, expected) in [
+            ("EMPTY", ""),
+            ("LITERAL_NULL", "null"),
+            ("BOOL_FALSE", "false"),
+            ("BOOL_TRUE", "true"),
+            ("ZERO", "0"),
+            ("NEGATIVE", "-1"),
+            ("DECIMAL", "1.5"),
+        ] {
+            assert_eq!(env[key], expected, "key: {key}");
+        }
+
+        for value in [serde_json::json!([]), serde_json::json!({})] {
+            document["containers"]["api"]["environment"]["INVALID"] = value;
+            assert!(!validator.is_valid(&document));
+            let invalid_text = serde_yaml::to_string(&document).unwrap();
+            assert!(ComposeFile::parse(&invalid_text, "/tmp/worker-compose.yaml").is_err());
+        }
     }
 
     #[test]

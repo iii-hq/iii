@@ -451,8 +451,20 @@ async fn serve(
             let Some(spec) = owner.engine.as_ref() else {
                 unreachable!("managed mode is selected only from an engine section");
             };
-            let engine =
-                managed_engine::ManagedEngine::start(spec, &daemon_namespace, &owner.path).await?;
+            let Some(engine) = shutdown
+                .run(managed_engine::ManagedEngine::start(
+                    spec,
+                    &daemon_namespace,
+                    &owner.path,
+                ))
+                .await
+            else {
+                if let Some(project) = &mut start_project {
+                    project.progress.finish(false, "Cancelled");
+                }
+                return Ok(());
+            };
+            let engine = engine?;
             if let Some(project) = &start_project {
                 project.progress.engine_waiting();
             }
@@ -497,6 +509,7 @@ async fn serve(
         .await
     };
 
+    shutdown::drain_blocking_jobs().await;
     if let Some(engine) = &managed_engine {
         report::line(&"stopping engine...".dimmed().to_string());
         engine.stop_with_default_grace().await;
@@ -563,11 +576,12 @@ async fn serve_daemon(
 ) -> Result<()> {
     use colored::Colorize;
 
-    let daemon = daemon::Daemon::start(
-        engine_url,
+    let daemon = daemon::Daemon::start_with_shutdown(
+        engine_url.clone(),
         daemon_namespace,
         project_namespace_override,
         engine_policy,
+        shutdown::ShutdownController::with_parent(shutdown.clone()),
     );
 
     // Announce only once the engine has accepted this daemon. A rejection
