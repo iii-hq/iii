@@ -85,6 +85,31 @@ pub struct InitArgs {
     /// scaffolding option.
     #[arg(long = "learn-iii", conflicts_with_all = ["directory", "template", "docker", "template_dir"])]
     pub learn_iii: bool,
+
+    /// Start the harness with these workers already declared: a
+    /// comma-separated list. The project directory is named after the first
+    /// worker (`--start-with worker1` scaffolds `./iii-worker1`), and every
+    /// worker in the list is added through `compose::add` once the project is
+    /// up.
+    #[arg(
+        long = "start-with",
+        value_delimiter = ',',
+        value_name = "WORKERS",
+        requires = "learn_iii"
+    )]
+    pub start_with: Vec<String>,
+
+    /// Environment variables to ask for on top of the inference provider key,
+    /// comma-separated. A worker outside the provider list needs its own key
+    /// this way: `--start-with worker1 --need-envs WORKER_API_KEY`. Each
+    /// answer is written to the new project's `.env`.
+    #[arg(
+        long = "need-envs",
+        value_delimiter = ',',
+        value_name = "VARS",
+        requires = "learn_iii"
+    )]
+    pub need_envs: Vec<String>,
 }
 
 impl InitArgs {
@@ -390,14 +415,41 @@ fn declared_base_images(dir: &Path) -> Vec<String> {
 
 const LEARN_III_DIR: &str = "learn-iii";
 
+/// The directory base name for a tour with no NAME: `learn-iii`, or
+/// `iii-<first worker>` when `--start-with` names one.
+///
+/// A worker reference carries more than a name (`scope/worker1@1.2.0`), and none
+/// of it belongs in a directory name: the registry scope would nest the
+/// project a level down, and the version would pin the directory to a release.
+fn learn_dir_base(start_with: &[String]) -> String {
+    let Some(first) = start_with.first() else {
+        return LEARN_III_DIR.to_string();
+    };
+    let name = first
+        .rsplit('/')
+        .next()
+        .unwrap_or(first)
+        .split('@')
+        .next()
+        .unwrap_or(first)
+        .trim();
+    if name.is_empty() {
+        LEARN_III_DIR.to_string()
+    } else {
+        format!("iii-{name}")
+    }
+}
+
 /// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
 /// <NAME>`, then `iii compose --up` from inside the new directory. Without
 /// NAME the directory is the first free `learn-iii` name; a given NAME is
 /// used as-is, so a taken one fails the same way plain init does.
 async fn run_learn_iii(mut args: InitArgs) -> i32 {
+    let start_with = std::mem::take(&mut args.start_with);
+    let need_envs = std::mem::take(&mut args.need_envs);
     let dir = match args.name.as_deref() {
         Some(name) => PathBuf::from(name),
-        None => next_free_dir(Path::new(""), LEARN_III_DIR),
+        None => next_free_dir(Path::new(""), &learn_dir_base(&start_with)),
     };
     args.template = Some(LEARN_III_TEMPLATE.to_string());
     args.directory = Some(dir.to_string_lossy().into_owned());
@@ -435,6 +487,7 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     };
 
     prompt_provider_key(&dir);
+    let extra_env = prompt_extra_env_keys(&dir, &need_envs);
 
     let hint = format!("cd ./{} && iii compose --up", dir.display());
     eprintln!();
@@ -455,12 +508,18 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
 
     // Aborted when compose exits, so the poll inside needs no deadline of its
     // own: the tour's life is the deadline.
-    let announcer = tokio::spawn(announce_console_when_ready(dir.join("worker-compose.yaml")));
+    let announcer = tokio::spawn(announce_console_when_ready(
+        dir.join("worker-compose.yaml"),
+        start_with,
+    ));
     CHILD_OWNS_TERMINAL.store(true, Ordering::Relaxed);
 
     let code = match tokio::process::Command::new(exe)
         .args(["compose", "--up"])
         .current_dir(&dir)
+        // `WORKER_API_KEY=... iii compose --up`: the same keys that went to the
+        // project's `.env`, in this run's environment as well.
+        .envs(extra_env)
         .status()
         .await
     {
@@ -614,13 +673,16 @@ const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000
 /// Waits for the tour's project to serve, then points the user at the console
 /// and opens it on request.
 ///
-/// The gate is every declared container reporting `ready` through
-/// `compose::status`, which is also when compose's startup renderer lets go of
-/// the terminal: it owns one global in-place block for the whole of `--up` and
+/// The gate is every declared container settling through `compose::status`,
+/// which is also when compose's startup renderer lets go of the terminal: it owns one global in-place block for the whole of `--up` and
 /// repaints it, so a banner printed before then is overwritten and the user
 /// never sees it. A ready console has not necessarily bound its listener yet,
 /// so the port is checked too.
-async fn announce_console_when_ready(compose_path: PathBuf) {
+///
+/// `start_with` workers are declared here too, through the same client and the
+/// same readiness gate: `compose::add` needs a serving daemon, and this is the
+/// one place that already waits for one.
+async fn announce_console_when_ready(compose_path: PathBuf, start_with: Vec<String>) {
     let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
         return;
     };
@@ -635,9 +697,33 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     let client =
         iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
 
-    while !project_is_ready(&client, &file.path, &namespace).await {
+    // "Nothing is starting" is also true before anything has started, so the
+    // wait needs to have seen the project move first. Until it does, the gate
+    // is the stricter "every container is ready", which is what a project with
+    // no failing container reaches anyway.
+    let mut seen_starting = false;
+    loop {
+        if let Some(progress) = project_progress(&client, &file.path, &namespace).await {
+            seen_starting |= progress.any_starting;
+            if progress.all_ready || (seen_starting && !progress.any_starting) {
+                break;
+            }
+        }
         tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
+
+    // ponytail: fixed settle delay. The renderer prints its closing line just
+    // after the last container settles, and compose publishes no "startup
+    // block finished" event to wait on instead. Swap this for that event if
+    // compose ever grows one.
+    tokio::time::sleep(BLOCK_SETTLE).await;
+
+    // Before the console wait, not after: a project whose console failed to
+    // bind still takes its `--start-with` workers.
+    add_workers(&client, &file.path, &namespace, &start_with).await;
+
+    // The add reconciles the project, which paints the startup block again, so
+    // the banner below needs its own settle delay as much as the add did.
 
     let port = client
         .fetch_config(CONSOLE_CONFIG)
@@ -659,10 +745,6 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
         tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
 
-    // ponytail: fixed settle delay. The renderer prints its closing line just
-    // after the last container flips ready, and compose publishes no "startup
-    // block finished" event to wait on instead. Swap this for that event if
-    // compose ever grows one.
     tokio::time::sleep(BLOCK_SETTLE).await;
 
     let url = format!("http://127.0.0.1:{port}");
@@ -680,15 +762,127 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     std::thread::spawn(move || open_console_on_request(&url));
 }
 
-/// Whether every container the compose file declares reports `ready`.
+/// Declare `workers` in the running project: the `iii trigger compose::add`
+/// call, made from here so a `--start-with` tour needs no second terminal.
 ///
-/// A call that fails is the daemon not serving `compose::status` yet, which is
-/// indistinguishable here from a project still starting: both mean "not yet".
-async fn project_is_ready(
+/// One request for the whole list, because `compose::add` takes a `workers`
+/// list and reconciles it once; a call per worker would restart the project
+/// once per name.
+///
+/// Best effort, like every other step of the tour: a failed add leaves a
+/// running project the operator can add to by hand.
+async fn add_workers(
     client: &iii_compose::engine::EngineClient,
     compose_path: &Path,
     namespace: &str,
-) -> bool {
+    workers: &[String],
+) {
+    if workers.is_empty() {
+        return;
+    }
+    let names = workers.join(", ");
+    eprintln!();
+    eprintln!("  {} adding workers: {}", "▶".green(), names.bold());
+
+    let payload = serde_json::json!({
+        "file": compose_path,
+        "workers": worker_declarations(compose_path, workers),
+    });
+
+    // The daemon registers its functions in one pass, in the order it lists
+    // them, and `compose::add` comes after `compose::status`. The settle gate
+    // is a `compose::status` answer, so the add can arrive inside that pass
+    // and find the function it needs not registered yet. Retried only for
+    // that error, because it is the one that means nothing ran: `compose::add`
+    // is not idempotent, and a retry on anything else could add twice.
+    let deadline = std::time::Instant::now() + ADD_REGISTRATION_GRACE;
+    loop {
+        let request = iii_sdk::protocol::TriggerRequest {
+            function_id: "compose::add".to_string(),
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: Some(ADD_TIMEOUT_MS),
+        }
+        .namespace(namespace);
+
+        let Err(e) = client.client().trigger(request).await else {
+            return;
+        };
+        if e.to_string().contains("function_not_found") && std::time::Instant::now() < deadline {
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+            continue;
+        }
+        eprintln!("  could not add {names}: {e}");
+        eprintln!("  add them yourself with: iii trigger compose::add worker=<name>");
+        return;
+    }
+}
+
+/// `compose::add`'s own recommended timeout: the call resolves a registry
+/// graph and pulls images before it answers.
+const ADD_TIMEOUT_MS: u64 = 600_000;
+
+/// How long [`add_workers`] keeps waiting for the daemon to finish registering
+/// `compose::add`. Long enough for a registration pass, short enough that a
+/// daemon which never registers it still lets the tour say so.
+const ADD_REGISTRATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The `workers` entries for [`add_workers`].
+///
+/// `compose::add` takes either a bare spec (`"worker1"`) or a container object,
+/// and only the object form carries the rest of a container's fields. The
+/// object is what these workers need: `--need-envs` wrote its answers to the
+/// project's `.env`, and a container reads that file only when it declares it
+/// in `env_file`. A bare spec would be added with no environment at all.
+///
+/// The path stays relative, the way an operator would write it: compose
+/// resolves `env_file` against the compose file's own directory, so `.env`
+/// means this project's `.env` wherever the project is moved to.
+///
+/// A project with no `.env` gets the bare specs back: `env_file` naming a
+/// missing file fails validation, and that would lose the add itself.
+fn worker_declarations(compose_path: &Path, workers: &[String]) -> Vec<serde_json::Value> {
+    let has_env = compose_path
+        .parent()
+        .map(|dir| dir.join(PROJECT_ENV_FILE))
+        .is_some_and(|path| path.exists());
+
+    workers
+        .iter()
+        .map(|worker| {
+            if has_env {
+                serde_json::json!({ "worker": worker, "env_file": [PROJECT_ENV_FILE] })
+            } else {
+                serde_json::json!(worker)
+            }
+        })
+        .collect()
+}
+
+/// The env file the harness template ships and [`prompt_provider_key`] writes.
+const PROJECT_ENV_FILE: &str = ".env";
+
+/// What one `compose::status` answer says about the project's progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Progress {
+    /// Every declared container reports `ready`: startup finished with nothing
+    /// left behind.
+    all_ready: bool,
+    /// At least one container is still `starting`, the only state compose
+    /// leaves on its own.
+    any_starting: bool,
+}
+
+/// Read the project's progress from `compose::status`.
+///
+/// `None` is the daemon not serving `compose::status` yet, or an answer with
+/// no containers in it, which is indistinguishable here from a project that
+/// has not loaded: both mean "ask again".
+async fn project_progress(
+    client: &iii_compose::engine::EngineClient,
+    compose_path: &Path,
+    namespace: &str,
+) -> Option<Progress> {
     let request = iii_sdk::protocol::TriggerRequest {
         function_id: "compose::status".to_string(),
         payload: serde_json::json!({ "file": compose_path }),
@@ -697,16 +891,38 @@ async fn project_is_ready(
     }
     .namespace(namespace);
 
-    let Ok(value) = client.client().trigger(request).await else {
-        return false;
+    let value = client.client().trigger(request).await.ok()?;
+    let containers = value.get("containers")?.as_array()?;
+    read_progress(containers)
+}
+
+/// The container states, as progress. Split from the call so the states that
+/// matter can be tested without a daemon.
+///
+/// A container that failed, or was declared `required: false` and stopped,
+/// never becomes ready. Waiting for it is waiting forever, so "every container
+/// is ready" cannot be the only way out: the tour would print no console link
+/// and add no `--start-with` worker over one optional container. The caller
+/// pairs the `any_starting` half with "the project has moved at least once",
+/// because a project that has not started yet has nothing starting either.
+fn read_progress(containers: &[serde_json::Value]) -> Option<Progress> {
+    if containers.is_empty() {
+        return None;
+    }
+    let state = |container: &serde_json::Value| {
+        container
+            .get("state")
+            .and_then(|state| state.as_str())
+            .map(str::to_string)
     };
-    let Some(containers) = value.get("containers").and_then(|list| list.as_array()) else {
-        return false;
-    };
-    !containers.is_empty()
-        && containers
+    Some(Progress {
+        all_ready: containers
             .iter()
-            .all(|container| container.get("state").and_then(|s| s.as_str()) == Some("ready"))
+            .all(|container| state(container).as_deref() == Some("ready")),
+        any_starting: containers
+            .iter()
+            .any(|container| state(container).as_deref() == Some("starting")),
+    })
 }
 
 /// Waits for a bare `b` and opens `url` on it.
@@ -828,7 +1044,7 @@ key after the project has started you'll need to manually restart the llm-router
 /// Every failure here is non-fatal: the tour still starts, and the note tells
 /// the user how to add the key by hand.
 fn prompt_provider_key(dir: &Path) {
-    let env_path = dir.join(".env");
+    let env_path = dir.join(PROJECT_ENV_FILE);
     if !std::io::stdin().is_terminal() || !env_path.exists() {
         return;
     }
@@ -873,6 +1089,49 @@ fn prompt_provider_key(dir: &Path) {
     }
 
     let _ = cliclack::log::success(format!("{var} written to {}", env_path.display()));
+}
+
+/// Ask for each variable named by `--need-envs` and record it in the new
+/// project's `.env`, the same prompt and the same writer as the provider key
+/// above. This is how a `--start-with` worker outside [`PROVIDERS`] gets the
+/// key it needs before the project starts.
+///
+/// The answers come back so the caller can also put them in `iii compose
+/// --up`'s environment: a worker that reads its key from the process
+/// environment rather than the project's `.env` gets it on this first run
+/// too, without waiting for a restart.
+///
+/// Non-fatal throughout: a skipped or failed variable leaves the tour running
+/// with that key unset.
+fn prompt_extra_env_keys(dir: &Path, vars: &[String]) -> Vec<(String, String)> {
+    let mut collected = Vec::new();
+    let env_path = dir.join(PROJECT_ENV_FILE);
+    if vars.is_empty() || !std::io::stdin().is_terminal() || !env_path.exists() {
+        return collected;
+    }
+
+    for var in vars {
+        let var = var.trim();
+        if var.is_empty() {
+            continue;
+        }
+        let Ok(key) = cliclack::password(var).mask('•').interact() else {
+            return collected;
+        };
+        // Terminals and password managers pad pasted keys; a stray space breaks auth.
+        let key = key.trim();
+        if key.is_empty() {
+            let _ = cliclack::log::warning(format!("No key entered, leaving {var} unset."));
+            continue;
+        }
+        if let Err(e) = set_env_var(&env_path, var, key) {
+            let _ = cliclack::log::warning(format!("could not write {}: {e}", env_path.display()));
+            return collected;
+        }
+        collected.push((var.to_string(), key.to_string()));
+        let _ = cliclack::log::success(format!("{var} written to {}", env_path.display()));
+    }
+    collected
 }
 
 /// Set `var` in a `.env` file, replacing the existing line even when the
@@ -1180,6 +1439,151 @@ mod tests {
         };
         assert!(init.learn_iii);
         assert_eq!(init.name.as_deref(), Some("my-tour"));
+    }
+
+    #[test]
+    fn start_with_splits_on_commas_and_needs_learn_iii() {
+        let cli = Cli::try_parse_from([
+            "project",
+            "init",
+            "--learn-iii",
+            "--start-with",
+            "worker1,worker2",
+        ])
+        .unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert_eq!(init.start_with, ["worker1", "worker2"]);
+
+        assert!(
+            Cli::try_parse_from(["project", "init", "--start-with", "worker1"]).is_err(),
+            "--start-with alone should require --learn-iii"
+        );
+    }
+
+    #[test]
+    fn need_envs_splits_on_commas() {
+        let cli = Cli::try_parse_from([
+            "project",
+            "init",
+            "--learn-iii",
+            "--start-with",
+            "worker1",
+            "--need-envs",
+            "WORKER_API_KEY,SECOND_KEY",
+        ])
+        .unwrap();
+        let ProjectAction::Init(init) = cli.action else {
+            panic!("expected init");
+        };
+        assert_eq!(init.need_envs, ["WORKER_API_KEY", "SECOND_KEY"]);
+    }
+
+    #[test]
+    fn progress_needs_containers() {
+        assert_eq!(read_progress(&[]), None);
+    }
+
+    #[test]
+    fn a_project_that_has_not_started_is_not_ready_and_not_starting() {
+        // Every container declared, none created yet. Taken alone this looks
+        // exactly like a settled project, which is why the caller also waits
+        // to have seen something start.
+        let containers = [
+            serde_json::json!({ "container": "state", "state": "stopped" }),
+            serde_json::json!({ "container": "ade", "state": "stopped" }),
+        ];
+        assert_eq!(
+            read_progress(&containers),
+            Some(Progress {
+                all_ready: false,
+                any_starting: false
+            })
+        );
+    }
+
+    #[test]
+    fn a_starting_container_is_reported_as_starting() {
+        let containers = [
+            serde_json::json!({ "container": "state", "state": "ready" }),
+            serde_json::json!({ "container": "ade", "state": "starting" }),
+        ];
+        assert_eq!(
+            read_progress(&containers),
+            Some(Progress {
+                all_ready: false,
+                any_starting: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_optional_container_still_counts_as_settled() {
+        let containers = [
+            serde_json::json!({ "container": "state", "state": "ready" }),
+            serde_json::json!({ "container": "ade", "state": "stopped" }),
+        ];
+        assert_eq!(
+            read_progress(&containers),
+            Some(Progress {
+                all_ready: false,
+                any_starting: false
+            })
+        );
+    }
+
+    #[test]
+    fn every_container_ready_is_all_ready() {
+        let containers = [
+            serde_json::json!({ "container": "state", "state": "ready" }),
+            serde_json::json!({ "container": "ade", "state": "ready" }),
+        ];
+        assert_eq!(
+            read_progress(&containers),
+            Some(Progress {
+                all_ready: true,
+                any_starting: false
+            })
+        );
+    }
+
+    #[test]
+    fn workers_are_declared_with_the_project_env_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = tmp.path().join("worker-compose.yaml");
+        std::fs::write(tmp.path().join(".env"), "WORKER_API_KEY=x\n").unwrap();
+
+        let declared = worker_declarations(&compose, &["worker1".to_string()]);
+        assert_eq!(
+            declared,
+            vec![serde_json::json!({ "worker": "worker1", "env_file": [".env"] })]
+        );
+    }
+
+    #[test]
+    fn workers_stay_bare_specs_without_an_env_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = tmp.path().join("worker-compose.yaml");
+
+        let declared = worker_declarations(&compose, &["worker1".to_string()]);
+        assert_eq!(declared, vec![serde_json::json!("worker1")]);
+    }
+
+    #[test]
+    fn learn_dir_base_names_the_project_after_the_first_worker() {
+        assert_eq!(learn_dir_base(&[]), "learn-iii");
+        assert_eq!(learn_dir_base(&["worker1".to_string()]), "iii-worker1");
+        assert_eq!(
+            learn_dir_base(&["worker1".to_string(), "queue".to_string()]),
+            "iii-worker1"
+        );
+        // A reference carries a scope and a version; neither belongs in a path.
+        assert_eq!(
+            learn_dir_base(&["iii-hq/worker1@1.2.0".to_string()]),
+            "iii-worker1"
+        );
+        assert_eq!(learn_dir_base(&[String::new()]), "learn-iii");
     }
 
     #[test]

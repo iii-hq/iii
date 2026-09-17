@@ -213,3 +213,82 @@ EOF
   [[ "$output" == *"curl is required"* ]]
   [[ "$output" == *"install"* ]]
 }
+
+# ─────────────────────────────────────────────────────────────
+# --start-with / --need-envs: the harness setup offer
+# ─────────────────────────────────────────────────────────────
+
+@test "learn_args_for returns --learn-iii alone by default" {
+  run learn_args_for "" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii" ]
+}
+
+@test "learn_args_for passes the worker list through" {
+  run learn_args_for "worker1,worker2" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii --start-with worker1,worker2" ]
+}
+
+@test "learn_args_for passes the extra env vars through" {
+  run learn_args_for "worker1" "WORKER_API_KEY,SECOND_KEY"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii --start-with worker1 --need-envs WORKER_API_KEY,SECOND_KEY" ]
+}
+
+@test "learn_args_for drops --need-envs without --start-with" {
+  # The engine rejects the flag on its own, so never build a command it refuses.
+  run learn_args_for "" "WORKER_API_KEY"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii" ]
+}
+
+@test "install.sh --start-with rejects whitespace" {
+  run sh "$INSTALL_SH" --start-with "worker1, worker2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--start-with does not accept whitespace"* ]]
+}
+
+@test "install.sh --need-envs rejects whitespace" {
+  run sh "$INSTALL_SH" --need-envs "A B"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--need-envs does not accept whitespace"* ]]
+}
+
+@test "install.sh --help documents --start-with and --need-envs" {
+  run sh "$INSTALL_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--start-with LIST"* ]]
+  [[ "$output" == *"--need-envs LIST"* ]]
+}
+
+@test "install.sh --help documents --no-iii" {
+  run sh "$INSTALL_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--no-iii"* ]]
+}
+
+@test "install.sh --no-iii reaches the setup offer without installing" {
+  # No release is resolved and no asset is downloaded, so this needs no
+  # network: the offer runs against whatever iii is already on this machine.
+  run sh "$INSTALL_SH" --no-iii --start-with worker1 </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--learn-iii --start-with worker1"* ]]
+  [[ "$output" != *"Downloading"* ]]
+}
+
+@test "cleanup is harmless when no download directory was made" {
+  # --no-iii never creates one, and the harness prompt re-arms the trap that
+  # calls this.
+  unset tmpdir
+  run cleanup
+  [ "$status" -eq 0 ]
+}
+
+@test "cleanup removes the download directory" {
+  tmpdir="$BATS_TEST_TMPDIR/dl"
+  mkdir -p "$tmpdir"
+  run cleanup
+  [ "$status" -eq 0 ]
+  [ ! -d "$tmpdir" ]
+}
