@@ -262,23 +262,23 @@ EOF
   [[ "$output" == *"--need-envs LIST"* ]]
 }
 
-@test "install.sh --help documents --no-iii" {
+@test "install.sh --help documents --skip-bin-download" {
   run sh "$INSTALL_SH" --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--no-iii"* ]]
+  [[ "$output" == *"--skip-bin-download"* ]]
 }
 
-@test "install.sh --no-iii reaches the setup offer without installing" {
+@test "install.sh --skip-bin-download reaches the setup offer without installing" {
   # No release is resolved and no asset is downloaded, so this needs no
   # network: the offer runs against whatever iii is already on this machine.
-  run sh "$INSTALL_SH" --no-iii --start-with worker1 </dev/null
+  run sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"--learn-iii --start-with worker1"* ]]
   [[ "$output" != *"Downloading"* ]]
 }
 
 @test "cleanup is harmless when no download directory was made" {
-  # --no-iii never creates one, and the harness prompt re-arms the trap that
+  # --skip-bin-download never creates one, and the harness prompt re-arms the trap that
   # calls this.
   unset tmpdir
   run cleanup

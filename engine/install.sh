@@ -225,7 +225,7 @@ learn_args_for() {
 
 # Removes the download directory. Defined out here, not beside the `mktemp`
 # that fills `tmpdir`, because the harness prompt re-arms this trap after it
-# borrows the terminal, and with --no-iii there is no download directory for
+# borrows the terminal, and with --skip-bin-download there is no download directory for
 # it to name: an unset `tmpdir` is a run with nothing to clean, not an error.
 cleanup() { rm -rf "${tmpdir:-}"; }
 
@@ -247,7 +247,7 @@ use_next=false
 use_rc=false
 start_with=""
 extra_envs=""
-no_iii=false
+skip_bin_download=false
 
 # Both lists are word-split when they reach `iii project init`, so a value with
 # whitespace in it would silently become several arguments.
@@ -281,8 +281,8 @@ while [ $# -gt 0 ]; do
       use_rc=true
       shift
       ;;
-    --no-iii)
-      no_iii=true
+    --skip-bin-download)
+      skip_bin_download=true
       shift
       ;;
     --start-with)
@@ -307,7 +307,7 @@ Options:
   -h, --help            Show this help message
   --next                Install the latest "next" pre-release
   --rc                  Install the latest release candidate
-  --no-iii              Skip the download and install entirely, and run the
+  --skip-bin-download   Skip the download and install entirely, and run the
                         setup offer against the iii already on this machine.
   --start-with LIST     Comma-separated workers to start the harness with.
                         The setup offer scaffolds a project named after the
@@ -368,7 +368,7 @@ fi
 # ---------------------------------------------------------------------------
 
 # Only the download needs them.
-if [ "$no_iii" = false ]; then
+if [ "$skip_bin_download" = false ]; then
 if ! command -v curl >/dev/null 2>&1; then
   err "dependency" "curl is required ($(pkg_manager_hint curl))"
 fi
@@ -444,9 +444,9 @@ fi
 # Release selection
 # ---------------------------------------------------------------------------
 
-# Skipped whole with --no-iii: nothing is fetched, so no release is chosen
+# Skipped whole with --skip-bin-download: nothing is fetched, so no release is chosen
 # and no asset is resolved.
-if [ "$no_iii" = false ]; then
+if [ "$skip_bin_download" = false ]; then
 if [ -n "${III_RELEASE_TAG:-}" ]; then
   # Explicit exact release tag (e.g. iii-alpha/v0.19.2-alpha.1). Bypasses the
   # iii/v<version> construction so isolated alpha releases living under a
@@ -614,9 +614,9 @@ else
 fi
 
 # Everything that downloads, installs, or reports on an install. With
-# --no-iii the binary already on this machine is the one the onboarding
+# --skip-bin-download the binary already on this machine is the one the onboarding
 # offer below runs.
-if [ "$no_iii" = false ]; then
+if [ "$skip_bin_download" = false ]; then
 # Idempotency: if already at target version, skip the download and move on.
 # Nothing was installed, so nothing is announced: the harness offer and the
 # quickstart link below are for someone who has just arrived, not for a
