@@ -260,6 +260,7 @@ EOF
   run worker_target_for_host Linux armv7 gnu
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
 
 # ─────────────────────────────────────────────────────────────
 # --start-with / --need-envs: the harness setup offer

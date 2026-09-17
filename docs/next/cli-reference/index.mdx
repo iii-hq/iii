@@ -133,6 +133,8 @@ iii project init [OPTIONS] [NAME]
 | `--skip-iii` | Skip the iii-engine version compatibility check |
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
 | `--learn-iii` | Start the iii harness and take a quick look at what iii can do: scaffold the "harness" template into NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then start `iii compose --up` inside it. Cannot be combined with any other scaffolding option |
+| `--start-with <WORKERS>` | Start the harness with these workers already declared: a comma-separated list. The project directory is named after the first worker (`--start-with worker1` scaffolds `./iii-worker1`), and every worker in the list is added through `compose::add` once the project is up |
+| `--need-envs <VARS>` | Environment variables to ask for on top of the inference provider key, comma-separated. A worker outside the provider list needs its own key this way: `--start-with worker1 --need-envs WORKER_API_KEY`. Each answer is written to the new project's `.env` |
 
 ### `iii trigger`
 
