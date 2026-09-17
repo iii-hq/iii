@@ -262,6 +262,79 @@ The panel above is one recipe with a provider picker. Plain form: install iii, r
 
 {/* TODO: re-add a "## 4. Add Agent Skills (Optional)" section with `npx skills add iii-hq/iii/skills` once the iii skills worker ships (owned by Sergio). */}
 
+## Installer options
+
+The installer takes its options after `sh -s --`. To see them all:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --help
+```
+
+### Install a pre-release
+
+Use `--next` for the latest `next` pre-release, or `--rc` for the latest release candidate:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
+```
+
+To install one exact version, give the version as the last argument:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
+```
+
+### Start the harness with your workers
+
+`--start-with` takes a comma-separated worker list. The setup offer at the end of the install
+scaffolds a harness project named after the first worker in the list, starts it, and adds every
+worker in the list with `compose::add`:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --start-with database,storage
+```
+
+This example creates `iii-database`, starts it, then adds the `database` and `storage` workers. Each
+added worker reads the project `.env` file. Put `onboarding` in the list to also get the guided tour
+that the plain install offers.
+
+### Ask for more environment variables
+
+`--need-envs` takes a comma-separated list of variable names. The setup asks for each one after the
+inference provider key, writes the answers to the project `.env` file, and puts them in the
+environment of the `iii compose --up` process. Use it for a worker that needs its own key:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --start-with worker1 --need-envs WORKER_API_KEY
+```
+
+`--need-envs` is only valid together with `--start-with`.
+
+<Warning>
+  Every worker in the `--start-with` list receives the full project `.env` file. Use these flags
+  with workers you trust.
+</Warning>
+
+### Run the setup against an installed engine
+
+`--skip-bin-download` skips the download and the install, and runs the setup offer against the iii
+that is on the machine already. Use it to repeat the setup, or when you build the engine yourself:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --skip-bin-download --start-with database
+```
+
+### Control the install with environment variables
+
+| Variable        | Effect                                                                              |
+| --------------- | ----------------------------------------------------------------------------------- |
+| `VERSION`       | Engine version to install, for example `0.23.1`.                                    |
+| `BIN_DIR`       | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
+| `PREFIX`        | Install prefix. Defaults to `$HOME/.local`.                                         |
+| `TARGET`        | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
+| `III_USE_GLIBC` | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
+| `GITHUB_TOKEN`  | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
+
 ## Next Steps
 
 <CardGroup cols={2}>
