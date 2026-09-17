@@ -5,6 +5,115 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.24.0" description="September 2026">
+  ## Compose package locks and configuration
+
+  - Compose writes `worker-compose.lock` with the resolved dependency graph, exact versions,
+    artifact URLs, SHA-256 digests, and package defaults. Starts and restarts reuse the lock rather
+    than resolving moving tags again, and cached package contents are verified before reuse.
+  - `iii compose build --frozen`, `iii compose --up --frozen`, and `compose::up frozen=true` require
+    the compose file and lock to match without resolving selectors or changing the lock. Commit
+    the lock so development, CI, and deployments use the same package content.
+  - `compose::add` accepts container objects alongside worker names, including scripts,
+    dependencies, environment files, configuration overrides, working directories, and timeouts.
+    Changed declarations restart in place; unchanged workers stay running.
+  - `compose::update` without a worker selection updates all declared package workers to the
+    registry's latest version and skips local workers. A targeted update resolves the selector
+    already declared; use `worker=name@latest` to move an exact pin to the latest channel.
+    Failed resolution or download leaves the previous lock and running workers unchanged.
+  - Dependency resolution preserves local workers and declared pins, warns on aliases, and reuses
+    canonical dependencies instead of adding duplicate workers.
+
+  ## Compose lifecycle and upgrade notes
+
+  <Callout type="warning">
+    Workers are now optional by default. Set `required_default: true` at the top of
+    `worker-compose.yaml`, or `required: true` on individual containers, to fail startup and roll
+    back when a required worker cannot start. Optional failures appear in `not_required_failures`
+    even when the operation succeeds; `start_after` controls startup order, not whether a worker
+    requires its dependency to succeed.
+  </Callout>
+
+  - Restart policies support `no` (the default), `on-failure`, and `always`, with configurable
+    backoff, attempt limits, and a stability window. Eligible retries keep dependents running;
+    status reports `restarting` between attempts.
+  - `compose::add`, `compose::update`, and `compose::remove` accept caller-selected `operation_id`
+    values and return an acceptance response before completion. Bind `compose-operation` with
+    `terminal_only: true` before submitting the mutation, then read `compose::operation` once for
+    recovery. Acceptance is not readiness, and completion messages now report optional worker
+    failures rather than claiming every worker is ready.
+  - Runtime state and logs move to `<project-dir>/.iii/compose/<namespace>/`; the package cache
+    remains shared. `III_COMPOSE_STATE_DIR` can redirect state to a writable location.
+  - Startup shows engine, worker, and download progress, plus restart timing. Package metadata
+    resolves concurrently, duplicate progress rows are removed, and `Ctrl+C` cancels startup.
+    Linux process labels include the namespace to distinguish Compose daemons and their engines.
+  - Blank `environment` entries no longer erase values loaded from `env_file`. Switching a
+    `config_override` mapping's `name` replaces the whole variant instead of retaining settings
+    from the previous adapter. Worker edits also handle YAML comments correctly.
+  - Compose retries transient `ETXTBSY` spawn failures, avoids spurious `Gone` errors during
+    restarts, and rejects a container argument to `compose::stop` rather than stopping the daemon
+    when a caller intended to stop one worker.
+
+  <Callout type="warning">
+    Before upgrading, stop existing Compose daemons with the old version and confirm their engines
+    and workers have stopped. Old process records, logs, and VM data are not migrated; preserve
+    anything you need. Add `**/.iii/compose/` to `.gitignore` to exclude generated project state.
+    See [Worker Compose](/using-iii/compose) for the state layout and lifecycle settings.
+  </Callout>
+
+  ## Engine, CLI, and SDK reliability
+
+  - Function-targeted triggers registered through `engine::register_trigger` now belong to the
+    caller's namespace. Provider lookup and `engine::triggers::info` try that namespace before
+    falling back to `default`, instead of leaving valid registrations pending indefinitely.
+  - `engine::registered-triggers::list` accepts `include_pending: true`, and trigger inspection
+    reports `active` or `pending` status to make missing providers easier to diagnose.
+  - A function that returns `null` now reaches its caller as `null`. The engine used to drop the
+    field on the way through, so the Node SDK resolved `undefined` and a strict `=== null` check on
+    a `state::get` miss never fired. The Python SDK keeps a `None` return on the wire the same way.
+  - `iii trigger` gains `--engine` and honors `III_URL` and the working directory's compose file;
+    `--address` and `--port` are deprecated. Compose also honors `III_URL` as an external engine
+    selection and does not start a second engine when it is set.
+
+  ## Observability
+
+  - The in-memory span cache is a hard-bounded FIFO: a burst of traced invocations can no longer
+    grow it without limit or stall the engine's WebSocket accept loop. Finalized spans evicted
+    before the archive wrote them are reported in `known_dropped_spans` (`completeness: partial`),
+    and the health check exposes `dirty_backlog_spans`.
+  - Attribute values are capped at ingest (`trace_storage.max_attribute_bytes`, default 64 KiB);
+    a cut `iii.payload.json` sets `iii.payload.truncated`.
+  - On Linux with glibc the engine returns freed heap to the OS once a minute, so its memory
+    follows the bounded span cache instead of staying at the last burst's peak.
+  - Read-only trace and log functions remain discoverable through `engine::functions::list`
+    without `include_internal`; destructive clear operations remain hidden by default.
+
+  ## Installation and worker compatibility
+
+  - `iii project init --learn-iii` creates a harness project and starts the guided tour. The
+    installer offers the tour after installation and accepts a single keypress at its prompt.
+  - The installer adds `--start-with` to start a harness project with selected workers,
+    `--need-envs` to request their environment variables, and `--skip-bin-download` to run setup
+    against an existing installation. `--need-envs` requires `--start-with`. Each selected worker
+    receives the full project `.env` file, so use these options only with workers you trust.
+    See [Installer options](/install#installer-options).
+  - The bundled `iii-worker` supports Alpine/musl with host-aware GNU or musl artifact selection
+    during install and update. VM execution still requires KVM and an appropriate guest rootfs.
+  - Node and Python worker images separate lean runtime images from builder images, and worker
+    manifests accept the registry's `license` key when `runtime.base_image` is set.
+
+  ## Telemetry and tutorials
+
+  - `III_TELEMETRY_ENABLED` accepts `false`, `0`, `no`, and `off` regardless of case or surrounding
+    whitespace. This controls product-usage telemetry, not OpenTelemetry observability.
+  - Product telemetry reports completed onboarding tour steps and deduplicates repeated step
+    messages within an engine run.
+  - The [Linkly tutorial](/tutorials/linkly/overview) separates Agentic and Exploration paths, and
+    installation docs use the harness template and Compose to add inference providers.
+
+  [Compare 0.23.0 to 0.24.0](https://github.com/iii-hq/iii/compare/iii%2Fv0.23.0...iii%2Fv0.24.0).
+</Update>
+
 <Update label="0.23.0" description="September 2026">
   ## Worker Compose
 
@@ -34,20 +143,9 @@ type: "reference"
   - The Console adds observability configuration and live trace updates.
   - `engine::traces::list` now returns compact trace summaries. Use `engine::traces::spans` for full
     span details.
-  - The in-memory span cache is a hard-bounded FIFO: a burst of traced invocations can no longer
-    grow it without limit or stall the engine's WebSocket accept loop. Finalized spans evicted
-    before the archive wrote them are reported in `known_dropped_spans` (`completeness: partial`),
-    and the health check exposes `dirty_backlog_spans`.
-  - Attribute values are capped at ingest (`trace_storage.max_attribute_bytes`, default 64 KiB);
-    a cut `iii.payload.json` sets `iii.payload.truncated`.
-  - On Linux with glibc the engine returns freed heap to the OS once a minute, so its memory
-    follows the bounded span cache instead of staying at the last burst's peak.
 
   ## Reliability
 
-  - A function that returns `null` now reaches its caller as `null`. The engine used to drop the
-    field on the way through, so the Node SDK resolved `undefined` and a strict `=== null` check on
-    a `state::get` miss never fired. The Python SDK keeps a `None` return on the wire the same way.
   - Improved queue routing across namespaces.
   - Improved trace archive cleanup and summary pagination.
   - Reduced CLI telemetry traffic.
