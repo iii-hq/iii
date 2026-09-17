@@ -33,6 +33,7 @@ The workflows are organized into two categories:
    ci.yml ◄── push to main / PRs
    docker-engine.yml ◄── called by release-iii / manual
    license-check.yml ◄── push to main / PRs
+   supply-chain.yml ◄── push to main / PRs / weekly schedule
    checklist-checker.yml ◄── PR license agreement / comments
 
    alpha-release ◄── manual dispatch from a feature branch
@@ -57,18 +58,20 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 |-----|-----------|--------------|
 | `changes` | — | Detects changed paths (engine/crates/Cargo) for scoping downstream jobs |
 | `engine-build` | — | Builds debug `iii` with all features, uploads `iii-binary` artifact (critical path) |
-| `engine-test` | — | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init`, and `iii --all-features` |
-| `engine-coverage` | `changes` | `cargo llvm-cov` on `iii --all-features`. PRs: only when engine paths change. Push/dispatch: always |
+| `engine-coverage` | `changes` | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init` and `iii --all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
 | `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
 | `engine-fmt` | — | `cargo fmt --all -- --check` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
-| `sdk-node-ci` | `engine-build` | Type check, build, start engine, run SDK tests |
+| `sdk-node-ci` | `engine-build` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
+| `sdk-node-browser-ci` | `engine-build` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
 | `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `engine-build` | Fmt, clippy, start engine, run cargo tests |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability` against a live engine |
 | `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
 | `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
+
+Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`, so the committed `Cargo.lock` is what gets tested; the Makefile targets omit it for local use.
 
 ---
 
@@ -212,6 +215,17 @@ Downloads pre-built binaries from the GitHub Release (no Rust compilation) and p
 **Triggers:** push to `main`, pull requests to `main`
 
 Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers across source files, configured via `engine/licenserc.toml`.
+
+### `supply-chain.yml` — Dependency Advisories
+
+**Triggers:** push to `main`, pull requests to `main`, weekly schedule (Monday 06:00 UTC), manual dispatch
+
+| Job | What it does |
+|-----|--------------|
+| `rust-advisories` | `cargo deny check advisories bans` over the workspace `Cargo.lock`, configured in `deny.toml` (vulnerabilities fail; unmaintained notices fail only for direct dependencies; duplicate versions warn) |
+| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website`, `console` or `docs` are reported without failing |
+
+Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm and GitHub Actions.
 
 ### `checklist-checker.yml` — License Agreement Check
 

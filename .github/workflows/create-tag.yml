@@ -184,6 +184,10 @@ jobs:
         if: inputs.target == 'iii' && inputs.dry_run != true
         run: cargo update --workspace
 
+      - name: Verify Cargo.lock is consistent
+        if: inputs.target == 'iii' && inputs.dry_run != true
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Validate version updates
         if: inputs.dry_run != true
         env:

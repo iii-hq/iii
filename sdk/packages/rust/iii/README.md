@@ -12,10 +12,34 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-iii-sdk = "0.11"
+iii-sdk = "0.24"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 ```
+
+### OpenTelemetry
+
+The SDK exposes OpenTelemetry types (`Context`, `KeyValue`, tracers, span
+processors) through the `iii-helpers` crate, which re-exports the exact
+`opentelemetry` version it was built with. Use that path instead of adding
+`opentelemetry` to your own `Cargo.toml`, so the versions always match:
+
+```toml
+iii-helpers = "0.24"
+```
+
+```rust
+use iii_helpers::observability::opentelemetry::{KeyValue, global};
+```
+
+If you must depend on `opentelemetry` directly, match this table. Each
+OpenTelemetry minor is a distinct set of types, so every row is a breaking
+change for direct dependents and ships as a minor bump of `iii-sdk`:
+
+| iii-sdk / iii-helpers | opentelemetry, opentelemetry_sdk | tracing-opentelemetry |
+|-----------------------|----------------------------------|-----------------------|
+| next release          | 0.32                             | 0.33                  |
+| 0.23, 0.24            | 0.31                             | 0.32                  |
 
 ## Hello World
 

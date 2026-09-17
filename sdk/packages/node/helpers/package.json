@@ -58,10 +58,10 @@
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsdown": "^0.21.4",
-    "typedoc": "^0.28.17",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.11"
   }
 }

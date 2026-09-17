@@ -98,6 +98,9 @@ jobs:
       - name: Sync Cargo.lock
         run: cargo update --workspace
 
+      - name: Verify Cargo.lock is consistent
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Commit bump (ephemeral) and push the alpha tag only
         env:
           TAG: ${{ steps.versions.outputs.tag }}

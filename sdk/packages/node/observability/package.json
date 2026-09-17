@@ -33,9 +33,9 @@
     "@iii-dev/helpers": "workspace:*"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsdown": "^0.21.4",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.11"
   }
 }

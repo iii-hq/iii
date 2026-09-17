@@ -5,6 +5,20 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="Unreleased" description="Next release">
+  ## Security
+
+  - OpenTelemetry moved to the current lines in every SDK that ships it: `@opentelemetry/*` 2.11 / 0.222 in `@iii-dev/helpers` and `iii-sdk`; `opentelemetry` 0.32, `opentelemetry_sdk` 0.32.1 and `tracing-opentelemetry` 0.33 in `iii-helpers`, `iii-sdk` and the engine. Closes GHSA-8988-4f7v-96qf and GHSA-w9wp-h8wv-79jx (unbounded allocation while parsing W3C `baggage` headers). 0.24.0 still shipped the previous lines.
+  - `ws` 8.21 in the Node SDKs (GHSA-96hv-2xvq-fx4p, GHSA-58qx-3vcg-4xpx).
+  - Engine: `hickory-resolver` and `hickory-proto` 0.26 (GHSA-3v94-mw7p-v465, GHSA-q2qq-hmj6-3wpp) and refreshed transitive crates (`quinn-proto`, `h2`, `rustls`, `tar`, `serde_with` and others).
+  - CI runs `cargo` with `--locked`, tests `iii-helpers` and `@iii-dev/helpers` directly, and gates on advisories with `cargo-deny` and `pnpm audit` over the SDK packages.
+
+  ## Migration
+
+  - Rust: if your crate depends on `opentelemetry` directly, move to 0.32 (and `tracing-opentelemetry` 0.33). Prefer `iii_helpers::observability::opentelemetry` so the version always matches the SDK.
+  - Node: no API change. Drop any pnpm patch or override that forced `@opentelemetry/*` 2.x on top of `@iii-dev/helpers` 0.23 or 0.24.
+</Update>
+
 <Update label="0.24.0" description="September 2026">
   ## Compose package locks and configuration
 

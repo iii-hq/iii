@@ -106,7 +106,7 @@ jobs:
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Build iii (debug, all-features)
-        run: cargo build -p iii --all-features
+        run: cargo build --locked -p iii --all-features
 
       - uses: actions/upload-artifact@v4
         with:
@@ -162,7 +162,7 @@ jobs:
 
       - name: Build and install iii-worker (needed by iii integration tests)
         run: |
-          cargo build -p iii-worker
+          cargo build --locked -p iii-worker
           mkdir -p ~/.local/bin
           cp target/debug/iii-worker ~/.local/bin/iii-worker
           chmod +x ~/.local/bin/iii-worker
@@ -183,8 +183,8 @@ jobs:
           # test runners like nextest aren't used here: several engine tests rely
           # on shared in-process global state — tracing/metrics singletons,
           # ports — and aren't isolation-safe.)
-          cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
-          cargo test -p iii --all-features
+          cargo test --locked -p iii-worker -p iii-filesystem -p iii-network -p iii-init
+          cargo test --locked -p iii --all-features
           # Reports re-read the merged profdata (no recompile), so emitting the
           # terminal summary, an lcov file, and a browsable HTML tree is cheap.
           IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/'
@@ -233,7 +233,7 @@ jobs:
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Check benches compile
-        run: cargo bench --benches --no-run
+        run: cargo bench --locked --benches --no-run
 
   # ──────────────────────────────────────────────────────────────
   # Engine Formatting — fast, parallel
@@ -323,7 +323,7 @@ jobs:
         env:
           RABBITMQ_URL: amqp://localhost:5672
           RUST_LOG: info
-        run: cargo test -p iii --test rabbitmq_queue_integration -- --nocapture
+        run: cargo test --locked -p iii --test rabbitmq_queue_integration -- --nocapture
 
   # ──────────────────────────────────────────────────────────────
   # Compose — supervision is platform code, so it is tested per OS
@@ -360,7 +360,7 @@ jobs:
       # The unix suites are cfg-gated, so the windows run exercises the portable
       # tests plus compilation of the job-object path.
       - name: Run compose tests
-        run: cargo test -p iii-compose
+        run: cargo test --locked -p iii-compose
 
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
@@ -402,7 +402,7 @@ jobs:
       # target. Optimized release builds are produced separately at tag time by
       # release-iii.yml (which always uses --release).
       - name: Build for target
-        run: cargo build -p iii --target ${{ matrix.target }}
+        run: cargo build --locked -p iii --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
   # Worker Build Matrix (matches release targets)
@@ -471,7 +471,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build iii-worker for target
-        run: cargo build -p iii-worker --target ${{ matrix.target }}
+        run: cargo build --locked -p iii-worker --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
   # Worker Test Matrix (cross-platform integration tests)
@@ -507,7 +507,7 @@ jobs:
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run iii-worker tests
-        run: cargo nextest run -p iii-worker --profile ci
+        run: cargo nextest run --locked -p iii-worker --profile ci
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -561,7 +561,7 @@ jobs:
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run VM feature-gated tests
-        run: cargo nextest run -p iii-worker --features integration-vm --profile ci
+        run: cargo nextest run --locked -p iii-worker --features integration-vm --profile ci
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -586,7 +586,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-nextest
 
       - name: Run VM feature-gated tests
-        run: cargo nextest run -p iii-worker --features integration-vm --profile ci
+        run: cargo nextest run --locked -p iii-worker --features integration-vm --profile ci
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -619,7 +619,7 @@ jobs:
             || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run OCI feature-gated tests
-        run: cargo nextest run -p iii-worker --features integration-oci --profile ci
+        run: cargo nextest run --locked -p iii-worker --features integration-oci --profile ci
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -644,7 +644,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-nextest
 
       - name: Run OCI feature-gated tests
-        run: cargo nextest run -p iii-worker --features integration-oci --profile ci
+        run: cargo nextest run --locked -p iii-worker --features integration-oci --profile ci
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -681,6 +681,9 @@ jobs:
 
       - name: Build helper packages (prerequisite for type check)
         run: pnpm --filter @iii-dev/observability build && pnpm --filter @iii-dev/helpers build
+
+      - name: Test helper package
+        run: pnpm --filter @iii-dev/helpers type-check && pnpm --filter @iii-dev/helpers test
 
       - name: Type check
         run: pnpm --filter iii-sdk exec tsc --noEmit
@@ -854,10 +857,10 @@ jobs:
           shared-key: sdk-rust
 
       - name: Check formatting
-        run: cargo fmt -p iii-sdk -- --check
+        run: cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -- --check
 
       - name: Run clippy
-        run: cargo clippy -p iii-sdk --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked -p iii-sdk -p iii-helpers -p iii-observability --all-targets --all-features -- -D warnings
 
       - name: Download III binary
         uses: actions/download-artifact@v4
@@ -875,7 +878,7 @@ jobs:
         env:
           III_URL: ws://localhost:49199
           III_HTTP_URL: http://localhost:3199
-        run: cargo test -p iii-sdk --all-features
+        run: cargo test --locked -p iii-sdk -p iii-helpers -p iii-observability --all-features
 
       - name: Stop III Engine
         if: always()
@@ -962,4 +965,4 @@ jobs:
           shared-key: console
 
       - name: Build console binary
-        run: cargo build -p iii-console --release
+        run: cargo build --locked -p iii-console --release

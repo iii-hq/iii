@@ -47,11 +47,11 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
-    "happy-dom": "^17.4.4",
+    "happy-dom": "^20.14.5",
     "tsdown": "^0.21.4",
-    "typedoc": "^0.28.17",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.0",
+    "vitest": "^4.1.11",
     "ws": "^8.21.0"
   }
 }
