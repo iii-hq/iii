@@ -63,6 +63,7 @@ pub fn type_key(namespace: &str, id: &str) -> TypeKey {
     (namespace.to_string(), id.to_string())
 }
 
+#[derive(Clone)]
 pub struct TriggerType {
     pub id: String,
     /// Namespace this provider serves. In-process engine providers use
@@ -73,7 +74,7 @@ pub struct TriggerType {
     pub trigger_request_format: Option<Value>,
     pub call_request_format: Option<Value>,
     pub call_response_format: Option<Value>,
-    pub registrator: Box<dyn TriggerRegistrator>,
+    pub registrator: Arc<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
 }
 
@@ -113,7 +114,7 @@ impl TriggerType {
             trigger_request_format,
             call_request_format,
             call_response_format,
-            registrator,
+            registrator: Arc::from(registrator),
             worker_id,
         }
     }
@@ -353,6 +354,21 @@ impl TriggerRegistry {
         }
     }
 
+    /// Take an owned provider snapshot before calling user code or awaiting.
+    /// Holding a DashMap guard across an await can block a reconnect's insert
+    /// on the same shard and stall the executor that must resume the reader.
+    fn provider_snapshot(&self, key: &TypeKey) -> Option<TriggerType> {
+        self.trigger_types
+            .get(key)
+            .map(|entry| entry.value().clone())
+    }
+
+    fn is_current_provider(&self, provider: &TriggerType) -> bool {
+        self.trigger_types
+            .get(&provider.key())
+            .is_some_and(|current| Arc::ptr_eq(&current.registrator, &provider.registrator))
+    }
+
     /// The namespace a fired trigger's target/condition function resolves in,
     /// looked up LIVE by trigger id at fire time.
     ///
@@ -433,7 +449,7 @@ impl TriggerRegistry {
 
         for mut trigger in candidates {
             let previous = trigger.provider_key();
-            if let Some(old) = self.trigger_types.get(&previous)
+            if let Some(old) = self.provider_snapshot(&previous)
                 && let Err(err) = old.registrator.unregister_trigger(trigger.clone()).await
             {
                 tracing::warn!(
@@ -517,7 +533,7 @@ impl TriggerRegistry {
                 continue;
             }
 
-            if let Some(trigger_type) = self.trigger_types.get(&trigger.provider_key()) {
+            if let Some(trigger_type) = self.provider_snapshot(&trigger.provider_key()) {
                 tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
 
                 let result: Result<(), anyhow::Error> = trigger_type
@@ -581,7 +597,7 @@ impl TriggerRegistry {
                 match self.resolve_provider_key(&trigger) {
                     Some(next) => {
                         trigger.provider_namespace = next.0.clone();
-                        let replayed = match self.trigger_types.get(&next) {
+                        let replayed = match self.provider_snapshot(&next) {
                             Some(provider) => {
                                 provider.registrator.replay_trigger(trigger.clone()).await
                             }
@@ -658,8 +674,13 @@ impl TriggerRegistry {
         // Re-fetch instead of using the inserted value: if an even newer
         // generation replaced the entry in the meantime, replay must route to
         // that one.
-        if let Some(trigger_type) = self.trigger_types.get(&key) {
+        if let Some(trigger_type) = self.provider_snapshot(&key) {
             for trigger in matching_triggers {
+                // A replacement registration replays the live snapshot itself.
+                // Do not keep delivering the rest of this batch to a stale owner.
+                if !self.is_current_provider(&trigger_type) {
+                    break;
+                }
                 let result = trigger_type
                     .registrator
                     .replay_trigger(trigger.clone())
@@ -672,24 +693,31 @@ impl TriggerRegistry {
             // A parked intent resolves again from scratch: it may have been
             // parked when nothing provided the type at all, and this
             // registration is what makes it resolvable.
-            let pending: Vec<String> = self
+            // Finish the iteration before consulting another map: pending
+            // guards must not participate in a provider/pending lock cycle.
+            let pending: Vec<Trigger> = self
                 .pending_triggers
                 .iter()
-                .filter(|pair| {
-                    pair.value().trigger_type == trigger_type_id
-                        && self.resolve_provider_key(pair.value()).as_ref() == Some(&key)
-                })
-                .map(|pair| pair.key().clone())
+                .filter(|pair| pair.value().trigger_type == trigger_type_id)
+                .map(|pair| pair.value().clone())
                 .collect();
 
-            for trigger_id in pending {
+            for candidate in pending {
+                if self.resolve_provider_key(&candidate).as_ref() != Some(&key) {
+                    continue;
+                }
+                let trigger_id = candidate.id;
                 // `remove` claims the intent, so a concurrent drain of the
                 // same type cannot activate it twice.
                 let Some((_, mut trigger)) = self.pending_triggers.remove(&trigger_id) else {
                     continue;
                 };
                 trigger.provider_namespace = key.0.clone();
-                self.activate_pending_trigger(&trigger_type, trigger).await;
+                if let Some(current) = self.provider_snapshot(&key) {
+                    self.activate_pending_trigger(&current, trigger).await;
+                } else {
+                    self.pending_triggers.insert(trigger.id.clone(), trigger);
+                }
             }
         }
 
@@ -697,7 +725,7 @@ impl TriggerRegistry {
         // Re-fetched for the same reason as above, and after the replay so a
         // binding is never in flight to two providers at once.
         if key.0 != crate::protocol::DEFAULT_NAMESPACE
-            && let Some(trigger_type) = self.trigger_types.get(&key)
+            && let Some(trigger_type) = self.provider_snapshot(&key)
         {
             self.rehome_fallback_bindings(&trigger_type).await;
         }
@@ -709,32 +737,47 @@ impl TriggerRegistry {
     /// type. On registrator failure the intent is parked again so the next
     /// type (re)registration retries it.
     async fn activate_pending_trigger(&self, trigger_type: &TriggerType, trigger: Trigger) -> bool {
-        match trigger_type
-            .registrator
-            .replay_trigger(trigger.clone())
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    "{} Trigger {} (type {}, function {}) recovered from pending",
-                    "[REGISTERED]".green(),
-                    trigger.id.purple(),
-                    trigger.trigger_type.purple(),
-                    trigger.function_id.purple(),
-                );
-                self.triggers.insert(trigger.id.clone(), trigger);
-                true
-            }
-            Err(err) => {
-                tracing::error!(
-                    error = %err,
-                    trigger_id = %trigger.id,
-                    trigger_type = %trigger.trigger_type,
-                    "Error registering pending trigger; it stays pending"
-                );
+        let mut provider = trigger_type.clone();
+        loop {
+            let result = provider.registrator.replay_trigger(trigger.clone()).await;
+            // A pending intent is claimed outside either map while replay is
+            // in flight. A replacement cannot see it in its own drain, so the
+            // claimant must hand it to the current generation before publishing.
+            // Keep this short guard only through the synchronous publication,
+            // so replacement cannot drain between the generation check and insert.
+            let current = self.trigger_types.get(&provider.key());
+            if let Some(current) = current.as_ref() {
+                if !Arc::ptr_eq(&current.registrator, &provider.registrator) {
+                    provider = current.value().clone();
+                    continue;
+                }
+            } else {
                 self.pending_triggers.insert(trigger.id.clone(), trigger);
-                false
+                return false;
             }
+            return match result {
+                Ok(()) => {
+                    tracing::info!(
+                        "{} Trigger {} (type {}, function {}) recovered from pending",
+                        "[REGISTERED]".green(),
+                        trigger.id.purple(),
+                        trigger.trigger_type.purple(),
+                        trigger.function_id.purple(),
+                    );
+                    self.triggers.insert(trigger.id.clone(), trigger);
+                    true
+                }
+                Err(err) => {
+                    tracing::error!(
+                        error = %err,
+                        trigger_id = %trigger.id,
+                        trigger_type = %trigger.trigger_type,
+                        "Error registering pending trigger; it stays pending"
+                    );
+                    self.pending_triggers.insert(trigger.id.clone(), trigger);
+                    false
+                }
+            };
         }
     }
 
@@ -781,7 +824,7 @@ impl TriggerRegistry {
 
         let Some(trigger_type) = resolved
             .as_ref()
-            .and_then(|key| self.trigger_types.get(key))
+            .and_then(|key| self.provider_snapshot(key))
         else {
             // Park the intent instead of failing: workers may connect in any
             // order, and a binding that arrives before its trigger type's
@@ -797,7 +840,7 @@ impl TriggerRegistry {
             // Resolved again rather than reusing the earlier miss: the
             // provider that appeared in the meantime may be either step.
             if let Some(key) = self.resolve_provider_key(&trigger)
-                && let Some(trigger_type) = self.trigger_types.get(&key)
+                && let Some(trigger_type) = self.provider_snapshot(&key)
                 && let Some((_, mut parked)) = self.pending_triggers.remove(&trigger.id)
             {
                 parked.provider_namespace = key.0.clone();
@@ -880,7 +923,7 @@ impl TriggerRegistry {
             trigger_entry.value().clone()
         };
 
-        if let Some(tt) = self.trigger_types.get(&trigger.provider_key()) {
+        if let Some(tt) = self.provider_snapshot(&trigger.provider_key()) {
             tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
@@ -933,7 +976,7 @@ impl TriggerRegistry {
         // never double-activate with a drain) and activate it through the
         // current provider. While the reporter still owns the type the park
         // is intended: replaying would just be rejected again.
-        if let Some(trigger_type) = self.trigger_types.get(&parked_type)
+        if let Some(trigger_type) = self.provider_snapshot(&parked_type)
             && trigger_type.worker_id != Some(reporter_worker_id)
             && let Some((_, parked)) = self.pending_triggers.remove(id)
         {
@@ -949,6 +992,229 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingYieldingRegistrator(Arc<ControlledRegistrator>);
+
+    impl TriggerRegistrator for CountingYieldingRegistrator {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                self.0.register_trigger(trigger).await
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                self.0.unregister_trigger(trigger).await
+            })
+        }
+    }
+
+    struct YieldingRegistrator;
+
+    impl TriggerRegistrator for YieldingRegistrator {
+        fn register_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            self.register_trigger(trigger)
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_releases_provider_shard_before_await() {
+        let registry = TriggerRegistry::new();
+        let trigger = make_trigger("live", "evt");
+        registry.triggers.insert(trigger.id.clone(), trigger);
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+        let replay = registry.register_trigger_type(TriggerType::new(
+            "evt",
+            "yielding",
+            Box::new(YieldingRegistrator),
+            None,
+        ));
+        tokio::pin!(replay);
+        assert!(futures::poll!(&mut replay).is_pending());
+
+        // A blocking insert here would deadlock the runtime on the old code.
+        // try_get_mut proves the shard is writable without hanging the suite.
+        assert!(
+            matches!(
+                registry.trigger_types.try_get_mut(&key),
+                dashmap::try_result::TryResult::Present(_)
+            ),
+            "replay retained a provider shard guard across await"
+        );
+        replay.await.unwrap();
+        assert_eq!(registry.triggers.len(), 1);
+        assert!(registry.pending_triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_replay_follows_replacement_generation() {
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger(make_trigger("pending", "evt"))
+            .await
+            .unwrap();
+        let old_worker = Uuid::new_v4();
+        let replacement_worker = Uuid::new_v4();
+        let replay = registry.register_trigger_type(TriggerType::new(
+            "evt",
+            "old",
+            Box::new(YieldingRegistrator),
+            Some(old_worker),
+        ));
+        tokio::pin!(replay);
+        assert!(futures::poll!(&mut replay).is_pending());
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+        assert!(matches!(
+            registry.trigger_types.try_get_mut(&key),
+            dashmap::try_result::TryResult::Present(_)
+        ));
+
+        let replacement = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "replacement",
+                Box::new(Arc::clone(&replacement)),
+                Some(replacement_worker),
+            ))
+            .await
+            .unwrap();
+        replay.await.unwrap();
+        registry.unregister_worker(&old_worker).await;
+
+        assert_eq!(replacement.register_count.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.triggers.len(), 1);
+        assert!(registry.pending_triggers.is_empty());
+        assert_eq!(
+            registry.trigger_types.get(&key).unwrap().worker_id,
+            Some(replacement_worker)
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_and_unregister_release_provider_shard_before_await() {
+        let registry = TriggerRegistry::new();
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "yielding",
+                Box::new(YieldingRegistrator),
+                None,
+            ))
+            .await
+            .unwrap();
+        let registration = registry.register_trigger(make_trigger("live", "evt"));
+        tokio::pin!(registration);
+        assert!(futures::poll!(&mut registration).is_pending());
+        assert!(matches!(
+            registry.trigger_types.try_get_mut(&key),
+            dashmap::try_result::TryResult::Present(_)
+        ));
+        registration.await.unwrap();
+
+        let unregister = registry.unregister_trigger("live".into(), None);
+        tokio::pin!(unregister);
+        assert!(futures::poll!(&mut unregister).is_pending());
+        assert!(matches!(
+            registry.trigger_types.try_get_mut(&key),
+            dashmap::try_result::TryResult::Present(_)
+        ));
+        assert!(unregister.await.unwrap());
+        assert!(registry.triggers.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_provider_reconnect_preserves_all_bindings() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let mut owners: Vec<_> = (0..8).map(|_| Uuid::new_v4()).collect();
+        for (p, owner) in owners.iter().enumerate() {
+            for k in 0..6 {
+                let id = format!("fixture-{p}-{k}");
+                registry
+                    .register_trigger_type(TriggerType::new(
+                        &id,
+                        "yielding",
+                        Box::new(YieldingRegistrator),
+                        Some(*owner),
+                    ))
+                    .await
+                    .unwrap();
+                for n in 0..12 {
+                    registry
+                        .register_trigger(make_trigger(&format!("bind-{p}-{k}-{n}"), &id))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        for _ in 0..20 {
+            let mut tasks = tokio::task::JoinSet::new();
+            for owner in owners {
+                let registry = Arc::clone(&registry);
+                tasks.spawn(async move {
+                    registry.unregister_worker(&owner).await;
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+            assert!(registry.triggers.is_empty());
+            assert_eq!(registry.pending_triggers.len(), 576);
+            owners = (0..8).map(|_| Uuid::new_v4()).collect();
+            let counters: Vec<_> = (0..8)
+                .map(|_| Arc::new(ControlledRegistrator::new(false, false)))
+                .collect();
+            for (p, owner) in owners.iter().copied().enumerate() {
+                let registry = Arc::clone(&registry);
+                let counter = Arc::clone(&counters[p]);
+                tasks.spawn(async move {
+                    for k in 0..6 {
+                        registry
+                            .register_trigger_type(TriggerType::new(
+                                format!("fixture-{p}-{k}"),
+                                "replacement",
+                                Box::new(CountingYieldingRegistrator(Arc::clone(&counter))),
+                                Some(owner),
+                            ))
+                            .await
+                            .unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+            assert_eq!(registry.trigger_types.len(), 48);
+            assert_eq!(registry.triggers.len(), 576);
+            assert!(registry.pending_triggers.is_empty());
+            for counter in counters {
+                assert_eq!(counter.register_count.load(Ordering::SeqCst), 72);
+            }
+        }
+    }
 
     /// A no-op registrator used for testing synchronous registry operations.
     struct MockRegistrator {
