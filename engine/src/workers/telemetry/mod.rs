@@ -7,6 +7,7 @@
 pub mod amplitude;
 pub mod collector;
 pub mod environment;
+pub mod harness;
 pub mod onboarding;
 
 use std::collections::{HashMap, HashSet};
@@ -800,7 +801,12 @@ async fn send_product_event(
     }
 }
 
-struct DisabledTelemetryWorker;
+/// Telemetry off: the worker still drains the harness's usage topic, so an
+/// opted-out engine never stores reports it will not send (see
+/// [`harness::register_drain`]).
+struct DisabledTelemetryWorker {
+    engine: Arc<Engine>,
+}
 
 #[async_trait]
 impl Worker for DisabledTelemetryWorker {
@@ -809,10 +815,10 @@ impl Worker for DisabledTelemetryWorker {
     }
 
     async fn create(
-        _engine: Arc<Engine>,
+        engine: Arc<Engine>,
         _config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Worker>> {
-        Ok(Box::new(DisabledTelemetryWorker))
+        Ok(Box::new(DisabledTelemetryWorker { engine }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -824,6 +830,8 @@ impl Worker for DisabledTelemetryWorker {
         _shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
+        harness::register_drain(&self.engine);
+        harness::register_trigger(&self.engine).await;
         Ok(())
     }
 
@@ -859,7 +867,7 @@ impl Worker for TelemetryWorker {
                     tracing::info!("Anonymous telemetry disabled (dev opt-out).");
                 }
             }
-            return Ok(Box::new(DisabledTelemetryWorker));
+            return Ok(Box::new(DisabledTelemetryWorker { engine }));
         }
 
         let device_id = get_or_create_device_id();
@@ -914,6 +922,14 @@ impl Worker for TelemetryWorker {
             self.posthog_client.clone(),
         );
         onboarding::register_trigger(&self.engine).await;
+        // The harness reports its own session usage on its own topic.
+        harness::register_handler(
+            &self.engine,
+            self.ctx.clone(),
+            Arc::clone(self.active_client()),
+            self.posthog_client.clone(),
+        );
+        harness::register_trigger(&self.engine).await;
 
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
@@ -2515,20 +2531,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_name() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         assert_eq!(module.name(), "Telemetry");
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_initialize() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let result = module.initialize().await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_start_background_tasks() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let (tx, rx) = tokio::sync::watch::channel(false);
         let result = module.start_background_tasks(rx, tx).await;
         assert!(result.is_ok());
@@ -2536,7 +2558,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_destroy() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let result = module.destroy().await;
         assert!(result.is_ok());
     }
