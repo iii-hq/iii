@@ -478,10 +478,16 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     // seeds follow the list: `--start-with onboarding,...` gets exactly what
     // the bare command scaffolds, and a list without it gets neither the
     // container nor a pane pointing at a page nothing serves.
+    //
+    // Matched exactly, not by worker name: the seed declares
+    // `package://onboarding` at `latest`, so it can only stand in for a
+    // request that asked for precisely that. `acme/onboarding@1.2.0` names a
+    // different registry and a pinned version, and is added like any other
+    // worker.
     let with_onboarding = start_with.is_empty()
         || start_with
             .iter()
-            .any(|spec| worker_name(spec) == ONBOARDING_WORKER);
+            .any(|spec| is_tour_worker(spec));
     if with_onboarding {
         seed_console_layout(&dir);
         seed_onboarding_container(&dir);
@@ -491,7 +497,7 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     // it, and adding it anyway would rewrite the block the seed just wrote.
     let start_with: Vec<String> = start_with
         .into_iter()
-        .filter(|spec| !(with_onboarding && worker_name(spec) == ONBOARDING_WORKER))
+        .filter(|spec| !(with_onboarding && is_tour_worker(spec)))
         .collect();
 
     // The template is on disk now, so its manifests can say what they really
@@ -780,6 +786,13 @@ async fn announce_console_when_ready(compose_path: PathBuf, start_with: Vec<Stri
 /// list and reconciles it once; a call per worker would restart the project
 /// once per name.
 ///
+/// `compose::add` answers as soon as it has *accepted* the work, not when the
+/// work is done: the mutation runs on its own task and reports through the
+/// `compose-operation` trigger type. So the completion this waits on is that
+/// trigger's terminal event, bound before the add is submitted and against an
+/// operation id chosen here, which is what makes it impossible to miss. The
+/// timeout below is the backup, not the mechanism.
+///
 /// Best effort, like every other step of the tour: a failed add leaves a
 /// running project the operator can add to by hand.
 async fn add_workers(
@@ -795,9 +808,17 @@ async fn add_workers(
     eprintln!();
     eprintln!("  {} adding workers: {}", "▶".green(), names.bold());
 
+    // Ours, not the daemon's: an id we picked can be subscribed to before the
+    // add exists, and `compose::add` adopts it. Waiting for the id in the add's
+    // answer would leave a window where the operation could finish before the
+    // binding landed.
+    let operation_id = format!("compose:learn-iii:{}", uuid::Uuid::new_v4());
+    let (binding, mut finished) = subscribe_to_operation(client, &operation_id);
+
     let payload = serde_json::json!({
         "file": compose_path,
         "workers": worker_declarations(compose_path, workers),
+        "operation_id": operation_id,
     });
 
     // The daemon registers its functions in one pass, in the order it lists
@@ -816,17 +837,82 @@ async fn add_workers(
         }
         .namespace(namespace);
 
-        let Err(e) = client.client().trigger(request).await else {
-            return;
-        };
-        if e.to_string().contains("function_not_found") && std::time::Instant::now() < deadline {
-            tokio::time::sleep(READY_POLL_INTERVAL).await;
-            continue;
+        match client.client().trigger(request).await {
+            Ok(_) => break,
+            Err(e)
+                if e.to_string().contains("function_not_found")
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(READY_POLL_INTERVAL).await;
+            }
+            Err(e) => {
+                if let Some(binding) = binding {
+                    binding.unregister();
+                }
+                eprintln!("  could not add {names}: {e}");
+                eprintln!("  add them yourself with: iii trigger compose::add worker=<name>");
+                return;
+            }
         }
-        eprintln!("  could not add {names}: {e}");
-        eprintln!("  add them yourself with: iii trigger compose::add worker=<name>");
-        return;
     }
+
+    // The backup. A binding the daemon never delivered on -- an old daemon with
+    // no `compose-operation` trigger type, a socket that dropped and came back
+    // after the terminal event -- would otherwise park the tour here forever.
+    // Falling through costs nothing: the caller's settle poll is the same gate
+    // this was saving.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(ADD_TIMEOUT_MS),
+        finished.recv(),
+    )
+    .await;
+
+    if let Some(binding) = binding {
+        binding.unregister();
+    }
+}
+
+/// Binds `compose-operation` for one operation's terminal event.
+///
+/// The receiver yields once, when that operation finishes, whether it
+/// succeeded or failed: both are the end of the add as far as the tour is
+/// concerned, and the state the containers ended in is what the settle gate
+/// afterwards reads. The binding is returned with it, because a [`Trigger`]
+/// that is merely dropped stays registered -- the caller unregisters it once
+/// it has its event.
+///
+/// [`Trigger`]: iii_sdk::trigger::Trigger
+fn subscribe_to_operation(
+    client: &iii_compose::engine::EngineClient,
+    operation_id: &str,
+) -> (
+    Option<iii_sdk::trigger::Trigger>,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    let (done, finished) = tokio::sync::mpsc::unbounded_channel();
+    let callback = format!("iii-cli::learn-iii::operation::{}", uuid::Uuid::new_v4());
+    client.client().register_function(
+        callback.clone(),
+        iii_sdk::RegisterFunction::new(move |_: serde_json::Value| {
+            let _ = done.send(());
+            Ok(serde_json::Value::Null)
+        }),
+    );
+
+    // `register_trigger` hands its message to the socket and does not wait for
+    // the engine to answer, so an error here is the message never being sent
+    // at all, and a daemon too old to serve `compose-operation` does not error
+    // here either. The caller's timeout covers both.
+    let binding = client
+        .client()
+        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+            "compose-operation",
+            callback,
+            serde_json::json!({ "operation_id": operation_id, "terminal_only": true }),
+        ))
+        .ok();
+
+    (binding, finished)
 }
 
 /// `compose::add`'s own recommended timeout: the call resolves a registry
@@ -852,6 +938,11 @@ const ADD_REGISTRATION_GRACE: std::time::Duration = std::time::Duration::from_se
 ///
 /// A project with no `.env` gets the bare specs back: `env_file` naming a
 /// missing file fails validation, and that would lose the add itself.
+///
+/// This is a trust boundary, and it is deliberately wide: every `--start-with`
+/// worker receives the whole project `.env`, including keys meant for another
+/// worker. The flag is for workers the operator already trusts. Narrowing it
+/// would mean a per-worker env file, which is a different feature.
 fn worker_declarations(compose_path: &Path, workers: &[String]) -> Vec<serde_json::Value> {
     let has_env = compose_path
         .parent()
@@ -873,6 +964,16 @@ fn worker_declarations(compose_path: &Path, workers: &[String]) -> Vec<serde_jso
 /// The env file the harness template ships and [`prompt_provider_key`] writes.
 const PROJECT_ENV_FILE: &str = ".env";
 
+/// Whether `spec` asks for the tour's own worker, the one the scaffold seeds
+/// into `worker-compose.yaml`.
+///
+/// Exact, because the seed is one specific container: `package://onboarding`
+/// at `latest`. A spec that names another registry or pins a version wants a
+/// different worker and is added like any other.
+fn is_tour_worker(spec: &str) -> bool {
+    spec.trim() == ONBOARDING_WORKER
+}
+
 /// Waits for the project to stop moving, then for compose's startup renderer
 /// to let go of the terminal.
 ///
@@ -885,11 +986,11 @@ async fn wait_until_settled(
     compose_path: &Path,
     namespace: &str,
 ) {
-    let mut seen_starting = false;
+    let mut seen_moving = false;
     loop {
         if let Some(progress) = project_progress(client, compose_path, namespace).await {
-            seen_starting |= progress.any_starting;
-            if progress.all_ready || (seen_starting && !progress.any_starting) {
+            seen_moving |= progress.any_moving;
+            if progress.all_ready || (seen_moving && !progress.any_moving) {
                 break;
             }
         }
@@ -909,9 +1010,9 @@ struct Progress {
     /// Every declared container reports `ready`: startup finished with nothing
     /// left behind.
     all_ready: bool,
-    /// At least one container is still `starting`, the only state compose
-    /// leaves on its own.
-    any_starting: bool,
+    /// At least one container is still moving on its own: `starting`, or
+    /// `restarting` while the supervisor waits to try it again.
+    any_moving: bool,
 }
 
 /// Read the project's progress from `compose::status`.
@@ -944,7 +1045,7 @@ async fn project_progress(
 /// never becomes ready. Waiting for it is waiting forever, so "every container
 /// is ready" cannot be the only way out: the tour would print no console link
 /// and add no `--start-with` worker over one optional container. The caller
-/// pairs the `any_starting` half with "the project has moved at least once",
+/// pairs the `any_moving` half with "the project has moved at least once",
 /// because a project that has not started yet has nothing starting either.
 fn read_progress(containers: &[serde_json::Value]) -> Option<Progress> {
     if containers.is_empty() {
@@ -960,9 +1061,9 @@ fn read_progress(containers: &[serde_json::Value]) -> Option<Progress> {
         all_ready: containers
             .iter()
             .all(|container| state(container).as_deref() == Some("ready")),
-        any_starting: containers
-            .iter()
-            .any(|container| state(container).as_deref() == Some("starting")),
+        any_moving: containers.iter().any(|container| {
+            matches!(state(container).as_deref(), Some("starting" | "restarting"))
+        }),
     })
 }
 
@@ -1522,6 +1623,29 @@ mod tests {
     }
 
     #[test]
+    fn only_the_bare_name_is_the_tour_worker() {
+        assert!(is_tour_worker("onboarding"));
+        assert!(is_tour_worker(" onboarding "));
+        assert!(!is_tour_worker("onboarding@1.2.0"));
+        assert!(!is_tour_worker("acme/onboarding"));
+    }
+
+    #[test]
+    fn a_restarting_container_is_still_moving() {
+        let containers = vec![
+            serde_json::json!({ "state": "ready" }),
+            serde_json::json!({ "state": "restarting" }),
+        ];
+        assert_eq!(
+            read_progress(&containers),
+            Some(Progress {
+                all_ready: false,
+                any_moving: true
+            })
+        );
+    }
+
+    #[test]
     fn progress_needs_containers() {
         assert_eq!(read_progress(&[]), None);
     }
@@ -1539,7 +1663,7 @@ mod tests {
             read_progress(&containers),
             Some(Progress {
                 all_ready: false,
-                any_starting: false
+                any_moving: false
             })
         );
     }
@@ -1554,7 +1678,7 @@ mod tests {
             read_progress(&containers),
             Some(Progress {
                 all_ready: false,
-                any_starting: true
+                any_moving: true
             })
         );
     }
@@ -1569,7 +1693,7 @@ mod tests {
             read_progress(&containers),
             Some(Progress {
                 all_ready: false,
-                any_starting: false
+                any_moving: false
             })
         );
     }
@@ -1584,7 +1708,7 @@ mod tests {
             read_progress(&containers),
             Some(Progress {
                 all_ready: true,
-                any_starting: false
+                any_moving: false
             })
         );
     }

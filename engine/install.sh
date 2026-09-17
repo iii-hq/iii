@@ -219,8 +219,9 @@ worker_target_for_host() {
 # which owns the whole flow (scaffold, API key prompts, `compose --up`, and the
 # `compose::add` for each worker).
 #
-# The result is meant to be word-split by its caller: shell has no arrays, and
-# both lists are rejected above if they hold whitespace.
+# This builds the line the installer prints when it names the command. The run
+# that executes one passes the same arguments as positional parameters, so a
+# worker spec is never word-split or globbed.
 learn_args_for() {
   _start_with="$1"
   _envs="$2"
@@ -268,6 +269,20 @@ require_no_whitespace() {
   esac
 }
 
+# A flag that takes a value has to be given one. Called as
+# `require_value --flag "what it wants" "$@"`, so $3 is the flag itself and $4
+# is the value it was given.
+#
+# A dash-prefixed value is a missing value, not a value: `--start-with
+# --skip-bin-download` would otherwise consume the next flag as worker data and
+# leave that flag unset, downloading the binary the caller asked to keep.
+require_value() {
+  [ $# -ge 4 ] || err "args" "$1 needs a $2"
+  case "$4" in
+    -*) err "args" "$1 needs a $2, not the option $4" ;;
+  esac
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     # Deprecated no-op flags (kept for one release so stale docs don't break).
@@ -297,13 +312,13 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --start-with)
-      [ $# -ge 2 ] || err "args" "--start-with needs a comma-separated worker list"
+      require_value --start-with "comma-separated worker list" "$@"
       require_no_whitespace --start-with "$2"
       start_with="$2"
       shift 2
       ;;
     --need-envs)
-      [ $# -ge 2 ] || err "args" "--need-envs needs a comma-separated variable list"
+      require_value --need-envs "comma-separated variable list" "$@"
       require_no_whitespace --need-envs "$2"
       extra_envs="$2"
       shift 2
@@ -936,9 +951,22 @@ esac
 # /dev/tty. Skip silently when no terminal is attached (CI, Dockerfiles).
 # ---------------------------------------------------------------------------
 
-learn_args=$(learn_args_for "$start_with" "$extra_envs")
-start_cmd="$BIN_NAME project init $learn_args"
+# The arguments as one string, for the lines that print a command to run, and
+# as positional parameters, for the two places that actually run one. Shell has
+# no arrays, and a worker spec is not safe to word-split: `worker@*` is a legal
+# version selector and an unquoted `*` is a glob against the current directory.
+# The argument loop above has consumed every positional parameter, so `set --`
+# is free to take them.
+start_cmd="$BIN_NAME project init $(learn_args_for "$start_with" "$extra_envs")"
 quickstart_url="https://iii.dev/docs/quickstart"
+
+set -- --learn-iii
+if [ -n "$start_with" ]; then
+  set -- "$@" --start-with "$start_with"
+  if [ -n "$extra_envs" ]; then
+    set -- "$@" --need-envs "$extra_envs"
+  fi
+fi
 
 # Does the binary we just installed know `--learn-iii`? Ask the parser rather
 # than reading the help text: the help is a rendered table whose column widths
@@ -954,8 +982,7 @@ quickstart_url="https://iii.dev/docs/quickstart"
 # `--learn-iii` but not `--start-with` takes the quickstart branch instead of
 # failing after the operator says yes.
 has_learn_iii=0
-# shellcheck disable=SC2086
-if "$bin_dir/$BIN_NAME" project init $learn_args --help >/dev/null 2>&1; then
+if "$bin_dir/$BIN_NAME" project init "$@" --help >/dev/null 2>&1; then
   has_learn_iii=1
 fi
 
@@ -998,8 +1025,7 @@ elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
       # that pipe to init. Init asks for a provider API key only when stdin
       # is a terminal, so piped installs skipped the question in silence.
       # The enclosing `if` has already established /dev/tty is usable.
-      # shellcheck disable=SC2086
-      exec "$bin_dir/$BIN_NAME" project init $learn_args </dev/tty
+      exec "$bin_dir/$BIN_NAME" project init "$@" </dev/tty
       ;;
     *)
       echo "No problem. Run it anytime with:"
