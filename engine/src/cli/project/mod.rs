@@ -484,10 +484,8 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     // request that asked for precisely that. `acme/onboarding@1.2.0` names a
     // different registry and a pinned version, and is added like any other
     // worker.
-    let with_onboarding = start_with.is_empty()
-        || start_with
-            .iter()
-            .any(|spec| is_tour_worker(spec));
+    let with_onboarding =
+        start_with.is_empty() || start_with.iter().any(|spec| is_tour_worker(spec));
     if with_onboarding {
         seed_console_layout(&dir);
         seed_onboarding_container(&dir);
