@@ -322,6 +322,41 @@ impl std::hash::Hash for Trigger {
     }
 }
 
+/// Provider deliveries retained until detach succeeds, serialized per binding.
+#[derive(Default)]
+struct BindingLifecycle {
+    deliveries: Vec<(TriggerType, Trigger)>,
+}
+
+/// Keeps a gate shared with queued operations and reclaims idle, empty gates.
+/// The last lease checks Arc ownership while holding the map's entry lock,
+/// so a new caller cannot acquire a different gate for the same binding.
+struct LifecycleLease<'a> {
+    registry: &'a TriggerRegistry,
+    id: String,
+    gate: Option<Arc<tokio::sync::Mutex<BindingLifecycle>>>,
+    intent: Option<Uuid>,
+}
+
+impl Drop for LifecycleLease<'_> {
+    fn drop(&mut self) {
+        if let Some(intent) = self.intent {
+            self.registry.in_flight.remove(&intent);
+        }
+        self.registry.lifecycles.remove_if(&self.id, |_, gate| {
+            // Release this lease under the same shard lock as the last-owner
+            // check, including when two final leases drop concurrently.
+            drop(self.gate.take());
+            Arc::strong_count(gate) == 1
+                && !self.registry.triggers.contains_key(&self.id)
+                && !self.registry.pending_triggers.contains_key(&self.id)
+                && gate
+                    .try_lock()
+                    .is_ok_and(|state| state.deliveries.is_empty())
+        });
+    }
+}
+
 #[derive(Default)]
 pub struct TriggerRegistry {
     /// Providers, by `(namespace, type id)`.
@@ -342,6 +377,12 @@ pub struct TriggerRegistry {
     /// removes and resurrect an explicitly-unregistered binding. Held only
     /// around the map operations, never across an await.
     pub park_transition: std::sync::Mutex<()>,
+    /// Gates outlive map removal so queued teardown cannot race a new gate for
+    /// the same id. Type publication never waits on these gates: the holder
+    /// reconciles against the current provider before releasing its gate.
+    lifecycles: DashMap<String, Arc<tokio::sync::Mutex<BindingLifecycle>>>,
+    /// Intents are visible even while waiting for their binding gate.
+    in_flight: DashMap<Uuid, Trigger>,
 }
 
 impl TriggerRegistry {
@@ -351,6 +392,8 @@ impl TriggerRegistry {
             triggers: Arc::new(DashMap::new()),
             pending_triggers: Arc::new(DashMap::new()),
             park_transition: std::sync::Mutex::new(()),
+            lifecycles: DashMap::new(),
+            in_flight: DashMap::new(),
         }
     }
 
@@ -363,10 +406,173 @@ impl TriggerRegistry {
             .map(|entry| entry.value().clone())
     }
 
-    fn is_current_provider(&self, provider: &TriggerType) -> bool {
-        self.trigger_types
-            .get(&provider.key())
-            .is_some_and(|current| Arc::ptr_eq(&current.registrator, &provider.registrator))
+    /// Lease a gate and optionally expose a direct registration's intent to
+    /// disconnect cleanup before waiting for the gate. Drop reclaims empty
+    /// entries on both normal completion and cancellation.
+    fn lifecycle(&self, id: &str, trigger: Option<&Trigger>) -> LifecycleLease<'_> {
+        let gate = Arc::clone(self.lifecycles.entry(id.to_owned()).or_default().value());
+        let intent = trigger.map(|trigger| {
+            let token = Uuid::new_v4();
+            self.in_flight.insert(token, trigger.clone());
+            token
+        });
+        LifecycleLease {
+            registry: self,
+            id: id.to_owned(),
+            gate: Some(gate),
+            intent,
+        }
+    }
+
+    /// Read a binding only after taking its lifecycle gate, not from a replay
+    /// batch's potentially stale snapshot.
+    fn binding_snapshot(&self, id: &str) -> Option<Trigger> {
+        self.triggers
+            .get(id)
+            .map(|t| t.clone())
+            .or_else(|| self.pending_triggers.get(id).map(|t| t.clone()))
+    }
+
+    /// Detach every generation that accepted this binding. Failed detaches
+    /// remain tracked so an explicit unregister can retry them.
+    async fn detach_deliveries(state: &mut BindingLifecycle) -> Result<(), anyhow::Error> {
+        let mut failure = None;
+        let mut index = 0;
+        while index < state.deliveries.len() {
+            let (provider, trigger) = &state.deliveries[index];
+            // Leave the delivery recorded across await: cancellation must not
+            // discard this or the remaining providers in a drained iterator.
+            match provider
+                .registrator
+                .unregister_trigger(trigger.clone())
+                .await
+            {
+                Ok(()) => {
+                    state.deliveries.remove(index);
+                }
+                Err(err) => {
+                    failure = Some(err);
+                    index += 1;
+                }
+            }
+        }
+        match failure {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    /// Keep an existing accepted delivery without synthesizing a successful
+    /// attempt. If replacement skipped this gate, replay the previous intent
+    /// through settlement instead of attributing it to the rejecting provider.
+    async fn reconcile_existing(
+        &self,
+        state: tokio::sync::OwnedMutexGuard<BindingLifecycle>,
+        trigger: Trigger,
+    ) {
+        {
+            let fence = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let current = self
+                .resolve_provider_key(&trigger)
+                .and_then(|key| self.provider_snapshot(&key));
+            if self.triggers.contains_key(&trigger.id)
+                && current.as_ref().is_some_and(|current| {
+                    state.deliveries.iter().any(|(provider, delivered)| {
+                        Arc::ptr_eq(&provider.registrator, &current.registrator)
+                            && delivered.provider_key() == trigger.provider_key()
+                            && delivered.config == trigger.config
+                            && delivered.function_id == trigger.function_id
+                    })
+                })
+            {
+                drop(state);
+                drop(fence);
+                return;
+            }
+        }
+        self.settle_binding(state, trigger, None).await;
+    }
+
+    /// Reconcile an accepted intent with the latest resolved provider. The
+    /// async gate serializes delivery/detach; the short transition fence makes
+    /// publication AND releasing that gate atomic with provider replacement.
+    /// Replacement skips busy gates, so it cannot block a provider's ack loop.
+    async fn settle_binding(
+        &self,
+        mut state: tokio::sync::OwnedMutexGuard<BindingLifecycle>,
+        mut trigger: Trigger,
+        mut attempt: Option<(TriggerType, Result<(), anyhow::Error>)>,
+    ) -> RegisterTriggerOutcome {
+        loop {
+            if let Some((provider, result)) = attempt.take() {
+                let succeeded = result.is_ok();
+                if succeeded {
+                    state
+                        .deliveries
+                        .retain(|(p, _)| !Arc::ptr_eq(&p.registrator, &provider.registrator));
+                    state.deliveries.push((provider.clone(), trigger.clone()));
+                } else if let Err(err) = result {
+                    tracing::error!(error = %err, trigger_id = %trigger.id, "Trigger activation failed; retaining intent");
+                }
+                let fence = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                let current = self
+                    .resolve_provider_key(&trigger)
+                    .and_then(|key| self.provider_snapshot(&key));
+                if current
+                    .as_ref()
+                    .is_some_and(|p| Arc::ptr_eq(&p.registrator, &provider.registrator))
+                {
+                    self.triggers.remove(&trigger.id);
+                    self.pending_triggers.remove(&trigger.id);
+                    if succeeded {
+                        self.triggers.insert(trigger.id.clone(), trigger);
+                    } else {
+                        self.pending_triggers.insert(trigger.id.clone(), trigger);
+                    }
+                    drop(state);
+                    drop(fence);
+                    return if succeeded {
+                        RegisterTriggerOutcome::Registered
+                    } else {
+                        RegisterTriggerOutcome::Deferred
+                    };
+                }
+            }
+
+            // Old generations may still run jobs after replacement. Detach
+            // before replay, retaining failed deliveries for later teardown.
+            if let Err(err) = Self::detach_deliveries(&mut state).await {
+                tracing::warn!(error = %err, trigger_id = %trigger.id, "Could not detach previous trigger generation");
+            }
+            let provider = {
+                let fence = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                match self
+                    .resolve_provider_key(&trigger)
+                    .and_then(|key| self.provider_snapshot(&key))
+                {
+                    Some(provider) => provider,
+                    None => {
+                        self.triggers.remove(&trigger.id);
+                        self.pending_triggers.insert(trigger.id.clone(), trigger);
+                        drop(state);
+                        drop(fence);
+                        return RegisterTriggerOutcome::Deferred;
+                    }
+                }
+            };
+            trigger.provider_namespace = provider.namespace.clone();
+            let result = provider.registrator.replay_trigger(trigger.clone()).await;
+            attempt = Some((provider, result));
+        }
     }
 
     /// The namespace a fired trigger's target/condition function resolves in,
@@ -414,371 +620,190 @@ impl TriggerRegistry {
             .then_some(fallback)
     }
 
-    /// Bindings that fell back to [`DEFAULT_NAMESPACE`] and would rather have
-    /// the provider that just registered at `namespace`.
-    ///
-    /// Without this the resolution is order-dependent: a worker that binds
-    /// before its project's provider announces itself lands on the engine's
-    /// one and stays there for good — so whether a project's own provider is
-    /// used comes down to which container started first, which is not
-    /// something anyone can see or control.
-    fn fallback_bindings_for(&self, namespace: &str, type_id: &str) -> Vec<Trigger> {
-        self.triggers
-            .iter()
-            .filter(|pair| {
-                let trigger = pair.value();
-                trigger.trigger_type == type_id
-                    && trigger.home_namespace == namespace
-                    && trigger.is_on_fallback()
-            })
-            .map(|pair| pair.value().clone())
-            .collect()
+    /// Reconcile a replay candidate after acquiring its gate. A busy binding
+    /// is the gate holder's responsibility; waiting here could stall the same
+    /// provider read loop that must deliver its registration acknowledgement.
+    async fn replay_candidate(&self, id: &str, key: &TypeKey) {
+        let lease = self.lifecycle(id, None);
+        let Ok(mut state) =
+            Arc::clone(lease.gate.as_ref().expect("live lifecycle lease")).try_lock_owned()
+        else {
+            return;
+        };
+        let Some(trigger) = self.binding_snapshot(id) else {
+            return;
+        };
+        {
+            let fence = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let current = self
+                .resolve_provider_key(&trigger)
+                .and_then(|key| self.provider_snapshot(&key));
+            if self.triggers.contains_key(id)
+                && current.as_ref().is_some_and(|current| {
+                    state
+                        .deliveries
+                        .iter()
+                        .any(|(p, _)| Arc::ptr_eq(&p.registrator, &current.registrator))
+                })
+            {
+                drop(state);
+                drop(fence);
+                return;
+            }
+        }
+        // Legacy/in-process entries can predate lifecycle tracking.
+        if state.deliveries.is_empty()
+            && self.triggers.contains_key(id)
+            && trigger.provider_key() != *key
+            && let Some(old) = self.provider_snapshot(&trigger.provider_key())
+        {
+            state.deliveries.push((old, trigger.clone()));
+        }
+        self.settle_binding(state, trigger, None).await;
     }
 
-    /// Move fallback bindings onto the provider that just registered at home.
-    ///
-    /// The old provider is told to let go first. A failure there is logged and
-    /// not fatal: the binding still moves, because leaving it on a provider
-    /// this registry no longer routes to would make it fire from a place
-    /// nothing can unregister.
-    async fn rehome_fallback_bindings(&self, trigger_type: &TriggerType) {
-        let candidates = self.fallback_bindings_for(&trigger_type.namespace, &trigger_type.id);
-        if candidates.is_empty() {
-            return;
-        }
-
-        for mut trigger in candidates {
-            let previous = trigger.provider_key();
-            if let Some(old) = self.provider_snapshot(&previous)
-                && let Err(err) = old.registrator.unregister_trigger(trigger.clone()).await
-            {
-                tracing::warn!(
-                    error = %err,
-                    trigger_id = %trigger.id,
-                    from = %previous.0,
-                    "Could not detach a trigger from its fallback provider; re-homing anyway"
-                );
-            }
-
-            trigger.provider_namespace = trigger_type.namespace.clone();
-            match trigger_type
-                .registrator
-                .replay_trigger(trigger.clone())
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!(
-                        "{} Trigger {} (type {}) moved from {} to its own namespace {}",
-                        "[RE-HOMED]".green(),
-                        trigger.id.purple(),
-                        trigger.trigger_type.purple(),
-                        previous.0.purple(),
-                        trigger_type.namespace.purple(),
-                    );
-                    self.triggers.insert(trigger.id.clone(), trigger);
+    /// Remove connection-owned bindings and re-resolve surviving bindings
+    /// after provider removal. Gates also cover intents currently in flight,
+    /// so an owner disconnect cannot miss a claimed pending registration.
+    pub async fn unregister_worker(&self, worker_id: &Uuid) {
+        let removed: std::collections::HashSet<TypeKey> = {
+            let _fence = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let mut removed = std::collections::HashSet::new();
+            self.trigger_types.retain(|key, provider| {
+                if provider.worker_id == Some(*worker_id) {
+                    removed.insert(key.clone());
+                    false
+                } else {
+                    true
                 }
-                Err(err) => {
-                    // It is off the old provider and the new one refused it.
-                    // Park rather than leave it pointing at a provider that is
-                    // no longer routed: pending is the bucket that gets
-                    // retried on the next registration.
-                    tracing::error!(
-                        error = %err,
-                        trigger_id = %trigger.id,
-                        "Re-homing failed; the binding is parked until the trigger type re-registers"
-                    );
-                    let _park = self
+            });
+            removed
+        };
+        let affected = |trigger: &Trigger| {
+            trigger.worker_id == Some(*worker_id)
+                || removed.contains(&trigger.provider_key())
+                || removed.iter().any(|key| {
+                    key.1 == trigger.trigger_type
+                        && match &trigger.trigger_namespace {
+                            Some(namespace) => namespace == &key.0,
+                            None => {
+                                key.0 == trigger.home_namespace
+                                    || key.0 == crate::protocol::DEFAULT_NAMESPACE
+                            }
+                        }
+                })
+        };
+        let mut ids: std::collections::HashSet<String> = self
+            .in_flight
+            .iter()
+            .filter(|e| affected(e.value()))
+            .map(|e| e.id.clone())
+            .collect();
+        ids.extend(
+            self.triggers
+                .iter()
+                .filter(|e| affected(e.value()))
+                .map(|e| e.key().clone()),
+        );
+        ids.extend(
+            self.pending_triggers
+                .iter()
+                .filter(|e| e.worker_id == Some(*worker_id))
+                .map(|e| e.key().clone()),
+        );
+        for id in ids {
+            let lease = self.lifecycle(&id, None);
+            let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
+                .lock_owned()
+                .await;
+            let Some(trigger) = self.binding_snapshot(&id) else {
+                continue;
+            };
+            if trigger.worker_id == Some(*worker_id) {
+                if state.deliveries.is_empty()
+                    && let Some(provider) = self.provider_snapshot(&trigger.provider_key())
+                {
+                    state.deliveries.push((provider, trigger.clone()));
+                }
+                if let Err(err) = Self::detach_deliveries(&mut state).await {
+                    tracing::error!(error = %err, "Error unregistering disconnected owner's trigger");
+                }
+                let _fence = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                self.triggers.remove(&id);
+                self.pending_triggers.remove(&id);
+            } else {
+                {
+                    let fence = self
                         .park_transition
                         .lock()
                         .expect("park_transition lock poisoned");
-                    self.triggers.remove(&trigger.id);
-                    self.pending_triggers.insert(trigger.id.clone(), trigger);
-                }
-            }
-        }
-    }
-
-    pub async fn unregister_worker(&self, worker_id: &Uuid) {
-        let worker_trigger_type_keys: Vec<TypeKey> = self
-            .trigger_types
-            .iter()
-            .filter(|pair| pair.value().worker_id == Some(*worker_id))
-            .map(|pair| pair.key().clone())
-            .collect();
-
-        let worker_triggers: Vec<Trigger> = self
-            .triggers
-            .iter()
-            .filter(|pair| pair.value().worker_id == Some(*worker_id))
-            .map(|pair| pair.value().clone())
-            .collect();
-
-        for trigger in worker_triggers {
-            tracing::debug!(trigger_id = trigger.id, "Removing trigger");
-            // The entry may have been replaced between the snapshot above and
-            // now (worker reconnect: the new connection replays the same
-            // trigger id before the old connection's cleanup runs). Only
-            // remove it — and only unregister it with the registrator — if it
-            // still belongs to the disconnecting worker; a replaced binding
-            // keeps firing. Same guard as trigger types below.
-            if self
-                .triggers
-                .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id))
-                .is_none()
-            {
-                tracing::debug!(
-                    trigger_id = trigger.id,
-                    "Trigger already replaced by another worker; leaving it"
-                );
-                continue;
-            }
-
-            if let Some(trigger_type) = self.provider_snapshot(&trigger.provider_key()) {
-                tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
-
-                let result: Result<(), anyhow::Error> = trigger_type
-                    .registrator
-                    .unregister_trigger(trigger.clone())
-                    .await;
-                if let Err(err) = result {
-                    tracing::error!(error = %err, "Error unregistering trigger");
-                }
-            }
-
-            tracing::debug!(trigger_id = trigger.id, "Trigger removed");
-        }
-
-        // Connection-owned intents die with their worker, same as live
-        // connection-owned bindings above.
-        self.pending_triggers
-            .retain(|_, trigger| trigger.worker_id != Some(*worker_id));
-
-        for key in worker_trigger_type_keys {
-            tracing::debug!(trigger_type_id = %key.1, namespace = %key.0, "Removing trigger type");
-            // The entry may have been replaced by a new provider between the
-            // snapshot above and now (worker restart: the replacement can
-            // register before the old connection's cleanup runs). Only remove
-            // it if it still belongs to the disconnecting worker — and only
-            // then are its bindings orphaned; a replaced type keeps firing.
-            let removed = self
-                .trigger_types
-                .remove_if(&key, |_, tt| tt.worker_id == Some(*worker_id))
-                .is_some();
-            if !removed {
-                tracing::debug!(
-                    trigger_type_id = %key.1,
-                    "Trigger type already replaced by another worker; leaving it"
-                );
-                continue;
-            }
-            tracing::debug!(trigger_type_id = %key.1, "Trigger type removed");
-
-            // Bindings this provider served are now orphaned: nothing can fire
-            // them. Each resolves again — a binding that only resolved here
-            // because it is at home can fall back to the engine's provider in
-            // `default`, which is the same step that carried it before its own
-            // provider existed. Whatever still resolves nowhere is parked, so a
-            // provider restart never silently drops everyone else's bindings.
-            let orphaned: Vec<Trigger> = self
-                .triggers
-                .iter()
-                .filter(|pair| pair.value().provider_key() == key)
-                .map(|pair| pair.value().clone())
-                .collect();
-            for mut trigger in orphaned {
-                // Act only when this call is the one that removed the binding:
-                // a concurrent owner-disconnect cleanup may have already
-                // reaped it, and re-adding it would resurrect a dead worker's
-                // binding.
-                if self.triggers.remove(&trigger.id).is_none() {
-                    continue;
-                }
-
-                match self.resolve_provider_key(&trigger) {
-                    Some(next) => {
-                        trigger.provider_namespace = next.0.clone();
-                        let replayed = match self.provider_snapshot(&next) {
-                            Some(provider) => {
-                                provider.registrator.replay_trigger(trigger.clone()).await
-                            }
-                            None => Err(anyhow::anyhow!("provider vanished during failover")),
-                        };
-                        match replayed {
-                            Ok(()) => {
-                                tracing::info!(
-                                    "{} Trigger {} (type {}) fell back to {} after its provider left",
-                                    "[RE-HOMED]".green(),
-                                    trigger.id.purple(),
-                                    trigger.trigger_type.purple(),
-                                    next.0.purple(),
-                                );
-                                self.triggers.insert(trigger.id.clone(), trigger);
-                                continue;
-                            }
-                            Err(err) => tracing::error!(
-                                error = %err,
-                                trigger_id = %trigger.id,
-                                "Fallback provider refused the binding; parking it"
-                            ),
-                        }
+                    let current = self
+                        .resolve_provider_key(&trigger)
+                        .and_then(|key| self.provider_snapshot(&key));
+                    if current.as_ref().is_some_and(|current| {
+                        self.triggers.contains_key(&id)
+                            && state
+                                .deliveries
+                                .iter()
+                                .any(|(p, _)| Arc::ptr_eq(&p.registrator, &current.registrator))
+                    }) || (current.is_none() && self.pending_triggers.contains_key(&id))
+                    {
+                        drop(state);
+                        drop(fence);
+                        continue;
                     }
-                    None => tracing::warn!(
-                        "{} Trigger {} (type {}, function {}) is disabled: its trigger type was unregistered. It will be re-registered automatically when the trigger type returns.",
-                        "[DISABLED]".yellow(),
-                        trigger.id.purple(),
-                        trigger.trigger_type.purple(),
-                        trigger.function_id.purple(),
-                    ),
                 }
-                self.pending_triggers.insert(trigger.id.clone(), trigger);
+                self.settle_binding(state, trigger, None).await;
             }
         }
     }
 
+    /// Publish a provider generation, then reconcile current live, pending,
+    /// and fallback bindings without replaying stale binding snapshots.
     pub async fn register_trigger_type(
         &self,
         trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
         let key = trigger_type.key();
-        let trigger_type_id = trigger_type.id.clone();
-
-        tracing::info!(
-            "{} Trigger Type {} in {}",
-            "[REGISTERED]".green(),
-            trigger_type_id.purple(),
-            trigger_type.namespace.purple()
-        );
-
-        // Publish the type BEFORE any replay so every concurrent path
-        // observes the new generation first:
-        //  * a concurrent `register_trigger` that misses the pending drain
-        //    finds the type on its post-park re-check, so an intent can never
-        //    be stranded in pending while the type is available (see
-        //    `register_trigger`);
-        //  * a stale disconnect cleanup of the previous provider now fails
-        //    its ownership check (see `unregister_worker`) instead of parking
-        //    bindings this registration is about to replay — which would
-        //    deliver them twice.
-        self.trigger_types.insert(key.clone(), trigger_type);
-
-        // Only the bindings this provider actually serves. Filtering by type
-        // id alone is what sent one project's bindings into another project's
-        // provider, so the resolved key is the filter.
-        let matching_triggers: Vec<Trigger> = self
-            .triggers
-            .iter()
-            .filter(|pair| pair.value().provider_key() == key)
-            .map(|pair| pair.value().clone())
-            .collect();
-
-        // Re-fetch instead of using the inserted value: if an even newer
-        // generation replaced the entry in the meantime, replay must route to
-        // that one.
-        if let Some(trigger_type) = self.provider_snapshot(&key) {
-            for trigger in matching_triggers {
-                // A replacement registration replays the live snapshot itself.
-                // Do not keep delivering the rest of this batch to a stale owner.
-                if !self.is_current_provider(&trigger_type) {
-                    break;
-                }
-                let result = trigger_type
-                    .registrator
-                    .replay_trigger(trigger.clone())
-                    .await;
-                if let Err(err) = result {
-                    tracing::error!(error = %err, "Error registering trigger");
-                }
-            }
-
-            // A parked intent resolves again from scratch: it may have been
-            // parked when nothing provided the type at all, and this
-            // registration is what makes it resolvable.
-            // Finish the iteration before consulting another map: pending
-            // guards must not participate in a provider/pending lock cycle.
-            let pending: Vec<Trigger> = self
-                .pending_triggers
+        let ids = {
+            let _fence = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            self.trigger_types.insert(key.clone(), trigger_type);
+            let mut ids: std::collections::HashSet<String> = self
+                .triggers
                 .iter()
-                .filter(|pair| pair.value().trigger_type == trigger_type_id)
-                .map(|pair| pair.value().clone())
+                .filter(|e| {
+                    e.trigger_type == key.1
+                        && self.resolve_provider_key(e.value()).as_ref() == Some(&key)
+                })
+                .map(|e| e.key().clone())
                 .collect();
-
-            for candidate in pending {
-                if self.resolve_provider_key(&candidate).as_ref() != Some(&key) {
-                    continue;
-                }
-                let trigger_id = candidate.id;
-                // `remove` claims the intent, so a concurrent drain of the
-                // same type cannot activate it twice.
-                let Some((_, mut trigger)) = self.pending_triggers.remove(&trigger_id) else {
-                    continue;
-                };
-                trigger.provider_namespace = key.0.clone();
-                if let Some(current) = self.provider_snapshot(&key) {
-                    self.activate_pending_trigger(&current, trigger).await;
-                } else {
-                    self.pending_triggers.insert(trigger.id.clone(), trigger);
-                }
-            }
+            ids.extend(
+                self.pending_triggers
+                    .iter()
+                    .filter(|e| {
+                        e.trigger_type == key.1
+                            && self.resolve_provider_key(e.value()).as_ref() == Some(&key)
+                    })
+                    .map(|e| e.key().clone()),
+            );
+            ids
+        };
+        for id in ids {
+            self.replay_candidate(&id, &key).await;
         }
-
-        // Claim back what settled on the fallback before this provider existed.
-        // Re-fetched for the same reason as above, and after the replay so a
-        // binding is never in flight to two providers at once.
-        if key.0 != crate::protocol::DEFAULT_NAMESPACE
-            && let Some(trigger_type) = self.provider_snapshot(&key)
-        {
-            self.rehome_fallback_bindings(&trigger_type).await;
-        }
-
         Ok(())
-    }
-
-    /// Activate a claimed pending intent against its now-available trigger
-    /// type. On registrator failure the intent is parked again so the next
-    /// type (re)registration retries it.
-    async fn activate_pending_trigger(&self, trigger_type: &TriggerType, trigger: Trigger) -> bool {
-        let mut provider = trigger_type.clone();
-        loop {
-            let result = provider.registrator.replay_trigger(trigger.clone()).await;
-            // A pending intent is claimed outside either map while replay is
-            // in flight. A replacement cannot see it in its own drain, so the
-            // claimant must hand it to the current generation before publishing.
-            // Keep this short guard only through the synchronous publication,
-            // so replacement cannot drain between the generation check and insert.
-            let current = self.trigger_types.get(&provider.key());
-            if let Some(current) = current.as_ref() {
-                if !Arc::ptr_eq(&current.registrator, &provider.registrator) {
-                    provider = current.value().clone();
-                    continue;
-                }
-            } else {
-                self.pending_triggers.insert(trigger.id.clone(), trigger);
-                return false;
-            }
-            return match result {
-                Ok(()) => {
-                    tracing::info!(
-                        "{} Trigger {} (type {}, function {}) recovered from pending",
-                        "[REGISTERED]".green(),
-                        trigger.id.purple(),
-                        trigger.trigger_type.purple(),
-                        trigger.function_id.purple(),
-                    );
-                    self.triggers.insert(trigger.id.clone(), trigger);
-                    true
-                }
-                Err(err) => {
-                    tracing::error!(
-                        error = %err,
-                        trigger_id = %trigger.id,
-                        trigger_type = %trigger.trigger_type,
-                        "Error registering pending trigger; it stays pending"
-                    );
-                    self.pending_triggers.insert(trigger.id.clone(), trigger);
-                    false
-                }
-            };
-        }
     }
 
     /// Human-readable warning for a registration intent that had to be
@@ -811,85 +836,48 @@ impl TriggerRegistry {
         }
     }
 
+    /// Register under the binding's lifecycle gate. Provider rejection leaves
+    /// the prior binding intact; unavailable delivery retains a pending intent.
     pub async fn register_trigger(
         &self,
-        trigger: Trigger,
+        mut trigger: Trigger,
     ) -> Result<RegisterTriggerOutcome, anyhow::Error> {
-        let mut trigger = trigger;
-        let resolved = self.resolve_provider_key(&trigger);
-        if let Some(key) = &resolved {
-            trigger.provider_namespace = key.0.clone();
-        }
-        let trigger = trigger;
-
-        let Some(trigger_type) = resolved
-            .as_ref()
-            .and_then(|key| self.provider_snapshot(key))
-        else {
-            // Park the intent instead of failing: workers may connect in any
-            // order, and a binding that arrives before its trigger type's
-            // provider must survive until the provider shows up.
-            tracing::warn!("{}", Self::pending_trigger_warning(&trigger));
-            self.pending_triggers
-                .insert(trigger.id.clone(), trigger.clone());
-
-            // Close the park/drain race: if the type registered between the
-            // lookup above and the park, its pending drain may have already
-            // run. Re-check and activate the intent ourselves — claiming it
-            // via `remove` so we never double-activate with a drain.
-            // Resolved again rather than reusing the earlier miss: the
-            // provider that appeared in the meantime may be either step.
-            if let Some(key) = self.resolve_provider_key(&trigger)
-                && let Some(trigger_type) = self.provider_snapshot(&key)
-                && let Some((_, mut parked)) = self.pending_triggers.remove(&trigger.id)
-            {
-                parked.provider_namespace = key.0.clone();
-                if self.activate_pending_trigger(&trigger_type, parked).await {
-                    return Ok(RegisterTriggerOutcome::Registered);
-                }
-            }
-
-            return Ok(RegisterTriggerOutcome::Deferred);
-        };
-
-        if let Err(err) = trigger_type
-            .registrator
-            .register_trigger(trigger.clone())
-            .await
+        let lease = self.lifecycle(&trigger.id, Some(&trigger));
+        let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
+            .lock_owned()
+            .await;
+        // Legacy fixtures/in-process entries may predate delivery tracking.
+        // Snapshot their actual route BEFORE attempting a new configuration.
+        if state.deliveries.is_empty()
+            && let Some(previous) = self.triggers.get(&trigger.id).map(|t| t.clone())
+            && let Some(provider) = self.provider_snapshot(&previous.provider_key())
         {
-            if err.downcast_ref::<RegistratorUnavailable>().is_none() {
-                // The provider processed and rejected the bind (e.g. invalid
-                // config): a definitive answer, not a delivery failure. Fail
-                // the registration so callers surface the error, and leave any
-                // previous live registration of this id tracked — the provider
-                // still runs it and it must stay reachable for teardown.
-                tracing::error!(error = %err, "Error registering trigger");
-                return Err(err);
-            }
-            tracing::error!(
-                error = %err,
-                trigger_id = %trigger.id,
-                trigger_type = %trigger.trigger_type,
-                "Trigger provider unreachable; bind parked as pending until the trigger type re-registers"
-            );
-            // Park instead of failing; an undeliverable re-registration
-            // supersedes a previous live binding with the same id (the dying
-            // provider's jobs die with it) — the binding must end in exactly
-            // one bucket.
-            self.triggers.remove(&trigger.id);
-            self.pending_triggers.insert(trigger.id.clone(), trigger);
-            return Ok(RegisterTriggerOutcome::Deferred);
+            state.deliveries.push((provider, previous));
         }
-
-        drop(trigger_type);
-
-        tracing::debug!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
-
-        // A live registration supersedes any parked intent with the same id.
-        self.pending_triggers.remove(&trigger.id);
-        self.triggers.insert(trigger.id.clone(), trigger);
-
-        Ok(RegisterTriggerOutcome::Registered)
+        let provider = self
+            .resolve_provider_key(&trigger)
+            .and_then(|key| self.provider_snapshot(&key));
+        let Some(provider) = provider else {
+            tracing::warn!("{}", Self::pending_trigger_warning(&trigger));
+            return Ok(self.settle_binding(state, trigger, None).await);
+        };
+        trigger.provider_namespace = provider.namespace.clone();
+        let result = provider.registrator.register_trigger(trigger.clone()).await;
+        if result
+            .as_ref()
+            .is_err_and(|err| err.downcast_ref::<RegistratorUnavailable>().is_none())
+        {
+            // A replacement may have skipped the busy gate while this attempt
+            // was rejected. Reconcile the previous accepted binding, not the
+            // rejected config, before returning the definitive provider error.
+            if let Some(previous) = self.binding_snapshot(&trigger.id) {
+                self.reconcile_existing(state, previous).await;
+            }
+            return result.map(|()| RegisterTriggerOutcome::Registered);
+        }
+        Ok(self
+            .settle_binding(state, trigger, Some((provider, result)))
+            .await)
     }
 
     /// Unregister a trigger by id. Idempotent: returns `Ok(false)` when no
@@ -904,41 +892,32 @@ impl TriggerRegistry {
         id: String,
         trigger_type: Option<String>,
     ) -> Result<bool, anyhow::Error> {
-        tracing::info!(
-            "Unregistering trigger: {} of type: {}",
-            id.purple(),
-            trigger_type.as_deref().unwrap_or("<missing>").purple()
-        );
-
-        let trigger = {
-            let _park = self
-                .park_transition
-                .lock()
-                .expect("park_transition lock poisoned");
-            let Some(trigger_entry) = self.triggers.get(&id) else {
-                // A parked intent has no live registration to tear down —
-                // dropping it from the pending bucket is the whole unregister.
-                return Ok(self.pending_triggers.remove(&id).is_some());
-            };
-            trigger_entry.value().clone()
+        let _ = trigger_type;
+        let lease = self.lifecycle(&id, None);
+        let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
+            .lock_owned()
+            .await;
+        let Some(trigger) = self.binding_snapshot(&id) else {
+            return Ok(false);
         };
-
-        if let Some(tt) = self.provider_snapshot(&trigger.provider_key()) {
-            tt.registrator.unregister_trigger(trigger.clone()).await?;
+        if state.deliveries.is_empty()
+            && self.triggers.contains_key(&id)
+            && let Some(provider) = self.provider_snapshot(&trigger.provider_key())
+        {
+            state.deliveries.push((provider, trigger.clone()));
         }
-
-        // A late async rejection may re-park this binding while the
-        // registrator call above is in flight; an explicit unregister must
-        // win over that park or the intent resurrects on the next type
-        // registration. The transition lock makes this two-map clear atomic
-        // with the re-park's own live-to-pending move.
-        let _park = self
+        if let Err(err) = Self::detach_deliveries(&mut state).await {
+            // Replacement skipped our gate. Keep the binding tracked and
+            // reconcile it before propagating the failed detach.
+            self.reconcile_existing(state, trigger).await;
+            return Err(err);
+        }
+        let _fence = self
             .park_transition
             .lock()
             .expect("park_transition lock poisoned");
         self.triggers.remove(&id);
         self.pending_triggers.remove(&id);
-
         Ok(true)
     }
 
@@ -948,40 +927,35 @@ impl TriggerRegistry {
     /// gone — a concurrent disconnect GC or explicit unregister reaped it,
     /// and parking then would resurrect a dead binding.
     pub async fn park_rejected_trigger(&self, id: &str, reporter_worker_id: Uuid) {
-        let parked_type = {
-            let _park = self
+        let lease = self.lifecycle(id, None);
+        let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
+            .lock_owned()
+            .await;
+        let Some(trigger) = self.binding_snapshot(id) else {
+            return;
+        };
+        {
+            let fence = self
                 .park_transition
                 .lock()
                 .expect("park_transition lock poisoned");
-            let Some((_, failed)) = self.triggers.remove(id) else {
+            let current = self.provider_snapshot(&trigger.provider_key());
+            if current
+                .as_ref()
+                .is_some_and(|p| p.worker_id == Some(reporter_worker_id))
+            {
+                // The rejecting generation never accepted this activation.
+                state
+                    .deliveries
+                    .retain(|(p, _)| p.worker_id != Some(reporter_worker_id));
+                self.triggers.remove(id);
+                self.pending_triggers.insert(id.to_owned(), trigger);
+                drop(state);
+                drop(fence);
                 return;
-            };
-            tracing::warn!(
-                trigger_id = %id,
-                trigger_type = %failed.trigger_type,
-                function_id = %failed.function_id,
-                "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
-            );
-            let provider = failed.provider_key();
-            self.pending_triggers.insert(failed.id.clone(), failed);
-            provider
-        };
-
-        // Close the park/replacement race (mirror of the unknown-type park in
-        // `register_trigger`): the reporter's ownership was checked before the
-        // park, but a replacement provider may have registered — and drained
-        // pending intents — in between, which would strand this park until
-        // yet another re-registration. If the type's current owner is no
-        // longer the reporter, claim the intent back (via `remove`, so we
-        // never double-activate with a drain) and activate it through the
-        // current provider. While the reporter still owns the type the park
-        // is intended: replaying would just be rejected again.
-        if let Some(trigger_type) = self.provider_snapshot(&parked_type)
-            && trigger_type.worker_id != Some(reporter_worker_id)
-            && let Some((_, parked)) = self.pending_triggers.remove(id)
-        {
-            self.activate_pending_trigger(&trigger_type, parked).await;
+            }
         }
+        self.settle_binding(state, trigger, None).await;
     }
 }
 
@@ -992,6 +966,374 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Records actual provider jobs and pauses exactly one delivery or detach.
+    #[derive(Default)]
+    struct DeliveryProbe {
+        live: std::sync::Mutex<HashSet<String>>,
+        events: std::sync::Mutex<Vec<(bool, String)>>,
+        pause_register: std::sync::atomic::AtomicBool,
+        reject_register: std::sync::atomic::AtomicBool,
+        pause_unregister: std::sync::atomic::AtomicBool,
+        resume: tokio::sync::Notify,
+    }
+
+    impl TriggerRegistrator for Arc<DeliveryProbe> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                if self.pause_register.swap(false, Ordering::SeqCst) {
+                    self.resume.notified().await;
+                }
+                if self.reject_register.load(Ordering::SeqCst) {
+                    return Err(anyhow::anyhow!("probe rejected config"));
+                }
+                self.live.lock().unwrap().insert(trigger.id.clone());
+                self.events.lock().unwrap().push((true, trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                if self.pause_unregister.swap(false, Ordering::SeqCst) {
+                    self.resume.notified().await;
+                }
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push((false, trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    /// Install an observable provider without involving ports or worker tasks.
+    async fn install_probe(
+        registry: &TriggerRegistry,
+        namespace: &str,
+        probe: &Arc<DeliveryProbe>,
+        owner: Option<Uuid>,
+    ) {
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                namespace,
+                "evt",
+                "probe",
+                Box::new(Arc::clone(probe)),
+                owner,
+            ))
+            .await
+            .unwrap();
+    }
+
+    /// Assert delivery exactly once and that explicit teardown reaches every job.
+    async fn assert_single_delivery_and_detach(
+        registry: &TriggerRegistry,
+        old: &DeliveryProbe,
+        new: &DeliveryProbe,
+    ) {
+        assert!(old.live.lock().unwrap().is_empty());
+        assert_eq!(
+            *new.live.lock().unwrap(),
+            HashSet::from(["binding".to_owned()])
+        );
+        assert_eq!(
+            *new.events.lock().unwrap(),
+            vec![(true, "binding".to_owned())]
+        );
+        assert!(registry.triggers.contains_key("binding"));
+        assert!(registry.pending_triggers.is_empty());
+        assert!(
+            registry
+                .unregister_trigger("binding".into(), None)
+                .await
+                .unwrap()
+        );
+        assert!(new.live.lock().unwrap().is_empty());
+        assert!(registry.triggers.is_empty());
+        assert!(registry.pending_triggers.is_empty());
+    }
+
+    /// A direct registration cannot publish an acknowledgement from an obsolete generation.
+    #[tokio::test]
+    async fn direct_registration_reconciles_replacement_before_publication() {
+        let registry = TriggerRegistry::new();
+        let old = Arc::new(DeliveryProbe::default());
+        let new = Arc::new(DeliveryProbe::default());
+        install_probe(&registry, DEFAULT_NAMESPACE, &old, None).await;
+        old.pause_register.store(true, Ordering::SeqCst);
+        let registration = registry.register_trigger(make_trigger("binding", "evt"));
+        tokio::pin!(registration);
+        assert!(futures::poll!(&mut registration).is_pending());
+        install_probe(&registry, DEFAULT_NAMESPACE, &new, None).await;
+        old.resume.notify_one();
+        assert_eq!(
+            registration.await.unwrap(),
+            RegisterTriggerOutcome::Registered
+        );
+        assert_single_delivery_and_detach(&registry, &old, &new).await;
+    }
+
+    /// Failover must hand off an in-flight fallback delivery to its replacement.
+    #[tokio::test]
+    async fn failover_reconciles_replacement_before_publication() {
+        let registry = TriggerRegistry::new();
+        let old = Arc::new(DeliveryProbe::default());
+        let new = Arc::new(DeliveryProbe::default());
+        let home = Arc::new(DeliveryProbe::default());
+        let owner = Uuid::new_v4();
+        install_probe(&registry, DEFAULT_NAMESPACE, &old, None).await;
+        install_probe(&registry, "shop", &home, Some(owner)).await;
+        registry
+            .register_trigger(resolved_trigger("binding", "evt", "shop"))
+            .await
+            .unwrap();
+        old.pause_register.store(true, Ordering::SeqCst);
+        let failover = registry.unregister_worker(&owner);
+        tokio::pin!(failover);
+        assert!(futures::poll!(&mut failover).is_pending());
+        install_probe(&registry, DEFAULT_NAMESPACE, &new, None).await;
+        old.resume.notify_one();
+        failover.await;
+        assert!(home.live.lock().unwrap().is_empty());
+        assert_single_delivery_and_detach(&registry, &old, &new).await;
+    }
+
+    /// Replacement during detach must not replay the still-visible registry entry.
+    #[tokio::test]
+    async fn unregister_serializes_replacement_replay_and_detach() {
+        let registry = TriggerRegistry::new();
+        let old = Arc::new(DeliveryProbe::default());
+        let new = Arc::new(DeliveryProbe::default());
+        install_probe(&registry, DEFAULT_NAMESPACE, &old, None).await;
+        registry
+            .register_trigger(make_trigger("binding", "evt"))
+            .await
+            .unwrap();
+        old.pause_unregister.store(true, Ordering::SeqCst);
+        let detach = registry.unregister_trigger("binding".into(), None);
+        tokio::pin!(detach);
+        assert!(futures::poll!(&mut detach).is_pending());
+        install_probe(&registry, DEFAULT_NAMESPACE, &new, None).await;
+        old.resume.notify_one();
+        assert!(detach.await.unwrap());
+        // Simulate the remainder of a replay batch captured before unregister.
+        registry
+            .replay_candidate("binding", &type_key(DEFAULT_NAMESPACE, "evt"))
+            .await;
+        assert!(old.live.lock().unwrap().is_empty());
+        assert!(new.events.lock().unwrap().is_empty());
+        assert!(registry.triggers.is_empty());
+        assert!(registry.pending_triggers.is_empty());
+    }
+
+    /// Re-homing and pending activation share the same generation-safe handoff.
+    #[tokio::test]
+    async fn recovery_paths_reconcile_replacement_and_owner_disconnect() {
+        for pending in [false, true] {
+            let registry = TriggerRegistry::new();
+            let fallback = Arc::new(DeliveryProbe::default());
+            let old = Arc::new(DeliveryProbe::default());
+            let new = Arc::new(DeliveryProbe::default());
+            let owner = Uuid::new_v4();
+            if !pending {
+                install_probe(&registry, DEFAULT_NAMESPACE, &fallback, None).await;
+            }
+            let mut binding = resolved_trigger("binding", "evt", "shop");
+            binding.worker_id = Some(owner);
+            registry.register_trigger(binding).await.unwrap();
+            old.pause_register.store(true, Ordering::SeqCst);
+            let recovery = install_probe(&registry, "shop", &old, None);
+            tokio::pin!(recovery);
+            assert!(futures::poll!(&mut recovery).is_pending());
+            install_probe(&registry, "shop", &new, None).await;
+            let cleanup = registry.unregister_worker(&owner);
+            tokio::pin!(cleanup);
+            assert!(futures::poll!(&mut cleanup).is_pending());
+            old.resume.notify_one();
+            recovery.await;
+            cleanup.await;
+            assert!(fallback.live.lock().unwrap().is_empty());
+            assert!(old.live.lock().unwrap().is_empty());
+            assert!(new.live.lock().unwrap().is_empty());
+            assert_eq!(
+                *new.events.lock().unwrap(),
+                vec![(true, "binding".into()), (false, "binding".into())]
+            );
+            assert!(registry.triggers.is_empty());
+            assert!(registry.pending_triggers.is_empty());
+        }
+    }
+
+    /// Rejected route changes must not invent deliveries to the rejecting provider.
+    #[tokio::test]
+    async fn rejected_route_change_preserves_only_accepted_deliveries() {
+        for changed_type in [false, true] {
+            let registry = TriggerRegistry::new();
+            let old = Arc::new(DeliveryProbe::default());
+            let rejected = Arc::new(DeliveryProbe::default());
+            install_probe(&registry, DEFAULT_NAMESPACE, &old, None).await;
+            registry
+                .register_trigger(make_trigger("binding", "evt"))
+                .await
+                .unwrap();
+            rejected.reject_register.store(true, Ordering::SeqCst);
+            let namespace = if changed_type {
+                DEFAULT_NAMESPACE
+            } else {
+                "other"
+            };
+            let kind = if changed_type { "different" } else { "evt" };
+            registry
+                .register_trigger_type(TriggerType::new_ns(
+                    namespace,
+                    kind,
+                    "reject",
+                    Box::new(Arc::clone(&rejected)),
+                    None,
+                ))
+                .await
+                .unwrap();
+            let mut attempt = explicit_trigger("binding", kind, DEFAULT_NAMESPACE, namespace);
+            attempt.config = serde_json::json!({"rejected": true});
+            assert!(registry.register_trigger(attempt).await.is_err());
+            assert_eq!(*old.events.lock().unwrap(), vec![(true, "binding".into())]);
+            assert!(rejected.events.lock().unwrap().is_empty());
+            assert_eq!(
+                registry.triggers.get("binding").unwrap().trigger_type,
+                "evt"
+            );
+            assert!(
+                registry
+                    .unregister_trigger("binding".into(), None)
+                    .await
+                    .unwrap()
+            );
+            assert!(old.live.lock().unwrap().is_empty());
+            assert!(rejected.events.lock().unwrap().is_empty());
+        }
+    }
+
+    /// A replacement skipped during rejection must receive the previous config.
+    #[tokio::test]
+    async fn replacement_during_rejection_replays_previous_delivery() {
+        let registry = TriggerRegistry::new();
+        let old = Arc::new(DeliveryProbe::default());
+        let new = Arc::new(DeliveryProbe::default());
+        install_probe(&registry, DEFAULT_NAMESPACE, &old, None).await;
+        registry
+            .register_trigger(make_trigger("binding", "evt"))
+            .await
+            .unwrap();
+        old.pause_register.store(true, Ordering::SeqCst);
+        old.reject_register.store(true, Ordering::SeqCst);
+        let mut invalid = make_trigger("binding", "evt");
+        invalid.config = serde_json::json!({"invalid": true});
+        let rejection = registry.register_trigger(invalid);
+        tokio::pin!(rejection);
+        assert!(futures::poll!(&mut rejection).is_pending());
+        install_probe(&registry, DEFAULT_NAMESPACE, &new, None).await;
+        old.resume.notify_one();
+        assert!(rejection.await.is_err());
+        assert_eq!(
+            registry.triggers.get("binding").unwrap().config,
+            serde_json::json!({})
+        );
+        assert_single_delivery_and_detach(&registry, &old, &new).await;
+    }
+
+    /// Disconnect cleanup must finish while an unrelated registration is paused.
+    #[tokio::test]
+    async fn disconnect_does_not_wait_for_unrelated_busy_binding() {
+        let registry = TriggerRegistry::new();
+        let slow = Arc::new(DeliveryProbe::default());
+        let fast = Arc::new(DeliveryProbe::default());
+        let owner = Uuid::new_v4();
+        install_probe(&registry, "slow", &slow, Some(Uuid::new_v4())).await;
+        install_probe(&registry, "fast", &fast, Some(owner)).await;
+        let mut owned = explicit_trigger("owned", "evt", "fast", "fast");
+        owned.worker_id = Some(owner);
+        registry.register_trigger(owned).await.unwrap();
+        slow.pause_register.store(true, Ordering::SeqCst);
+        let registration =
+            registry.register_trigger(explicit_trigger("slow-binding", "evt", "slow", "slow"));
+        tokio::pin!(registration);
+        assert!(futures::poll!(&mut registration).is_pending());
+        let cleanup = registry.unregister_worker(&owner);
+        tokio::pin!(cleanup);
+        assert!(
+            futures::poll!(&mut cleanup).is_ready(),
+            "unrelated paused provider blocked cleanup"
+        );
+        assert!(fast.live.lock().unwrap().is_empty());
+        slow.resume.notify_one();
+        registration.await.unwrap();
+        assert!(slow.live.lock().unwrap().contains("slow-binding"));
+    }
+
+    /// Gate reclamation covers unknown ids, normal churn, and queued leases.
+    #[tokio::test]
+    async fn lifecycle_churn_reclaims_empty_gates_without_splitting_waiters() {
+        let registry = TriggerRegistry::new();
+        install_probe(
+            &registry,
+            DEFAULT_NAMESPACE,
+            &Arc::new(DeliveryProbe::default()),
+            None,
+        )
+        .await;
+        for index in 0..128 {
+            let id = format!("churn-{index}");
+            assert!(!registry.unregister_trigger(id.clone(), None).await.unwrap());
+            registry
+                .register_trigger(make_trigger(&id, "evt"))
+                .await
+                .unwrap();
+            assert!(registry.unregister_trigger(id, None).await.unwrap());
+        }
+        assert!(registry.lifecycles.is_empty());
+        assert!(registry.in_flight.is_empty());
+        let first = registry.lifecycle("queued", None);
+        let second = registry.lifecycle("queued", None);
+        let gate = Arc::clone(second.gate.as_ref().unwrap());
+        drop(first);
+        let third = registry.lifecycle("queued", None);
+        assert!(Arc::ptr_eq(&gate, third.gate.as_ref().unwrap()));
+        drop(gate);
+        drop(second);
+        drop(third);
+        assert!(registry.lifecycles.is_empty());
+    }
+
+    /// Cancelled detach retains its delivery for a later explicit retry.
+    #[tokio::test]
+    async fn cancelled_detach_keeps_delivery_tracked() {
+        let registry = TriggerRegistry::new();
+        let provider = Arc::new(DeliveryProbe::default());
+        install_probe(&registry, DEFAULT_NAMESPACE, &provider, None).await;
+        registry
+            .register_trigger(make_trigger("binding", "evt"))
+            .await
+            .unwrap();
+        provider.pause_unregister.store(true, Ordering::SeqCst);
+        {
+            let detach = registry.unregister_trigger("binding".into(), None);
+            tokio::pin!(detach);
+            assert!(futures::poll!(&mut detach).is_pending());
+        }
+        assert!(
+            registry
+                .unregister_trigger("binding".into(), None)
+                .await
+                .unwrap()
+        );
+        assert!(provider.live.lock().unwrap().is_empty());
+        assert!(registry.lifecycles.is_empty());
+    }
 
     struct CountingYieldingRegistrator(Arc<ControlledRegistrator>);
 
