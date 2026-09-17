@@ -319,10 +319,33 @@ EOF
 @test "install.sh --skip-bin-download reaches the setup offer without installing" {
   # No release is resolved and no asset is downloaded, so this needs no
   # network: the offer runs against whatever iii is already on this machine.
-  run sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  #
+  # That "whatever" is a stub here. The offer is only made when the binary in
+  # BIN_DIR accepts the flags this run would pass, and a machine with no iii
+  # at all — every CI runner — is told about the quickstart instead.
+  _bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 0\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"--learn-iii --start-with worker1"* ]]
   [[ "$output" != *"Downloading"* ]]
+}
+
+@test "install.sh --skip-bin-download names no command a binary would reject" {
+  # A binary that does not know the flags must never be handed them, so the
+  # run that cannot offer the setup names the quickstart instead.
+  _bin="$BATS_TEST_TMPDIR/oldbin"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 2\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"--start-with worker1"* ]]
+  [[ "$output" == *"quickstart"* ]]
 }
 
 @test "cleanup is harmless when no download directory was made" {
