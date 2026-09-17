@@ -425,20 +425,28 @@ fn learn_dir_base(start_with: &[String]) -> String {
     let Some(first) = start_with.first() else {
         return LEARN_III_DIR.to_string();
     };
-    let name = first
-        .rsplit('/')
-        .next()
-        .unwrap_or(first)
-        .split('@')
-        .next()
-        .unwrap_or(first)
-        .trim();
+    let name = worker_name(first);
     if name.is_empty() {
         LEARN_III_DIR.to_string()
     } else {
         format!("iii-{name}")
     }
 }
+
+/// The worker's own name inside a spec: `scope/name@version` -> `name`.
+fn worker_name(spec: &str) -> &str {
+    spec.rsplit('/')
+        .next()
+        .unwrap_or(spec)
+        .split('@')
+        .next()
+        .unwrap_or(spec)
+        .trim()
+}
+
+/// The tour's worker, seeded into the compose file by
+/// [`seed_onboarding_container`] and served behind the layout's second pane.
+const ONBOARDING_WORKER: &str = "onboarding";
 
 /// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
 /// <NAME>`, then `iii compose --up` from inside the new directory. Without
@@ -464,8 +472,27 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         return code;
     }
 
-    seed_console_layout(&dir);
-    seed_onboarding_container(&dir);
+    // The tour's own worker is declared in the compose file, not added at
+    // runtime, and the seeded layout opens a pane onto the page it serves. A
+    // `--start-with` project is not the tour unless it asks for it, so both
+    // seeds follow the list: `--start-with onboarding,...` gets exactly what
+    // the bare command scaffolds, and a list without it gets neither the
+    // container nor a pane pointing at a page nothing serves.
+    let with_onboarding = start_with.is_empty()
+        || start_with
+            .iter()
+            .any(|spec| worker_name(spec) == ONBOARDING_WORKER);
+    if with_onboarding {
+        seed_console_layout(&dir);
+        seed_onboarding_container(&dir);
+    }
+
+    // Seeded means already declared, so `compose::add` has nothing to do for
+    // it, and adding it anyway would rewrite the block the seed just wrote.
+    let start_with: Vec<String> = start_with
+        .into_iter()
+        .filter(|spec| !(with_onboarding && worker_name(spec) == ONBOARDING_WORKER))
+        .collect();
 
     // The template is on disk now, so its manifests can say what they really
     // need. Anything beyond the image already being fetched gets its own pass.
@@ -697,33 +724,19 @@ async fn announce_console_when_ready(compose_path: PathBuf, start_with: Vec<Stri
     let client =
         iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
 
-    // "Nothing is starting" is also true before anything has started, so the
-    // wait needs to have seen the project move first. Until it does, the gate
-    // is the stricter "every container is ready", which is what a project with
-    // no failing container reaches anyway.
-    let mut seen_starting = false;
-    loop {
-        if let Some(progress) = project_progress(&client, &file.path, &namespace).await {
-            seen_starting |= progress.any_starting;
-            if progress.all_ready || (seen_starting && !progress.any_starting) {
-                break;
-            }
-        }
-        tokio::time::sleep(READY_POLL_INTERVAL).await;
+    wait_until_settled(&client, &file.path, &namespace).await;
+
+    if !start_with.is_empty() {
+        // Before the console wait, not after: a project whose console failed
+        // to bind still takes its `--start-with` workers.
+        add_workers(&client, &file.path, &namespace, &start_with).await;
+
+        // The add starts the workers it declared, which is a second startup
+        // with a second block of its own. The console link belongs after it,
+        // both because the added workers are part of what the link opens onto
+        // and because a link printed into that block is painted over.
+        wait_until_settled(&client, &file.path, &namespace).await;
     }
-
-    // ponytail: fixed settle delay. The renderer prints its closing line just
-    // after the last container settles, and compose publishes no "startup
-    // block finished" event to wait on instead. Swap this for that event if
-    // compose ever grows one.
-    tokio::time::sleep(BLOCK_SETTLE).await;
-
-    // Before the console wait, not after: a project whose console failed to
-    // bind still takes its `--start-with` workers.
-    add_workers(&client, &file.path, &namespace, &start_with).await;
-
-    // The add reconciles the project, which paints the startup block again, so
-    // the banner below needs its own settle delay as much as the add did.
 
     let port = client
         .fetch_config(CONSOLE_CONFIG)
@@ -744,8 +757,6 @@ async fn announce_console_when_ready(compose_path: PathBuf, start_with: Vec<Stri
     {
         tokio::time::sleep(READY_POLL_INTERVAL).await;
     }
-
-    tokio::time::sleep(BLOCK_SETTLE).await;
 
     let url = format!("http://127.0.0.1:{port}");
     eprintln!();
@@ -861,6 +872,36 @@ fn worker_declarations(compose_path: &Path, workers: &[String]) -> Vec<serde_jso
 
 /// The env file the harness template ships and [`prompt_provider_key`] writes.
 const PROJECT_ENV_FILE: &str = ".env";
+
+/// Waits for the project to stop moving, then for compose's startup renderer
+/// to let go of the terminal.
+///
+/// "Nothing is starting" is also true before anything has started, so the wait
+/// needs to have seen the project move first. Until it does, the gate is the
+/// stricter "every container is ready", which is what a project with no
+/// failing container reaches anyway.
+async fn wait_until_settled(
+    client: &iii_compose::engine::EngineClient,
+    compose_path: &Path,
+    namespace: &str,
+) {
+    let mut seen_starting = false;
+    loop {
+        if let Some(progress) = project_progress(client, compose_path, namespace).await {
+            seen_starting |= progress.any_starting;
+            if progress.all_ready || (seen_starting && !progress.any_starting) {
+                break;
+            }
+        }
+        tokio::time::sleep(READY_POLL_INTERVAL).await;
+    }
+
+    // ponytail: fixed settle delay. The renderer prints its closing line just
+    // after the last container settles, and compose publishes no "startup
+    // block finished" event to wait on instead. Swap this for that event if
+    // compose ever grows one.
+    tokio::time::sleep(BLOCK_SETTLE).await;
+}
 
 /// What one `compose::status` answer says about the project's progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1568,6 +1609,15 @@ mod tests {
 
         let declared = worker_declarations(&compose, &["worker1".to_string()]);
         assert_eq!(declared, vec![serde_json::json!("worker1")]);
+    }
+
+    #[test]
+    fn worker_name_strips_the_scope_and_the_version() {
+        assert_eq!(worker_name("onboarding"), "onboarding");
+        assert_eq!(worker_name("onboarding@0.1.3"), "onboarding");
+        assert_eq!(worker_name("iii-hq/onboarding@0.1.3"), "onboarding");
+        assert_eq!(worker_name(" onboarding "), "onboarding");
+        assert_eq!(worker_name(""), "");
     }
 
     #[test]
