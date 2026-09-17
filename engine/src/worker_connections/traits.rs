@@ -22,10 +22,20 @@ use crate::{
     worker_connections::WorkerConnection,
 };
 
-/// How long a function-path registration waits for the registrator worker's
-/// `TriggerRegistrationResult` before failing open (legacy / stalled workers
-/// are still covered by the late-unwind path in `router_msg`).
-const REGISTRATION_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Removes this operation's closed acknowledgement receiver on cancellation.
+/// A replacement registration's open receiver must never be removed by an
+/// older operation finishing or being cancelled.
+struct PendingAck {
+    acks: std::sync::Arc<dashmap::DashMap<String, oneshot::Sender<Option<ErrorBody>>>>,
+    id: String,
+}
+
+impl Drop for PendingAck {
+    fn drop(&mut self) {
+        self.acks
+            .remove_if(&self.id, |_, sender| sender.is_closed());
+    }
+}
 
 impl TriggerRegistrator for WorkerConnection {
     fn register_trigger(
@@ -46,6 +56,16 @@ impl TriggerRegistrator for WorkerConnection {
             // so those keep fire-and-forget + late unwind.
             let await_ack = trigger.worker_id.is_none();
             let trigger_id = trigger.id.clone();
+            let deadline = crate::trigger::TRIGGER_DEADLINE
+                .try_with(|deadline| *deadline)
+                .unwrap_or_else(|_| {
+                    tokio::time::Instant::now() + crate::trigger::TRIGGER_OPERATION_TIMEOUT
+                });
+            // Declared before rx so cancellation drops the receiver first.
+            let _ack_cleanup = PendingAck {
+                acks: acks.clone(),
+                id: trigger_id.clone(),
+            };
             let rx = if await_ack {
                 let (tx, rx) = oneshot::channel();
                 acks.insert(trigger_id.clone(), tx);
@@ -54,8 +74,9 @@ impl TriggerRegistrator for WorkerConnection {
                 None
             };
 
-            let sent = sender
-                .send(Outbound::Protocol(Message::RegisterTrigger {
+            let sent = tokio::time::timeout_at(
+                deadline,
+                sender.send(Outbound::Protocol(Message::RegisterTrigger {
                     id: trigger.id,
                     trigger_type: trigger.trigger_type,
                     function_id: trigger.function_id,
@@ -70,24 +91,27 @@ impl TriggerRegistrator for WorkerConnection {
                     trigger_namespace: (trigger.provider_namespace
                         != crate::protocol::DEFAULT_NAMESPACE)
                         .then_some(trigger.provider_namespace),
-                }))
-                .await;
+                })),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::Error::new(RegistratorUnavailable)
+                    .context("trigger delivery deadline exceeded")
+            })?;
             if let Err(err) = sent {
-                acks.remove(&trigger_id);
                 return Err(anyhow::Error::new(RegistratorUnavailable).context(format!(
                     "failed to send register trigger message through worker channel: {err}"
                 )));
             }
 
             let Some(rx) = rx else { return Ok(()) };
-            match tokio::time::timeout(REGISTRATION_ACK_TIMEOUT, rx).await {
+            match tokio::time::timeout_at(deadline, rx).await {
                 Ok(Ok(None)) => Ok(()),
                 Ok(Ok(Some(err))) => Err(anyhow::anyhow!("{}: {}", err.code, err.message)),
                 // Ack channel dropped (connection teardown) — fail open; the
                 // disconnect GC / late-unwind own the cleanup.
                 Ok(Err(_)) => Ok(()),
                 Err(_elapsed) => {
-                    acks.remove(&trigger_id);
                     tracing::debug!(
                         trigger_id = %trigger_id,
                         "no TriggerRegistrationResult within timeout; accepting registration (late unwind still applies)"

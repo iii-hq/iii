@@ -322,10 +322,40 @@ impl std::hash::Hash for Trigger {
     }
 }
 
+/// Shared trigger-operation budget, including channel delivery and ack wait.
+/// Retains the existing ten-second registration policy without adding a
+/// separate, conflicting timeout or changing the engine configuration schema.
+pub(crate) const TRIGGER_OPERATION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
+tokio::task_local! {
+    /// Propagates the lifecycle deadline to WorkerConnection's fail-open ack wait.
+    pub(crate) static TRIGGER_DEADLINE: tokio::time::Instant;
+}
+
+/// Bound a provider future by the binding operation's remaining budget.
+/// Poll the provider first at the deadline so a delivered registration's ack
+/// timeout can intentionally fail open before the outer cancellation fires.
+async fn await_registrator(
+    deadline: tokio::time::Instant,
+    future: impl Future<Output = Result<(), anyhow::Error>>,
+) -> Result<(), anyhow::Error> {
+    TRIGGER_DEADLINE.scope(deadline, async {
+        tokio::select! {
+            biased;
+            result = future => result,
+            _ = tokio::time::sleep_until(deadline) => Err(anyhow::Error::new(RegistratorUnavailable).context("trigger lifecycle deadline exceeded")),
+        }
+    }).await
+}
+
 /// Provider deliveries retained until detach succeeds, serialized per binding.
 #[derive(Default)]
 struct BindingLifecycle {
     deliveries: Vec<(TriggerType, Trigger)>,
+    /// Calls cancelled before their result may already have external effects.
+    uncertain: Vec<(TriggerType, Trigger)>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 /// Keeps a gate shared with queued operations and reclaims idle, empty gates.
@@ -352,7 +382,7 @@ impl Drop for LifecycleLease<'_> {
                 && !self.registry.pending_triggers.contains_key(&self.id)
                 && gate
                     .try_lock()
-                    .is_ok_and(|state| state.deliveries.is_empty())
+                    .is_ok_and(|state| state.deliveries.is_empty() && state.uncertain.is_empty())
         });
     }
 }
@@ -436,16 +466,23 @@ impl TriggerRegistry {
     /// Detach every generation that accepted this binding. Failed detaches
     /// remain tracked so an explicit unregister can retry them.
     async fn detach_deliveries(state: &mut BindingLifecycle) -> Result<(), anyhow::Error> {
+        state.deliveries.append(&mut state.uncertain);
+        let deadline = state.deadline.expect("gate holder sets deadline");
         let mut failure = None;
         let mut index = 0;
         while index < state.deliveries.len() {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow::Error::new(RegistratorUnavailable)
+                    .context("trigger detach deadline exceeded"));
+            }
             let (provider, trigger) = &state.deliveries[index];
             // Leave the delivery recorded across await: cancellation must not
             // discard this or the remaining providers in a drained iterator.
-            match provider
-                .registrator
-                .unregister_trigger(trigger.clone())
-                .await
+            match await_registrator(
+                deadline,
+                provider.registrator.unregister_trigger(trigger.clone()),
+            )
+            .await
             {
                 Ok(()) => {
                     state.deliveries.remove(index);
@@ -545,10 +582,24 @@ impl TriggerRegistry {
                 }
             }
 
+            if tokio::time::Instant::now() >= state.deadline.expect("gate holder sets deadline") {
+                let fence = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                self.triggers.remove(&trigger.id);
+                self.pending_triggers.insert(trigger.id.clone(), trigger);
+                drop(state);
+                drop(fence);
+                return RegisterTriggerOutcome::Deferred;
+            }
             // Old generations may still run jobs after replacement. Detach
             // before replay, retaining failed deliveries for later teardown.
             if let Err(err) = Self::detach_deliveries(&mut state).await {
                 tracing::warn!(error = %err, trigger_id = %trigger.id, "Could not detach previous trigger generation");
+            }
+            if tokio::time::Instant::now() >= state.deadline.expect("gate holder sets deadline") {
+                continue;
             }
             let provider = {
                 let fence = self
@@ -570,7 +621,18 @@ impl TriggerRegistry {
                 }
             };
             trigger.provider_namespace = provider.namespace.clone();
-            let result = provider.registrator.replay_trigger(trigger.clone()).await;
+            state.uncertain.push((provider.clone(), trigger.clone()));
+            let result = await_registrator(
+                state.deadline.expect("gate holder sets deadline"),
+                provider.registrator.replay_trigger(trigger.clone()),
+            )
+            .await;
+            if !result
+                .as_ref()
+                .is_err_and(|err| err.downcast_ref::<RegistratorUnavailable>().is_some())
+            {
+                state.uncertain.pop();
+            }
             attempt = Some((provider, result));
         }
     }
@@ -630,6 +692,7 @@ impl TriggerRegistry {
         else {
             return;
         };
+        state.deadline = Some(tokio::time::Instant::now() + TRIGGER_OPERATION_TIMEOUT);
         let Some(trigger) = self.binding_snapshot(id) else {
             return;
         };
@@ -722,6 +785,7 @@ impl TriggerRegistry {
             let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
                 .lock_owned()
                 .await;
+            state.deadline = Some(tokio::time::Instant::now() + TRIGGER_OPERATION_TIMEOUT);
             let Some(trigger) = self.binding_snapshot(&id) else {
                 continue;
             };
@@ -846,6 +910,7 @@ impl TriggerRegistry {
         let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
             .lock_owned()
             .await;
+        state.deadline = Some(tokio::time::Instant::now() + TRIGGER_OPERATION_TIMEOUT);
         // Legacy fixtures/in-process entries may predate delivery tracking.
         // Snapshot their actual route BEFORE attempting a new configuration.
         if state.deliveries.is_empty()
@@ -862,7 +927,18 @@ impl TriggerRegistry {
             return Ok(self.settle_binding(state, trigger, None).await);
         };
         trigger.provider_namespace = provider.namespace.clone();
-        let result = provider.registrator.register_trigger(trigger.clone()).await;
+        state.uncertain.push((provider.clone(), trigger.clone()));
+        let result = await_registrator(
+            state.deadline.expect("gate holder sets deadline"),
+            provider.registrator.register_trigger(trigger.clone()),
+        )
+        .await;
+        if !result
+            .as_ref()
+            .is_err_and(|err| err.downcast_ref::<RegistratorUnavailable>().is_some())
+        {
+            state.uncertain.pop();
+        }
         if result
             .as_ref()
             .is_err_and(|err| err.downcast_ref::<RegistratorUnavailable>().is_none())
@@ -897,7 +973,15 @@ impl TriggerRegistry {
         let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
             .lock_owned()
             .await;
-        let Some(trigger) = self.binding_snapshot(&id) else {
+        state.deadline = Some(tokio::time::Instant::now() + TRIGGER_OPERATION_TIMEOUT);
+        let trigger = self.binding_snapshot(&id).or_else(|| {
+            state
+                .deliveries
+                .first()
+                .or_else(|| state.uncertain.first())
+                .map(|(_, trigger)| trigger.clone())
+        });
+        let Some(trigger) = trigger else {
             return Ok(false);
         };
         if state.deliveries.is_empty()
@@ -931,6 +1015,7 @@ impl TriggerRegistry {
         let mut state = Arc::clone(lease.gate.as_ref().expect("live lifecycle lease"))
             .lock_owned()
             .await;
+        state.deadline = Some(tokio::time::Instant::now() + TRIGGER_OPERATION_TIMEOUT);
         let Some(trigger) = self.binding_snapshot(id) else {
             return;
         };
@@ -1335,6 +1420,193 @@ mod tests {
         assert!(registry.lifecycles.is_empty());
     }
 
+    /// A full real worker channel bounds register/replay, clears cancelled
+    /// acknowledgements, and leaves the gate available for explicit teardown.
+    #[tokio::test(start_paused = true)]
+    async fn backpressured_register_and_replay_release_gate_at_deadline() {
+        for replay in [false, true] {
+            let registry = TriggerRegistry::new();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            tx.send(crate::engine::Outbound::Protocol(
+                crate::protocol::Message::UnregisterTrigger {
+                    id: "filler".into(),
+                    trigger_type: None,
+                },
+            ))
+            .await
+            .unwrap();
+            let connection = crate::worker_connections::WorkerConnection::new(tx);
+            let acks = connection.pending_trigger_acks.clone();
+            if replay {
+                registry
+                    .register_trigger(make_trigger("blocked", "evt"))
+                    .await
+                    .unwrap();
+            }
+            let start = tokio::time::Instant::now();
+            registry
+                .register_trigger_type(TriggerType::new(
+                    "evt",
+                    "worker",
+                    Box::new(connection),
+                    None,
+                ))
+                .await
+                .unwrap();
+            if !replay {
+                assert_eq!(
+                    registry
+                        .register_trigger(make_trigger("blocked", "evt"))
+                        .await
+                        .unwrap(),
+                    RegisterTriggerOutcome::Deferred
+                );
+            }
+            assert_eq!(
+                tokio::time::Instant::now() - start,
+                TRIGGER_OPERATION_TIMEOUT
+            );
+            assert!(acks.is_empty(), "cancelled send left an ack waiter");
+            assert!(registry.pending_triggers.contains_key("blocked"));
+            assert!(
+                registry
+                    .lifecycles
+                    .get("blocked")
+                    .unwrap()
+                    .try_lock()
+                    .is_ok()
+            );
+            rx.recv().await.unwrap();
+            assert!(
+                registry
+                    .unregister_trigger("blocked".into(), None)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                matches!(rx.recv().await.unwrap(), crate::engine::Outbound::Protocol(crate::protocol::Message::UnregisterTrigger { id, .. }) if id == "blocked")
+            );
+            assert!(registry.lifecycles.is_empty());
+        }
+    }
+
+    /// Owner cleanup retains timed-out detaches even after removing both maps;
+    /// an explicit retry can reach the provider and reclaim the retained gate.
+    #[tokio::test(start_paused = true)]
+    async fn backpressured_owner_detach_is_bounded_and_retryable() {
+        let registry = TriggerRegistry::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let connection = crate::worker_connections::WorkerConnection::new(tx);
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "worker",
+                Box::new(connection),
+                None,
+            ))
+            .await
+            .unwrap();
+        let owner = Uuid::new_v4();
+        let mut binding = make_trigger("blocked", "evt");
+        binding.worker_id = Some(owner);
+        registry.register_trigger(binding).await.unwrap();
+        let start = tokio::time::Instant::now();
+        registry.unregister_worker(&owner).await;
+        assert_eq!(
+            tokio::time::Instant::now() - start,
+            TRIGGER_OPERATION_TIMEOUT
+        );
+        assert!(registry.triggers.is_empty());
+        assert!(registry.pending_triggers.is_empty());
+        assert!(
+            registry
+                .lifecycles
+                .get("blocked")
+                .unwrap()
+                .try_lock()
+                .is_ok()
+        );
+        rx.recv().await.unwrap();
+        assert!(
+            registry
+                .unregister_trigger("blocked".into(), None)
+                .await
+                .unwrap()
+        );
+        assert!(
+            matches!(rx.recv().await.unwrap(), crate::engine::Outbound::Protocol(crate::protocol::Message::UnregisterTrigger { id, .. }) if id == "blocked")
+        );
+        assert!(registry.lifecycles.is_empty());
+    }
+
+    /// Successful send without an ack intentionally fails open at the same
+    /// lifecycle deadline, rather than being misclassified as unavailable.
+    #[tokio::test(start_paused = true)]
+    async fn delivered_registration_ack_timeout_remains_fail_open() {
+        let registry = TriggerRegistry::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let connection = crate::worker_connections::WorkerConnection::new(tx);
+        let acks = connection.pending_trigger_acks.clone();
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "worker",
+                Box::new(connection),
+                None,
+            ))
+            .await
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        assert_eq!(
+            registry
+                .register_trigger(make_trigger("delivered", "evt"))
+                .await
+                .unwrap(),
+            RegisterTriggerOutcome::Registered
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - start,
+            TRIGGER_OPERATION_TIMEOUT
+        );
+        assert!(acks.is_empty());
+        assert!(registry.triggers.contains_key("delivered"));
+    }
+
+    /// Dropping an outer registration clears its ack and retains uncertain
+    /// delivery for teardown, even if no live/pending binding was published.
+    #[tokio::test]
+    async fn cancelled_worker_registration_retains_retryable_delivery() {
+        let registry = TriggerRegistry::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let connection = crate::worker_connections::WorkerConnection::new(tx);
+        let acks = connection.pending_trigger_acks.clone();
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "worker",
+                Box::new(connection),
+                None,
+            ))
+            .await
+            .unwrap();
+        {
+            let registration = registry.register_trigger(make_trigger("cancelled", "evt"));
+            tokio::pin!(registration);
+            assert!(futures::poll!(&mut registration).is_pending());
+            assert_eq!(acks.len(), 1);
+        }
+        assert!(acks.is_empty());
+        rx.recv().await.unwrap();
+        assert!(
+            registry
+                .unregister_trigger("cancelled".into(), None)
+                .await
+                .unwrap()
+        );
+        assert!(registry.lifecycles.is_empty());
+    }
+
+    /// Yields before counting each provider call to expose generation races.
     struct CountingYieldingRegistrator(Arc<ControlledRegistrator>);
 
     impl TriggerRegistrator for CountingYieldingRegistrator {
@@ -1359,6 +1631,7 @@ mod tests {
         }
     }
 
+    /// Suspends once so tests can inspect shard availability during delivery.
     struct YieldingRegistrator;
 
     impl TriggerRegistrator for YieldingRegistrator {
@@ -1380,6 +1653,7 @@ mod tests {
         }
     }
 
+    /// Replay must release provider shard guards before calling async user code.
     #[tokio::test]
     async fn replay_releases_provider_shard_before_await() {
         let registry = TriggerRegistry::new();
@@ -1409,6 +1683,7 @@ mod tests {
         assert!(registry.pending_triggers.is_empty());
     }
 
+    /// A pending activation follows the generation published while it yields.
     #[tokio::test]
     async fn pending_replay_follows_replacement_generation() {
         let registry = TriggerRegistry::new();
@@ -1454,6 +1729,7 @@ mod tests {
         );
     }
 
+    /// Direct registration and detach never pin synchronous provider shards.
     #[tokio::test]
     async fn registration_and_unregister_release_provider_shard_before_await() {
         let registry = TriggerRegistry::new();
