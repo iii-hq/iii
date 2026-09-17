@@ -41,7 +41,6 @@ use super::{TelemetryContext, send_product_event};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    trigger::Trigger,
     workers::telemetry::amplitude::{AmplitudeClient, PostHogClient},
 };
 
@@ -153,30 +152,31 @@ pub(super) fn register_drain(engine: &Arc<Engine>) {
     );
 }
 
-/// Subscribe the handler to the harness's topic. The deterministic trigger id
-/// means a re-registration replaces rather than duplicates.
+/// Subscribe the handler to the harness's topic in one namespace. The
+/// deterministic trigger id means a re-registration replaces rather than
+/// duplicates.
 ///
 /// Fire and forget, like every other part of this worker: a subscription this
 /// engine could not take is not the operator's problem and never becomes
 /// theirs. A binding registered before the `queue` worker connects is stored
 /// and replayed when the provider arrives, so a project without the harness,
 /// or without `queue`, simply never fires it.
-pub(super) async fn register_trigger(engine: &Arc<Engine>) {
+pub(super) async fn register_trigger_in(engine: &Arc<Engine>, namespace: &str) {
     let _ = engine
         .trigger_registry
-        .register_trigger(Trigger {
-            id: USAGE_TRIGGER_ID.to_string(),
-            trigger_type: "durable:subscriber".to_string(),
-            function_id: USAGE_FN_ID.to_string(),
-            config: json!({ "topic": USAGE_TOPIC }),
-            worker_id: None,
-            metadata: None,
-            namespace: crate::protocol::default_namespace(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        })
+        .register_trigger(super::topic_watch(
+            USAGE_TRIGGER_ID,
+            USAGE_FN_ID,
+            USAGE_TOPIC,
+            namespace,
+        ))
         .await;
+}
+
+/// Subscribe in the default namespace, which is where an unnamespaced project
+/// and the engine's own providers live.
+pub(super) async fn register_trigger(engine: &Arc<Engine>) {
+    register_trigger_in(engine, crate::protocol::DEFAULT_NAMESPACE).await;
 }
 
 #[cfg(test)]

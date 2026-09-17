@@ -39,7 +39,6 @@ use super::{TelemetryContext, send_product_event};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    trigger::Trigger,
     workers::telemetry::amplitude::{AmplitudeClient, PostHogClient},
 };
 
@@ -132,22 +131,22 @@ pub(super) fn register_handler(
 /// this engine could not take is not the operator's problem and never
 /// becomes theirs. The outcome is dropped — nothing is returned to a caller,
 /// nothing is logged or traced here, and nothing about the tour changes.
-pub(super) async fn register_trigger(engine: &Arc<Engine>) {
+pub(super) async fn register_trigger_in(engine: &Arc<Engine>, namespace: &str) {
     let _ = engine
         .trigger_registry
-        .register_trigger(Trigger {
-            id: STEP_TRIGGER_ID.to_string(),
-            trigger_type: "durable:subscriber".to_string(),
-            function_id: STEP_FN_ID.to_string(),
-            config: json!({ "topic": STEP_TOPIC }),
-            worker_id: None,
-            metadata: None,
-            namespace: crate::protocol::default_namespace(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        })
+        .register_trigger(super::topic_watch(
+            STEP_TRIGGER_ID,
+            STEP_FN_ID,
+            STEP_TOPIC,
+            namespace,
+        ))
         .await;
+}
+
+/// Subscribe in the default namespace, which is where an unnamespaced project
+/// and the engine's own providers live.
+pub(super) async fn register_trigger(engine: &Arc<Engine>) {
+    register_trigger_in(engine, crate::protocol::DEFAULT_NAMESPACE).await;
 }
 
 #[cfg(test)]

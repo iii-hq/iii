@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
+use crate::trigger::Trigger;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
@@ -743,6 +744,100 @@ impl TelemetryContext {
     }
 }
 
+/// The trigger type the `queue` worker provides, which both reported topics
+/// are consumed through.
+const DURABLE_SUBSCRIBER: &str = "durable:subscriber";
+
+/// How often the worker looks for a `durable:subscriber` provider in a
+/// namespace it has not subscribed in yet.
+///
+/// A worker in a named namespace provides the type there and nowhere else, and
+/// trigger routing is strict: a binding at home in `default` resolves a
+/// provider in `default` or nothing. So a project that runs `queue` under its
+/// own namespace needs its own subscription, and the provider registers after
+/// this worker starts.
+// ponytail: a poll because the registry has no provider-registration hook;
+// replace it with one if the registry ever grows it.
+const TOPIC_WATCH_RESCAN_SECS: u64 = 60;
+
+/// One binding of a reported topic, at home in `default` where this worker's
+/// handler is registered, with the provider named explicitly so the binding
+/// reaches the `queue` worker of exactly that namespace.
+///
+/// The default namespace keeps the plain trigger id, so an engine that has
+/// always subscribed there does not grow a second binding on upgrade.
+fn topic_watch(trigger_id: &str, function_id: &str, topic: &str, namespace: &str) -> Trigger {
+    let id = if namespace == crate::protocol::DEFAULT_NAMESPACE {
+        trigger_id.to_string()
+    } else {
+        format!("{trigger_id}:{namespace}")
+    };
+    Trigger {
+        id,
+        trigger_type: DURABLE_SUBSCRIBER.to_string(),
+        function_id: function_id.to_string(),
+        config: serde_json::json!({ "topic": topic }),
+        worker_id: None,
+        metadata: None,
+        namespace: crate::protocol::default_namespace(),
+        trigger_namespace: Some(namespace.to_string()),
+        home_namespace: crate::protocol::default_namespace(),
+        provider_namespace: namespace.to_string(),
+    }
+}
+
+/// The namespaces that provide `durable:subscriber` right now.
+fn durable_subscriber_namespaces(engine: &Engine) -> Vec<String> {
+    engine
+        .trigger_registry
+        .trigger_types
+        .iter()
+        .filter(|entry| entry.key().1 == DURABLE_SUBSCRIBER)
+        .map(|entry| entry.key().0.clone())
+        .collect()
+}
+
+/// Subscribe both reported topics in every namespace that provides
+/// `durable:subscriber`, as providers appear.
+///
+/// `default` is subscribed by the caller before this loop starts and is never
+/// revisited. Each namespace is subscribed once: the binding survives its
+/// provider restarting, and a re-registration would replace an active binding
+/// with an identical one for nothing.
+fn spawn_topic_watch_rescan(
+    engine: Arc<Engine>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    telemetry_enabled: bool,
+) {
+    tokio::spawn(async move {
+        let mut subscribed: HashSet<String> =
+            HashSet::from([crate::protocol::DEFAULT_NAMESPACE.to_string()]);
+        loop {
+            for namespace in durable_subscriber_namespaces(&engine) {
+                if !subscribed.insert(namespace.clone()) {
+                    continue;
+                }
+                harness::register_trigger_in(&engine, &namespace).await;
+                if telemetry_enabled {
+                    onboarding::register_trigger_in(&engine, &namespace).await;
+                }
+                tracing::debug!(namespace = %namespace, "subscribed the reported topics");
+            }
+            let delay = tokio::time::sleep(std::time::Duration::from_secs(TOPIC_WATCH_RESCAN_SECS));
+            tokio::pin!(delay);
+            tokio::select! {
+                biased;
+                result = shutdown_rx.changed() => {
+                    if result.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+                _ = &mut delay => {}
+            }
+        }
+    });
+}
+
 /// How long the engine must stay up before it reports a boot heartbeat.
 const BOOT_HEARTBEAT_DELAY_SECS: u64 = 120;
 
@@ -832,6 +927,7 @@ impl Worker for DisabledTelemetryWorker {
     ) -> anyhow::Result<()> {
         harness::register_drain(&self.engine);
         harness::register_trigger(&self.engine).await;
+        spawn_topic_watch_rescan(Arc::clone(&self.engine), _shutdown_rx, false);
         Ok(())
     }
 
@@ -930,6 +1026,7 @@ impl Worker for TelemetryWorker {
             self.posthog_client.clone(),
         );
         harness::register_trigger(&self.engine).await;
+        spawn_topic_watch_rescan(Arc::clone(&self.engine), shutdown_rx.clone(), true);
 
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
@@ -2523,6 +2620,33 @@ mod tests {
         assert!(!is_observability_function_id("configuration::list"));
         assert!(!is_observability_function_id("state::get"));
         assert!(!is_observability_function_id("orders::process"));
+    }
+
+    // =========================================================================
+    // topic_watch
+    // =========================================================================
+
+    #[test]
+    fn a_default_namespace_watch_keeps_the_plain_trigger_id() {
+        let watch = topic_watch("t::watch", "t::on-event", "some:topic", "default");
+        assert_eq!(watch.id, "t::watch");
+        assert_eq!(watch.trigger_namespace.as_deref(), Some("default"));
+        assert_eq!(watch.home_namespace, "default");
+        assert_eq!(watch.namespace, "default");
+        assert_eq!(watch.config["topic"], "some:topic");
+    }
+
+    #[test]
+    fn each_namespace_gets_its_own_binding_of_the_same_topic() {
+        let project = topic_watch("t::watch", "t::on-event", "some:topic", "my-project");
+        // Its own id, so it never replaces the default one.
+        assert_eq!(project.id, "t::watch:my-project");
+        // Strict: this project's provider or nothing, because a binding at
+        // home in `default` would otherwise never reach it.
+        assert_eq!(project.trigger_namespace.as_deref(), Some("my-project"));
+        // The handler it fires stays where this worker registered it.
+        assert_eq!(project.namespace, "default");
+        assert_eq!(project.home_namespace, "default");
     }
 
     // =========================================================================
