@@ -814,6 +814,12 @@ impl Project {
         self.store.dir().join("vm")
     }
 
+    /// Per-container mutable workspaces for registry bundles explicitly run on
+    /// the host. Kept apart from both the shared package cache and VM state.
+    fn host_dir(&self) -> PathBuf {
+        self.store.dir().join("host")
+    }
+
     /// Installed packages live at the root, not inside a daemon or a project:
     /// the same `state 0.21.4` serves every project on this machine, and
     /// deriving this by walking up from the state directory would silently
@@ -838,6 +844,7 @@ impl Project {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let host_dir = self.host_dir();
         let mut inner = shutdown.run(self.inner.lock()).await?;
         inner.restarts.operator_took_control(target);
         let Inner {
@@ -857,6 +864,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            host_dir: &host_dir,
         };
 
         let result = lifecycle::up_until_shutdown(
@@ -888,6 +896,7 @@ impl Project {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let host_dir = self.host_dir();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
         let Inner {
@@ -911,6 +920,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            host_dir: &host_dir,
         };
 
         let operation = crate::operation::active(&operation_id);
@@ -978,6 +988,7 @@ impl Project {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let host_dir = self.host_dir();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
         let Inner {
@@ -1000,6 +1011,7 @@ impl Project {
                 logs: &self.logs,
                 package_cache: &package_cache,
                 vm_dir: &vm_dir,
+                host_dir: &host_dir,
             };
             let mut stopped = Vec::with_capacity(removed.len());
             for (index, worker) in removed.iter().enumerate() {
@@ -1035,6 +1047,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            host_dir: &host_dir,
         };
         let up = lifecycle::up(
             &ctx,
@@ -1077,6 +1090,7 @@ impl Project {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let host_dir = self.host_dir();
         let Inner {
             children, state, ..
         } = inner;
@@ -1093,6 +1107,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            host_dir: &host_dir,
         };
 
         if let Some((attempt, total_attempts)) = supervised_attempt {
@@ -1115,6 +1130,7 @@ impl Project {
         let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let host_dir = self.host_dir();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(target);
         let Inner {
@@ -1134,6 +1150,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            host_dir: &host_dir,
         };
 
         let result =

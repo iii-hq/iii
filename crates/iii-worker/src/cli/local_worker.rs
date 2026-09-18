@@ -850,7 +850,7 @@ pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16)
         worker_name,
         worker_path,
         port,
-        /*is_bundle=*/ false,
+        /*expected_package_name=*/ None,
         None,
         None,
     )
@@ -889,7 +889,7 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         worker_name,
         worker_path,
         port,
-        /*is_bundle=*/ true,
+        Some(worker_name),
         None,
         None,
     )
@@ -920,7 +920,7 @@ pub async fn local_vm_command(
         // The guest reaches the engine through `over.engine_url`; no port is
         // derived here.
         0,
-        /*is_bundle=*/ false,
+        /*expected_package_name=*/ None,
         Some(over),
         run_override,
     )
@@ -980,6 +980,17 @@ pub async fn bundle_vm_command(
     install_dir: &Path,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    bundle_vm_command_for_package(worker_name, worker_name, install_dir, over).await
+}
+
+/// Compose supplies the canonical package separately from the instance identity.
+/// The legacy entry point above keeps matching its worker name as before.
+pub async fn bundle_vm_command_for_package(
+    worker_name: &str,
+    expected_package_name: &str,
+    install_dir: &Path,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
     if super::bundle_download::bundle_workers_disabled() {
         return Err(format!(
             "bundle workers are disabled via {}=1; refusing to start '{worker_name}'",
@@ -993,7 +1004,7 @@ pub async fn bundle_vm_command(
         // The guest reaches the engine through `over.engine_url`; no port is
         // derived here.
         0,
-        /*is_bundle=*/ true,
+        Some(expected_package_name),
         Some(over),
         None,
     )
@@ -1011,7 +1022,8 @@ pub async fn bundle_vm_command(
 
 /// Shared body for `start_local_worker` and `start_bundle_worker`.
 ///
-/// `is_bundle` changes resource and workspace handling: when true, resources
+/// A bundle's expected package name selects its resource and workspace rules:
+/// resources
 /// are parsed and clamped via
 ///     `bundle_download::parse_bundle_resources` (saturating + capped)
 ///     rather than the permissive `parse_manifest_resources`. Local
@@ -1051,15 +1063,36 @@ pub enum VmStart {
     Plan(Box<super::worker_manager::libkrun::VmCommand>),
 }
 
+/// Validates before project loading or VM setup, using package identity only
+/// for bundles. Local workers retain their strict key validation without a
+/// name constraint.
+pub(super) fn validate_start_manifest(
+    project_path: &Path,
+    expected_package_name: Option<&str>,
+) -> Result<(), String> {
+    if let Some(expected_package_name) = expected_package_name {
+        super::bundle_download::validate_bundle_manifest(project_path, expected_package_name)
+            .map_err(|e| format!("bundle manifest re-validation failed at start: {e}"))?;
+    } else {
+        let manifest_path = project_path.join(WORKER_MANIFEST);
+        if let Some(doc) = super::project::read_manifest_doc(&manifest_path)? {
+            super::project::validate_manifest_keys(&doc, &manifest_path)
+                .map_err(|e| format!("manifest validation failed at start: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-copies project files, builds env, and runs via libkrun.
 async fn start_worker_impl(
     worker_name: &str,
     worker_path: &str,
     port: u16,
-    is_bundle: bool,
+    expected_package_name: Option<&str>,
     over: Option<VmOverride<'_>>,
     run_override: Option<&str>,
 ) -> VmStart {
+    let is_bundle = expected_package_name.is_some();
     // Kill any stale process from a previous engine run. Skipped when the
     // caller owns the VM's identity: the name is not unique across projects
     // there, so this would reach into someone else's.
@@ -1092,42 +1125,9 @@ async fn start_worker_impl(
     // load_project_info path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
-    if is_bundle
-        && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, worker_name)
-    {
-        eprintln!(
-            "{} bundle manifest re-validation failed at start: {}",
-            "error:".red(),
-            e,
-        );
+    if let Err(e) = validate_start_manifest(project_path, expected_package_name) {
+        eprintln!("{} {}", "error:".red(), e);
         return VmStart::Exit(1);
-    }
-
-    // 1b. Local (non-bundle) workers: strict key validation at start too, so a
-    // manifest hand-edited or swapped after `add` can't smuggle unknown keys
-    // (or an oversize/billion-laughs YAML) past the engine via the permissive
-    // load_project_info path below. Deprecation warnings are intentionally NOT
-    // re-emitted here — they fired at add time; repeating them on every engine
-    // boot would be noise.
-    if !is_bundle {
-        let manifest_path = project_path.join(WORKER_MANIFEST);
-        match super::project::read_manifest_doc(&manifest_path) {
-            Ok(Some(doc)) => {
-                if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
-                    eprintln!(
-                        "{} manifest validation failed at start: {}",
-                        "error:".red(),
-                        e
-                    );
-                    return VmStart::Exit(1);
-                }
-            }
-            Ok(None) => {} // auto-detected worker, no manifest to validate
-            Err(e) => {
-                eprintln!("{} {}", "error:".red(), e);
-                return VmStart::Exit(1);
-            }
-        }
     }
 
     // 2. Detect language

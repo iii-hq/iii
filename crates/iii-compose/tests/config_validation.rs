@@ -921,7 +921,7 @@ containers:
 }
 
 #[test]
-fn rejects_run_on_a_package_worker() {
+fn rejects_package_run_without_explicit_host_runtime() {
     assert_eq!(
         code(
             r#"
@@ -934,7 +934,7 @@ containers:
       run: cargo run
 "#
         ),
-        "RUN_NOT_ALLOWED_FOR_PACKAGE"
+        "PACKAGE_RUN_REQUIRES_HOST_RUNTIME"
     );
 }
 

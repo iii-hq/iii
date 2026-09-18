@@ -119,8 +119,22 @@ pub enum ComposeError {
         source_uri: String,
     },
 
-    #[error("container '{container}': 'run' is only valid for path:// workers")]
-    RunNotAllowedForPackage { container: String },
+    #[error("container '{container}': 'runtime' is only valid for registry bundle workers")]
+    RuntimeOnlyForBundles { container: String },
+
+    #[error(
+        "container '{container}': a host bundle workspace key must be one non-empty path component"
+    )]
+    InvalidHostBundleContainerKey { container: String },
+    #[error(
+        "container '{container}': package 'scripts.run' requires 'runtime: host'; bundles use a VM by default"
+    )]
+    PackageRunRequiresHostRuntime { container: String },
+
+    #[error(
+        "container '{container}': package resolved as '{kind}', but 'runtime' is only valid for bundle payloads"
+    )]
+    RuntimeRequiresBundle { container: String, kind: String },
 
     #[error("container '{container}': 'pre_run_timeout' requires 'pre_run'")]
     PreRunTimeoutWithoutPreRun { container: String },
@@ -555,7 +569,10 @@ impl ComposeError {
             Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
-            Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
+            Self::RuntimeOnlyForBundles { .. } => "RUNTIME_ONLY_FOR_BUNDLES",
+            Self::PackageRunRequiresHostRuntime { .. } => "PACKAGE_RUN_REQUIRES_HOST_RUNTIME",
+            Self::RuntimeRequiresBundle { .. } => "RUNTIME_REQUIRES_BUNDLE",
+            Self::InvalidHostBundleContainerKey { .. } => "INVALID_HOST_BUNDLE_CONTAINER_KEY",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
