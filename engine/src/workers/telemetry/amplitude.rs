@@ -186,17 +186,22 @@ const LONG_SESSION_UPTIME_SECS: u64 = 200;
 /// The person property a passing heartbeat sets.
 const LONG_SESSION_PERSON_PROPERTY: &str = "uptime_is_greater_than_200_secs";
 
-/// Whether this event is a heartbeat reporting more than
-/// [`LONG_SESSION_UPTIME_SECS`] of uptime.
+/// Whether this event reports more than [`LONG_SESSION_UPTIME_SECS`] of
+/// uptime.
 ///
-/// Strictly greater, so a heartbeat that reports exactly the threshold does not
-/// flag anyone. A heartbeat without `uptime_secs` reports nothing rather than
-/// assuming a zero.
+/// Both events that carry `uptime_secs` count. `engine_stopped` is the one that
+/// sees a short run: the heartbeat interval is six hours and the boot heartbeat
+/// fires at two minutes, so a session between 200 seconds and six hours ends
+/// without a heartbeat ever reporting past the threshold.
+///
+/// Strictly greater, so an event that reports exactly the threshold flags
+/// nobody. An event without `uptime_secs` reports nothing rather than assuming
+/// a zero.
 fn reports_long_session(
     event_type: &str,
     properties: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    event_type == "heartbeat"
+    matches!(event_type, "heartbeat" | "engine_stopped")
         && properties
             .get("uptime_secs")
             .and_then(serde_json::Value::as_u64)
@@ -239,10 +244,10 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
         }
     }
 
-    // A heartbeat past the threshold flags its person once. `$set_once` never
-    // overwrites, so the first passing heartbeat writes `true` and every one
-    // after it is a no-op — which is what makes the flag mean "has ever had a
-    // long session" rather than "had one recently".
+    // An event past the threshold flags its person once. `$set_once` never
+    // overwrites, so the first passing event writes `true` and every one after
+    // it is a no-op — which is what makes the flag mean "has ever had a long
+    // session" rather than "had one recently".
     //
     // Person properties need person processing, which every other event turns
     // off, so this event turns it back on for itself alone. Without that
@@ -462,11 +467,38 @@ mod tests {
     }
 
     #[test]
-    fn only_a_heartbeat_flags_a_long_session() {
-        // `engine_stopped` carries `uptime_secs` too, and reports the whole
-        // run, so it would flag almost everyone.
+    fn a_stop_past_the_threshold_flags_too() {
+        // The run that ends between 200 seconds and the six-hour heartbeat
+        // interval is only ever seen by `engine_stopped`.
         let mut event = sample_event();
         event.event_type = "engine_stopped".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 900 });
+        let event = build_posthog_event(event);
+
+        assert_eq!(
+            event.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        assert_eq!(event.properties["$process_person_profile"], true);
+    }
+
+    #[test]
+    fn a_short_stop_flags_nobody() {
+        let mut event = sample_event();
+        event.event_type = "engine_stopped".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 12 });
+        let event = build_posthog_event(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn another_event_with_a_long_uptime_flags_nobody() {
+        // Only the two lifecycle events report uptime for this purpose; a
+        // future event carrying the same property must not flag by accident.
+        let mut event = sample_event();
+        event.event_type = "function_invoked".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
         let event = build_posthog_event(event);
 
