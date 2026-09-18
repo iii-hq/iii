@@ -46,10 +46,10 @@ runtime:
 
 The images that ship with iii come in two variants:
 
-| Image                                                              | Contents                                                          | Use it when                                                                                              |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.            |
-| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source-only wheel. |
+| Image                                                              | Contents                                                          | Use it when                                                                                                |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.              |
+| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution. |
 
 Select the builder variant when an install fails because a compiler is absent:
 
