@@ -41,5 +41,6 @@ export type {
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
   Trigger,
+  TriggerBoundFunctionRef,
   TriggerTypeRef,
 } from './types'

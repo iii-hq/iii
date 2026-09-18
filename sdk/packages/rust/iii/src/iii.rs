@@ -926,6 +926,9 @@ struct IIIInner {
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
+    /// Failure acks keyed by trigger id, written only when a registration is
+    /// rejected. Read through `Trigger::registration_error`.
+    trigger_registration_errors: Mutex<HashMap<String, ErrorBody>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     /// Set when the engine rejects registration (fatal, no reconnect).
@@ -988,6 +991,7 @@ impl IIIClient {
             functions: Mutex::new(HashMap::new()),
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
+            trigger_registration_errors: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             fatal_error: Mutex::new(None),
@@ -1468,6 +1472,11 @@ impl IIIClient {
         let unregister_id = message.id.clone();
         let unregister_fn = Arc::new(move || {
             let _ = iii.inner.triggers.lock_or_recover().remove(&unregister_id);
+            let _ = iii
+                .inner
+                .trigger_registration_errors
+                .lock_or_recover()
+                .remove(&unregister_id);
             let msg = UnregisterTriggerMessage {
                 id: unregister_id.clone(),
                 trigger_type: trigger_type.clone(),
@@ -1475,7 +1484,21 @@ impl IIIClient {
             let _ = iii.send_message(msg.to_message());
         });
 
-        Ok(Trigger::new(unregister_fn))
+        // Read through a closure rather than copying the value in: the ack
+        // arrives long after this handle is built, so a snapshot would stay
+        // `None` forever.
+        let error_reader = self.clone();
+        let error_id = id.clone();
+        let registration_error_fn = Arc::new(move || {
+            error_reader
+                .inner
+                .trigger_registration_errors
+                .lock_or_recover()
+                .get(&error_id)
+                .cloned()
+        });
+
+        Ok(Trigger::new(unregister_fn).with_registration_error(registration_error_fn))
     }
 
     /// Invoke a remote function.
@@ -1877,6 +1900,14 @@ impl IIIClient {
             messages.push(function.message.to_message());
         }
 
+        // Clear first: this replay re-requests every binding, so a rejection
+        // from the previous connection is stale. Keeping it would strand a
+        // retry loop on an error the engine may no longer have reason to
+        // repeat.
+        self.inner
+            .trigger_registration_errors
+            .lock_or_recover()
+            .clear();
         for trigger in self.inner.triggers.lock_or_recover().values() {
             messages.push(trigger.to_message());
         }
@@ -2095,6 +2126,22 @@ impl IIIClient {
                     id,
                     err.message
                 );
+                // Record it so a caller polling `Trigger::registration_error`
+                // sees the cause, not just an operator reading the logs.
+                //
+                // Gated on the binding still being live, and holding the
+                // `triggers` lock across the insert: `unregister` drops the
+                // trigger and then its error, so an ack racing that pair would
+                // otherwise strand an error for a binding that no longer
+                // exists — one nothing ever removes. Locks are taken in the
+                // same order as `unregister` (triggers, then errors).
+                let triggers = self.inner.triggers.lock_or_recover();
+                if triggers.contains_key(&id) {
+                    self.inner
+                        .trigger_registration_errors
+                        .lock_or_recover()
+                        .insert(id, err);
+                }
             }
             _ => {}
         }
@@ -3540,6 +3587,84 @@ mod tests {
         assert!(logs_contain("<compose-daemon-namespace>"));
         assert!(logs_contain("compose::add worker=http"));
         assert!(logs_contain("trig-1"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_error_is_readable_by_the_caller() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let trigger = iii
+            .register_trigger(RegisterTriggerInput::new(
+                "harness::hook::pre-generate",
+                "memory::on-pre-generate",
+                json!({}),
+            ))
+            .unwrap();
+        assert!(trigger.registration_error().is_none());
+
+        // The engine keys its ack by the id the SDK generated, so read that off
+        // the registration the client recorded rather than inventing one.
+        let id = iii
+            .inner
+            .triggers
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        iii.handle_message(&trigger_rejected(&id)).unwrap();
+
+        let err = trigger.registration_error().expect("error recorded");
+        assert_eq!(err.code, "trigger_type_not_found");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn trigger_registration_result_for_an_unregistered_trigger_is_ignored() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let trigger = iii
+            .register_trigger(RegisterTriggerInput::new(
+                "harness::hook::pre-generate",
+                "memory::on-pre-generate",
+                json!({}),
+            ))
+            .unwrap();
+        let id = iii
+            .inner
+            .triggers
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        // `unregister` drops the trigger and its error together. An ack racing
+        // that pair would otherwise strand an error for a binding that no
+        // longer exists -- one nothing is left to clear.
+        trigger.unregister();
+        iii.handle_message(&trigger_rejected(&id)).unwrap();
+
+        assert!(trigger.registration_error().is_none());
+        assert!(
+            iii.inner
+                .trigger_registration_errors
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn trigger_rejected(id: &str) -> String {
+        serde_json::json!({
+            "type": "triggerregistrationresult",
+            "id": id,
+            "trigger_type": "harness::hook::pre-generate",
+            "function_id": "memory::on-pre-generate",
+            "error": { "code": "trigger_type_not_found", "message": "Trigger type not found" },
+        })
+        .to_string()
     }
 
     #[tokio::test]
