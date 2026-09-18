@@ -196,6 +196,55 @@ fn blank_environment_values_cannot_bypass_reserved_key_validation() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_reserved_key_case_variants_are_rejected_from_every_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    for reserved in iii_compose::spawn::RESERVED_ENV {
+        // Dotless i has the same ordinal uppercase mapping as ASCII I on Windows.
+        for name in [reserved.to_lowercase(), reserved.replace('I', "ı")] {
+            for value in ["stale", "\"\"", "", "null", "~"] {
+                let compose = format!(
+                    "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    environment:\n      {name}: {value}\n"
+                );
+                let err = ComposeFile::parse(&compose, tmp.path().join("worker-compose.yaml"))
+                    .expect_err("Windows aliases must not bypass reserved-key validation");
+                assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}: {value}");
+                assert!(err.to_string().contains(&name));
+            }
+
+            let file = project(
+                tmp.path(),
+                "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    env_file: [base.env]\n",
+                &[("base.env", &format!("{name}=stale\n"))],
+            );
+            let err = file.containers["api"]
+                .resolve_user_env("api")
+                .expect_err("env files must reject Windows aliases at spawn time");
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
+            let err = iii_compose::manifest::validate_offline(&file, "reserved-test")
+                .expect_err("env files must reject Windows aliases before startup");
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn reserved_key_validation_remains_case_sensitive_on_other_platforms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    env_file: [base.env]\n    environment:\n      iii_config: compose\n      ııı_config: unicode\n",
+        &[("base.env", "iii_config_name=from-file\n")],
+    );
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+    assert_eq!(env["iii_config"], "compose");
+    assert_eq!(env["ııı_config"], "unicode");
+    assert_eq!(env["iii_config_name"], "from-file");
+    iii_compose::manifest::validate_offline(&file, "reserved-test").unwrap();
+}
+
 #[test]
 fn duplicate_environment_keys_are_rejected_even_when_null() {
     let err = ComposeFile::parse(

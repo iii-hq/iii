@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     dag,
     error::{ComposeError, Result},
-    spawn::RESERVED_ENV,
+    spawn::is_reserved_env,
 };
 
 /// Default `pre_run` budget. A blocking migration or asset build routinely
@@ -553,7 +553,7 @@ fn validate_container(
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
     for (name, value) in &raw.environment {
-        if RESERVED_ENV.contains(&name.as_str()) {
+        if is_reserved_env(name.as_str()) {
             return Err(ComposeError::ReservedEnvOverride {
                 container: key.to_string(),
                 name: name.clone(),
@@ -646,7 +646,7 @@ impl Container {
                 source,
             })?;
             for (name, value) in parse_env_file(&text) {
-                if RESERVED_ENV.contains(&name.as_str()) {
+                if is_reserved_env(name.as_str()) {
                     return Err(ComposeError::ReservedEnvOverride {
                         container: container_key.to_string(),
                         name,

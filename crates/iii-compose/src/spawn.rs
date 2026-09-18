@@ -59,6 +59,18 @@ pub const RESERVED_ENV: [&str; 8] = [
     "III_WORKER_NAME",
 ];
 
+/// Whether a key claims a daemon-owned variable under the host OS's rules.
+pub(crate) fn is_reserved_env(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        RESERVED_ENV.iter().any(|key| windows_env_key_eq(name, key))
+    }
+    #[cfg(not(windows))]
+    {
+        RESERVED_ENV.contains(&name)
+    }
+}
+
 /// Cloneable so hooks can reuse a container's context with a different command.
 #[derive(Debug, Clone)]
 pub struct SpawnCtx<'a> {
@@ -158,8 +170,7 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
     env.retain(|name, _| {
-        !RESERVED_ENV.iter().any(|key| windows_env_key_eq(name, key))
-            && !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key))
+        !is_reserved_env(name) && !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key))
     });
 
     env.extend(ctx.user_env.clone());
