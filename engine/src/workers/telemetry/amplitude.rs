@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
@@ -186,6 +187,14 @@ const LONG_SESSION_UPTIME_SECS: u64 = 200;
 /// The person property a passing heartbeat sets.
 const LONG_SESSION_PERSON_PROPERTY: &str = "uptime_is_greater_than_200_secs";
 
+/// Whether this process has already written the long-session flag.
+///
+/// The property never changes once written, so one write per process is
+/// enough. Writing it again costs an identified event for nothing, and a
+/// long-running engine reports a passing uptime on every heartbeat. Restarts
+/// write it again, which is one event per run.
+static LONG_SESSION_FLAG_WRITTEN: AtomicBool = AtomicBool::new(false);
+
 /// Whether this event reports more than [`LONG_SESSION_UPTIME_SECS`] of
 /// uptime.
 ///
@@ -208,7 +217,14 @@ fn reports_long_session(
             .is_some_and(|uptime| uptime > LONG_SESSION_UPTIME_SECS)
 }
 
-fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
+fn build_posthog_event(event: AmplitudeEvent) -> PostHogEvent {
+    build_posthog_event_with_flag(event, &LONG_SESSION_FLAG_WRITTEN)
+}
+
+fn build_posthog_event_with_flag(
+    mut event: AmplitudeEvent,
+    flag_written: &AtomicBool,
+) -> PostHogEvent {
     sanitize_event_properties(&mut event.event_properties);
     if let Some(props) = event.user_properties.as_mut() {
         sanitize_event_properties(props);
@@ -244,15 +260,22 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
         }
     }
 
-    // An event past the threshold flags its person once. `$set_once` never
-    // overwrites, so the first passing event writes `true` and every one after
-    // it is a no-op — which is what makes the flag mean "has ever had a long
-    // session" rather than "had one recently".
+    // The first event past the threshold flags its person. `$set_once` never
+    // overwrites, so the flag means "has ever had a long session" rather than
+    // "had one recently".
+    //
+    // Only the first such event in this process asks for it. Person processing
+    // makes the event bill as identified, and every later write is a no-op that
+    // PostHog charges for, so the flag is claimed once per run.
     //
     // Person properties need person processing, which every other event turns
-    // off, so this event turns it back on for itself alone. Without that
-    // PostHog drops the `$set_once` and no profile is written.
-    if reports_long_session(&event.event_type, &properties) {
+    // off, so the claiming event turns it back on for itself alone. Without
+    // that PostHog drops the `$set_once` and no profile is written.
+    if reports_long_session(&event.event_type, &properties)
+        && flag_written
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
         properties.insert(
             "$set_once".into(),
             serde_json::json!({ LONG_SESSION_PERSON_PROPERTY: true }),
@@ -427,11 +450,17 @@ mod tests {
     // Long-session person flag
     // =========================================================================
 
+    /// Builds the event against a flag no other test shares, so each test
+    /// sees a process that has not written the flag yet.
+    fn unflagged(event: AmplitudeEvent) -> PostHogEvent {
+        build_posthog_event_with_flag(event, &AtomicBool::new(false))
+    }
+
     fn heartbeat_with_uptime(uptime_secs: serde_json::Value) -> PostHogEvent {
         let mut event = sample_event();
         event.event_type = "heartbeat".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": uptime_secs });
-        build_posthog_event(event)
+        unflagged(event)
     }
 
     #[test]
@@ -460,7 +489,7 @@ mod tests {
         let mut event = sample_event();
         event.event_type = "heartbeat".to_string();
         event.event_properties = serde_json::json!({});
-        let event = build_posthog_event(event);
+        let event = unflagged(event);
 
         assert!(event.properties.get("$set_once").is_none());
         assert_eq!(event.properties["$process_person_profile"], false);
@@ -473,7 +502,7 @@ mod tests {
         let mut event = sample_event();
         event.event_type = "engine_stopped".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": 900 });
-        let event = build_posthog_event(event);
+        let event = unflagged(event);
 
         assert_eq!(
             event.properties["$set_once"],
@@ -487,7 +516,7 @@ mod tests {
         let mut event = sample_event();
         event.event_type = "engine_stopped".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": 12 });
-        let event = build_posthog_event(event);
+        let event = unflagged(event);
 
         assert!(event.properties.get("$set_once").is_none());
         assert_eq!(event.properties["$process_person_profile"], false);
@@ -500,7 +529,7 @@ mod tests {
         let mut event = sample_event();
         event.event_type = "function_invoked".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
-        let event = build_posthog_event(event);
+        let event = unflagged(event);
 
         assert!(event.properties.get("$set_once").is_none());
         assert_eq!(event.properties["$process_person_profile"], false);
@@ -508,13 +537,40 @@ mod tests {
 
     #[test]
     fn every_other_event_keeps_person_processing_off() {
-        let event = build_posthog_event(sample_event());
+        let event = unflagged(sample_event());
 
         assert!(event.properties.get("$set_once").is_none());
         assert_eq!(event.properties["$process_person_profile"], false);
     }
 
     // =========================================================================
+    #[test]
+    fn only_the_first_passing_event_of_a_process_writes_the_flag() {
+        // A six-hour heartbeat interval still means several passing heartbeats
+        // a day from one long-running engine. The property cannot change, so
+        // repeats would buy nothing and cost an identified event each.
+        let flag = AtomicBool::new(false);
+        let heartbeat = || {
+            let mut event = sample_event();
+            event.event_type = "heartbeat".to_string();
+            event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
+            build_posthog_event_with_flag(event, &flag)
+        };
+
+        let first = heartbeat();
+        assert_eq!(
+            first.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        assert_eq!(first.properties["$process_person_profile"], true);
+
+        for _ in 0..3 {
+            let later = heartbeat();
+            assert!(later.properties.get("$set_once").is_none());
+            assert_eq!(later.properties["$process_person_profile"], false);
+        }
+    }
+
     // AmplitudeEvent serialization
     // =========================================================================
 
