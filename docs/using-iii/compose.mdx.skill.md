@@ -728,13 +728,18 @@ the error is `CONFIG_FETCH_FAILED`.
 
 ## The worker environment
 
-A worker's environment is defined by the following sources:
+A worker's environment combines the following sources, from lowest to highest precedence:
 
-1. A host baseline. On Unix: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `TZ`,
-   `LANG`, `LC_ALL`. Windows adds the variables the platform needs, such as `SystemRoot`, `COMSPEC`,
-   and `PATHEXT`.
-2. The worker's `env_file` entries, then its `environment` map.
-3. The reserved variables, which the daemon owns.
+1. The machine environment visible to the Compose daemon. Variables are inherited even when
+   neither `env_file` nor `environment` is declared. Non-Unicode names and values are skipped.
+2. The worker's `env_file` entries, in declaration order. Later files override earlier files.
+3. The worker's `environment` map. Nonempty values override env files; an empty string preserves
+   an existing env-file value, or supplies an empty value when no env file defines the key.
+4. The reserved variables, which the daemon owns.
+
+Export machine variables before starting the daemon. Changing another shell's environment does
+not update an already-running daemon. Workers and hooks now receive all of the daemon's Unicode
+machine variables, including credentials; only start workers you trust with that environment.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |
