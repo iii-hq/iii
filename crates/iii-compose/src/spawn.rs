@@ -126,18 +126,40 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     spawn_plan_with_env(ctx, env)
 }
 
+/// Match the OS's ordinal case folding, including non-ASCII environment names.
+#[cfg(windows)]
+fn windows_env_key_eq(left: &str, right: &str) -> bool {
+    use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
+
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    // Windows folds individual UTF-16 code units without changing their count.
+    if left.len() != right.len() {
+        return false;
+    }
+    if left.is_empty() {
+        return true;
+    }
+    let len = i32::try_from(left.len()).expect("environment key exceeds Windows API length limit");
+    // SAFETY: Both pointers reference initialized UTF-16 buffers with `len`
+    // elements, and both buffers remain alive for the duration of the call.
+    let result = unsafe { CompareStringOrdinal(left.as_ptr(), len, right.as_ptr(), len, 1) };
+    assert_ne!(
+        result,
+        0,
+        "comparing environment keys failed: {}",
+        std::io::Error::last_os_error()
+    );
+    result == CSTR_EQUAL
+}
+
 fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) -> SpawnPlan {
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
     env.retain(|name, _| {
-        !RESERVED_ENV
-            .iter()
-            .any(|key| name.eq_ignore_ascii_case(key))
-            && !ctx
-                .user_env
-                .keys()
-                .any(|key| name.eq_ignore_ascii_case(key))
+        !RESERVED_ENV.iter().any(|key| windows_env_key_eq(name, key))
+            && !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key))
     });
 
     env.extend(ctx.user_env.clone());
@@ -498,6 +520,30 @@ mod tests {
         assert!(!plan.env.contains_key("token"));
         assert!(!plan.env.contains_key("iii_url"));
         assert!(!plan.env.contains_key("iii_config"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unicode_host_names_yield_to_explicit_values() {
+        let start = StartSpec::Shell("echo ready".to_string());
+        for (host_key, explicit_key) in [("föo", "FÖO"), ("FÖO", "föo")] {
+            let user_env = env_of(&[(explicit_key, "compose")]);
+            let plan = spawn_plan_with_env(
+                &ctx(&start, None, &user_env),
+                env_of(&[(host_key, "machine")]),
+            );
+
+            assert_eq!(plan.env[explicit_key], "compose");
+            assert!(!plan.env.contains_key(host_key));
+            let command = plan.command().unwrap();
+            let values: Vec<_> = command
+                .as_std()
+                .get_envs()
+                .filter(|(key, _)| windows_env_key_eq(key.to_str().unwrap(), explicit_key))
+                .map(|(_, value)| value.unwrap().to_str().unwrap())
+                .collect();
+            assert_eq!(values, ["compose"]);
+        }
     }
 
     #[test]
