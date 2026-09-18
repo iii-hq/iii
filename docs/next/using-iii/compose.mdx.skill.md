@@ -900,6 +900,11 @@ Compose can output the following error codes:
 | Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                   |
 | Command line        | `FILE_REQUIRES_UP`, `BUILD_CONFLICTS_WITH_SERVE_OPTIONS`                                                                                                                                                                                                                                                                                                        |
 
+These are literal diagnostic identifiers emitted by Compose, not worker categories.
+`ENGINE_WORKER_IS_BUILTIN` reports that a worker declared under `containers` is already supplied
+by the engine. Its name is retained for compatibility; it does not define a separate worker type.
+All workers follow the same Function/Trigger/Worker model.
+
 ## Related
 
 <Note>
