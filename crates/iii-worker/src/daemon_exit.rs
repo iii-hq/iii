@@ -380,10 +380,19 @@ impl ExitWatch {
         #[cfg(unix)]
         {
             use tokio::signal::unix::SignalKind;
+            // Registration is synchronous and precedes polling ANY watch.
+            // select! randomizes polling order; installing inside its futures
+            // could publish parent-watch readiness with SIGTERM still default.
+            let mut sigint = register_exit_signal(SignalKind::interrupt(), "SIGINT");
+            let mut sigterm = register_exit_signal(SignalKind::terminate(), "SIGTERM");
+            let mut sighup = register_exit_signal(SignalKind::hangup(), "SIGHUP");
+            if sigint.is_some() && sigterm.is_some() && sighup.is_some() {
+                tracing::info!(daemon, "shutdown signal handlers ready");
+            }
             let reason = tokio::select! {
-                _ = wait_for_sigint() => "sigint",
-                _ = wait_for_unix_signal(SignalKind::terminate(), "SIGTERM") => "sigterm",
-                _ = wait_for_unix_signal(SignalKind::hangup(), "SIGHUP") => "sighup",
+                _ = wait_for_registered_signal(&mut sigint, "SIGINT") => "sigint",
+                _ = wait_for_registered_signal(&mut sigterm, "SIGTERM") => "sigterm",
+                _ = wait_for_registered_signal(&mut sighup, "SIGHUP") => "sighup",
                 _ = self.wait_for_engine_gone(daemon) => "engine-gone",
             };
             if reason == "engine-gone" {
@@ -475,36 +484,36 @@ fn redirect_stdio_to_exit_log(daemon: &str) {
     }
 }
 
-/// Resolve on Ctrl-C/SIGINT. If the handler can't be installed, log and park
-/// forever instead of resolving — an installation Err is NOT an exit request,
-/// and the other exit arms still cover shutdown. (An earlier version exited
-/// rc 0 with reason "sigint" on Err, silently taking the daemon down at
-/// startup.)
+/// Install a shutdown handler before any exit-watch readiness is published.
+/// Failure disables only this arm; it is not an exit request.
 #[cfg(unix)]
-async fn wait_for_sigint() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "ctrl_c handler failed; SIGINT exit arm disabled");
-        std::future::pending::<()>().await
+fn register_exit_signal(
+    kind: tokio::signal::unix::SignalKind,
+    name: &'static str,
+) -> Option<tokio::signal::unix::Signal> {
+    match tokio::signal::unix::signal(kind) {
+        Ok(signal) => Some(signal),
+        Err(e) => {
+            tracing::error!(error = %e, signal = name, "failed to install signal handler; exit arm disabled");
+            None
+        }
     }
 }
 
-/// Resolve when `kind` is delivered. Installation failure (or stream
-/// exhaustion) logs and parks rather than resolving, for the same reason as
-/// [`wait_for_sigint`].
+/// Wait on an already installed handler. Disabled or closed streams park
+/// forever so the other signal and engine-death arms remain responsible.
 #[cfg(unix)]
-async fn wait_for_unix_signal(kind: tokio::signal::unix::SignalKind, name: &'static str) {
-    match tokio::signal::unix::signal(kind) {
-        Ok(mut sig) => {
-            if sig.recv().await.is_none() {
-                tracing::error!(signal = name, "signal stream closed; exit arm disabled");
-                std::future::pending::<()>().await
-            }
+async fn wait_for_registered_signal(
+    signal: &mut Option<tokio::signal::unix::Signal>,
+    name: &'static str,
+) {
+    if let Some(signal) = signal {
+        if signal.recv().await.is_some() {
+            return;
         }
-        Err(e) => {
-            tracing::error!(error = %e, signal = name, "failed to install signal handler; exit arm disabled");
-            std::future::pending::<()>().await
-        }
+        tracing::error!(signal = name, "signal stream closed; exit arm disabled");
     }
+    std::future::pending::<()>().await
 }
 
 /// PID-handshake watch: resolve once the engine's declared pid stops

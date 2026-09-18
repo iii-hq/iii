@@ -3735,9 +3735,22 @@ pub async fn ingest_otlp_metrics(json_str: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let storage = super::metrics::get_metric_storage();
+    ingest_otlp_metrics_into(json_str, storage.as_deref())
+}
+
+/// Parse and ingest one OTLP batch into the supplied storage. Keeping storage
+/// explicit lets conversion tests own their state rather than clearing the
+/// process-wide store used by concurrent exporters and worker metrics tests.
+/// Parsing still occurs when storage is absent, preserving malformed-input
+/// errors; only the production wrapper applies the observability enable flag.
+pub(super) fn ingest_otlp_metrics_into(
+    json_str: &str,
+    storage: Option<&super::metrics::TimeIndexedMetricStorage>,
+) -> anyhow::Result<()> {
     use super::metrics::{
         StoredDataPoint, StoredHistogramDataPoint, StoredMetric, StoredMetricType,
-        StoredNumberDataPoint, get_metric_storage,
+        StoredNumberDataPoint,
     };
 
     tracing::debug!(
@@ -3750,7 +3763,7 @@ pub async fn ingest_otlp_metrics(json_str: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP metrics JSON: {}", e))?;
 
     // Get the in-memory metric storage (if available)
-    let storage = match get_metric_storage() {
+    let storage = match storage {
         Some(s) => s,
         None => {
             tracing::debug!("No in-memory metric storage available, skipping metrics ingestion");
