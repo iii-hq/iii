@@ -17,11 +17,31 @@ const MAX_RETRIES: u32 = 3;
 pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 pub const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 
+/// An address-shaped run of text, redacted wherever it appears in an error.
+///
+/// One `@`, a local part, and a dotted domain ending in letters. Deliberately
+/// broader than the address the operator typed: the point is that no error
+/// string can carry an address, whether or not this build knows which one.
+/// It also catches `user@host` forms that are not addresses, which is the
+/// price of not having to be right about which is which.
+static EMAIL_IN_ERROR: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+        .expect("the address pattern is a literal and compiles")
+});
+
 /// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
-/// `\home\<name>\` prefixes from error strings, and cap the length so we
-/// never ship unbounded backtraces. Applied at the send layer
-/// ([`AmplitudeClient::send_event`]) so every Amplitude event is scrubbed,
-/// regardless of which subsystem produced it.
+/// `\home\<name>\` prefixes from error strings, redact anything
+/// address-shaped, and cap the length so we never ship unbounded backtraces.
+///
+/// Applied at the send layer, to both vendors: every PostHog event goes
+/// through [`build_posthog_event`] and every Amplitude one through
+/// [`AmplitudeClient::send_event`], so an error is scrubbed regardless of
+/// which subsystem produced it.
+///
+/// The address redaction is defence in depth. Nothing puts an address in an
+/// `error` today, and the one worker that holds one never logs it. This is
+/// what keeps that true when someone later writes `could not add {email}` in
+/// a catch block.
 pub fn sanitize_error(error: &str) -> String {
     const MAX_LEN: usize = 256;
     let mut out = String::with_capacity(error.len().min(MAX_LEN));
@@ -48,6 +68,11 @@ pub fn sanitize_error(error: &str) -> String {
         }
     }
     out.push_str(&buf);
+    // After the path scrub, so a redacted home directory cannot leave behind
+    // something that only now looks like an address. Before the length cap, so
+    // an address near the end of a long error is redacted rather than
+    // truncated into something still readable.
+    let out = EMAIL_IN_ERROR.replace_all(&out, "<redacted>").into_owned();
     if out.chars().count() > MAX_LEN {
         let truncated: String = out.chars().take(MAX_LEN).collect();
         format!("{truncated}…")
@@ -608,6 +633,84 @@ mod tests {
             assert!(later.properties.get("$set_once").is_none());
             assert_eq!(later.properties["$process_person_profile"], false);
         }
+    }
+
+    // =========================================================================
+    // Address redaction in errors
+    // =========================================================================
+
+    #[test]
+    fn an_address_in_an_error_is_redacted() {
+        assert_eq!(
+            sanitize_error("could not add someone@example.com to the list"),
+            "could not add <redacted> to the list"
+        );
+        // Inside a path, a URL, and next to punctuation.
+        assert_eq!(
+            sanitize_error("open /tmp/someone@example.co.uk/x failed"),
+            "open /tmp/<redacted>/x failed"
+        );
+        assert_eq!(
+            sanitize_error("POST mailto:first.last+tag@sub.example.com: 400"),
+            "POST mailto:<redacted>: 400"
+        );
+        assert_eq!(
+            sanitize_error("two: a@b.com and c@d.org"),
+            "two: <redacted> and <redacted>"
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_address_shaped_survives() {
+        for error in [
+            "no at sign here",
+            "user@host has no dotted domain",
+            "@example.com is missing a local part",
+            "someone@example. ends on a dot",
+            "cost was 5@2.5x",
+        ] {
+            assert_eq!(sanitize_error(error), error, "changed {error}");
+        }
+    }
+
+    #[test]
+    fn the_home_directory_scrub_still_runs() {
+        assert_eq!(
+            sanitize_error("/Users/dave/oops and someone@example.com"),
+            "/Users/<redacted>/oops and <redacted>"
+        );
+    }
+
+    #[test]
+    fn redaction_happens_before_the_length_cap() {
+        // An address near the end of a long error must be redacted rather than
+        // cut in half and left readable.
+        let error = format!("{} someone@example.com", "x".repeat(300));
+        let sanitized = sanitize_error(&error);
+        assert!(!sanitized.contains("someone@example.com"));
+        assert!(!sanitized.contains("someone@"));
+    }
+
+    #[test]
+    fn the_identify_address_is_never_scrubbed() {
+        // The scrubber rewrites properties named `error` only. The identify
+        // carries its address under `email`, which is the whole point of this
+        // event, so it has to survive the same pipeline that redacts errors.
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties = serde_json::json!({
+            "email": "someone@example.com",
+            "source": "console_prompt",
+            "error": "the list refused someone@example.com",
+        });
+        let event = unflagged(event);
+
+        assert_eq!(
+            event.properties["$set"],
+            serde_json::json!({ "email": "someone@example.com" })
+        );
+        // The same address inside an `error` on the same event is still gone.
+        assert_eq!(event.properties["error"], "the list refused <redacted>");
     }
 
     // =========================================================================
