@@ -65,6 +65,64 @@ fn env_files_apply_in_order_and_environment_wins() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_case_equivalent_keys_obey_source_precedence() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (first, alias) in [
+        ("token", "TOKEN"),
+        ("TOKEN", "token"),
+        ("föo", "FÖO"),
+        ("FÖO", "föo"),
+    ] {
+        for (value, expected) in [
+            ("compose", "compose"),
+            ("' '", " "),
+            ("''", "last-file"),
+            ("\"\"", "last-file"),
+            ("null", "last-file"),
+            ("~", "last-file"),
+            ("", "last-file"),
+        ] {
+            let compose = format!(
+                "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n    environment:\n      {first}: {value}\n"
+            );
+            let file = project(
+                tmp.path(),
+                &compose,
+                &[
+                    ("base.env", &format!("{first}=base\n{alias}=same-file\n")),
+                    ("last.env", &format!("{alias}=last-file\n")),
+                ],
+            );
+            let env = file.containers["api"].resolve_user_env("api").unwrap();
+            assert_eq!(env.len(), 1, "{first}/{alias}: {value:?}");
+            assert_eq!(env.values().next().unwrap(), expected);
+            let mut command = std::process::Command::new("cmd");
+            command.env_clear().envs(&env);
+            let actual: Vec<_> = command
+                .get_envs()
+                .map(|(_, value)| value.unwrap().to_str().unwrap())
+                .collect();
+            assert_eq!(actual, [expected]);
+        }
+
+        // An empty value in a later env file still overrides an earlier file;
+        // preservation applies only to an empty Compose `environment` value.
+        let file = project(
+            tmp.path(),
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n",
+            &[
+                ("base.env", &format!("{first}=base\n")),
+                ("last.env", &format!("{alias}=\n")),
+            ],
+        );
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.values().next().unwrap(), "");
+    }
+}
+
 #[test]
 fn blank_environment_values_preserve_the_last_env_file_value() {
     for value in ["\"\"", "''", "", "null", "~"] {

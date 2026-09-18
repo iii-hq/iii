@@ -140,7 +140,7 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
 
 /// Match the OS's ordinal case folding, including non-ASCII environment names.
 #[cfg(windows)]
-fn windows_env_key_eq(left: &str, right: &str) -> bool {
+pub(crate) fn windows_env_key_eq(left: &str, right: &str) -> bool {
     use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 
     let left: Vec<u16> = left.encode_utf16().collect();

@@ -652,18 +652,37 @@ impl Container {
                         name,
                     });
                 }
-                env.insert(name, value);
+                merge_env_value(&mut env, name, value, false);
             }
         }
         for (name, value) in &self.environment {
-            if value.is_empty() {
-                // Optional host references must not erase a value from an env file.
-                env.entry(name.clone()).or_default();
-            } else {
-                env.insert(name.clone(), value.clone());
-            }
+            // Optional host references must not erase a value from an env file.
+            merge_env_value(&mut env, name.clone(), value.clone(), value.is_empty());
         }
         Ok(env)
+    }
+}
+
+/// Merge one source value using the host OS's environment-key semantics.
+/// Empty Compose values preserve an earlier value; env-file entries always win.
+fn merge_env_value(
+    env: &mut BTreeMap<String, String>,
+    name: String,
+    value: String,
+    preserve_existing: bool,
+) {
+    // Retain one spelling per native key, so source order, not BTreeMap's sort
+    // order, determines the value when the map reaches the child process.
+    #[cfg(windows)]
+    let name = env
+        .keys()
+        .find(|key| crate::spawn::windows_env_key_eq(key, &name))
+        .cloned()
+        .unwrap_or(name);
+    if preserve_existing {
+        env.entry(name).or_insert(value);
+    } else {
+        env.insert(name, value);
     }
 }
 
