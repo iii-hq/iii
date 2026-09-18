@@ -180,6 +180,29 @@ fn should_skip_posthog_event_property(
     }
 }
 
+/// Uptime a session must pass for its person to be flagged as long-running.
+const LONG_SESSION_UPTIME_SECS: u64 = 200;
+
+/// The person property a passing heartbeat sets.
+const LONG_SESSION_PERSON_PROPERTY: &str = "uptime_is_greater_than_200_secs";
+
+/// Whether this event is a heartbeat reporting more than
+/// [`LONG_SESSION_UPTIME_SECS`] of uptime.
+///
+/// Strictly greater, so a heartbeat that reports exactly the threshold does not
+/// flag anyone. A heartbeat without `uptime_secs` reports nothing rather than
+/// assuming a zero.
+fn reports_long_session(
+    event_type: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    event_type == "heartbeat"
+        && properties
+            .get("uptime_secs")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|uptime| uptime > LONG_SESSION_UPTIME_SECS)
+}
+
 fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     sanitize_event_properties(&mut event.event_properties);
     if let Some(props) = event.user_properties.as_mut() {
@@ -214,6 +237,22 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
             }
             properties.insert(key, value);
         }
+    }
+
+    // A heartbeat past the threshold flags its person once. `$set_once` never
+    // overwrites, so the first passing heartbeat writes `true` and every one
+    // after it is a no-op — which is what makes the flag mean "has ever had a
+    // long session" rather than "had one recently".
+    //
+    // Person properties need person processing, which every other event turns
+    // off, so this event turns it back on for itself alone. Without that
+    // PostHog drops the `$set_once` and no profile is written.
+    if reports_long_session(&event.event_type, &properties) {
+        properties.insert(
+            "$set_once".into(),
+            serde_json::json!({ LONG_SESSION_PERSON_PROPERTY: true }),
+        );
+        properties.insert("$process_person_profile".into(), serde_json::json!(true));
     }
 
     PostHogEvent {
@@ -377,6 +416,70 @@ mod tests {
             language: Some("en".to_string()),
             ip: Some("$remote".to_string()),
         }
+    }
+
+    // =========================================================================
+    // Long-session person flag
+    // =========================================================================
+
+    fn heartbeat_with_uptime(uptime_secs: serde_json::Value) -> PostHogEvent {
+        let mut event = sample_event();
+        event.event_type = "heartbeat".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": uptime_secs });
+        build_posthog_event(event)
+    }
+
+    #[test]
+    fn a_heartbeat_past_the_threshold_flags_its_person_once() {
+        let event = heartbeat_with_uptime(serde_json::json!(201));
+
+        assert_eq!(
+            event.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        // Person properties are dropped without person processing, so the
+        // flagging event has to ask for it.
+        assert_eq!(event.properties["$process_person_profile"], true);
+    }
+
+    #[test]
+    fn the_threshold_itself_flags_nobody() {
+        let event = heartbeat_with_uptime(serde_json::json!(200));
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn a_heartbeat_without_an_uptime_flags_nobody() {
+        let mut event = sample_event();
+        event.event_type = "heartbeat".to_string();
+        event.event_properties = serde_json::json!({});
+        let event = build_posthog_event(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn only_a_heartbeat_flags_a_long_session() {
+        // `engine_stopped` carries `uptime_secs` too, and reports the whole
+        // run, so it would flag almost everyone.
+        let mut event = sample_event();
+        event.event_type = "engine_stopped".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
+        let event = build_posthog_event(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn every_other_event_keeps_person_processing_off() {
+        let event = build_posthog_event(sample_event());
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
     }
 
     // =========================================================================
