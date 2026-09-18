@@ -4,6 +4,7 @@ use std::path::Path;
 
 use iii_compose::ComposeFile;
 
+/// Keeps explicitly shared configuration IDs independent of the project namespace.
 #[test]
 fn explicit_configuration_name_wins_over_the_generated_default() {
     let tmp = tempfile::tempdir().unwrap();
@@ -18,6 +19,7 @@ fn explicit_configuration_name_wins_over_the_generated_default() {
     );
 }
 
+/// Derives runtime identity from the selected namespace without changing the parsed declaration.
 #[test]
 fn configuration_identity_uses_the_effective_namespace_without_mutating_yaml() {
     let tmp = tempfile::tempdir().unwrap();
@@ -517,6 +519,7 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
     assert_eq!(plan.env["III_WORKER_NAME"], "state");
 }
 
+/// Delivers a first-boot registration ID even when there is no configuration file.
 #[test]
 fn a_container_without_a_value_still_receives_its_configuration_identity() {
     let tmp = tempfile::tempdir().unwrap();

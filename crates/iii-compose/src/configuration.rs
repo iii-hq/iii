@@ -172,15 +172,18 @@ impl ConfigFile {
 mod tests {
     use super::*;
 
+    /// Pins the persisted identity so generator changes require an explicit migration decision.
     #[test]
     fn default_config_names_are_stable_and_readable() {
         let name = default_config_name("orders", "console");
+        assert_eq!(name, "orders-console-946b336ce90783a6");
         assert!(name.starts_with("orders-console-"), "{name}");
         assert_eq!(name, default_config_name("orders", "console"));
         assert_ne!(name, default_config_name("billing", "console"));
         assert_ne!(name, default_config_name("orders", "http"));
     }
 
+    /// Distinguishes namespace/key pairs that share the same readable prefix.
     #[test]
     fn default_config_names_preserve_component_boundaries() {
         assert_ne!(
@@ -189,6 +192,7 @@ mod tests {
         );
     }
 
+    /// Checks storage limits without losing identity through sanitization or truncation.
     #[test]
     fn default_config_names_fit_the_store_without_lossy_collisions() {
         let namespace = "n".repeat(80);

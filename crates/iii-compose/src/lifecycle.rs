@@ -1406,6 +1406,9 @@ pub struct ResolvedConfig {
     pub name: String,
 }
 
+/// Resolves the identity and merges package defaults, stored values, and overrides.
+/// Publishes before startup; an absent value yields only the identity, while
+/// service failures propagate rather than silently starting with stale defaults.
 async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
     container: &Container,

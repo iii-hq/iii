@@ -32,6 +32,7 @@ async fn spawn_engine() -> u16 {
     spawn_engine_with_configuration(true).await
 }
 
+/// Starts an isolated engine, optionally omitting configuration to exercise service failures.
 async fn spawn_engine_with_configuration(configuration: bool) -> u16 {
     iii::workers::observability::metrics::ensure_default_meter();
 
@@ -2144,6 +2145,7 @@ async fn naming_another_daemon_in_the_payload_is_refused() {
     .expect("agreeing with the daemon it reached is not an error");
 }
 
+/// Verifies pre-spawn delivery, explicit IDs, and first-boot registration across two namespaces.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn configuration_names_isolate_projects_and_deliver_overrides_before_spawn() {
