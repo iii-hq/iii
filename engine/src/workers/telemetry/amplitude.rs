@@ -181,6 +181,38 @@ fn should_skip_posthog_event_property(
     }
 }
 
+/// The one event that carries an address the user gave us.
+pub const IDENTIFY_EVENT: &str = "user_identified";
+
+/// The person property the address is written to.
+const EMAIL_PERSON_PROPERTY: &str = "email";
+
+/// Move the address out of the event properties and into a PostHog `$set`, so
+/// it lands on the person rather than on the one event.
+///
+/// `$set` overwrites, which is what a corrected address needs. The person
+/// stays keyed by `device_id`: nothing is aliased and nothing is merged.
+///
+/// TODO: Change this to PostHog's true `$identify` when iii cloud is available
+/// and can provide stable IDs. Until then an address is a property of the
+/// machine's person, and one human on two machines is two persons.
+fn set_person_email(
+    event_type: &str,
+    properties: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if event_type != IDENTIFY_EVENT {
+        return false;
+    }
+    let Some(email) = properties.remove(EMAIL_PERSON_PROPERTY) else {
+        return false;
+    };
+    properties.insert(
+        "$set".into(),
+        serde_json::json!({ EMAIL_PERSON_PROPERTY: email }),
+    );
+    true
+}
+
 /// Uptime a session must pass for its person to be flagged as long-running.
 const LONG_SESSION_UPTIME_SECS: u64 = 200;
 
@@ -280,6 +312,13 @@ fn build_posthog_event_with_flag(
             "$set_once".into(),
             serde_json::json!({ LONG_SESSION_PERSON_PROPERTY: true }),
         );
+        properties.insert("$process_person_profile".into(), serde_json::json!(true));
+    }
+
+    // An identify writes a person property too, so it needs the same person
+    // processing. It is not gated on a once-per-process flag: a corrected
+    // address has to be able to land.
+    if set_person_email(&event.event_type, &mut properties) {
         properties.insert("$process_person_profile".into(), serde_json::json!(true));
     }
 
@@ -571,6 +610,73 @@ mod tests {
         }
     }
 
+    // =========================================================================
+    // Identify
+    // =========================================================================
+
+    #[test]
+    fn an_identify_writes_the_address_to_the_person() {
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties =
+            serde_json::json!({ "email": "someone@example.com", "source": "console_prompt" });
+        let event = unflagged(event);
+
+        assert_eq!(
+            event.properties["$set"],
+            serde_json::json!({ "email": "someone@example.com" })
+        );
+        assert_eq!(event.properties["$process_person_profile"], true);
+        // The address belongs on the person, so it is not left on the event as
+        // well. `source` is not an address and stays.
+        assert!(event.properties.get("email").is_none());
+        assert_eq!(event.properties["source"], "console_prompt");
+    }
+
+    #[test]
+    fn an_identify_reports_every_time_so_a_corrected_address_lands() {
+        // Unlike the long-session flag, this is not claimed once per process:
+        // `$set` overwrites, and a typo has to be fixable.
+        let flag = AtomicBool::new(false);
+        let identify = || {
+            let mut event = sample_event();
+            event.event_type = IDENTIFY_EVENT.to_string();
+            event.event_properties = serde_json::json!({ "email": "second@example.com" });
+            build_posthog_event_with_flag(event, &flag)
+        };
+
+        for _ in 0..2 {
+            let event = identify();
+            assert_eq!(
+                event.properties["$set"],
+                serde_json::json!({ "email": "second@example.com" })
+            );
+            assert_eq!(event.properties["$process_person_profile"], true);
+        }
+    }
+
+    #[test]
+    fn an_identify_without_an_address_keeps_person_processing_off() {
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties = serde_json::json!({ "source": "console_prompt" });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn another_event_carrying_an_email_never_writes_a_person_property() {
+        let mut event = sample_event();
+        event.event_properties = serde_json::json!({ "email": "someone@example.com" });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    // =========================================================================
     // AmplitudeEvent serialization
     // =========================================================================
 

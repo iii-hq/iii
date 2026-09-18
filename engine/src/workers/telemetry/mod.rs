@@ -8,6 +8,7 @@ pub mod amplitude;
 pub mod collector;
 pub mod environment;
 pub mod harness;
+pub mod identify;
 pub mod onboarding;
 
 use std::collections::{HashMap, HashSet};
@@ -818,6 +819,7 @@ fn spawn_topic_watch_rescan(
                     continue;
                 }
                 harness::register_trigger_in(&engine, &namespace).await;
+                identify::register_trigger_in(&engine, &namespace).await;
                 if telemetry_enabled {
                     onboarding::register_trigger_in(&engine, &namespace).await;
                 }
@@ -927,6 +929,8 @@ impl Worker for DisabledTelemetryWorker {
     ) -> anyhow::Result<()> {
         harness::register_drain(&self.engine);
         harness::register_trigger(&self.engine).await;
+        identify::register_drain(&self.engine);
+        identify::register_trigger(&self.engine).await;
         spawn_topic_watch_rescan(Arc::clone(&self.engine), _shutdown_rx, false);
         Ok(())
     }
@@ -1026,6 +1030,14 @@ impl Worker for TelemetryWorker {
             self.posthog_client.clone(),
         );
         harness::register_trigger(&self.engine).await;
+        // A worker that captured an email publishes it on its own topic.
+        identify::register_handler(
+            &self.engine,
+            self.ctx.clone(),
+            Arc::clone(self.active_client()),
+            self.posthog_client.clone(),
+        );
+        identify::register_trigger(&self.engine).await;
         spawn_topic_watch_rescan(Arc::clone(&self.engine), shutdown_rx.clone(), true);
 
         let interval_secs = self.config.heartbeat_interval_secs;
