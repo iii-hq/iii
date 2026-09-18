@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
@@ -16,11 +17,31 @@ const MAX_RETRIES: u32 = 3;
 pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 pub const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 
+/// An address-shaped run of text, redacted wherever it appears in an error.
+///
+/// One `@`, a local part, and a dotted domain ending in letters. Deliberately
+/// broader than the address the operator typed: the point is that no error
+/// string can carry an address, whether or not this build knows which one.
+/// It also catches `user@host` forms that are not addresses, which is the
+/// price of not having to be right about which is which.
+static EMAIL_IN_ERROR: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+        .expect("the address pattern is a literal and compiles")
+});
+
 /// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
-/// `\home\<name>\` prefixes from error strings, and cap the length so we
-/// never ship unbounded backtraces. Applied at the send layer
-/// ([`AmplitudeClient::send_event`]) so every Amplitude event is scrubbed,
-/// regardless of which subsystem produced it.
+/// `\home\<name>\` prefixes from error strings, redact anything
+/// address-shaped, and cap the length so we never ship unbounded backtraces.
+///
+/// Applied at the send layer, to both vendors: every PostHog event goes
+/// through [`build_posthog_event`] and every Amplitude one through
+/// [`AmplitudeClient::send_event`], so an error is scrubbed regardless of
+/// which subsystem produced it.
+///
+/// The address redaction is defence in depth. Nothing puts an address in an
+/// `error` today, and the one worker that holds one never logs it. This is
+/// what keeps that true when someone later writes `could not add {email}` in
+/// a catch block.
 pub fn sanitize_error(error: &str) -> String {
     const MAX_LEN: usize = 256;
     let mut out = String::with_capacity(error.len().min(MAX_LEN));
@@ -47,6 +68,11 @@ pub fn sanitize_error(error: &str) -> String {
         }
     }
     out.push_str(&buf);
+    // After the path scrub, so a redacted home directory cannot leave behind
+    // something that only now looks like an address. Before the length cap, so
+    // an address near the end of a long error is redacted rather than
+    // truncated into something still readable.
+    let out = EMAIL_IN_ERROR.replace_all(&out, "<redacted>").into_owned();
     if out.chars().count() > MAX_LEN {
         let truncated: String = out.chars().take(MAX_LEN).collect();
         format!("{truncated}…")
@@ -180,7 +206,82 @@ fn should_skip_posthog_event_property(
     }
 }
 
-fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
+/// The one event that carries an address the user gave us.
+pub const IDENTIFY_EVENT: &str = "user_identified";
+
+/// The person property the address is written to.
+const EMAIL_PERSON_PROPERTY: &str = "email";
+
+/// Move the address out of the event properties and into a PostHog `$set`, so
+/// it lands on the person rather than on the one event.
+///
+/// `$set` overwrites, which is what a corrected address needs. The person
+/// stays keyed by `device_id`: nothing is aliased and nothing is merged.
+///
+/// TODO: Change this to PostHog's true `$identify` when iii cloud is available
+/// and can provide stable IDs. Until then an address is a property of the
+/// machine's person, and one human on two machines is two persons.
+fn set_person_email(
+    event_type: &str,
+    properties: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if event_type != IDENTIFY_EVENT {
+        return false;
+    }
+    let Some(email) = properties.remove(EMAIL_PERSON_PROPERTY) else {
+        return false;
+    };
+    properties.insert(
+        "$set".into(),
+        serde_json::json!({ EMAIL_PERSON_PROPERTY: email }),
+    );
+    true
+}
+
+/// Uptime a session must pass for its person to be flagged as long-running.
+const LONG_SESSION_UPTIME_SECS: u64 = 200;
+
+/// The person property a passing heartbeat sets.
+const LONG_SESSION_PERSON_PROPERTY: &str = "uptime_is_greater_than_200_secs";
+
+/// Whether this process has already written the long-session flag.
+///
+/// The property never changes once written, so one write per process is
+/// enough. Writing it again costs an identified event for nothing, and a
+/// long-running engine reports a passing uptime on every heartbeat. Restarts
+/// write it again, which is one event per run.
+static LONG_SESSION_FLAG_WRITTEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether this event reports more than [`LONG_SESSION_UPTIME_SECS`] of
+/// uptime.
+///
+/// Both events that carry `uptime_secs` count. `engine_stopped` is the one that
+/// sees a short run: the heartbeat interval is six hours and the boot heartbeat
+/// fires at two minutes, so a session between 200 seconds and six hours ends
+/// without a heartbeat ever reporting past the threshold.
+///
+/// Strictly greater, so an event that reports exactly the threshold flags
+/// nobody. An event without `uptime_secs` reports nothing rather than assuming
+/// a zero.
+fn reports_long_session(
+    event_type: &str,
+    properties: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    matches!(event_type, "heartbeat" | "engine_stopped")
+        && properties
+            .get("uptime_secs")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|uptime| uptime > LONG_SESSION_UPTIME_SECS)
+}
+
+fn build_posthog_event(event: AmplitudeEvent) -> PostHogEvent {
+    build_posthog_event_with_flag(event, &LONG_SESSION_FLAG_WRITTEN)
+}
+
+fn build_posthog_event_with_flag(
+    mut event: AmplitudeEvent,
+    flag_written: &AtomicBool,
+) -> PostHogEvent {
     sanitize_event_properties(&mut event.event_properties);
     if let Some(props) = event.user_properties.as_mut() {
         sanitize_event_properties(props);
@@ -214,6 +315,36 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
             }
             properties.insert(key, value);
         }
+    }
+
+    // The first event past the threshold flags its person. `$set_once` never
+    // overwrites, so the flag means "has ever had a long session" rather than
+    // "had one recently".
+    //
+    // Only the first such event in this process asks for it. Person processing
+    // makes the event bill as identified, and every later write is a no-op that
+    // PostHog charges for, so the flag is claimed once per run.
+    //
+    // Person properties need person processing, which every other event turns
+    // off, so the claiming event turns it back on for itself alone. Without
+    // that PostHog drops the `$set_once` and no profile is written.
+    if reports_long_session(&event.event_type, &properties)
+        && flag_written
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        properties.insert(
+            "$set_once".into(),
+            serde_json::json!({ LONG_SESSION_PERSON_PROPERTY: true }),
+        );
+        properties.insert("$process_person_profile".into(), serde_json::json!(true));
+    }
+
+    // An identify writes a person property too, so it needs the same person
+    // processing. It is not gated on a once-per-process flag: a corrected
+    // address has to be able to land.
+    if set_person_email(&event.event_type, &mut properties) {
+        properties.insert("$process_person_profile".into(), serde_json::json!(true));
     }
 
     PostHogEvent {
@@ -377,6 +508,275 @@ mod tests {
             language: Some("en".to_string()),
             ip: Some("$remote".to_string()),
         }
+    }
+
+    // =========================================================================
+    // Long-session person flag
+    // =========================================================================
+
+    /// Builds the event against a flag no other test shares, so each test
+    /// sees a process that has not written the flag yet.
+    fn unflagged(event: AmplitudeEvent) -> PostHogEvent {
+        build_posthog_event_with_flag(event, &AtomicBool::new(false))
+    }
+
+    fn heartbeat_with_uptime(uptime_secs: serde_json::Value) -> PostHogEvent {
+        let mut event = sample_event();
+        event.event_type = "heartbeat".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": uptime_secs });
+        unflagged(event)
+    }
+
+    #[test]
+    fn a_heartbeat_past_the_threshold_flags_its_person_once() {
+        let event = heartbeat_with_uptime(serde_json::json!(201));
+
+        assert_eq!(
+            event.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        // Person properties are dropped without person processing, so the
+        // flagging event has to ask for it.
+        assert_eq!(event.properties["$process_person_profile"], true);
+    }
+
+    #[test]
+    fn the_threshold_itself_flags_nobody() {
+        let event = heartbeat_with_uptime(serde_json::json!(200));
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn a_heartbeat_without_an_uptime_flags_nobody() {
+        let mut event = sample_event();
+        event.event_type = "heartbeat".to_string();
+        event.event_properties = serde_json::json!({});
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn a_stop_past_the_threshold_flags_too() {
+        // The run that ends between 200 seconds and the six-hour heartbeat
+        // interval is only ever seen by `engine_stopped`.
+        let mut event = sample_event();
+        event.event_type = "engine_stopped".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 900 });
+        let event = unflagged(event);
+
+        assert_eq!(
+            event.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        assert_eq!(event.properties["$process_person_profile"], true);
+    }
+
+    #[test]
+    fn a_short_stop_flags_nobody() {
+        let mut event = sample_event();
+        event.event_type = "engine_stopped".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 12 });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn another_event_with_a_long_uptime_flags_nobody() {
+        // Only the two lifecycle events report uptime for this purpose; a
+        // future event carrying the same property must not flag by accident.
+        let mut event = sample_event();
+        event.event_type = "function_invoked".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn every_other_event_keeps_person_processing_off() {
+        let event = unflagged(sample_event());
+
+        assert!(event.properties.get("$set_once").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    // =========================================================================
+    #[test]
+    fn only_the_first_passing_event_of_a_process_writes_the_flag() {
+        // A six-hour heartbeat interval still means several passing heartbeats
+        // a day from one long-running engine. The property cannot change, so
+        // repeats would buy nothing and cost an identified event each.
+        let flag = AtomicBool::new(false);
+        let heartbeat = || {
+            let mut event = sample_event();
+            event.event_type = "heartbeat".to_string();
+            event.event_properties = serde_json::json!({ "uptime_secs": 9_000 });
+            build_posthog_event_with_flag(event, &flag)
+        };
+
+        let first = heartbeat();
+        assert_eq!(
+            first.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+        assert_eq!(first.properties["$process_person_profile"], true);
+
+        for _ in 0..3 {
+            let later = heartbeat();
+            assert!(later.properties.get("$set_once").is_none());
+            assert_eq!(later.properties["$process_person_profile"], false);
+        }
+    }
+
+    // =========================================================================
+    // Address redaction in errors
+    // =========================================================================
+
+    #[test]
+    fn an_address_in_an_error_is_redacted() {
+        assert_eq!(
+            sanitize_error("could not add someone@example.com to the list"),
+            "could not add <redacted> to the list"
+        );
+        // Inside a path, a URL, and next to punctuation.
+        assert_eq!(
+            sanitize_error("open /tmp/someone@example.co.uk/x failed"),
+            "open /tmp/<redacted>/x failed"
+        );
+        assert_eq!(
+            sanitize_error("POST mailto:first.last+tag@sub.example.com: 400"),
+            "POST mailto:<redacted>: 400"
+        );
+        assert_eq!(
+            sanitize_error("two: a@b.com and c@d.org"),
+            "two: <redacted> and <redacted>"
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_address_shaped_survives() {
+        for error in [
+            "no at sign here",
+            "user@host has no dotted domain",
+            "@example.com is missing a local part",
+            "someone@example. ends on a dot",
+            "cost was 5@2.5x",
+        ] {
+            assert_eq!(sanitize_error(error), error, "changed {error}");
+        }
+    }
+
+    #[test]
+    fn the_home_directory_scrub_still_runs() {
+        assert_eq!(
+            sanitize_error("/Users/dave/oops and someone@example.com"),
+            "/Users/<redacted>/oops and <redacted>"
+        );
+    }
+
+    #[test]
+    fn redaction_happens_before_the_length_cap() {
+        // An address near the end of a long error must be redacted rather than
+        // cut in half and left readable.
+        let error = format!("{} someone@example.com", "x".repeat(300));
+        let sanitized = sanitize_error(&error);
+        assert!(!sanitized.contains("someone@example.com"));
+        assert!(!sanitized.contains("someone@"));
+    }
+
+    #[test]
+    fn the_identify_address_is_never_scrubbed() {
+        // The scrubber rewrites properties named `error` only. The identify
+        // carries its address under `email`, which is the whole point of this
+        // event, so it has to survive the same pipeline that redacts errors.
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties = serde_json::json!({
+            "email": "someone@example.com",
+            "source": "console_prompt",
+            "error": "the list refused someone@example.com",
+        });
+        let event = unflagged(event);
+
+        assert_eq!(
+            event.properties["$set"],
+            serde_json::json!({ "email": "someone@example.com" })
+        );
+        // The same address inside an `error` on the same event is still gone.
+        assert_eq!(event.properties["error"], "the list refused <redacted>");
+    }
+
+    // =========================================================================
+    // Identify
+    // =========================================================================
+
+    #[test]
+    fn an_identify_writes_the_address_to_the_person() {
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties =
+            serde_json::json!({ "email": "someone@example.com", "source": "console_prompt" });
+        let event = unflagged(event);
+
+        assert_eq!(
+            event.properties["$set"],
+            serde_json::json!({ "email": "someone@example.com" })
+        );
+        assert_eq!(event.properties["$process_person_profile"], true);
+        // The address belongs on the person, so it is not left on the event as
+        // well. `source` is not an address and stays.
+        assert!(event.properties.get("email").is_none());
+        assert_eq!(event.properties["source"], "console_prompt");
+    }
+
+    #[test]
+    fn an_identify_reports_every_time_so_a_corrected_address_lands() {
+        // Unlike the long-session flag, this is not claimed once per process:
+        // `$set` overwrites, and a typo has to be fixable.
+        let flag = AtomicBool::new(false);
+        let identify = || {
+            let mut event = sample_event();
+            event.event_type = IDENTIFY_EVENT.to_string();
+            event.event_properties = serde_json::json!({ "email": "second@example.com" });
+            build_posthog_event_with_flag(event, &flag)
+        };
+
+        for _ in 0..2 {
+            let event = identify();
+            assert_eq!(
+                event.properties["$set"],
+                serde_json::json!({ "email": "second@example.com" })
+            );
+            assert_eq!(event.properties["$process_person_profile"], true);
+        }
+    }
+
+    #[test]
+    fn an_identify_without_an_address_keeps_person_processing_off() {
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties = serde_json::json!({ "source": "console_prompt" });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn another_event_carrying_an_email_never_writes_a_person_property() {
+        let mut event = sample_event();
+        event.event_properties = serde_json::json!({ "email": "someone@example.com" });
+        let event = unflagged(event);
+
+        assert!(event.properties.get("$set").is_none());
+        assert_eq!(event.properties["$process_person_profile"], false);
     }
 
     // =========================================================================
