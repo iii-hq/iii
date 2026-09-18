@@ -744,8 +744,13 @@ A worker's environment combines the following sources, from lowest to highest pr
 4. The reserved variables, which the daemon owns.
 
 Export machine variables before starting the daemon. Changing another shell's environment does
-not update an already-running daemon. Workers and hooks now receive all of the daemon's Unicode
-machine variables, including credentials; only start workers you trust with that environment.
+not update an already-running daemon. Workers and hooks inherit the daemon's Unicode machine
+variables, including credentials, subject to the daemon-owned values above and the project identity
+exception below; only start workers you trust with that environment.
+
+`III_HOST_USER_ID` is not inherited from the machine: it comes from the current project's
+`.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
+`environment` value can still override it, including an empty value.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |

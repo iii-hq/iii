@@ -114,6 +114,18 @@ pub struct SpawnPlan {
 /// on the engine crate that owns telemetry, and this is four lines of INI.
 const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
 
+/// Identify the project-scoped telemetry key using the host's naming rules.
+fn is_host_user_id(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        windows_env_key_eq(name, HOST_USER_ID_ENV)
+    }
+    #[cfg(not(windows))]
+    {
+        name == HOST_USER_ID_ENV
+    }
+}
+
 fn project_device_id(compose_dir: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(compose_dir.join(".iii").join("project.ini")).ok()?;
     contents.lines().find_map(|line| {
@@ -166,6 +178,9 @@ pub(crate) fn windows_env_key_eq(left: &str, right: &str) -> bool {
 }
 
 fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) -> SpawnPlan {
+    // Telemetry identity belongs to this project, not the daemon's parent.
+    // Explicit container values are applied below and may still override it.
+    env.retain(|name, _| !is_host_user_id(name));
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
@@ -203,7 +218,7 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     // wants. A project with no `.iii/project.ini` — one not scaffolded by
     // `iii project init` — simply has no id to publish, so the variable is
     // absent and a worker must treat it as optional.
-    if !env.contains_key(HOST_USER_ID_ENV)
+    if !env.keys().any(|name| is_host_user_id(name))
         && let Some(device_id) = project_device_id(compose_dir)
     {
         env.insert(HOST_USER_ID_ENV.to_string(), device_id);
@@ -380,46 +395,55 @@ mod tests {
         assert_eq!(Path::new(&plan.env["III_COMPOSE_DIR"]), expected_dir);
     }
 
-    /// The three states of the device id: published from the project file,
-    /// beaten by an explicit `environment:`, and simply absent for a project
-    /// that was never scaffolded.
+    /// Machine identity is never inherited; only the project or an explicit
+    /// container value may provide it, including native aliases on Windows.
     #[test]
     fn host_user_id_comes_from_the_project_file_and_yields_to_the_container() {
-        let temp = tempfile::tempdir().unwrap();
-        let compose_file = temp.path().join("worker-compose.yaml");
-        std::fs::write(&compose_file, "containers: {}").unwrap();
-        let start = StartSpec::Shell("cargo run".to_string());
+        #[cfg(windows)]
+        let names = [HOST_USER_ID_ENV, "iii_host_user_id"];
+        #[cfg(not(windows))]
+        let names = [HOST_USER_ID_ENV];
+        for machine_key in names {
+            let temp = tempfile::tempdir().unwrap();
+            let compose_file = temp.path().join("worker-compose.yaml");
+            std::fs::write(&compose_file, "containers: {}").unwrap();
+            let start = StartSpec::Shell("cargo run".to_string());
+            let user_env = BTreeMap::new();
+            let mut context = ctx(&start, None, &user_env);
+            context.compose_file = &compose_file;
+            let machine = env_of(&[(machine_key, "other-project")]);
 
-        // No `.iii/project.ini` yet: nothing to publish.
-        let user_env = BTreeMap::new();
-        let mut context = ctx(&start, None, &user_env);
-        context.compose_file = &compose_file;
-        assert!(
-            !spawn_plan_with_env(&context, BTreeMap::new())
-                .env
-                .contains_key("III_HOST_USER_ID")
-        );
+            let plan = spawn_plan_with_env(&context, machine.clone());
+            assert!(!plan.env.keys().any(|name| is_host_user_id(name)));
 
-        std::fs::create_dir_all(temp.path().join(".iii")).unwrap();
-        std::fs::write(
-            temp.path().join(".iii").join("project.ini"),
-            "[project]\nproject_id=p-1\ndevice_id=device-abc\n",
-        )
-        .unwrap();
+            std::fs::create_dir_all(temp.path().join(".iii")).unwrap();
+            std::fs::write(
+                temp.path().join(".iii/project.ini"),
+                "[project]\nproject_id=p-1\ndevice_id=device-abc\n",
+            )
+            .unwrap();
+            let plan = spawn_plan_with_env(&context, machine.clone());
+            assert_eq!(plan.env[HOST_USER_ID_ENV], "device-abc");
+            assert_eq!(
+                plan.env.keys().filter(|name| is_host_user_id(name)).count(),
+                1
+            );
 
-        let mut context = ctx(&start, None, &user_env);
-        context.compose_file = &compose_file;
-        assert_eq!(
-            spawn_plan_with_env(&context, BTreeMap::new()).env["III_HOST_USER_ID"],
-            "device-abc"
-        );
-
-        // Not reserved: a container that declares it wins.
-        let declared =
-            BTreeMap::from([("III_HOST_USER_ID".to_string(), "from-compose".to_string())]);
-        let mut context = ctx(&start, None, &declared);
-        context.compose_file = &compose_file;
-        assert_eq!(spawn_plan(&context).env["III_HOST_USER_ID"], "from-compose");
+            // Explicit overrides, even empty ones, prevent the project fallback.
+            for declared_key in names {
+                for value in ["from-compose", ""] {
+                    let declared = env_of(&[(declared_key, value)]);
+                    let mut context = ctx(&start, None, &declared);
+                    context.compose_file = &compose_file;
+                    let plan = spawn_plan_with_env(&context, machine.clone());
+                    assert_eq!(plan.env[declared_key], value);
+                    assert_eq!(
+                        plan.env.keys().filter(|name| is_host_user_id(name)).count(),
+                        1
+                    );
+                }
+            }
+        }
     }
 
     #[test]

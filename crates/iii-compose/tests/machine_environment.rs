@@ -15,7 +15,8 @@ fn workers_receive_the_machine_environment() {
         .env("COMPOSE_MACHINE_ONLY", "from-machine")
         .env("III_URL", "ws://stale:1")
         .env("III_CONFIG", "/stale/config")
-        .env("III_CONFIG_NAME", "stale-config");
+        .env("III_CONFIG_NAME", "stale-config")
+        .env("III_HOST_USER_ID", "other-project");
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
@@ -66,6 +67,7 @@ fn machine_environment_probe() {
     assert_eq!(plan.env["III_URL"], "ws://engine.test:49134");
     assert!(!plan.env.contains_key("III_CONFIG"));
     assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    assert!(!plan.env.contains_key("III_HOST_USER_ID"));
     #[cfg(unix)]
     assert!(!plan.env.contains_key("COMPOSE_NON_UNICODE"));
 
