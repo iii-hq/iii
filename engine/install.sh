@@ -260,6 +260,11 @@ use_rc=false
 start_with=""
 extra_envs=""
 skip_bin_download=false
+# Either form works: the flag, or a non-empty III_NON_INTERACTIVE.
+non_interactive=false
+if [ -n "${III_NON_INTERACTIVE:-}" ]; then
+  non_interactive=true
+fi
 
 # Both lists are word-split when they reach `iii project init`, so a value with
 # whitespace in it would silently become several arguments.
@@ -311,6 +316,10 @@ while [ $# -gt 0 ]; do
       skip_bin_download=true
       shift
       ;;
+    --non-interactive)
+      non_interactive=true
+      shift
+      ;;
     --start-with)
       require_value --start-with "comma-separated worker list" "$@"
       require_no_whitespace --start-with "$2"
@@ -335,6 +344,11 @@ Options:
   --rc                  Install the latest release candidate
   --skip-bin-download   Skip the download and install entirely, and run the
                         setup offer against the iii already on this machine.
+  --non-interactive     Never ask a question, even when a terminal is
+                        attached. Same effect as answering n: install only,
+                        and print the setup command instead of running it.
+                        A run with no terminal already behaves this way.
+                        Same as setting III_NON_INTERACTIVE.
   --start-with LIST     Comma-separated workers to start the harness with.
                         The setup offer scaffolds a project named after the
                         first worker, starts it, and adds every worker in the
@@ -354,6 +368,8 @@ Environment variables:
                         aarch64-unknown-linux-gnu)
   III_USE_GLIBC         Use glibc build on Linux x86_64 (any non-empty value
                         enables; default: musl)
+  III_NON_INTERACTIVE   Any non-empty value does the same as
+                        --non-interactive.
   GITHUB_TOKEN          Authenticate GitHub API calls (raises rate limit
                         from 60/hr to 5000/hr). Any token with public read
                         access works; no scopes required.
@@ -364,6 +380,8 @@ Examples:
   curl -fsSL https://iii.dev/install.sh | sh
   curl -fsSL https://iii.dev/install.sh | sh -s -- --next
   curl -fsSL https://iii.dev/install.sh | sh -s -- --rc
+  curl -fsSL https://iii.dev/install.sh | sh -s -- --non-interactive
+  curl -fsSL https://iii.dev/install.sh | III_NON_INTERACTIVE=1 sh
   curl -fsSL https://iii.dev/install.sh | sh -s -- --start-with worker1,worker2
   curl -fsSL https://iii.dev/install.sh | sh -s -- --start-with worker1 --need-envs WORKER_API_KEY
   curl -fsSL https://iii.dev/install.sh | VERSION=0.11.0 sh
@@ -990,7 +1008,7 @@ if [ "$has_learn_iii" = 0 ]; then
   # Never offer what this binary cannot run, and never name the command.
   echo ""
   echo "If you're new to iii, get started quickly here: $quickstart_url"
-elif [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+elif [ "$non_interactive" = false ] && [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
   if [ -n "$start_with" ]; then
     printf 'Would you like to run the setup? [Y/n] ' >/dev/tty
