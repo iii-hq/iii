@@ -194,7 +194,8 @@ pub struct Container {
     /// It is runtime state and is never read from `worker-compose.yaml`.
     pub resolved_package: Option<crate::registry::ResolvedPackage>,
     pub start_after: Vec<String>,
-    /// The configuration entry this container owns.
+    /// Explicit configuration entry. When absent, use a stable name derived
+    /// from the effective project namespace and container key.
     ///
     /// Not a source. Compose fetches it as the base, publishes the merged
     /// result back to it, and tells the child which entry is its own through
@@ -622,6 +623,14 @@ fn restart_duration(key: &str, raw: &Option<String>, default: Duration) -> Resul
 }
 
 impl Container {
+    /// Resolve at runtime so a namespace selected by the caller takes precedence
+    /// over the compose file, without writing generated names back into YAML.
+    pub fn resolved_config_name(&self, namespace: &str, key: &str) -> String {
+        self.config_name
+            .clone()
+            .unwrap_or_else(|| crate::configuration::default_config_name(namespace, key))
+    }
+
     /// Directory of a `path://` worker. `None` for packages, which have no
     /// local directory until registry resolution exists.
     pub fn worker_dir(&self) -> Option<&std::path::Path> {

@@ -221,15 +221,10 @@ impl EngineClient {
             })
     }
 
-    /// Writes the resolved configuration into the configuration worker, under
-    /// the entry the container named.
-    ///
-    /// This is what makes a worker configurable by compose without the worker
-    /// knowing compose exists. A worker reads its configuration from the
-    /// configuration worker, and re-registering its own schema without an
-    /// `initial_value` reuses whatever is stored — so a value written here,
-    /// before the child starts, is the value it boots on. Nothing in the fleet
-    /// has to change.
+    /// Writes the resolved configuration under the explicit or generated entry
+    /// name. The child receives that name in `III_CONFIG_NAME` and must use it
+    /// when registering and reading its configuration. Re-registering without
+    /// `initial_value` then preserves the value delivered here.
     ///
     /// The existing schema, name and description are carried over rather than
     /// replaced. A worker that has run before keeps its schema, which means the

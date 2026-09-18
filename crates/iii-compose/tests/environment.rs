@@ -4,6 +4,31 @@ use std::path::Path;
 
 use iii_compose::ComposeFile;
 
+#[test]
+fn explicit_configuration_name_wins_over_the_generated_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: path://./api\n    config_name: shared-api\n",
+        &[],
+    );
+    assert_eq!(
+        file.containers["api"].resolved_config_name("orders", "api"),
+        "shared-api"
+    );
+}
+
+#[test]
+fn configuration_identity_uses_the_effective_namespace_without_mutating_yaml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), COMPOSE, &[]);
+    let container = &file.containers["api"];
+    let name = container.resolved_config_name("billing", "api");
+    assert!(name.starts_with("billing-api-"), "{name}");
+    assert_ne!(name, container.resolved_config_name("orders", "api"));
+    assert!(container.config_name.is_none());
+}
+
 /// Writes a compose file plus env files into a tempdir and loads it, so paths
 /// resolve exactly as the CLI resolves them.
 fn project(tmp: &Path, compose: &str, files: &[(&str, &str)]) -> ComposeFile {
@@ -493,9 +518,10 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
 }
 
 #[test]
-fn a_container_without_configuration_is_told_nothing_about_one() {
-    // A stale `III_CONFIG_NAME` would point a worker at an entry compose never
-    // wrote, which is worse than the absence it replaces.
+fn a_container_without_a_value_still_receives_its_configuration_identity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), COMPOSE, &[]);
+    let config_name = file.containers["api"].resolved_config_name("finance", "api");
     use iii_compose::manifest::StartSpec;
     use iii_compose::spawn::{SpawnCtx, spawn_plan};
 
@@ -506,14 +532,14 @@ fn a_container_without_configuration_is_told_nothing_about_one() {
         namespace: "finance",
         compose_namespace: "compose-finance",
         compose_file: std::path::Path::new("/srv/finance/worker-compose.yaml"),
-        container_key: "plain",
+        container_key: "api",
         start: &start,
         config_path: None,
-        config_name: None,
+        config_name: Some(&config_name),
         working_dir: std::path::Path::new("."),
         user_env: &user_env,
     });
 
-    assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    assert_eq!(plan.env["III_CONFIG_NAME"], config_name);
     assert!(!plan.env.contains_key("III_CONFIG"));
 }

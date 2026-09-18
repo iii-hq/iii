@@ -27,9 +27,12 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
-/// Boots an engine with the modules the daemon needs: `engine::workers::*` for
-/// readiness and registration.
+/// Boots an engine with readiness and configuration services.
 async fn spawn_engine() -> u16 {
+    spawn_engine_with_configuration(true).await
+}
+
+async fn spawn_engine_with_configuration(configuration: bool) -> u16 {
     iii::workers::observability::metrics::ensure_default_meter();
 
     let probe = TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
@@ -45,6 +48,19 @@ async fn spawn_engine() -> u16 {
         .await
         .expect("initialize EngineFunctionsWorker");
     engine_fn.register_functions(engine.clone());
+
+    if configuration {
+        use iii::workers::configuration::{ConfigurationWorker, adapters::fs::FsAdapter};
+        let directory =
+            std::path::PathBuf::from(std::env::var_os("III_COMPOSE_STATE_DIR").unwrap())
+                .join(format!("configuration-{}", uuid::Uuid::new_v4()));
+        let adapter = FsAdapter::new(Some(json!({ "directory": directory })))
+            .await
+            .expect("configuration adapter");
+        let worker = ConfigurationWorker::for_test(engine.clone(), Arc::new(adapter), 0);
+        worker.initialize().await.expect("configuration worker");
+        worker.register_functions(engine.clone());
+    }
 
     let manager = WorkerManager::create(
         engine.clone(),
@@ -2128,7 +2144,177 @@ async fn naming_another_daemon_in_the_payload_is_refused() {
     .expect("agreeing with the daemon it reached is not an error");
 }
 
-/// A configuration worker that cannot answer fails the container.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_names_isolate_projects_and_deliver_overrides_before_spawn() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon_named(port, "config-supervisor").await;
+    let mut children = Vec::new();
+    let mut projects = Vec::new();
+    let mut names = Vec::new();
+
+    for (namespace, port_number) in [("orders", 3213), ("billing", 3313)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project(
+            tmp.path(),
+            &format!(
+                r#"
+namespace: {namespace}
+startup_timeout: 5s
+stop_timeout: 100ms
+required_default: true
+containers:
+  console:
+    worker: path://./workers/console
+    config_override:
+      http_port: {port_number}
+    scripts:
+      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; cat "$III_CONFIG" > delivered; touch started; sleep 30'
+  fresh:
+    worker: path://./workers/fresh
+    scripts:
+      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; test -z "$III_CONFIG" && touch no-config; touch started; sleep 30'
+  explicit:
+    worker: path://./workers/explicit
+    config_name: {namespace}-custom
+    scripts:
+      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; cat "$III_CONFIG" > delivered; touch started; sleep 30'
+"#
+            ),
+            &["console", "fresh", "explicit"],
+        );
+        let compose = ComposeFile::load(&file).unwrap();
+        let name = compose.containers["console"].resolved_config_name(namespace, "console");
+        // A previous boot left a port and another field. The override wins only
+        // for the port; a container without an override must retain its value.
+        for id in [&name, &format!("{namespace}-custom")] {
+            call(
+                port,
+                "configuration::register",
+                json!({
+                    "id": id, "name": "fixture", "description": "fixture", "schema": {},
+                    "initial_value": { "http_port": 3113, "retained": true }
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let console_started = tmp.path().join("workers/console/started");
+        let fresh_started = tmp.path().join("workers/fresh/started");
+        let explicit_started = tmp.path().join("workers/explicit/started");
+        let up = call_in(
+            port,
+            Some("config-supervisor"),
+            "compose::up",
+            json!({ "file": file }),
+        );
+        let ready = async {
+            wait_for_start_markers(&[&console_started, &fresh_started, &explicit_started]).await;
+            ["console", "fresh", "explicit"].map(|key| register_test_worker(port, namespace, key))
+        };
+        let (result, workers) = tokio::join!(up, ready);
+        let result = result.unwrap();
+        assert_eq!(result["status"], "ok", "{result}");
+        children.extend(workers);
+
+        let delivered_name =
+            std::fs::read_to_string(tmp.path().join("workers/console/config-name")).unwrap();
+        assert_eq!(delivered_name, name);
+        let delivered: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp.path().join("workers/console/delivered")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delivered,
+            json!({ "http_port": port_number, "retained": true })
+        );
+        let stored = call(port, "configuration::get", json!({ "id": name }))
+            .await
+            .unwrap();
+        assert_eq!(stored["value"], delivered);
+        // Refreshing the worker's schema must not undo Compose's override.
+        call(
+            port,
+            "configuration::register",
+            json!({
+                "id": name, "name": "Console", "description": "worker schema", "schema": {}
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            call(port, "configuration::get", json!({ "id": name }))
+                .await
+                .unwrap()["value"],
+            delivered
+        );
+
+        let fresh_name =
+            std::fs::read_to_string(tmp.path().join("workers/fresh/config-name")).unwrap();
+        assert_eq!(
+            fresh_name,
+            compose.containers["fresh"].resolved_config_name(namespace, "fresh")
+        );
+        assert!(tmp.path().join("workers/fresh/no-config").exists());
+        assert!(
+            call(port, "configuration::get", json!({ "id": fresh_name }))
+                .await
+                .unwrap_err()
+                .contains("NOT_FOUND")
+        );
+        // The name is usable on the very first registration without a seed file.
+        call(
+            port,
+            "configuration::register",
+            json!({
+                "id": fresh_name, "name": "Fresh", "description": "first boot", "schema": {},
+                "initial_value": { "seeded": true }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            call(port, "configuration::get", json!({ "id": fresh_name }))
+                .await
+                .unwrap()["value"],
+            json!({ "seeded": true })
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("workers/explicit/config-name")).unwrap(),
+            format!("{namespace}-custom")
+        );
+        let explicit: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp.path().join("workers/explicit/delivered")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(explicit, json!({ "http_port": 3113, "retained": true }));
+        names.push((name, port_number));
+        projects.push(tmp);
+    }
+    assert_ne!(names[0].0, names[1].0);
+    for (name, expected_port) in names {
+        assert_eq!(
+            call(port, "configuration::get", json!({ "id": name }))
+                .await
+                .unwrap()["value"]["http_port"],
+            expected_port
+        );
+    }
+    assert!(
+        call(port, "configuration::get", json!({ "id": "console" }))
+            .await
+            .unwrap_err()
+            .contains("NOT_FOUND")
+    );
+    daemon.shutdown().await;
+    for worker in children {
+        worker.shutdown_async().await;
+    }
+}
+
+/// A configuration worker that cannot answer fails even an implicitly named container.
 ///
 /// The other half of the rule that lets a first boot through. An entry nobody
 /// has registered yet is not a failure — the worker is what creates it. An
@@ -2140,7 +2326,7 @@ async fn naming_another_daemon_in_the_payload_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configuration_that_cannot_be_read_stops_the_container() {
     isolate_state();
-    let port = spawn_engine().await;
+    let port = spawn_engine_with_configuration(false).await;
     let daemon = start_daemon(port).await;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -2154,7 +2340,6 @@ required_default: true
 containers:
   database:
     worker: path://./workers/database
-    config_name: nobody-can-read-this
     scripts:
       run: "sleep 30"
 "#,

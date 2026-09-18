@@ -1020,10 +1020,8 @@ async fn start_one_until_shutdown(
         compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
-        config_path: config.as_ref().map(|resolved| resolved.file.path()),
-        config_name: config
-            .as_ref()
-            .and_then(|resolved| resolved.name.as_deref()),
+        config_path: config.file.as_ref().map(ConfigFile::path),
+        config_name: Some(&config.name),
         working_dir: &working_dir,
         user_env: &user_env,
     };
@@ -1060,7 +1058,7 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
+            wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.file.as_ref())).map_err(
                 |message| ComposeError::SpawnFailed {
                     container: key.to_string(),
                     message,
@@ -1149,7 +1147,7 @@ async fn vm_command(
     key: &str,
     start: &StartSpec,
     plan: &crate::spawn::SpawnPlan,
-    config: Option<&ResolvedConfig>,
+    config: Option<&ConfigFile>,
 ) -> std::result::Result<tokio::process::Command, String> {
     let (worker_dir, run_override, prepare_command) = match start {
         StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
@@ -1169,7 +1167,7 @@ async fn vm_command(
             // this guest. Beside the rootfs rather than inside it: the rootfs
             // is the guest's `/`, and a `config` directory there would collide
             // with whatever the image already has.
-            let path = config.file.path();
+            let path = config.path();
             let Some(name) = path.file_name() else {
                 return Err(format!("config file has no name: {}", path.display()));
             };
@@ -1401,16 +1399,11 @@ async fn rollback(
     }
 }
 
-/// Fetch-or-fail, then merge `config_override` on top and hand the result over
-/// as an owner-only file.
-/// What a container's configuration resolved to: the file it is handed, and
-/// the entry that value lives in.
+/// The configuration identity is always delivered, even before a worker has
+/// seeded its first value. A file exists only when there is a value to deliver.
 pub struct ResolvedConfig {
-    pub file: ConfigFile,
-    /// The configuration entry the value was written to, when the file named
-    /// one. Absent means the value went to the file only, and no global id was
-    /// claimed on the container's behalf.
-    pub name: Option<String>,
+    pub file: Option<ConfigFile>,
+    pub name: String,
 }
 
 async fn resolve_config(
@@ -1418,23 +1411,12 @@ async fn resolve_config(
     container: &Container,
     key: &str,
     shipped: Option<serde_yaml::Value>,
-) -> Result<Option<ResolvedConfig>> {
-    // Lowest to highest: what the worker ships, what the configuration worker
-    // holds, what the compose file overrides.
+) -> Result<ResolvedConfig> {
+    let name = container.resolved_config_name(ctx.project_namespace, key);
+    // Lowest to highest: package defaults, stored value, compose override.
+    // NOT_FOUND contributes nothing; transport/service failures still fail boot.
     let mut value = shipped;
-
-    // Only an entry the file named. Falling back to the container key looks
-    // helpful and is the collision itself: a container called `state` would
-    // claim the global `state` entry, so two projects would take turns
-    // overwriting one another — and every `state` worker on the engine would
-    // reload on each write, because the id it watches is the one being
-    // written. A configuration entry is claimed deliberately or not at all.
-    //
-    // Absent is not empty: an entry nobody has registered yet contributes
-    // nothing, and the container starts on what the compose file declares.
-    if let Some(name) = &container.config_name
-        && let Some(fetched) = ctx.engine.fetch_config(name).await?
-    {
+    if let Some(fetched) = ctx.engine.fetch_config(&name).await? {
         value = Some(match value {
             Some(base) => merge(base, fetched),
             None => fetched,
@@ -1448,29 +1430,17 @@ async fn resolve_config(
         });
     }
 
-    let Some(value) = value else {
-        return Ok(None);
+    let file = if let Some(value) = value {
+        // Workers must honor III_CONFIG_NAME when reading the service. Both
+        // delivery paths carry the same merged value before the child starts.
+        ctx.engine.publish_config(&name, &value).await?;
+        Some(ConfigFile::write(ctx.config_dir, key, &value)?)
+    } else {
+        // Do not publish an empty placeholder: let the worker seed its defaults
+        // under the assigned name on its first registration.
+        None
     };
-
-    // Delivered twice, on purpose, because workers read their configuration in
-    // two different places and both have to be right.
-    //
-    // Into the configuration worker, which is where a worker built before
-    // compose existed looks: re-registering its own schema without a value
-    // reuses what is stored, so this is the value it boots on, with nothing in
-    // the fleet changed.
-    if let Some(name) = &container.config_name {
-        ctx.engine.publish_config(name, &value).await?;
-    }
-
-    // And as a file, which is what a worker written for compose reads. The two
-    // carry the same value, so whichever a worker trusts, it gets the same
-    // answer.
-    let file = ConfigFile::write(ctx.config_dir, key, &value)?;
-    Ok(Some(ResolvedConfig {
-        file,
-        name: container.config_name.clone(),
-    }))
+    Ok(ResolvedConfig { file, name })
 }
 
 async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {

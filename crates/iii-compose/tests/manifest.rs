@@ -320,7 +320,14 @@ containers:
         api.start,
         StartSpec::Shell("cargo run --release".to_string())
     );
-    assert_eq!(api.config_name, None);
+    assert_eq!(
+        api.config_name.as_deref(),
+        Some(
+            file.containers["api"]
+                .resolved_config_name("orders-abcd1234", "api")
+                .as_str()
+        )
+    );
     // No working_dir declared, so the container runs in its own worker dir.
     assert!(
         api.working_dir.ends_with("workers/api"),

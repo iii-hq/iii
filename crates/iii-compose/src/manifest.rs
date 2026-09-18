@@ -219,7 +219,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
                 Some(worker_dir),
                 &file.base_dir,
             ),
-            config_name: container.config_name.clone(),
+            config_name: Some(container.resolved_config_name(namespace, key)),
             environment: container.environment.keys().cloned().collect(),
             env_file: container.env_file.clone(),
             startup_timeout: container.startup_timeout,

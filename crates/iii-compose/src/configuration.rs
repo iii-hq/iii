@@ -10,15 +10,40 @@
 //! a file path in `III_CONFIG`, so a worker never needs credentials to fetch its
 //! own configuration and the daemon can fail a container before spawning it.
 //!
-//! Fetching the base entry from the configuration worker needs an engine
-//! connection and is not wired yet; merge and delivery are.
+//! The same value is published under `III_CONFIG_NAME` for workers that read
+//! the configuration service instead of the file.
 
 use std::{
     io::Write,
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
+
 use crate::error::{ComposeError, Result};
+
+/// Stable configuration identity for a container in its effective namespace.
+/// The digest includes the component boundary: `a-b` / `c` must not alias
+/// `a` / `b-c`. Keep a readable prefix, but fit the store's 64-byte id limit
+/// even when container keys need sanitizing or names need truncating.
+pub(crate) fn default_config_name(namespace: &str, key: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update((namespace.len() as u64).to_be_bytes());
+    digest.update(namespace.as_bytes());
+    digest.update(key.as_bytes());
+    let suffix = hex::encode(&digest.finalize()[..8]);
+    let prefix: String = namespace
+        .chars()
+        .chain(std::iter::once('-'))
+        .chain(key.chars())
+        .map(|ch| match ch {
+            'a'..='z' | '0'..='9' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .take(47)
+        .collect();
+    format!("{prefix}-{suffix}")
+}
 
 /// Merges `config_override` onto a fetched base.
 ///
@@ -146,6 +171,39 @@ impl ConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_config_names_are_stable_and_readable() {
+        let name = default_config_name("orders", "console");
+        assert!(name.starts_with("orders-console-"), "{name}");
+        assert_eq!(name, default_config_name("orders", "console"));
+        assert_ne!(name, default_config_name("billing", "console"));
+        assert_ne!(name, default_config_name("orders", "http"));
+    }
+
+    #[test]
+    fn default_config_names_preserve_component_boundaries() {
+        assert_ne!(
+            default_config_name("a-b", "c"),
+            default_config_name("a", "b-c")
+        );
+    }
+
+    #[test]
+    fn default_config_names_fit_the_store_without_lossy_collisions() {
+        let namespace = "n".repeat(80);
+        let name = default_config_name(&namespace, "Console.日本語");
+        assert_eq!(name.len(), 64);
+        assert!(
+            name.bytes()
+                .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+        );
+        assert_ne!(name, default_config_name(&namespace, "Console.other"));
+        assert_ne!(
+            default_config_name("app", "API"),
+            default_config_name("app", "---")
+        );
+    }
 
     fn yaml(text: &str) -> serde_yaml::Value {
         serde_yaml::from_str(text).unwrap()
