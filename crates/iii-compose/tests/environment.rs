@@ -198,19 +198,50 @@ fn blank_environment_values_cannot_bypass_reserved_key_validation() {
 
 #[cfg(windows)]
 #[test]
-fn windows_reserved_key_case_variants_are_rejected_from_every_source() {
+fn windows_reserved_key_validation_matches_native_environment_names() {
+    // Use std's native environment-key map as an independent oracle. Windows
+    // ordinal folding is not Rust's Unicode uppercase mapping: dotless i, for
+    // example, must not be assumed to collide with ASCII I.
+    fn assert_validation<T: std::fmt::Debug>(
+        result: Result<T, iii_compose::ComposeError>,
+        name: &str,
+        collides: bool,
+    ) {
+        if collides {
+            let err = result.expect_err("native aliases must be rejected");
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
+            assert!(err.to_string().contains(name));
+        } else {
+            result.expect("distinct native names must remain valid");
+        }
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     for reserved in iii_compose::spawn::RESERVED_ENV {
-        // Dotless i has the same ordinal uppercase mapping as ASCII I on Windows.
-        for name in [reserved.to_lowercase(), reserved.replace('I', "ı")] {
+        for name in [
+            reserved.to_lowercase(),
+            reserved.replace('I', "ı"),
+            reserved.replace('I', "İ"),
+            reserved.replace('S', "ſ"),
+        ] {
+            let mut native = std::process::Command::new("cmd");
+            native
+                .env_clear()
+                .env(reserved, "reserved")
+                .env(&name, "explicit");
+            let collides = native.get_envs().count() == 1;
+            if name == reserved.to_lowercase() {
+                assert!(collides, "ASCII casing must collide on Windows");
+            }
             for value in ["stale", "\"\"", "", "null", "~"] {
                 let compose = format!(
                     "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    environment:\n      {name}: {value}\n"
                 );
-                let err = ComposeFile::parse(&compose, tmp.path().join("worker-compose.yaml"))
-                    .expect_err("Windows aliases must not bypass reserved-key validation");
-                assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}: {value}");
-                assert!(err.to_string().contains(&name));
+                assert_validation(
+                    ComposeFile::parse(&compose, tmp.path().join("worker-compose.yaml")),
+                    &name,
+                    collides,
+                );
             }
 
             let file = project(
@@ -218,13 +249,16 @@ fn windows_reserved_key_case_variants_are_rejected_from_every_source() {
                 "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    env_file: [base.env]\n",
                 &[("base.env", &format!("{name}=stale\n"))],
             );
-            let err = file.containers["api"]
-                .resolve_user_env("api")
-                .expect_err("env files must reject Windows aliases at spawn time");
-            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
-            let err = iii_compose::manifest::validate_offline(&file, "reserved-test")
-                .expect_err("env files must reject Windows aliases before startup");
-            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
+            assert_validation(
+                file.containers["api"].resolve_user_env("api"),
+                &name,
+                collides,
+            );
+            assert_validation(
+                iii_compose::manifest::validate_offline(&file, "reserved-test"),
+                &name,
+                collides,
+            );
         }
     }
 }
