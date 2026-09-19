@@ -71,6 +71,8 @@ config:
 
 The `bridge` adapter cannot delete configurations on the remote engine; cleanup happens via the remote's TTL or by operating on the remote engine directly.
 
+`configuration::ensure` over the `bridge` is forwarded to the remote engine's own `configuration::ensure` — the original seed candidate is sent to the remote and the seed-vs-preserve decision is made at the authoritative engine, so a stale local cache can never overwrite an operator value on the remote engine. If the remote engine does not expose `configuration::ensure` (an older engine), the call fails closed with `ADAPTER_ERROR`; the bridge deliberately does **not** fall back to a legacy `configuration::register`, which would risk overwriting remote state.
+
 ## Functions
 
 ### `configuration::register`
@@ -80,6 +82,16 @@ Declare a configuration id with a JSON Schema, name, description, and optional i
 Parameters: `id` (string), `name` (string), `description` (string), `schema` (object — JSON Schema), `initial_value` (any, optional), `metadata` (any, optional)
 
 Returns: the stored entry `{ id, name, description, schema, value, metadata }`. Templates inside `value` are stored verbatim; expansion happens on read.
+
+### `configuration::ensure`
+
+Atomically ensure an id exists with a schema, name, description, and metadata, seeding `initial_value` **only when no non-null value is stored yet**. If a value already exists (including `false`, `0`, or `""` — these are real values, not "empty"), it is preserved verbatim and the candidate seed is ignored and never validated. Unlike `configuration::register`, `ensure` never overwrites a stored value, so it is the race-free way for one or many workers to seed a default — use it instead of read-then-`register`. When the seed *is* applied it is validated against `schema` exactly like `register` validates `initial_value`. Fires `configuration:registered` on first creation or `configuration:updated` when an existing entry is refreshed.
+
+`register`, `ensure`, `set`, and `delete` are linearized per store (one engine process — the `fs` adapter's on-disk store), so with the `fs` adapter a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner without a lost write. This lock guards the LOCAL store only: with the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `configuration::ensure` is decided remotely (see the `bridge` adapter above), never against the local cache. External direct edits to an `fs` file are reconciled against a directory snapshot re-read fresh under the write path's lock, so an internal write is never reverted by a stale snapshot; genuine concurrent external edits are last-writer-wins. Trigger fan-out happens after each mutation commits and is not strictly ordered across concurrent callers.
+
+Parameters: `id` (string), `name` (string), `description` (string), `schema` (object — JSON Schema), `initial_value` (any, optional — the seed candidate), `metadata` (any, optional)
+
+Returns: `action` (one of `seeded`, `preserved`, `registered`) and `entry` (the stored `{ id, name, description, schema, value, metadata }`). `seeded` means the candidate was installed; `preserved` means an existing value was kept; `registered` means the entry was created or refreshed with a null value because no seed was supplied.
 
 ### `configuration::set`
 
@@ -168,7 +180,7 @@ iii.registerTrigger({
 })
 ```
 
-Mutations that fire triggers: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::set` (`:updated`), TTL-driven cleanup (`:deleted`), and external `fs` create / edit / delete events. Reads (`configuration::get`, `configuration::list`, `configuration::schema`) do **not** fire triggers.
+Mutations that fire triggers: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::ensure` (`:registered` when it creates an entry, `:updated` when it refreshes one), `configuration::set` (`:updated`), TTL-driven cleanup (`:deleted`), and external `fs` create / edit / delete events. Reads (`configuration::get`, `configuration::list`, `configuration::schema`) do **not** fire triggers.
 
 ## TTL Cleanup
 

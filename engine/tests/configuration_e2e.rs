@@ -28,8 +28,8 @@ use iii::workers::configuration::ConfigurationWorker;
 use iii::workers::configuration::adapters::ConfigurationAdapter;
 use iii::workers::configuration::adapters::fs::FsAdapter;
 use iii::workers::configuration::structs::{
-    ConfigurationGetInput, ConfigurationListInput, ConfigurationRegisterInput,
-    ConfigurationSetInput,
+    ConfigurationEnsureInput, ConfigurationGetInput, ConfigurationListInput,
+    ConfigurationRegisterInput, ConfigurationSetInput,
 };
 use iii::workers::traits::Worker;
 
@@ -421,5 +421,99 @@ async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
             panic!("ephemeral configuration should have been TTL-deleted");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, worker) = build_worker(dir.path(), 0).await;
+
+    let mut events = install_event_capture(&engine, "test::on_ensure");
+    worker
+        .register_trigger(Trigger {
+            id: "trig-ensure".into(),
+            trigger_type: "configuration".into(),
+            function_id: "test::on_ensure".into(),
+            config: json!({ "configuration_id": "iii-stream" }),
+            worker_id: None,
+            metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
+        })
+        .await
+        .unwrap();
+
+    let schema = json!({
+        "type": "object",
+        "required": ["port"],
+        "properties": { "port": { "type": "integer" } }
+    });
+
+    // First ensure: no stored value -> seeds and fires configuration:registered.
+    let seeded = worker
+        .ensure_fn(ConfigurationEnsureInput {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "first".into(),
+            schema: schema.clone(),
+            initial_value: Some(json!({ "port": 3112 })),
+            metadata: None,
+        })
+        .await;
+    match seeded {
+        FunctionResult::Success(out) => assert_eq!(out.entry.value, json!({ "port": 3112 })),
+        _ => panic!("expected ensure seed success"),
+    }
+
+    let evt = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("ensure should fire a trigger")
+        .expect("channel open");
+    assert_eq!(evt["event_type"], "configuration:registered");
+    assert_eq!(evt["new_value"]["port"], 3112);
+
+    // Second ensure with a DIFFERENT seed: the stored value must be preserved.
+    worker
+        .ensure_fn(ConfigurationEnsureInput {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "second".into(),
+            schema: schema.clone(),
+            initial_value: Some(json!({ "port": 9999 })),
+            metadata: None,
+        })
+        .await;
+
+    let read = worker
+        .get_fn(ConfigurationGetInput {
+            id: "iii-stream".into(),
+            raw: false,
+        })
+        .await;
+    match read {
+        FunctionResult::Success(out) => assert_eq!(out.value["port"], 3112),
+        _ => panic!("expected get success"),
+    }
+
+    // An explicit set still overrides after seeding.
+    let set = worker
+        .set_fn(ConfigurationSetInput {
+            id: "iii-stream".into(),
+            value: json!({ "port": 4242 }),
+        })
+        .await;
+    assert!(matches!(set, FunctionResult::Success(_)));
+    let read2 = worker
+        .get_fn(ConfigurationGetInput {
+            id: "iii-stream".into(),
+            raw: false,
+        })
+        .await;
+    match read2 {
+        FunctionResult::Success(out) => assert_eq!(out.value["port"], 4242),
+        _ => panic!("expected get success after set"),
     }
 }

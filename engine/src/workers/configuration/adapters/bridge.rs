@@ -19,16 +19,16 @@ use tokio::sync::OnceCell;
 
 use crate::engine::Engine;
 use crate::workers::configuration::adapters::{
-    ConfigurationAdapter, ExternalChange, ExternalChangeSender, RegisterKind, RegisterOutcome,
-    SetOutcome,
+    AdapterEnsureOutcome, ConfigurationAdapter, EnsureCandidate, EnsureSupport, ExternalChange,
+    ExternalChangeSender, RegisterKind, RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::registry::{
     ConfigurationAdapterFuture, ConfigurationAdapterRegistration,
 };
 use crate::workers::configuration::structs::{
-    ConfigurationEntry, ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
-    ConfigurationListInput, ConfigurationListResult, ConfigurationRegisterInput,
-    ConfigurationSetInput,
+    ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
+    ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput, ConfigurationListInput,
+    ConfigurationListResult, ConfigurationRegisterInput, ConfigurationSetInput,
 };
 
 const DEFAULT_BRIDGE_URL: &str = "ws://localhost:49134";
@@ -102,6 +102,41 @@ impl ConfigurationAdapter for BridgeAdapter {
             kind: RegisterKind::Replaced,
             entry: returned,
             old_value: None,
+        })
+    }
+
+    fn ensure_support(&self) -> EnsureSupport {
+        // The authoritative store lives on the REMOTE engine; the local cache is
+        // only a mirror the local `write_lock` cannot guard across processes.
+        // The store must forward the decision to us so it happens where the
+        // value actually lives.
+        EnsureSupport::Delegated
+    }
+
+    async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
+        // Forward the ORIGINAL candidate to the REMOTE authoritative
+        // `configuration::ensure` so the seed-vs-preserve decision is made where
+        // the value actually lives. We deliberately never read the local cache
+        // and never fall back to `configuration::register`: a remote engine
+        // without `configuration::ensure` returns a hard error here (surfaced as
+        // ADAPTER_ERROR), which is fail-closed — a legacy register could
+        // overwrite operator state on the remote engine.
+        let raw = self
+            .call("configuration::ensure", build_ensure_input(candidate))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "remote configuration::ensure failed — an engine without \
+                     configuration::ensure is unsupported by the bridge (upgrade the remote \
+                     engine; NOT falling back to configuration::register): {}",
+                    e
+                )
+            })?;
+        let result: ConfigurationEnsureResult = serde_json::from_value(raw)
+            .map_err(|e| anyhow::anyhow!("decode remote ensure response: {}", e))?;
+        Ok(AdapterEnsureOutcome {
+            action: result.action,
+            entry: result.entry,
         })
     }
 
@@ -302,6 +337,22 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 }
 
+/// Build the remote `configuration::ensure` input from a delegated candidate,
+/// forwarding the ORIGINAL seed candidate verbatim. Kept as a free function so
+/// it can be unit-tested without a live remote engine: the whole point of the
+/// bridge ensure path is that the candidate reaches the remote unchanged and no
+/// local cache value is ever substituted.
+fn build_ensure_input(candidate: EnsureCandidate) -> ConfigurationEnsureInput {
+    ConfigurationEnsureInput {
+        id: candidate.id,
+        name: candidate.name,
+        description: candidate.description,
+        schema: candidate.schema,
+        initial_value: candidate.candidate,
+        metadata: candidate.metadata,
+    }
+}
+
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAdapterFuture {
     Box::pin(async move {
         let bridge_url = config
@@ -315,3 +366,42 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAda
 }
 
 crate::register_adapter!(<ConfigurationAdapterRegistration> name: "bridge", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn build_ensure_input_forwards_original_candidate_verbatim() {
+        let candidate = EnsureCandidate {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "desc".into(),
+            schema: json!({ "type": "object" }),
+            candidate: Some(json!({ "port": 3112 })),
+            metadata: Some(json!({ "owner": "team" })),
+        };
+        let input = build_ensure_input(candidate);
+        // The remote engine — not the local cache — decides seed vs preserve, so
+        // the candidate must reach it exactly as supplied.
+        assert_eq!(input.id, "iii-stream");
+        assert_eq!(input.initial_value, Some(json!({ "port": 3112 })));
+        assert_eq!(input.schema, json!({ "type": "object" }));
+        assert_eq!(input.metadata, Some(json!({ "owner": "team" })));
+    }
+
+    #[test]
+    fn build_ensure_input_preserves_absent_candidate() {
+        let candidate = EnsureCandidate {
+            id: "demo".into(),
+            name: "Demo".into(),
+            description: String::new(),
+            schema: json!({ "type": "object" }),
+            candidate: None,
+            metadata: None,
+        };
+        let input = build_ensure_input(candidate);
+        assert_eq!(input.initial_value, None);
+    }
+}

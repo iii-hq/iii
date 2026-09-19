@@ -27,10 +27,11 @@ use crate::{
             config::ConfigurationModuleConfig,
             store::{ConfigurationStore, StoreError, expand_value, validate_against_schema},
             structs::{
-                ConfigurationEntry, ConfigurationEventData, ConfigurationEventType,
-                ConfigurationGetInput, ConfigurationGetResult, ConfigurationListInput,
-                ConfigurationListResult, ConfigurationRegisterInput, ConfigurationSchemaInput,
-                ConfigurationSchemaView, ConfigurationSetInput, ConfigurationSetResult,
+                ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
+                ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
+                ConfigurationGetResult, ConfigurationListInput, ConfigurationListResult,
+                ConfigurationRegisterInput, ConfigurationSchemaInput, ConfigurationSchemaView,
+                ConfigurationSetInput, ConfigurationSetResult,
             },
             trigger::{ConfigurationTriggers, TRIGGER_TYPE},
         },
@@ -433,6 +434,54 @@ impl ConfigurationWorker {
         self.fan_out(event).await;
 
         FunctionResult::Success(outcome.entry)
+    }
+
+    #[function(
+        id = "configuration::ensure",
+        description = "Atomically ensure a configuration id exists with a schema, name, description, and metadata, seeding initial_value ONLY when no non-null value is stored yet. An existing non-null value (including false, 0, or empty string) is preserved verbatim and the candidate seed is ignored (and not validated). Unlike configuration::register, ensure never overwrites a stored value, so it is the race-free way for one or many workers to seed a default. Fires configuration:registered on first creation or configuration:updated when an existing entry is refreshed."
+    )]
+    pub async fn ensure_fn(
+        &self,
+        input: ConfigurationEnsureInput,
+    ) -> FunctionResult<ConfigurationEnsureResult, ErrorBody> {
+        let outcome = match self
+            .store
+            .ensure(
+                input.id,
+                input.name,
+                input.description,
+                input.schema,
+                input.initial_value,
+                input.metadata,
+            )
+            .await
+        {
+            Ok(o) => o,
+            Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
+        };
+
+        // Only fan out locally when THIS store owns the event. For a delegated
+        // (bridge) adapter register_kind is `None`: the authoritative remote
+        // engine emits its own `configuration:*` event, relayed to local
+        // subscribers via the bridge watcher, so firing here would duplicate it.
+        if let Some(kind) = outcome.register_kind {
+            let event_type = match kind {
+                RegisterKind::Created => ConfigurationEventType::Registered,
+                RegisterKind::Replaced => ConfigurationEventType::Updated,
+            };
+            let event = entry_to_event(
+                &outcome.entry,
+                event_type,
+                outcome.old_value.clone(),
+                Some(outcome.entry.value.clone()),
+            );
+            self.fan_out(event).await;
+        }
+
+        FunctionResult::Success(ConfigurationEnsureResult {
+            action: outcome.action,
+            entry: outcome.entry,
+        })
     }
 
     #[function(
@@ -1108,5 +1157,107 @@ mod tests {
         let entry = worker.store.get("iii-stream").await.expect("entry");
         assert_eq!(entry.description, "updated");
         assert_eq!(entry.value, json!({ "port": 3112 }));
+    }
+
+    use crate::workers::configuration::structs::EnsureAction;
+
+    #[tokio::test]
+    async fn ensure_fn_seeds_when_absent_and_reports_seeded() {
+        let (_engine, worker, _dir) = setup().await;
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "test".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": 3112 })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.action, EnsureAction::Seeded);
+                assert_eq!(out.entry.value, json!({ "port": 3112 }));
+            }
+            _ => panic!("expected ensure success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_fn_preserves_existing_value_but_refreshes_metadata() {
+        let (_engine, worker, _dir) = setup().await;
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 3112 }))))
+            .await;
+
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "changed".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": 9999 })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.action, EnsureAction::Preserved);
+                assert_eq!(out.entry.value, json!({ "port": 3112 }));
+                assert_eq!(out.entry.description, "changed");
+            }
+            _ => panic!("expected ensure success"),
+        }
+        let entry = worker.store.get("iii-stream").await.expect("entry");
+        assert_eq!(entry.value, json!({ "port": 3112 }));
+    }
+
+    #[tokio::test]
+    async fn ensure_fn_rejects_invalid_applied_seed() {
+        let (_engine, worker, _dir) = setup().await;
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "test".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": "nope" })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "SCHEMA_INVALID"),
+            _ => panic!("expected SCHEMA_INVALID"),
+        }
+    }
+
+    // Schema / wire contract for the new `configuration::ensure` surface.
+    #[test]
+    fn ensure_input_schema_and_action_wire_contract() {
+        // Input shape mirrors register: id/name/description/schema/
+        // initial_value/metadata.
+        let schema_str =
+            serde_json::to_string(&schemars::schema_for!(ConfigurationEnsureInput)).unwrap();
+        for key in [
+            "id",
+            "name",
+            "description",
+            "schema",
+            "initial_value",
+            "metadata",
+        ] {
+            assert!(
+                schema_str.contains(key),
+                "ensure input schema must expose `{key}`"
+            );
+        }
+        // The action wire values are the stable contract callers branch on.
+        for (action, wire) in [
+            (EnsureAction::Seeded, "seeded"),
+            (EnsureAction::Preserved, "preserved"),
+            (EnsureAction::Registered, "registered"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), json!(wire));
+        }
     }
 }
