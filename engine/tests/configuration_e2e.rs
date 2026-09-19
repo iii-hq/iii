@@ -33,6 +33,9 @@ use iii::workers::configuration::structs::{
 };
 use iii::workers::traits::Worker;
 
+/// Build a `ConfigurationWorker` backed by a real `FsAdapter` rooted at `dir`
+/// for direct, in-process end-to-end testing (no engine boot, no WebSocket).
+/// `ttl_seconds` sets the per-id cleanup countdown (`0` disables it).
 async fn build_worker(
     dir: &std::path::Path,
     ttl_seconds: u64,
@@ -425,6 +428,7 @@ async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
 }
 
 #[tokio::test]
+/// Verify the routed ensure contract, first-registration event and preservation of later values.
 async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, worker) = build_worker(dir.path(), 0).await;

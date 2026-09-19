@@ -232,6 +232,7 @@ impl FsAdapter {
 
 #[async_trait]
 impl ConfigurationAdapter for FsAdapter {
+    /// The owning store serializes local filesystem initialization with its other mutations.
     fn ensure_support(&self) -> EnsureSupport {
         // The fs adapter's on-disk store is the sole authority the local cache
         // mirrors, so the store may make the seed-vs-preserve decision itself

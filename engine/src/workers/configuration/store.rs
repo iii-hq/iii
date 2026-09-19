@@ -184,6 +184,27 @@ pub struct EnsureOutcome {
     pub old_value: Option<Value>,
 }
 
+/// Whether a reconciled [`ExternalChange`] should be fanned out to trigger
+/// subscribers, returned by [`ConfigurationStore::apply_external`].
+///
+/// External changes reach the store through a channel, so a snapshot the
+/// watcher captured can be applied only AFTER a newer local mutation commits.
+/// `apply_external` reconciles the cache against the authoritative adapter
+/// instead of trusting the queued snapshot, and reports here whether the change
+/// still reflects the live state (and must fan out) or was superseded (and must
+/// stay silent so no stale `configuration:*` event is emitted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalApply {
+    /// The change still matches the authoritative store: the cache was updated
+    /// and the worker must fan out the corresponding `configuration:*` event.
+    Fanout,
+    /// The change was superseded by a newer local mutation, or the authoritative
+    /// adapter read failed. The cache was left reflecting the current
+    /// authoritative state and NO event must be fanned out: the local mutation
+    /// already emitted its own, or the queued value never became live.
+    Suppressed,
+}
+
 pub struct ConfigurationStore {
     adapter: Arc<dyn ConfigurationAdapter>,
     /// Authoritative in-memory cache. Source of truth for `get`/`list`/`schema`.
@@ -201,6 +222,7 @@ pub struct ConfigurationStore {
 }
 
 impl ConfigurationStore {
+    /// Create an empty cache and mutation lock for one authoritative adapter.
     pub fn new(adapter: Arc<dyn ConfigurationAdapter>) -> Self {
         Self {
             adapter,
@@ -226,6 +248,8 @@ impl ConfigurationStore {
         Ok(())
     }
 
+    /// Refresh schema and metadata, preserving the current value unless an explicit
+    /// initial value requests replacement. Serialize storage and cache mutations.
     pub async fn register(
         &self,
         id: String,
@@ -453,6 +477,8 @@ impl ConfigurationStore {
         })
     }
 
+    /// Validate the applied value and persist its raw template without losing a
+    /// concurrent registration or leaving the cache ahead of failed storage.
     pub async fn set(&self, id: &str, value: Value) -> Result<SetOutcome, StoreError> {
         Self::validate_id(id)?;
         let _write = self.write_lock.lock().await;
@@ -489,6 +515,7 @@ impl ConfigurationStore {
         self.entries.read().await.get(id).cloned()
     }
 
+    /// Delete from storage before removing the cache entry under the mutation lock.
     pub async fn delete(&self, id: &str) -> Result<Option<ConfigurationEntry>, StoreError> {
         let _write = self.write_lock.lock().await;
         let removed = self.adapter.delete(id).await?;
@@ -514,10 +541,43 @@ impl ConfigurationStore {
             .map(ConfigurationSchemaView::from)
     }
 
-    /// Apply an external change (file edit, remote bridge event) into the
-    /// cache without round-tripping through the adapter again.
-    pub async fn apply_external(&self, change: &ExternalChange) {
+    /// Reconcile an external change (file edit, remote bridge event) into the
+    /// cache and report whether it should be fanned out.
+    ///
+    /// The change was captured by an adapter watcher and delivered through a
+    /// channel, so by the time it reaches this method a newer local
+    /// register/ensure/set (or delete) may already have committed under the same
+    /// `write_lock`. Trusting the queued snapshot verbatim would then revert the
+    /// cache to a stale value (a later `get` returns stale, a later `ensure`
+    /// could clobber) or drop a locally recreated entry.
+    ///
+    /// For a `Local` adapter (whose in-process store IS the authority the cache
+    /// mirrors, e.g. `fs`) this re-reads the adapter's CURRENT state under the
+    /// `write_lock` and reconciles the cache to it, ignoring a snapshot a newer
+    /// local mutation superseded. A failed authoritative read keeps the
+    /// last-known cache untouched -- never a spurious delete. For a `Delegated`
+    /// adapter (whose authority is a remote engine reached over the bridge,
+    /// whose `get` is a remote RPC that cannot distinguish NOT_FOUND from a
+    /// transient failure) the ordered relayed event stream IS the authority, so
+    /// the snapshot is applied directly.
+    ///
+    /// Returns [`ExternalApply::Fanout`] when the change still reflects the
+    /// authoritative store and its `configuration:*` event should be emitted, or
+    /// [`ExternalApply::Suppressed`] when it was superseded and must stay silent.
+    pub async fn apply_external(&self, change: &ExternalChange) -> ExternalApply {
         let _write = self.write_lock.lock().await;
+        match self.adapter.ensure_support() {
+            EnsureSupport::Local => self.apply_external_reconciled(change).await,
+            EnsureSupport::Delegated => self.apply_external_snapshot(change).await,
+        }
+    }
+
+    /// Apply a queued snapshot verbatim (the `Delegated` path). The remote
+    /// authority emits ordered events relayed over a single bridge connection,
+    /// so the value in the event is authoritative; re-querying the remote would
+    /// add an RPC that cannot tell a delete from a transient failure. Assumes
+    /// the caller holds `write_lock`.
+    async fn apply_external_snapshot(&self, change: &ExternalChange) -> ExternalApply {
         let mut cache = self.entries.write().await;
         match change {
             ExternalChange::Registered(entry) | ExternalChange::Updated { entry, .. } => {
@@ -526,6 +586,68 @@ impl ConfigurationStore {
             ExternalChange::Deleted { entry } => {
                 cache.remove(&entry.id);
             }
+        }
+        ExternalApply::Fanout
+    }
+
+    /// Reconcile a queued change against the authoritative adapter (the `Local`
+    /// path). Re-reads the adapter's current state and updates the cache to it,
+    /// so a snapshot a newer local mutation superseded neither reverts a value
+    /// nor drops a recreated entry. Assumes the caller holds `write_lock`; the
+    /// `entries` lock is taken only after the adapter read completes, never
+    /// across it.
+    async fn apply_external_reconciled(&self, change: &ExternalChange) -> ExternalApply {
+        let id = change.id();
+        let current = match self.adapter.get(id).await {
+            Ok(current) => current,
+            Err(err) => {
+                // A failed authoritative read must never be turned into a
+                // spurious delete or revert: keep the last-known cache.
+                tracing::warn!(
+                    configuration_id = %id,
+                    error = %err,
+                    "Failed to reconcile external configuration change against the adapter; keeping the cached value"
+                );
+                return ExternalApply::Suppressed;
+            }
+        };
+
+        let mut cache = self.entries.write().await;
+        match change {
+            ExternalChange::Registered(_) | ExternalChange::Updated { .. } => match current {
+                // The entry still exists at the authority: adopt its current
+                // value. Fan out only when it still matches the queued snapshot;
+                // otherwise a newer local write already emitted its own event.
+                Some(current) => {
+                    let still_current = change.value() == Some(&current.value);
+                    cache.insert(id.to_string(), current);
+                    if still_current {
+                        ExternalApply::Fanout
+                    } else {
+                        ExternalApply::Suppressed
+                    }
+                }
+                // The entry was deleted at the authority after this snapshot was
+                // captured: reconcile (remove) and let the delete's own event
+                // drive the fan-out.
+                None => {
+                    cache.remove(id);
+                    ExternalApply::Suppressed
+                }
+            },
+            ExternalChange::Deleted { .. } => match current {
+                // The delete still reflects the authority: apply and fan out.
+                None => {
+                    cache.remove(id);
+                    ExternalApply::Fanout
+                }
+                // A local register/ensure recreated the entry before this delete
+                // landed: keep the live value, drop the stale delete.
+                Some(current) => {
+                    cache.insert(id.to_string(), current);
+                    ExternalApply::Suppressed
+                }
+            },
         }
     }
 
@@ -847,6 +969,7 @@ mod tests {
 
     use crate::workers::configuration::adapters::fs::FsAdapter;
 
+    /// Build a filesystem adapter rooted in the test's private temporary directory.
     async fn fs_adapter(dir: &std::path::Path) -> Arc<dyn ConfigurationAdapter> {
         Arc::new(
             FsAdapter::new(Some(json!({ "directory": dir.to_str().unwrap() })))
@@ -855,10 +978,12 @@ mod tests {
         ) as Arc<dyn ConfigurationAdapter>
     }
 
+    /// Allow object-valued fixtures without coupling concurrency assertions to schema details.
     fn any_object_schema() -> Value {
         json!({ "type": "object" })
     }
 
+    /// Require an integer port so tests can distinguish applied from ignored seed validation.
     fn required_int_port_schema() -> Value {
         json!({
             "type": "object",
@@ -880,6 +1005,7 @@ mod tests {
     }
 
     impl GateAdapter {
+        /// Wrap storage with a one-shot gate that tests can arm before registration.
         fn wrap(inner: Arc<dyn ConfigurationAdapter>) -> Arc<Self> {
             Arc::new(Self {
                 inner,
@@ -892,12 +1018,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConfigurationAdapter for GateAdapter {
+        /// Preserve the wrapped adapter's authoritative initialization strategy.
         fn ensure_support(&self) -> EnsureSupport {
             self.inner.ensure_support()
         }
+        /// Forward the original initialization candidate without modifying its semantics.
         async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
             self.inner.ensure(candidate).await
         }
+        /// Park the armed mutation until released, then execute the real storage write.
         async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
             if self.armed.swap(false, Ordering::SeqCst) {
                 self.entered.notify_one();
@@ -922,15 +1051,18 @@ mod tests {
         }
     }
 
-    /// Adapter wrapper whose `register`/`set` fail while `fail` is set, so a
-    /// test can drive a storage error and confirm the cache is untouched and
-    /// the `write_lock` was released (a later mutation still succeeds).
+    /// Adapter wrapper whose `register`/`set`/`get` fail while `fail` is set, so
+    /// a test can drive a storage error and confirm the cache is untouched and
+    /// the `write_lock` was released (a later mutation still succeeds). Failing
+    /// `get` too lets an `apply_external` reconcile hit an authoritative-read
+    /// failure and keep the last-known cache with no spurious delete.
     struct ToggleFailAdapter {
         inner: Arc<dyn ConfigurationAdapter>,
         fail: AtomicBool,
     }
 
     impl ToggleFailAdapter {
+        /// Start with successful storage operations and permit explicit failure injection.
         fn wrap(inner: Arc<dyn ConfigurationAdapter>) -> Arc<Self> {
             Arc::new(Self {
                 inner,
@@ -941,25 +1073,33 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConfigurationAdapter for ToggleFailAdapter {
+        /// Preserve the wrapped adapter's authoritative initialization strategy.
         fn ensure_support(&self) -> EnsureSupport {
             self.inner.ensure_support()
         }
+        /// Forward the original initialization candidate without modifying its semantics.
         async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
             self.inner.ensure(candidate).await
         }
+        /// Inject a register failure before storage changes, or delegate normally.
         async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
             if self.fail.load(Ordering::SeqCst) {
                 anyhow::bail!("injected register failure");
             }
             self.inner.register(entry).await
         }
+        /// Inject a write failure without modifying the real adapter or its cache.
         async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
             if self.fail.load(Ordering::SeqCst) {
                 anyhow::bail!("injected set failure");
             }
             self.inner.set(id, value).await
         }
+        /// Simulate a failed authoritative read, distinct from an absent entry.
         async fn get(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
+            if self.fail.load(Ordering::SeqCst) {
+                anyhow::bail!("injected get failure");
+            }
             self.inner.get(id).await
         }
         async fn delete(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
@@ -973,6 +1113,7 @@ mod tests {
         }
     }
 
+    /// First initialization persists the candidate consistently in storage and cache.
     #[tokio::test]
     async fn ensure_seeds_when_absent() {
         let dir = tempfile::tempdir().unwrap();
@@ -996,6 +1137,7 @@ mod tests {
         );
     }
 
+    /// A registered null placeholder remains eligible for atomic initialization.
     #[tokio::test]
     async fn ensure_seeds_when_stored_value_is_null() {
         let dir = tempfile::tempdir().unwrap();
@@ -1029,6 +1171,7 @@ mod tests {
         assert_eq!(store.get("demo").await.unwrap().value, json!({ "port": 1 }));
     }
 
+    /// An unused seed cannot replace existing data or reject an otherwise valid refresh.
     #[tokio::test]
     async fn ensure_preserves_existing_value_even_when_seed_differs_or_is_invalid() {
         let dir = tempfile::tempdir().unwrap();
@@ -1066,6 +1209,7 @@ mod tests {
         );
     }
 
+    /// False, zero and an empty string are stored values, not first-boot placeholders.
     #[tokio::test]
     async fn ensure_preserves_falsey_values_false_zero_empty_string() {
         for stored in [json!(false), json!(0), json!("")] {
@@ -1103,6 +1247,7 @@ mod tests {
         }
     }
 
+    /// Retain unresolved environment templates verbatim for expansion at read time.
     #[tokio::test]
     async fn ensure_stores_seed_with_unresolved_env_var_raw() {
         unsafe {
@@ -1130,6 +1275,7 @@ mod tests {
         );
     }
 
+    /// A seed selected for persistence must satisfy the applied-value schema.
     #[tokio::test]
     async fn ensure_rejects_invalid_seed_when_applied() {
         let dir = tempfile::tempdir().unwrap();
@@ -1148,6 +1294,7 @@ mod tests {
         assert!(matches!(err, StoreError::SchemaInvalid(_)));
     }
 
+    /// Gate competing registrars to prove the later candidate cannot replace the winning seed.
     #[tokio::test]
     async fn two_concurrent_ensures_first_seed_wins_no_clobber() {
         let dir = tempfile::tempdir().unwrap();
@@ -1211,6 +1358,7 @@ mod tests {
         );
     }
 
+    /// A metadata refresh must not restore a stale value over a serialized operator update.
     #[tokio::test]
     async fn concurrent_metadata_register_and_set_do_not_lose_the_set() {
         let dir = tempfile::tempdir().unwrap();
@@ -1278,6 +1426,7 @@ mod tests {
         );
     }
 
+    /// Failed writes preserve the cache and release the mutation lock for subsequent writes.
     #[tokio::test]
     async fn storage_failure_leaves_cache_consistent_and_releases_lock() {
         let dir = tempfile::tempdir().unwrap();
@@ -1315,6 +1464,7 @@ mod tests {
         assert_eq!(store.get("demo").await.unwrap().value, json!({ "port": 3 }));
     }
 
+    /// Interleaved initialization and deletion converge to matching storage and cache state.
     #[tokio::test]
     async fn ensure_and_delete_serialize_without_corruption() {
         let dir = tempfile::tempdir().unwrap();
@@ -1362,6 +1512,7 @@ mod tests {
     }
 
     impl RecordingDelegatedAdapter {
+        /// Prepare an authoritative remote reply and capture the candidate sent to it.
         fn new(reply: ConfigurationEntry, reply_action: EnsureAction) -> Arc<Self> {
             Arc::new(Self {
                 recorded: std::sync::Mutex::new(None),
@@ -1374,9 +1525,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConfigurationAdapter for RecordingDelegatedAdapter {
+        /// Model an adapter whose remote authority, not the local cache, decides seeding.
         fn ensure_support(&self) -> EnsureSupport {
             EnsureSupport::Delegated
         }
+        /// Record the forwarded seed and return the configured remote outcome or failure.
         async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
             *self.recorded.lock().unwrap() = Some(candidate);
             if self.fail.load(Ordering::SeqCst) {
@@ -1407,6 +1560,7 @@ mod tests {
         }
     }
 
+    /// Construct an object-schema entry for delegated initialization and reconciliation fixtures.
     fn mk_entry(id: &str, value: Value) -> ConfigurationEntry {
         ConfigurationEntry {
             id: id.into(),
@@ -1418,6 +1572,7 @@ mod tests {
         }
     }
 
+    /// Preserve the remote decision even when the local cache contains a conflicting stale value.
     #[tokio::test]
     async fn delegated_ensure_forwards_original_candidate_not_cached_value() {
         // The authoritative store lives behind a Delegated adapter. Even if the
@@ -1472,6 +1627,7 @@ mod tests {
         assert!(out.register_kind.is_none());
     }
 
+    /// Remote failure must not trigger the unsafe legacy registration path or populate the cache.
     #[tokio::test]
     async fn delegated_ensure_error_does_not_fall_back_to_register() {
         let adapter =
@@ -1522,6 +1678,7 @@ mod tests {
         }
     }
 
+    /// An adapter without an atomic implementation must reject initialization before any write.
     #[tokio::test]
     async fn default_delegated_adapter_fails_closed_on_ensure() {
         let store = ConfigurationStore::new(
@@ -1539,5 +1696,282 @@ mod tests {
             .await
             .expect_err("a Delegated adapter with no ensure impl must fail closed");
         assert!(matches!(err, StoreError::Adapter(_)));
+    }
+
+    // ================================================================
+    //  apply_external reconciles a QUEUED/DELAYED watcher snapshot
+    //  against the authoritative adapter (CodeRabbit #4053820511).
+    //
+    //  The fs watcher captures a snapshot under the ADAPTER cache lock and
+    //  queues it; `apply_external` applies it later under the STORE
+    //  write_lock (a different lock). A local mutation can commit in that
+    //  gap, so a verbatim apply of the queued snapshot reverts the cache
+    //  (get returns stale, a later ensure could clobber). These tests force
+    //  that ordering deterministically -- no sleeps, no watcher timing.
+    // ================================================================
+
+    /// RED->GREEN regression: a queued external update applied after a newer
+    /// local set must not revert the cache to the stale snapshot value --
+    /// reconcile against the authoritative adapter, which holds the new value.
+    #[tokio::test]
+    async fn apply_external_stale_update_does_not_revert_newer_local_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The watcher captured an external update to {port: 2} and queued it.
+        let queued = ExternalChange::Updated {
+            entry: mk_entry("demo", json!({ "port": 2 })),
+            old_value: Some(json!({ "port": 1 })),
+        };
+
+        // A newer local set to {port: 3} commits before the queued event is
+        // applied: it updates BOTH the adapter and the cache.
+        store.set("demo", json!({ "port": 3 })).await.unwrap();
+
+        // Applying the stale queued snapshot must NOT revert the cache to 2.
+        store.apply_external(&queued).await;
+
+        assert_eq!(
+            store.get("demo").await.unwrap().value,
+            json!({ "port": 3 }),
+            "a queued external snapshot must not clobber a newer local set"
+        );
+        assert_eq!(
+            store.adapter().get("demo").await.unwrap().unwrap().value,
+            json!({ "port": 3 }),
+            "the authoritative adapter value is unchanged"
+        );
+    }
+
+    /// RED->GREEN regression: a queued external delete applied after a local
+    /// register recreated the entry must not drop it -- reconcile against the
+    /// authoritative adapter, which now holds the recreated value.
+    #[tokio::test]
+    async fn apply_external_stale_delete_does_not_drop_locally_recreated_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The watcher captured an external delete and queued it.
+        let queued = ExternalChange::Deleted {
+            entry: mk_entry("demo", json!({ "port": 1 })),
+        };
+
+        // A newer local register recreates the entry before the delete lands.
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 7 })),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Applying the stale delete must NOT drop the recreated entry.
+        store.apply_external(&queued).await;
+
+        assert_eq!(
+            store.get("demo").await.unwrap().value,
+            json!({ "port": 7 }),
+            "a queued external delete must not drop a locally recreated entry"
+        );
+    }
+
+    /// Scenario 1: a queued external update a newer local set superseded must
+    /// reconcile the cache silently, reporting `Suppressed` so no stale
+    /// `configuration:*` event is fanned out.
+    #[tokio::test]
+    async fn apply_external_superseded_update_suppresses_fan_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+        let queued = ExternalChange::Updated {
+            entry: mk_entry("demo", json!({ "port": 2 })),
+            old_value: Some(json!({ "port": 1 })),
+        };
+        store.set("demo", json!({ "port": 3 })).await.unwrap();
+        assert_eq!(
+            store.apply_external(&queued).await,
+            ExternalApply::Suppressed
+        );
+    }
+
+    /// Scenario 2: a queued delete a local recreate superseded reconciles
+    /// silently, reporting `Suppressed` so the recreated entry stays and no
+    /// delete event fires.
+    #[tokio::test]
+    async fn apply_external_superseded_delete_suppresses_fan_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+        let queued = ExternalChange::Deleted {
+            entry: mk_entry("demo", json!({ "port": 1 })),
+        };
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 7 })),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.apply_external(&queued).await,
+            ExternalApply::Suppressed
+        );
+    }
+
+    /// Scenario 4: a genuine external edit (no interleaving local write) still
+    /// ingests into the cache and fans out.
+    #[tokio::test]
+    async fn apply_external_fresh_update_ingests_and_fans_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+        // The watcher already applied the external edit to the adapter's
+        // authoritative state; deliver the matching Updated snapshot.
+        store
+            .adapter()
+            .set("demo", json!({ "port": 9 }))
+            .await
+            .unwrap();
+        let change = ExternalChange::Updated {
+            entry: mk_entry("demo", json!({ "port": 9 })),
+            old_value: Some(json!({ "port": 1 })),
+        };
+        assert_eq!(store.apply_external(&change).await, ExternalApply::Fanout);
+        assert_eq!(store.get("demo").await.unwrap().value, json!({ "port": 9 }));
+    }
+
+    /// Scenario 4: a genuine external removal still drops the entry and fans out
+    /// a delete.
+    #[tokio::test]
+    async fn apply_external_real_delete_removes_and_fans_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigurationStore::new(fs_adapter(dir.path()).await);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+        // The watcher already removed the entry from the authoritative store.
+        store.adapter().delete("demo").await.unwrap();
+        let change = ExternalChange::Deleted {
+            entry: mk_entry("demo", json!({ "port": 1 })),
+        };
+        assert_eq!(store.apply_external(&change).await, ExternalApply::Fanout);
+        assert!(store.get("demo").await.is_none());
+    }
+
+    /// Scenario 4: a failed authoritative read must leave the cache intact
+    /// (never a spurious delete or revert) and suppress the fan-out.
+    #[tokio::test]
+    async fn apply_external_read_failure_keeps_cache_and_suppresses() {
+        let dir = tempfile::tempdir().unwrap();
+        let fail = ToggleFailAdapter::wrap(fs_adapter(dir.path()).await);
+        let store = ConfigurationStore::new(fail.clone() as Arc<dyn ConfigurationAdapter>);
+        store
+            .register(
+                "demo".into(),
+                "demo".into(),
+                String::new(),
+                any_object_schema(),
+                Some(json!({ "port": 1 })),
+                None,
+            )
+            .await
+            .unwrap();
+        fail.fail.store(true, Ordering::SeqCst);
+        let change = ExternalChange::Updated {
+            entry: mk_entry("demo", json!({ "port": 2 })),
+            old_value: Some(json!({ "port": 1 })),
+        };
+        assert_eq!(
+            store.apply_external(&change).await,
+            ExternalApply::Suppressed
+        );
+        fail.fail.store(false, Ordering::SeqCst);
+        assert_eq!(store.get("demo").await.unwrap().value, json!({ "port": 1 }));
+    }
+
+    /// A `Delegated` adapter's authority is a remote engine with an ordered
+    /// relayed event stream, so the snapshot is applied verbatim and fans out
+    /// (no reconcile RPC that could mistake a transient failure for a delete).
+    #[tokio::test]
+    async fn apply_external_delegated_applies_snapshot_without_reconcile() {
+        let adapter = RecordingDelegatedAdapter::new(
+            mk_entry("demo", json!({ "port": 1 })),
+            EnsureAction::Preserved,
+        );
+        let store = ConfigurationStore::new(adapter as Arc<dyn ConfigurationAdapter>);
+        let change = ExternalChange::Registered(mk_entry("demo", json!({ "port": 5000 })));
+        assert_eq!(store.apply_external(&change).await, ExternalApply::Fanout);
+        assert_eq!(
+            store.get("demo").await.unwrap().value,
+            json!({ "port": 5000 })
+        );
     }
 }

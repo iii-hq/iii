@@ -92,6 +92,28 @@ pub enum ExternalChange {
         entry: ConfigurationEntry,
     },
 }
+impl ExternalChange {
+    /// The configuration id this change concerns, regardless of variant.
+    pub fn id(&self) -> &str {
+        match self {
+            ExternalChange::Registered(entry)
+            | ExternalChange::Updated { entry, .. }
+            | ExternalChange::Deleted { entry } => &entry.id,
+        }
+    }
+
+    /// The value this change would install, or `None` for a delete. The store
+    /// uses it to decide whether a queued snapshot still matches the
+    /// authoritative adapter state before fanning the change out.
+    pub fn value(&self) -> Option<&Value> {
+        match self {
+            ExternalChange::Registered(entry) | ExternalChange::Updated { entry, .. } => {
+                Some(&entry.value)
+            }
+            ExternalChange::Deleted { .. } => None,
+        }
+    }
+}
 
 /// Channel sender the worker hands to adapters that surface external changes.
 pub type ExternalChangeSender = tokio::sync::mpsc::UnboundedSender<ExternalChange>;

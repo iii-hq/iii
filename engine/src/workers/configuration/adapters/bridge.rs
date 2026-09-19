@@ -105,6 +105,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         })
     }
 
+    /// Initialization decisions belong to the remote engine rather than the local mirror.
     fn ensure_support(&self) -> EnsureSupport {
         // The authoritative store lives on the REMOTE engine; the local cache is
         // only a mirror the local `write_lock` cannot guard across processes.
@@ -113,6 +114,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         EnsureSupport::Delegated
     }
 
+    /// Forward the untouched candidate to the remote atomic API; never retry as legacy register.
     async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
         // Forward the ORIGINAL candidate to the REMOTE authoritative
         // `configuration::ensure` so the seed-vs-preserve decision is made where
@@ -373,6 +375,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    /// Preserve the candidate and metadata without substituting a cached local value.
     fn build_ensure_input_forwards_original_candidate_verbatim() {
         let candidate = EnsureCandidate {
             id: "iii-stream".into(),
@@ -392,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    /// Missing candidates stay absent instead of becoming an explicit null seed.
     fn build_ensure_input_preserves_absent_candidate() {
         let candidate = EnsureCandidate {
             id: "demo".into(),
