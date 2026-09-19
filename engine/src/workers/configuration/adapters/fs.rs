@@ -240,6 +240,7 @@ impl ConfigurationAdapter for FsAdapter {
         EnsureSupport::Local
     }
 
+    /// Persist a complete legacy registration and refresh the filesystem cache used for echo suppression.
     async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
         // Hold the write lock across the disk write so a `write_entry`
         // failure leaves the in-memory cache untouched. Without this, a

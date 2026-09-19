@@ -82,6 +82,7 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl ConfigurationAdapter for BridgeAdapter {
+    /// Forward explicit legacy registration, including its intentional value-replacement semantics.
     async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
         let raw = self
             .call(
@@ -142,6 +143,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         })
     }
 
+    /// Replace the authoritative remote value through its validated configuration API.
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
         let raw = self
             .call(
@@ -325,6 +327,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         Ok(())
     }
 
+    /// Unregister the relay and close the remote client without deleting configuration entries.
     async fn destroy(&self) -> anyhow::Result<()> {
         if let Some(trigger) = self
             .relay_trigger
@@ -355,6 +358,7 @@ fn build_ensure_input(candidate: EnsureCandidate) -> ConfigurationEnsureInput {
     }
 }
 
+/// Build a remote-backed adapter from its configured URL, falling back to the default bridge address.
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAdapterFuture {
     Box::pin(async move {
         let bridge_url = config

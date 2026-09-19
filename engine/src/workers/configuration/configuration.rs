@@ -417,6 +417,7 @@ impl ConfigurationWorker {
         id = "configuration::register",
         description = "Register a configuration id with a name, description, and JSON Schema. Idempotent — re-registering replaces metadata and (when initial_value is provided) the value. Validates initial_value against the schema."
     )]
+    /// Apply explicit legacy registration semantics and notify subscribers after the store commits.
     pub async fn register_fn(
         &self,
         input: ConfigurationRegisterInput,
@@ -831,6 +832,7 @@ mod tests {
     // #1916: a templated integer field must register (validation runs on the
     // APPLIED value) and `get` must coerce it to a real integer.
     #[tokio::test]
+    /// Validate the expanded integer while retaining the raw environment template in storage.
     async fn register_and_get_coerces_templated_integer_port() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
@@ -964,6 +966,7 @@ mod tests {
 
     // --- hot-reload: external file-edit validation ---
 
+    /// Build a queued watcher update with matching schema and old/new values for reconciliation tests.
     fn updated_change(value: Value, old: Value) -> ExternalChange {
         ExternalChange::Updated {
             entry: ConfigurationEntry {
@@ -1029,6 +1032,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// A live external edit with missing required environment values cannot replace the applied cache.
     async fn external_change_rejects_unresolved_env_var() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
@@ -1200,6 +1204,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Metadata-only legacy registration preserves the current value while refreshing form metadata.
     async fn re_register_replaces_metadata_keeps_value_when_initial_omitted() {
         let (_engine, worker, _dir) = setup().await;
         worker

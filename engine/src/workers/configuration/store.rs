@@ -511,6 +511,7 @@ impl ConfigurationStore {
         Ok(outcome)
     }
 
+    /// Return the last committed raw entry without holding the mutation lock across caller work.
     pub async fn get(&self, id: &str) -> Option<ConfigurationEntry> {
         self.entries.read().await.get(id).cloned()
     }
@@ -533,6 +534,7 @@ impl ConfigurationStore {
         views
     }
 
+    /// Expose schema metadata without returning the entry's potentially sensitive configuration value.
     pub async fn schema_view(&self, id: &str) -> Option<ConfigurationSchemaView> {
         self.entries
             .read()
@@ -944,6 +946,7 @@ mod tests {
     }
 
     #[test]
+    /// Reject names outside the lowercase bounded identifier contract before reaching storage.
     fn validate_id_rejects_uppercase_and_long_ids() {
         assert!(matches!(
             ConfigurationStore::validate_id("UPPER"),
@@ -1034,18 +1037,23 @@ mod tests {
             }
             self.inner.register(entry).await
         }
+        /// Let operator writes use the real adapter while the test gates only registration.
         async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
             self.inner.set(id, value).await
         }
+        /// Read the real adapter state so assertions compare cache with authoritative storage.
         async fn get(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             self.inner.get(id).await
         }
+        /// Delegate deletions unchanged so the fixture can exercise real mutation ordering.
         async fn delete(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             self.inner.delete(id).await
         }
+        /// Preserve authoritative enumeration when priming the store through this fixture.
         async fn list(&self) -> anyhow::Result<Vec<ConfigurationEntry>> {
             self.inner.list().await
         }
+        /// Release wrapped adapter resources without adding fixture-specific storage mutations.
         async fn destroy(&self) -> anyhow::Result<()> {
             self.inner.destroy().await
         }
@@ -1102,12 +1110,15 @@ mod tests {
             }
             self.inner.get(id).await
         }
+        /// Delegate deletions unchanged so the fixture can exercise real mutation ordering.
         async fn delete(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             self.inner.delete(id).await
         }
+        /// Preserve authoritative enumeration when priming the store through this fixture.
         async fn list(&self) -> anyhow::Result<Vec<ConfigurationEntry>> {
             self.inner.list().await
         }
+        /// Release wrapped adapter resources without adding fixture-specific storage mutations.
         async fn destroy(&self) -> anyhow::Result<()> {
             self.inner.destroy().await
         }
@@ -1540,21 +1551,27 @@ mod tests {
                 entry: self.reply.clone(),
             })
         }
+        /// Any legacy registration is an unsafe fallback and must fail this fixture immediately.
         async fn register(&self, _entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
             panic!("delegated ensure must never fall back to register");
         }
+        /// Initialization is not allowed to use unconditional set as an alternative write path.
         async fn set(&self, _id: &str, _value: Value) -> anyhow::Result<SetOutcome> {
             unreachable!()
         }
+        /// Model an empty local mirror without supplying authority for the remote seed decision.
         async fn get(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             Ok(None)
         }
+        /// The recording fixture contains no persistent entry to delete.
         async fn delete(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             Ok(None)
         }
+        /// Start store priming with an empty mirror so delegated outcomes remain authoritative.
         async fn list(&self) -> anyhow::Result<Vec<ConfigurationEntry>> {
             Ok(Vec::new())
         }
+        /// No background resources are owned by this in-memory delegation fixture.
         async fn destroy(&self) -> anyhow::Result<()> {
             Ok(())
         }
@@ -1658,21 +1675,27 @@ mod tests {
     #[async_trait::async_trait]
     impl ConfigurationAdapter for DefaultDelegatedAdapter {
         // ensure_support defaults to Delegated; ensure defaults to a fail-closed bail.
+        /// Unsupported atomic initialization must never silently invoke the legacy writer.
         async fn register(&self, _entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
             panic!("default-delegated adapter must not register");
         }
+        /// Initialization is not allowed to use unconditional set as an alternative write path.
         async fn set(&self, _id: &str, _value: Value) -> anyhow::Result<SetOutcome> {
             unreachable!()
         }
+        /// Model an empty local mirror without supplying authority for the remote seed decision.
         async fn get(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             Ok(None)
         }
+        /// The recording fixture contains no persistent entry to delete.
         async fn delete(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
             Ok(None)
         }
+        /// Start store priming with an empty mirror so delegated outcomes remain authoritative.
         async fn list(&self) -> anyhow::Result<Vec<ConfigurationEntry>> {
             Ok(Vec::new())
         }
+        /// No background resources are owned by this in-memory delegation fixture.
         async fn destroy(&self) -> anyhow::Result<()> {
             Ok(())
         }
