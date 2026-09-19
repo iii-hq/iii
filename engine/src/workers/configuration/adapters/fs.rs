@@ -27,8 +27,8 @@ use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 use crate::engine::Engine;
 use crate::workers::configuration::adapters::{
-    ConfigurationAdapter, ExternalChange, ExternalChangeSender, RegisterKind, RegisterOutcome,
-    SetOutcome,
+    ConfigurationAdapter, EnsureSupport, ExternalChange, ExternalChangeSender, RegisterKind,
+    RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::registry::{
     ConfigurationAdapterFuture, ConfigurationAdapterRegistration,
@@ -232,6 +232,15 @@ impl FsAdapter {
 
 #[async_trait]
 impl ConfigurationAdapter for FsAdapter {
+    /// The owning store serializes local filesystem initialization with its other mutations.
+    fn ensure_support(&self) -> EnsureSupport {
+        // The fs adapter's on-disk store is the sole authority the local cache
+        // mirrors, so the store may make the seed-vs-preserve decision itself
+        // under its `write_lock` and persist it through `register`.
+        EnsureSupport::Local
+    }
+
+    /// Persist a complete legacy registration and refresh the filesystem cache used for echo suppression.
     async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
         // Hold the write lock across the disk write so a `write_entry`
         // failure leaves the in-memory cache untouched. Without this, a

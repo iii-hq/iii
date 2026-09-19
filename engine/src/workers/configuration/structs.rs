@@ -77,6 +77,28 @@ pub struct ConfigurationRegisterInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationEnsureInput {
+    /// Configuration id. Must match `[a-z0-9_-]{1,64}` so it is safe as a
+    /// filename in the `fs` adapter.
+    pub id: String,
+    /// Human-readable name shown in `configuration::list`.
+    pub name: String,
+    /// Description shown in `configuration::list`.
+    pub description: String,
+    /// JSON Schema describing the value shape. `set` validates against this.
+    pub schema: Value,
+    /// Optional seed value. Applied atomically ONLY when no non-null value is
+    /// already stored for this id (the id is absent or its stored value is
+    /// `null`). When a non-null value already exists it is preserved verbatim
+    /// and this candidate is ignored — never validated. When the seed IS
+    /// applied it is validated against `schema` exactly like
+    /// `configuration::register` validates `initial_value`.
+    pub initial_value: Option<Value>,
+    /// Optional opaque metadata stored alongside the entry.
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationSetInput {
     pub id: String,
     /// New configuration value. Validated against the registered schema.
@@ -112,6 +134,34 @@ pub struct ConfigurationSetResult {
     pub old_value: Option<Value>,
     /// Current stored value (templates not expanded).
     pub new_value: Value,
+}
+
+/// What `configuration::ensure` did with the stored value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum EnsureAction {
+    /// The candidate `initial_value` was written because no non-null value was
+    /// stored yet (the id was absent or its stored value was `null`).
+    #[serde(rename = "seeded")]
+    Seeded,
+    /// A non-null value was already stored and preserved verbatim; the
+    /// candidate seed (if any) was ignored. Name, description, schema, and
+    /// metadata were still refreshed.
+    #[serde(rename = "preserved")]
+    Preserved,
+    /// The entry was created or refreshed but no seed was applied and no value
+    /// existed, so the value stays `null` (awaiting a later `set`/`ensure`).
+    #[serde(rename = "registered")]
+    Registered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationEnsureResult {
+    /// What ensure did: seeded the candidate, preserved an existing value, or
+    /// registered the entry with a null value.
+    pub action: EnsureAction,
+    /// The stored entry after ensure. Templates inside `value` are kept
+    /// verbatim; expansion happens on read.
+    pub entry: ConfigurationEntry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

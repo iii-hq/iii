@@ -4417,7 +4417,10 @@ mod tests {
         assert!(matches!(result, FunctionResult::Failure(_)));
     }
 
+    /// Worker-list fixtures mutate the same global metrics store as OTLP
+    /// ingestion tests; serialize the clear/write/read sequence with them.
     #[tokio::test]
+    #[serial_test::serial]
     async fn workers_list_returns_registered_worker_with_metrics_when_filtered() {
         let (engine, module) = setup_engine_and_module();
 
