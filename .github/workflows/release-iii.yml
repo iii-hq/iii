@@ -57,7 +57,7 @@ jobs:
       - name: Post initial Slack message
         id: slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v4.0.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -88,12 +88,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
           fetch-depth: 0
@@ -112,7 +112,7 @@ jobs:
           echo "::notice::Previous stable tag for release notes: ${PREV_STABLE:-<none, GitHub default>}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -142,12 +142,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
 
@@ -177,7 +177,7 @@ jobs:
         run: cargo build --locked -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iii-init-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/iii-init
@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.setup.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -235,12 +235,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
 
@@ -271,7 +271,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.setup.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -341,13 +341,13 @@ jobs:
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -358,7 +358,7 @@ jobs:
       - name: Build frontend for binary embedding
         run: pnpm --filter console-frontend build:binary
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: console-frontend-dist
           path: console/packages/console-frontend/dist-binary/
@@ -717,7 +717,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -844,7 +844,7 @@ jobs:
       - name: Update Slack parent message
         if: needs.setup.outputs.slack_ts != ''
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v4.0.0
         with:
           method: chat.update
           token: ${{ secrets.SLACK_BOT_TOKEN }}
