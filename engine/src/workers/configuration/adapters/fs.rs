@@ -322,15 +322,19 @@ impl FsAdapter {
         };
         let mut entry: ConfigurationEntry = serde_yaml::from_slice(&original)?;
         anyhow::ensure!(
-            entry.id == from_id,
+            entry.id == from_id || entry.id == to_id,
             "configuration filename/internal id mismatch for '{from_id}'"
         );
         if entry.schema.is_null()
-            && let Some(cached) = cache.get(from_id)
+            && let Some(cached) = cache.get(&entry.id)
         {
             entry.schema = cached.schema.clone();
         }
-        cache.insert(from_id.to_string(), entry.clone());
+        // A partially migrated file may already carry the destination id.
+        // Do not invent a source cache entry with a mismatched internal id.
+        if entry.id == from_id {
+            cache.insert(from_id.to_string(), entry.clone());
+        }
         let mut document: serde_yaml::Value = serde_yaml::from_slice(&original)?;
         let map = document
             .as_mapping_mut()
@@ -879,6 +883,63 @@ mod tests {
         std::fs::write(adapter.entry_path("old"), "invalid: [").unwrap();
         assert!(adapter.migrate("old", "new").await.is_err());
         assert!(!adapter.entry_path("new").exists());
+    }
+
+    #[tokio::test]
+    async fn migration_accepts_destination_id_in_legacy_file_but_rejects_unrelated_ids() {
+        use crate::workers::configuration::store::ConfigurationStore;
+        for target_exists in [false, true] {
+            let dir = temp_dir();
+            let config = Some(json!({"directory": dir.path()}));
+            let adapter = Arc::new(FsAdapter::new(config.clone()).await.unwrap());
+            if target_exists {
+                adapter
+                    .register(sample_entry("default-state"))
+                    .await
+                    .unwrap();
+            }
+            let mut source = sample_entry("default-state");
+            source.value = json!({"raw": "${TOKEN}", "enabled": false, "zero": 0, "empty": null});
+            source.metadata = Some(json!({"manual": true}));
+            let original = serde_yaml::to_string(&source).unwrap();
+            std::fs::write(dir.path().join("state.yaml"), &original).unwrap();
+            let store = ConfigurationStore::new(adapter.clone());
+            store.prime_from_adapter().await.unwrap();
+            store.migrate("state", "default-state").await.unwrap();
+            assert!(store.get("state").await.is_none());
+            assert_eq!(
+                store.get("default-state").await.unwrap().value,
+                source.value
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("state.yaml.bak")).unwrap(),
+                original
+            );
+            assert!(!dir.path().join("state.yaml").exists());
+            let reloaded = FsAdapter::new(config).await.unwrap();
+            let restored = reloaded.get("default-state").await.unwrap().unwrap();
+            assert_eq!(restored.value, source.value);
+            assert_eq!(restored.metadata, source.metadata);
+            assert_eq!(
+                store
+                    .migrate("state", "default-state")
+                    .await
+                    .unwrap()
+                    .action,
+                MigrateAction::Preserved
+            );
+            source.id = "unrelated".into();
+            std::fs::write(
+                dir.path().join("state.yaml"),
+                serde_yaml::to_string(&source).unwrap(),
+            )
+            .unwrap();
+            assert!(store.migrate("state", "default-state").await.is_err());
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("state.yaml.bak")).unwrap(),
+                original
+            );
+        }
     }
 
     #[tokio::test]
