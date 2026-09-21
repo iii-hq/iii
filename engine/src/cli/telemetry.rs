@@ -93,10 +93,53 @@ fn build_posthog_client_from_env() -> Option<PostHogClient> {
     Some(PostHogClient::new(key, host))
 }
 
+/// Sends a batch of events to PostHog only.
+///
+/// Compose reports on the way out of a command, so it waits for its own
+/// sends. Amplitude is no longer read, and waiting for a second vendor is
+/// time an operator spends looking at a spinner after the error is known.
+async fn send_posthog_batch(events: Vec<AmplitudeEvent>) {
+    if let Some(client) = build_posthog_client_from_env() {
+        let _ = client.send_batch(events).await;
+    }
+}
+
 fn send_fire_and_forget(event: AmplitudeEvent) {
     tokio::spawn(async move {
         send_direct(event).await;
     });
+}
+
+/// How long a compose event may hold the command that is reporting it.
+const COMPOSE_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Lets `iii-compose` report through the same CLI path as every other
+/// command.
+///
+/// The crate owns the events and knows nothing about PostHog; this is the one
+/// place the two meet. Compose runs in this process, so a compose event
+/// carries the same `device_id` as the rest of the CLI, and it needs neither
+/// a running engine nor a queue worker to be reported. An embedding host that
+/// installs nothing sends nothing.
+///
+/// The send is awaited, never spawned: a compose command that fails reports
+/// on its way out, and a spawned task would be dropped with the runtime.
+pub fn install_compose_reporter() {
+    iii_compose::telemetry::set_reporter(std::sync::Arc::new(|reports| {
+        let events: Vec<AmplitudeEvent> = reports
+            .into_iter()
+            .filter_map(|(event, properties)| build_event(&event, properties, None))
+            .collect();
+        Box::pin(async move {
+            if events.is_empty() {
+                return;
+            }
+            // Bounded, because compose waits for this before it prints an
+            // error and exits. A report that cannot be sent in time is worth
+            // less than the seconds it would cost the operator.
+            let _ = tokio::time::timeout(COMPOSE_REPORT_TIMEOUT, send_posthog_batch(events)).await;
+        })
+    }));
 }
 
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {

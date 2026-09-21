@@ -311,7 +311,15 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
         let registration = RegisterFunction::new_async(move |request: ComposeRequest| {
             let daemon = Arc::clone(&daemon);
             let guard_name = guard_name.clone();
-            async move { dispatch(daemon, kind, guard_name, request).await }
+            async move {
+                let Some(op) = reported_op(kind) else {
+                    return dispatch(daemon, kind, guard_name, request).await;
+                };
+                let began = std::time::Instant::now();
+                let result = dispatch(daemon, kind, guard_name, request).await;
+                report_op(op, &result, began.elapsed()).await;
+                result
+            }
         });
         client.register_function(function.clone(), describe_op(registration, &function));
     }
@@ -333,6 +341,55 @@ enum Operation {
     Schema,
     Snapshot,
     Cancel,
+}
+
+/// The name one call reports under, or `None` for a call that reports
+/// nothing.
+///
+/// Only the mutations that answer with their own outcome are here. Add,
+/// remove and update answer as soon as they are accepted and finish in the
+/// background, so they report from [`spawn_mutation`] instead. A read-only
+/// call reports nothing at all.
+fn reported_op(kind: Operation) -> Option<&'static str> {
+    match kind {
+        Operation::Up => Some("up"),
+        Operation::Down => Some("down"),
+        Operation::Restart => Some("restart"),
+        _ => None,
+    }
+}
+
+/// Reports one mutation that answered with its outcome.
+///
+/// The outcome comes out of the answer itself: an `up` whose container failed
+/// still returns `Ok`, carrying `status: failed` and the code of the first
+/// failure. Nothing but the code is taken; the message belongs to the
+/// operator.
+async fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std::time::Duration) {
+    let (outcome, error_kind) = match result {
+        Ok(value) => (
+            value.get("status").and_then(Value::as_str).unwrap_or("ok"),
+            value
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+        ),
+        Err(Error::Remote { code, .. }) => (
+            // A cancellation is the operator's decision, not a fault.
+            if code == "OPERATION_CANCELLED" {
+                "cancelled"
+            } else {
+                "failed"
+            },
+            Some(code.as_str()),
+        ),
+        Err(_) => ("failed", None),
+    };
+    crate::telemetry::report(
+        crate::telemetry::OP_FINISHED,
+        crate::telemetry::op_properties(op, outcome, elapsed, error_kind),
+    )
+    .await;
 }
 
 impl Operation {
@@ -701,6 +758,8 @@ fn succeeded_detail(details: MutationDetails, not_required_failures: &[String]) 
 /// site would compile and only show up as a wrong sentence in a live run.
 #[derive(Clone, Copy)]
 struct MutationDetails {
+    /// What this mutation is called in telemetry.
+    op: &'static str,
     /// Every container reached its target state.
     success: &'static str,
     /// The operation succeeded, but some non-required container did not.
@@ -710,18 +769,21 @@ struct MutationDetails {
 }
 
 const ADD_DETAILS: MutationDetails = MutationDetails {
+    op: "add",
     success: "all requested workers are ready",
     partial: "workers that did not start",
     failed: "one or more workers failed",
 };
 
 const REMOVE_DETAILS: MutationDetails = MutationDetails {
+    op: "remove",
     success: "all requested workers were removed",
     partial: "workers that could not be removed",
     failed: "one or more workers could not be removed",
 };
 
 const UPDATE_DETAILS: MutationDetails = MutationDetails {
+    op: "update",
     success: "all requested workers were updated",
     partial: "workers that could not be updated",
     failed: "one or more workers could not be updated",
@@ -735,6 +797,7 @@ fn spawn_mutation<F>(
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
 {
     tokio::spawn(async move {
+        let began = std::time::Instant::now();
         if operation.is_cancelled() {
             operation
                 .finish(
@@ -745,7 +808,9 @@ fn spawn_mutation<F>(
             return;
         }
 
-        match mutation.await {
+        let result = mutation.await;
+        report_mutation(details.op, &result, began.elapsed()).await;
+        match result {
             Ok(outcome) => {
                 let failed = outcome.is_failed();
                 operation
@@ -778,6 +843,19 @@ fn spawn_mutation<F>(
             }
         }
     });
+}
+
+/// Reports one mutation that ran in the background after it was accepted.
+async fn report_mutation(
+    op: &'static str,
+    result: &Result<MutationOutcome, ComposeError>,
+    elapsed: std::time::Duration,
+) {
+    let reported = match result {
+        Ok(outcome) => Ok(to_value(outcome)),
+        Err(error) => Err(compose_error(error)),
+    };
+    report_op(op, &reported, elapsed).await;
 }
 
 /// Serialize the generated root schema into the value carried over the wire.

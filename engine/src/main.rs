@@ -407,6 +407,7 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
                      engine: in worker-compose.yaml, or start the external engine separately"
                 );
             }
+            cli::telemetry::install_compose_reporter();
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
