@@ -723,8 +723,52 @@ Lowest to highest: the configuration a package ships, the entry in the configura
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
 merged result is written to an owner-only file and its path is passed to the
-worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
-the error is `CONFIG_FETCH_FAILED`.
+worker as `III_CONFIG`. This is a private execution snapshot, separate from the persistent
+`config/<id>.yaml` entry. Compose never writes `config_override` (or the merged execution value)
+back to the configuration service. Workers must use `III_CONFIG` for the execution override and
+must not register that snapshot as `initial_value`; service-only consumers see the stored base.
+Removing an override restores the stored setting on the next start. Configuration read failures
+stop startup with `CONFIG_FETCH_FAILED`, rather than silently falling back to defaults.
+
+### Readable configuration names and migration
+
+Without an explicit `config_name`, the entry id is exactly `<namespace>-<container-key>`.
+For example, `default` plus `harness` uses `default-harness` and the filesystem adapter stores
+`config/default-harness.yaml`. The id must match `[a-z0-9_-]{1,64}`. Compose rejects an invalid or
+long generated name with `INVALID_CONFIG_NAME` and asks for an explicit `config_name`; it never
+sanitizes, truncates, or adds a hash. Explicit names remain unchanged and are never auto-migrated.
+
+Before reading configuration or starting the child, Compose asks the configuration authority to
+migrate the exact hashed id produced by the previous algorithm for that namespace and key.
+`default-harness-a14f3656efb8d5ea` therefore becomes `default-harness`. Stored raw values (including
+`${VAR}`, `false`, `0`, and `null`), name, description, metadata, and available schema are preserved.
+The filesystem adapter updates both filename and internal id, and the authority updates its caches
+and notifies subscribers. It re-reads the source so manual edits awaiting the watcher are retained.
+
+If the destination already exists, it wins, even when its value is null. Neither file is rewritten,
+and the source remains available for manual reconciliation. If neither exists, normal first boot
+continues without a placeholder entry. Repeating a completed migration performs no file writes.
+The exact previous hashed id is tried first. If both it and the destination are absent, the
+`default` namespace also tries the exact container key (`state` becomes `default-state`), unless
+another container explicitly owns that id. Other namespaces never adopt bare ids. Explicit
+`config_name` values are never auto-migrated. An existing destination always leaves the source intact.
+
+Migration commits a complete destination without overwriting another file before deleting the
+source. I/O failures stop startup; failure after publication can leave two recoverable copies.
+The filesystem adapter requires same-directory hard-link support and may normalize YAML formatting
+or remove comments on the one migration rewrite; values and unknown document fields are retained.
+Stop source consumers before migration: Compose checks that the child is not already registered,
+and its restart path stops the old child first. Do not run two configuration authorities against
+the same directory or edit the source concurrently with migration.
+
+The bridge delegates migration to the remote authority. Upgrade that authority together with
+Compose: an absent `configuration::migrate` or unsupported adapter fails with
+`CONFIG_MIGRATION_FAILED`, never a read/copy/delete fallback that could reset stored values.
+
+Within one project, a generated name colliding with another container's explicit name is rejected
+before startup. Sharing is allowed only when both names are explicit. Across namespaces, `a-b` / `c`
+and `a` / `b-c` both produce `a-b-c`; choose unambiguous namespaces or distinct explicit `config_name`
+values. Readable names do not claim cross-project ownership.
 
 ## The worker environment
 
@@ -755,7 +799,7 @@ exception below; only start workers you trust with that environment.
 | `III_COMPOSE_DIR`       | Canonical directory that contains the owning compose file.                    |
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
-| `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
+| `III_CONFIG_NAME`       | The explicit configuration id or `<namespace>-<container-key>`, always present.        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 

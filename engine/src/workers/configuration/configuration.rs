@@ -33,8 +33,9 @@ use crate::{
                 ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
                 ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
                 ConfigurationGetResult, ConfigurationListInput, ConfigurationListResult,
-                ConfigurationRegisterInput, ConfigurationSchemaInput, ConfigurationSchemaView,
-                ConfigurationSetInput, ConfigurationSetResult,
+                ConfigurationMigrateInput, ConfigurationMigrateResult, ConfigurationRegisterInput,
+                ConfigurationSchemaInput, ConfigurationSchemaView, ConfigurationSetInput,
+                ConfigurationSetResult, MigrateAction,
             },
             trigger::{ConfigurationTriggers, TRIGGER_TYPE},
         },
@@ -413,6 +414,43 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
 
 #[service(name = "configuration")]
 impl ConfigurationWorker {
+    #[function(
+        id = "configuration::migrate",
+        description = "Move an exact legacy configuration id to an absent destination at the authoritative store. Preserves raw values, schema and metadata; an existing destination wins and leaves the source untouched. Stop source consumers before migrating."
+    )]
+    pub async fn migrate_fn(
+        &self,
+        input: ConfigurationMigrateInput,
+    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
+        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
+            Ok(outcome) => outcome,
+            Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
+        };
+        if outcome.action == MigrateAction::Migrated
+            && self.store.adapter().ensure_support()
+                == crate::workers::configuration::adapters::EnsureSupport::Local
+            && let Some(entry) = &outcome.entry
+        {
+            let mut previous = entry.clone();
+            previous.id = input.from_id;
+            self.fan_out(entry_to_event(
+                &previous,
+                ConfigurationEventType::Deleted,
+                Some(previous.value.clone()),
+                None,
+            ))
+            .await;
+            self.fan_out(entry_to_event(
+                entry,
+                ConfigurationEventType::Registered,
+                None,
+                Some(entry.value.clone()),
+            ))
+            .await;
+        }
+        FunctionResult::Success(outcome)
+    }
+
     #[function(
         id = "configuration::register",
         description = "Register a configuration id with a name, description, and JSON Schema. Idempotent — re-registering replaces metadata and (when initial_value is provided) the value. Validates initial_value against the schema."

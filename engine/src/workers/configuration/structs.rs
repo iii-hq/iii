@@ -57,6 +57,29 @@ impl From<&ConfigurationEntry> for ConfigurationSchemaView {
     }
 }
 
+/// Move one exact legacy id only if the destination is absent.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationMigrateInput {
+    pub from_id: String,
+    pub to_id: String,
+}
+
+/// Migration never treats an existing null value as absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrateAction {
+    Migrated,
+    Preserved,
+    Missing,
+}
+
+/// Authoritative raw destination snapshot, without environment expansion.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationMigrateResult {
+    pub action: MigrateAction,
+    pub entry: Option<ConfigurationEntry>,
+}
+
 // ── function inputs / outputs ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

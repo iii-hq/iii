@@ -14,7 +14,9 @@ fn explicit_configuration_name_wins_over_the_generated_default() {
         &[],
     );
     assert_eq!(
-        file.containers["api"].resolved_config_name("orders", "api"),
+        file.containers["api"]
+            .resolved_config_name("orders", "api")
+            .unwrap(),
         "shared-api"
     );
 }
@@ -25,12 +27,45 @@ fn configuration_identity_uses_the_effective_namespace_without_mutating_yaml() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(tmp.path(), COMPOSE, &[]);
     let container = &file.containers["api"];
-    let name = container.resolved_config_name("billing", "api");
-    assert!(name.starts_with("billing-api-"), "{name}");
-    assert_ne!(name, container.resolved_config_name("orders", "api"));
+    let name = container.resolved_config_name("billing", "api").unwrap();
+    assert_eq!(name, "billing-api");
+    assert_ne!(
+        name,
+        container.resolved_config_name("orders", "api").unwrap()
+    );
     assert!(container.config_name.is_none());
 }
 
+#[test]
+fn package_configuration_names_are_validated_before_startup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api.v2:\n    worker: package://example\n    version: '1.0.0'\n",
+        &[],
+    );
+    let err = iii_compose::manifest::validate_offline(&file, "default").unwrap_err();
+    assert_eq!(err.code(), "INVALID_CONFIG_NAME");
+}
+
+#[test]
+fn implicit_explicit_collision_is_rejected_but_explicit_sharing_is_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let yaml = "containers:\n  api:\n    worker: package://example\n    version: '1.0.0'\n  other:\n    worker: package://example\n    version: '1.0.0'\n    config_name: default-api\n";
+    let file = project(tmp.path(), yaml, &[]);
+    assert_eq!(
+        iii_compose::manifest::validate_offline(&file, "default")
+            .unwrap_err()
+            .code(),
+        "CONFIG_NAME_COLLISION"
+    );
+    let file = project(
+        tmp.path(),
+        &yaml.replace("  api:\n", "  api:\n    config_name: default-api\n"),
+        &[],
+    );
+    iii_compose::manifest::validate_offline(&file, "default").unwrap();
+}
 /// Writes a compose file plus env files into a tempdir and loads it, so paths
 /// resolve exactly as the CLI resolves them.
 fn project(tmp: &Path, compose: &str, files: &[(&str, &str)]) -> ComposeFile {
@@ -524,7 +559,9 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
 fn a_container_without_a_value_still_receives_its_configuration_identity() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(tmp.path(), COMPOSE, &[]);
-    let config_name = file.containers["api"].resolved_config_name("finance", "api");
+    let config_name = file.containers["api"]
+        .resolved_config_name("finance", "api")
+        .unwrap();
     use iii_compose::manifest::StartSpec;
     use iii_compose::spawn::{SpawnCtx, spawn_plan};
 

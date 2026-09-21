@@ -34,6 +34,13 @@ async fn spawn_engine() -> u16 {
 
 /// Starts an isolated engine, optionally omitting configuration to exercise service failures.
 async fn spawn_engine_with_configuration(configuration: bool) -> u16 {
+    spawn_engine_with_configuration_in(configuration, None).await
+}
+
+async fn spawn_engine_with_configuration_in(
+    configuration: bool,
+    directory: Option<&std::path::Path>,
+) -> u16 {
     iii::workers::observability::metrics::ensure_default_meter();
 
     let probe = TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
@@ -52,9 +59,12 @@ async fn spawn_engine_with_configuration(configuration: bool) -> u16 {
 
     if configuration {
         use iii::workers::configuration::{ConfigurationWorker, adapters::fs::FsAdapter};
-        let directory =
-            std::path::PathBuf::from(std::env::var_os("III_COMPOSE_STATE_DIR").unwrap())
-                .join(format!("configuration-{}", uuid::Uuid::new_v4()));
+        let directory = directory
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var_os("III_COMPOSE_STATE_DIR").unwrap())
+                    .join(format!("configuration-{}", uuid::Uuid::new_v4()))
+            });
         let adapter = FsAdapter::new(Some(json!({ "directory": directory })))
             .await
             .expect("configuration adapter");
@@ -2150,7 +2160,8 @@ async fn naming_another_daemon_in_the_payload_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn configuration_names_isolate_projects_and_deliver_overrides_before_spawn() {
     isolate_state();
-    let port = spawn_engine().await;
+    let storage = tempfile::tempdir().unwrap();
+    let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
     let daemon = start_daemon_named(port, "config-supervisor").await;
     let mut children = Vec::new();
     let mut projects = Vec::new();
@@ -2180,6 +2191,8 @@ containers:
   explicit:
     worker: path://./workers/explicit
     config_name: {namespace}-custom
+    config_override:
+      http_port: 9999
     scripts:
       run: 'printf "%s" "$III_CONFIG_NAME" > config-name; cat "$III_CONFIG" > delivered; touch started; sleep 30'
 "#
@@ -2187,21 +2200,35 @@ containers:
             &["console", "fresh", "explicit"],
         );
         let compose = ComposeFile::load(&file).unwrap();
-        let name = compose.containers["console"].resolved_config_name(namespace, "console");
+        let name = compose.containers["console"]
+            .resolved_config_name(namespace, "console")
+            .unwrap();
         // A previous boot left a port and another field. The override wins only
         // for the port; a container without an override must retain its value.
-        for id in [&name, &format!("{namespace}-custom")] {
+        let legacy = match namespace {
+            "orders" => "orders-console-946b336ce90783a6",
+            "billing" => "billing-console-bc411c07ff6fa1aa",
+            _ => unreachable!(),
+        };
+        for id in [legacy, &format!("{namespace}-custom")] {
             call(
                 port,
                 "configuration::register",
                 json!({
                     "id": id, "name": "fixture", "description": "fixture", "schema": {},
-                    "initial_value": { "http_port": 3113, "retained": true }
+                    "initial_value": { "http_port": 3113, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null },
+                    "metadata": { "manual": true }
                 }),
             )
             .await
             .unwrap();
         }
+        let explicit_path = storage.path().join(format!("{namespace}-custom.yaml"));
+        let explicit_bytes = std::fs::read(&explicit_path).unwrap();
+        let explicit_modified = std::fs::metadata(&explicit_path)
+            .unwrap()
+            .modified()
+            .unwrap();
         let console_started = tmp.path().join("workers/console/started");
         let fresh_started = tmp.path().join("workers/fresh/started");
         let explicit_started = tmp.path().join("workers/explicit/started");
@@ -2229,13 +2256,35 @@ containers:
         .unwrap();
         assert_eq!(
             delivered,
-            json!({ "http_port": port_number, "retained": true })
+            json!({ "http_port": port_number, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null })
         );
-        let stored = call(port, "configuration::get", json!({ "id": name }))
+        let stored = call(
+            port,
+            "configuration::get",
+            json!({ "id": name, "raw": true }),
+        )
+        .await
+        .unwrap();
+        let base = json!({ "http_port": 3113, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null });
+        assert_eq!(
+            stored["value"], base,
+            "runtime override must not be persisted"
+        );
+        assert!(
+            call(
+                port,
+                "configuration::get",
+                json!({ "id": legacy, "raw": true })
+            )
+            .await
+            .unwrap_err()
+            .contains("NOT_FOUND")
+        );
+        let metadata = call(port, "configuration::schema", json!({ "id": name }))
             .await
             .unwrap();
-        assert_eq!(stored["value"], delivered);
-        // Refreshing the worker's schema must not undo Compose's override.
+        assert_eq!(metadata["metadata"], json!({"manual": true}));
+        // Metadata registration still retains the persistent base, not the override.
         call(
             port,
             "configuration::register",
@@ -2246,17 +2295,23 @@ containers:
         .await
         .unwrap();
         assert_eq!(
-            call(port, "configuration::get", json!({ "id": name }))
-                .await
-                .unwrap()["value"],
-            delivered
+            call(
+                port,
+                "configuration::get",
+                json!({ "id": name, "raw": true })
+            )
+            .await
+            .unwrap()["value"],
+            base
         );
 
         let fresh_name =
             std::fs::read_to_string(tmp.path().join("workers/fresh/config-name")).unwrap();
         assert_eq!(
             fresh_name,
-            compose.containers["fresh"].resolved_config_name(namespace, "fresh")
+            compose.containers["fresh"]
+                .resolved_config_name(namespace, "fresh")
+                .unwrap()
         );
         assert!(tmp.path().join("workers/fresh/no-config").exists());
         assert!(
@@ -2291,16 +2346,31 @@ containers:
             &std::fs::read_to_string(tmp.path().join("workers/explicit/delivered")).unwrap(),
         )
         .unwrap();
-        assert_eq!(explicit, json!({ "http_port": 3113, "retained": true }));
-        names.push((name, port_number));
+        assert_eq!(
+            explicit,
+            json!({ "http_port": 9999, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null })
+        );
+        assert_eq!(std::fs::read(&explicit_path).unwrap(), explicit_bytes);
+        assert_eq!(
+            std::fs::metadata(&explicit_path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            explicit_modified
+        );
+        names.push((name, 3113));
         projects.push(tmp);
     }
     assert_ne!(names[0].0, names[1].0);
     for (name, expected_port) in names {
         assert_eq!(
-            call(port, "configuration::get", json!({ "id": name }))
-                .await
-                .unwrap()["value"]["http_port"],
+            call(
+                port,
+                "configuration::get",
+                json!({ "id": name, "raw": true })
+            )
+            .await
+            .unwrap()["value"]["http_port"],
             expected_port
         );
     }
@@ -2357,7 +2427,10 @@ containers:
     .expect("compose::up answers even when it fails");
 
     assert_eq!(result["status"], "failed", "{result}");
-    assert_eq!(result["error"]["code"], "CONFIG_FETCH_FAILED", "{result}");
+    assert_eq!(
+        result["error"]["code"], "CONFIG_MIGRATION_FAILED",
+        "{result}"
+    );
     assert!(
         result.get("containers").is_none(),
         "mutation leaked internals: {result}"
@@ -2373,4 +2446,294 @@ containers:
     assert_ne!(status["containers"][0]["state"], "ready", "{status}");
 
     daemon.shutdown().await;
+}
+
+/// The real bridge delegates migration and keeps raw templates after relay events.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
+    use iii::function::FunctionResult;
+    use iii::workers::configuration::structs::{
+        ConfigurationGetInput, ConfigurationMigrateInput, MigrateAction,
+    };
+    use iii::workers::configuration::{ConfigurationWorker, adapters::bridge::BridgeAdapter};
+    isolate_state();
+    let port = spawn_engine().await;
+    let raw = json!({"token": "${BRIDGE_MIGRATION_TOKEN:fallback}", "enabled": false, "zero": 0, "empty": null});
+    call(
+        port,
+        "configuration::register",
+        json!({
+            "id": "legacy", "name": "Manual", "description": "Retained", "schema": {},
+            "initial_value": raw, "metadata": {"manual": true},
+        }),
+    )
+    .await
+    .unwrap();
+    let local_engine = Arc::new(Engine::new());
+    let bridge = Arc::new(
+        BridgeAdapter::new(format!("ws://127.0.0.1:{port}"))
+            .await
+            .unwrap(),
+    );
+    let local = ConfigurationWorker::for_test(local_engine, bridge, 0);
+    local.initialize().await.unwrap();
+    let input = ConfigurationMigrateInput {
+        from_id: "legacy".into(),
+        to_id: "readable".into(),
+    };
+    let FunctionResult::Success(out) = local.migrate_fn(input.clone()).await else {
+        panic!("bridge migration failed")
+    };
+    assert_eq!(out.action, MigrateAction::Migrated);
+    assert_eq!(out.entry.unwrap().value, raw);
+    // Let the asynchronous remote event relay complete: it must not replace
+    // the raw snapshot with the expanded event's `fallback` string.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let FunctionResult::Success(got) = local
+        .get_fn(ConfigurationGetInput {
+            id: "readable".into(),
+            raw: true,
+        })
+        .await
+    else {
+        panic!("local raw get failed")
+    };
+    assert_eq!(got.value, raw);
+    assert!(matches!(
+        local
+            .get_fn(ConfigurationGetInput {
+                id: "legacy".into(),
+                raw: true
+            })
+            .await,
+        FunctionResult::Failure(_)
+    ));
+    assert_eq!(
+        call(
+            port,
+            "configuration::get",
+            json!({"id": "readable", "raw": true})
+        )
+        .await
+        .unwrap()["value"],
+        raw
+    );
+    let FunctionResult::Success(out) = local.migrate_fn(input).await else {
+        panic!("bridge repeat failed")
+    };
+    assert_eq!(out.action, MigrateAction::Preserved);
+    // The local mirror has not seen these ids. Only the remote authority may
+    // decide whether migration can replace a target created by another caller.
+    for (id, value) in [
+        ("second-legacy", json!({"source": true})),
+        ("second-target", json!(null)),
+    ] {
+        call(port, "configuration::register", json!({
+            "id": id, "name": "Remote", "description": "Remote", "schema": {}, "initial_value": value,
+        })).await.unwrap();
+    }
+    let FunctionResult::Success(out) = local
+        .migrate_fn(ConfigurationMigrateInput {
+            from_id: "second-legacy".into(),
+            to_id: "second-target".into(),
+        })
+        .await
+    else {
+        panic!("remote target-wins failed")
+    };
+    assert_eq!(out.action, MigrateAction::Preserved);
+    assert!(out.entry.unwrap().value.is_null());
+    assert_eq!(
+        call(
+            port,
+            "configuration::get",
+            json!({"id": "second-legacy", "raw": true})
+        )
+        .await
+        .unwrap()["value"],
+        json!({"source": true})
+    );
+    local.destroy().await.unwrap();
+}
+
+/// An override-only first boot creates an execution snapshot, never a stored entry.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn override_only_start_leaves_persistent_configuration_directory_empty() {
+    isolate_state();
+    let storage = tempfile::tempdir().unwrap();
+    let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
+    let daemon = start_daemon_named(port, "override-supervisor").await;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: override-only
+startup_timeout: 5s
+stop_timeout: 100ms
+required_default: true
+containers:
+  api:
+    worker: path://./workers/api
+    config_override:
+      enabled: false
+      count: 0
+      token: ${TOKEN}
+    scripts:
+      run: 'cat "$III_CONFIG" > delivered; touch started; sleep 30'
+"#,
+        &["api"],
+    );
+    let started = tmp.path().join("workers/api/started");
+    let up = call_in(
+        port,
+        Some("override-supervisor"),
+        "compose::up",
+        json!({"file": file}),
+    );
+    let ready = async {
+        wait_for_start_markers(&[&started]).await;
+        register_test_worker(port, "override-only", "api")
+    };
+    let (result, child) = tokio::join!(up, ready);
+    assert_eq!(result.unwrap()["status"], "ok");
+    let delivered: Value =
+        serde_yaml::from_slice(&std::fs::read(tmp.path().join("workers/api/delivered")).unwrap())
+            .unwrap();
+    assert_eq!(
+        delivered,
+        json!({"enabled": false, "count": 0, "token": "${TOKEN}"})
+    );
+    assert!(
+        call(
+            port,
+            "configuration::get",
+            json!({"id": "override-only-api", "raw": true})
+        )
+        .await
+        .unwrap_err()
+        .contains("NOT_FOUND")
+    );
+    assert_eq!(std::fs::read_dir(storage.path()).unwrap().count(), 0);
+    daemon.shutdown().await;
+    child.shutdown_async().await;
+}
+
+/// Pre-namespace entries belong only to default; existing destinations win.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_config_migrates_only_when_default_destination_is_absent() {
+    isolate_state();
+    for (namespace, target_exists) in [("default", false), ("default", true), ("orders", false)] {
+        let storage = tempfile::tempdir().unwrap();
+        let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
+        let daemon = start_daemon_named(port, "bare-supervisor").await;
+        let raw = json!({"token": "${TOKEN}", "enabled": false, "count": 0, "empty": null});
+        call(
+            port,
+            "configuration::register",
+            json!({
+                "id": "state", "name": "Manual", "description": "Retained", "schema": {},
+                "initial_value": raw, "metadata": {"manual": true},
+            }),
+        )
+        .await
+        .unwrap();
+        let target = format!("{namespace}-state");
+        if target_exists {
+            call(
+                port,
+                "configuration::register",
+                json!({
+                    "id": target, "name": "Target", "description": "Wins", "schema": {},
+                    "initial_value": {"target": true},
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let before = std::fs::read(storage.path().join("state.yaml")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project(
+            tmp.path(),
+            &format!(
+                r#"
+namespace: {namespace}
+startup_timeout: 5s
+stop_timeout: 100ms
+required_default: true
+containers:
+  state:
+    worker: path://./workers/state
+    scripts:
+      run: 'if [ -n "$III_CONFIG" ]; then cat "$III_CONFIG" > delivered; fi; touch started; sleep 30'
+"#
+            ),
+            &["state"],
+        );
+        let started = tmp.path().join("workers/state/started");
+        let up = call_in(
+            port,
+            Some("bare-supervisor"),
+            "compose::up",
+            json!({"file": file}),
+        );
+        let ready = async {
+            wait_for_start_markers(&[&started]).await;
+            register_test_worker(port, namespace, "state")
+        };
+        let (result, child) = tokio::join!(up, ready);
+        assert_eq!(result.unwrap()["status"], "ok");
+        if namespace == "default" {
+            let expected = if target_exists {
+                json!({"target": true})
+            } else {
+                raw.clone()
+            };
+            let delivered: Value = serde_yaml::from_slice(
+                &std::fs::read(tmp.path().join("workers/state/delivered")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(delivered, expected);
+            assert_eq!(
+                call(
+                    port,
+                    "configuration::get",
+                    json!({"id": target, "raw": true})
+                )
+                .await
+                .unwrap()["value"],
+                expected
+            );
+            let entry: Value = serde_yaml::from_slice(
+                &std::fs::read(storage.path().join(format!("{target}.yaml"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(entry["id"], target);
+            if !target_exists {
+                assert_eq!(entry["metadata"], json!({"manual": true}));
+                assert!(!storage.path().join("state.yaml").exists());
+                assert!(
+                    call(
+                        port,
+                        "configuration::get",
+                        json!({"id": "state", "raw": true})
+                    )
+                    .await
+                    .unwrap_err()
+                    .contains("NOT_FOUND")
+                );
+            }
+        } else {
+            assert!(!storage.path().join(format!("{target}.yaml")).exists());
+        }
+        if target_exists || namespace != "default" {
+            assert_eq!(
+                std::fs::read(storage.path().join("state.yaml")).unwrap(),
+                before
+            );
+        }
+        daemon.shutdown().await;
+        child.shutdown_async().await;
+    }
 }
