@@ -2553,6 +2553,27 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
         .unwrap()["value"],
         json!({"source": true})
     );
+    let FunctionResult::Success(out) = local
+        .migrate_replace_fn(ConfigurationMigrateInput {
+            from_id: "second-legacy".into(),
+            to_id: "second-target".into(),
+        })
+        .await
+    else {
+        panic!("remote source priority failed")
+    };
+    assert_eq!(out.action, MigrateAction::Migrated);
+    assert_eq!(out.entry.unwrap().value, json!({"source": true}));
+    assert_eq!(
+        call(
+            port,
+            "configuration::get",
+            json!({"id": "second-target", "raw": true})
+        )
+        .await
+        .unwrap()["value"],
+        json!({"source": true})
+    );
     local.destroy().await.unwrap();
 }
 
@@ -2619,10 +2640,10 @@ containers:
     child.shutdown_async().await;
 }
 
-/// Pre-namespace entries belong only to default; existing destinations win.
+/// Pre-namespace entries belong only to default and replace generated destinations.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn bare_config_migrates_only_when_default_destination_is_absent() {
+async fn bare_config_replaces_default_destination_and_preserves_backup() {
     isolate_state();
     for (namespace, target_exists) in [("default", false), ("default", true), ("orders", false)] {
         let storage = tempfile::tempdir().unwrap();
@@ -2685,11 +2706,7 @@ containers:
         let (result, child) = tokio::join!(up, ready);
         assert_eq!(result.unwrap()["status"], "ok");
         if namespace == "default" {
-            let expected = if target_exists {
-                json!({"target": true})
-            } else {
-                raw.clone()
-            };
+            let expected = raw.clone();
             let delivered: Value = serde_yaml::from_slice(
                 &std::fs::read(tmp.path().join("workers/state/delivered")).unwrap(),
             )
@@ -2710,7 +2727,7 @@ containers:
             )
             .unwrap();
             assert_eq!(entry["id"], target);
-            if !target_exists {
+            {
                 assert_eq!(entry["metadata"], json!({"manual": true}));
                 assert!(!storage.path().join("state.yaml").exists());
                 assert!(
@@ -2727,7 +2744,18 @@ containers:
         } else {
             assert!(!storage.path().join(format!("{target}.yaml")).exists());
         }
-        if target_exists || namespace != "default" {
+        if namespace == "default" && target_exists {
+            let backups: Vec<_> = std::fs::read_dir(storage.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "bak"))
+                .collect();
+            assert_eq!(backups.len(), 1);
+            let backup: Value =
+                serde_yaml::from_slice(&std::fs::read(&backups[0]).unwrap()).unwrap();
+            assert_eq!(backup["value"], json!({"target": true}));
+        }
+        if namespace != "default" {
             assert_eq!(
                 std::fs::read(storage.path().join("state.yaml")).unwrap(),
                 before

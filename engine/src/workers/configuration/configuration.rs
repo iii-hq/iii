@@ -422,7 +422,33 @@ impl ConfigurationWorker {
         &self,
         input: ConfigurationMigrateInput,
     ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
-        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
+        self.migrate_entry(input, false).await
+    }
+
+    #[function(
+        id = "configuration::migrate-replace",
+        description = "Move a legacy configuration to its destination with source priority. Backs up an existing filesystem destination before replacement. No-op when source is absent; stop consumers before migration. Unsupported adapters fail closed."
+    )]
+    pub async fn migrate_replace_fn(
+        &self,
+        input: ConfigurationMigrateInput,
+    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
+        self.migrate_entry(input, true).await
+    }
+
+    async fn migrate_entry(
+        &self,
+        input: ConfigurationMigrateInput,
+        replace: bool,
+    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
+        let result = if replace {
+            self.store
+                .migrate_replace(&input.from_id, &input.to_id)
+                .await
+        } else {
+            self.store.migrate(&input.from_id, &input.to_id).await
+        };
+        let outcome = match result {
             Ok(outcome) => outcome,
             Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
         };

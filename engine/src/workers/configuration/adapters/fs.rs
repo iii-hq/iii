@@ -246,42 +246,12 @@ impl FsAdapter {
     }
 }
 
-#[async_trait]
-impl ConfigurationAdapter for FsAdapter {
-    /// The owning store serializes local filesystem initialization with its other mutations.
-    fn ensure_support(&self) -> EnsureSupport {
-        // The fs adapter's on-disk store is the sole authority the local cache
-        // mirrors, so the store may make the seed-vs-preserve decision itself
-        // under its `write_lock` and persist it through `register`.
-        EnsureSupport::Local
-    }
-
-    /// Persist a complete legacy registration and refresh the filesystem cache used for echo suppression.
-    async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
-        // Hold the write lock across the disk write so a `write_entry`
-        // failure leaves the in-memory cache untouched. Without this, a
-        // failed I/O would leave readers observing a value that disappears
-        // on restart.
-        let mut cache = self.cache.write().await;
-        let prior = cache.get(&entry.id).cloned();
-        let kind = if prior.is_some() {
-            RegisterKind::Replaced
-        } else {
-            RegisterKind::Created
-        };
-        self.write_entry(&entry).await?;
-        cache.insert(entry.id.clone(), entry.clone());
-        Ok(RegisterOutcome {
-            kind,
-            entry,
-            old_value: prior.map(|p| p.value),
-        })
-    }
-
-    async fn migrate(
+impl FsAdapter {
+    async fn migrate_entry(
         &self,
         from_id: &str,
         to_id: &str,
+        replace: bool,
     ) -> anyhow::Result<ConfigurationMigrateResult> {
         use std::io::Write;
         let mut cache = self.cache.write().await;
@@ -307,15 +277,18 @@ impl ConfigurationAdapter for FsAdapter {
             }
             Ok(Some(entry))
         };
-        if let Some(entry) = read(&target, to_id)? {
+        let prior = read(&target, to_id)?;
+        if let Some(entry) = &prior
+            && (!replace || from_id == to_id)
+        {
             cache.insert(to_id.to_string(), entry.clone());
             return Ok(ConfigurationMigrateResult {
                 action: MigrateAction::Preserved,
-                entry: Some(entry),
+                entry: Some(entry.clone()),
             });
         }
         anyhow::ensure!(
-            !cache.contains_key(to_id),
+            prior.is_some() || !cache.contains_key(to_id),
             "configuration destination disappeared from disk; retry after reconciliation"
         );
         let original = match std::fs::read(&source) {
@@ -325,9 +298,16 @@ impl ConfigurationAdapter for FsAdapter {
                     !cache.contains_key(from_id),
                     "configuration source disappeared from disk; refusing to discard cached state"
                 );
+                if let Some(entry) = &prior {
+                    cache.insert(to_id.to_string(), entry.clone());
+                }
                 return Ok(ConfigurationMigrateResult {
-                    action: MigrateAction::Missing,
-                    entry: None,
+                    action: if prior.is_some() {
+                        MigrateAction::Preserved
+                    } else {
+                        MigrateAction::Missing
+                    },
+                    entry: prior,
                 });
             }
             Err(e) => return Err(e.into()),
@@ -374,7 +354,23 @@ impl ConfigurationAdapter for FsAdapter {
             // Unsupported filesystems fail closed, leaving the source intact.
             #[cfg(test)]
             self.fail_migration_at("publish")?;
-            std::fs::hard_link(&temporary, &target)?;
+            if replace && prior.is_some() {
+                // Keep the original target under a non-YAML extension so the
+                // watcher/reload never mistakes the backup for another entry.
+                let backup = self
+                    .directory
+                    .join(format!(".{to_id}.migration-{}.bak", uuid::Uuid::new_v4()));
+                #[cfg(test)]
+                self.fail_migration_at("backup")?;
+                std::fs::hard_link(&target, &backup)?;
+                #[cfg(unix)]
+                std::fs::File::open(&self.directory)?.sync_all()?;
+                #[cfg(test)]
+                self.fail_migration_at("replace")?;
+                std::fs::rename(&temporary, &target)?;
+            } else {
+                std::fs::hard_link(&temporary, &target)?;
+            }
             Ok(())
         })();
         let _ = std::fs::remove_file(&temporary);
@@ -396,6 +392,55 @@ impl ConfigurationAdapter for FsAdapter {
             action: MigrateAction::Migrated,
             entry: Some(entry),
         })
+    }
+}
+
+#[async_trait]
+impl ConfigurationAdapter for FsAdapter {
+    /// The owning store serializes local filesystem initialization with its other mutations.
+    fn ensure_support(&self) -> EnsureSupport {
+        // The fs adapter's on-disk store is the sole authority the local cache
+        // mirrors, so the store may make the seed-vs-preserve decision itself
+        // under its `write_lock` and persist it through `register`.
+        EnsureSupport::Local
+    }
+
+    /// Persist a complete legacy registration and refresh the filesystem cache used for echo suppression.
+    async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
+        // Hold the write lock across the disk write so a `write_entry`
+        // failure leaves the in-memory cache untouched. Without this, a
+        // failed I/O would leave readers observing a value that disappears
+        // on restart.
+        let mut cache = self.cache.write().await;
+        let prior = cache.get(&entry.id).cloned();
+        let kind = if prior.is_some() {
+            RegisterKind::Replaced
+        } else {
+            RegisterKind::Created
+        };
+        self.write_entry(&entry).await?;
+        cache.insert(entry.id.clone(), entry.clone());
+        Ok(RegisterOutcome {
+            kind,
+            entry,
+            old_value: prior.map(|p| p.value),
+        })
+    }
+
+    async fn migrate(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        self.migrate_entry(from_id, to_id, false).await
+    }
+
+    async fn migrate_replace(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        self.migrate_entry(from_id, to_id, true).await
     }
 
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
@@ -659,6 +704,84 @@ mod tests {
             serde_json::to_value(entry).unwrap()
         );
         assert_eq!(reloaded.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn replacement_preserves_source_and_destination_on_failure() {
+        use crate::workers::configuration::store::ConfigurationStore;
+        for stage in ["write", "publish", "backup", "replace", "delete"] {
+            let dir = temp_dir();
+            let adapter = Arc::new(
+                FsAdapter::new(Some(json!({"directory": dir.path()})))
+                    .await
+                    .unwrap(),
+            );
+            let mut source = sample_entry("state");
+            source.value = json!({"raw": "${TOKEN}", "zero": 0, "null": null});
+            adapter.register(source.clone()).await.unwrap();
+            adapter
+                .register(sample_entry("default-state"))
+                .await
+                .unwrap();
+            let before = std::fs::read(adapter.entry_path("default-state")).unwrap();
+            let store = ConfigurationStore::new(adapter.clone());
+            store.prime_from_adapter().await.unwrap();
+            *adapter.migration_failure.lock().unwrap() = Some(stage);
+            assert!(
+                store
+                    .migrate_replace("state", "default-state")
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.get("state").await.unwrap().value, source.value);
+            let committed = stage == "delete";
+            assert_eq!(
+                store.get("default-state").await.unwrap().value,
+                if committed {
+                    source.value.clone()
+                } else {
+                    json!({"port": 3112})
+                }
+            );
+            if !committed {
+                assert_eq!(
+                    std::fs::read(adapter.entry_path("default-state")).unwrap(),
+                    before
+                );
+            }
+            *adapter.migration_failure.lock().unwrap() = None;
+            store
+                .migrate_replace("state", "default-state")
+                .await
+                .unwrap();
+            assert!(store.get("state").await.is_none());
+            let target = adapter.entry_path("default-state");
+            let bytes = std::fs::read(&target).unwrap();
+            let modified = std::fs::metadata(&target).unwrap().modified().unwrap();
+            let count = std::fs::read_dir(dir.path()).unwrap().count();
+            assert_eq!(
+                store
+                    .migrate_replace("state", "default-state")
+                    .await
+                    .unwrap()
+                    .action,
+                MigrateAction::Preserved
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), bytes);
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().modified().unwrap(),
+                modified
+            );
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), count);
+            let reloaded = FsAdapter::new(Some(json!({"directory": dir.path()})))
+                .await
+                .unwrap();
+            assert_eq!(reloaded.list().await.unwrap().len(), 1);
+            assert_eq!(
+                reloaded.get("default-state").await.unwrap().unwrap().value,
+                source.value
+            );
+        }
     }
 
     #[tokio::test]

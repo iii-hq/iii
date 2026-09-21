@@ -163,6 +163,16 @@ pub trait ConfigurationAdapter: Send + Sync {
         )
     }
 
+    /// Move a legacy entry even if the destination exists. Implementations
+    /// must back up the replaced destination and fail closed if unsupported.
+    async fn migrate_replace(
+        &self,
+        _from_id: &str,
+        _to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        anyhow::bail!("adapter does not support configuration::migrate-replace")
+    }
+
     /// Replace the value of an existing entry. Returns `None` from `get`
     /// if the id is unknown — `set` itself does not implicitly create.
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome>;

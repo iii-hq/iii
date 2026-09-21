@@ -156,6 +156,23 @@ impl ConfigurationAdapter for BridgeAdapter {
         serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("decode migration response: {e}"))
     }
 
+    async fn migrate_replace(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        let raw = self
+            .call(
+                "configuration::migrate-replace",
+                ConfigurationMigrateInput {
+                    from_id: from_id.to_string(),
+                    to_id: to_id.to_string(),
+                },
+            )
+            .await?;
+        serde_json::from_value(raw).map_err(Into::into)
+    }
+
     /// Replace the authoritative remote value through its validated configuration API.
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
         let raw = self
