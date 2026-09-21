@@ -150,6 +150,15 @@ impl ConfigurationAdapter for BridgeAdapter {
         from_id: &str,
         to_id: &str,
     ) -> anyhow::Result<ConfigurationMigrateResult> {
+        let capabilities = self.call("configuration::migration-capabilities", serde_json::json!({}))
+            .await.map_err(|e| anyhow::anyhow!("upgrade remote configuration authority: migration capabilities unavailable: {e}"))?;
+        anyhow::ensure!(
+            capabilities
+                .get("source_priority_archive_revision")
+                .and_then(Value::as_u64)
+                == Some(1),
+            "upgrade remote configuration authority: source-priority archival contract is unknown"
+        );
         let raw = self.call("configuration::migrate", ConfigurationMigrateInput {
             from_id: from_id.to_string(), to_id: to_id.to_string(),
         }).await.map_err(|e| anyhow::anyhow!("remote configuration::migrate failed; upgrade the remote engine if unavailable; no copy/delete fallback: {e}"))?;

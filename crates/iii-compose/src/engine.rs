@@ -221,6 +221,25 @@ impl EngineClient {
     /// Returns true only when both source and destination are missing.
     /// A missing function is an upgrade error, never permission to reset defaults.
     pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
+        let capabilities = self.client.trigger(TriggerRequest {
+            function_id: "configuration::migration-capabilities".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(CALL_TIMEOUT_MS),
+        }.namespace(DEFAULT_NAMESPACE)).await.map_err(|source| ComposeError::ConfigMigrationFailed {
+            from_id: from_id.into(), to_id: to_id.into(),
+            message: format!("upgrade the configuration authority: migration capabilities unavailable: {source}"),
+        })?;
+        if capabilities
+            .get("source_priority_archive_revision")
+            .and_then(Value::as_u64)
+            != Some(1)
+        {
+            return Err(ComposeError::ConfigMigrationFailed {
+                from_id: from_id.into(), to_id: to_id.into(),
+                message: "upgrade the configuration authority: source-priority archival contract is unknown".into(),
+            });
+        }
         let response = self
             .client
             .trigger(

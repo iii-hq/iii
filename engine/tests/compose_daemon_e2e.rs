@@ -2745,3 +2745,62 @@ containers:
         child.shutdown_async().await;
     }
 }
+
+/// An old authority may accept migrate but still implement target-wins.
+/// Both callers must reject it before invoking that mutating function.
+#[tokio::test(flavor = "multi_thread")]
+async fn migration_rejects_unknown_authority_contract_before_writing() {
+    use iii::workers::configuration::adapters::{ConfigurationAdapter, bridge::BridgeAdapter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    isolate_state();
+    for advertised in [
+        None,
+        Some(json!({})),
+        Some(json!({"source_priority_archive_revision": 0})),
+    ] {
+        let port = spawn_engine_with_configuration(false).await;
+        let authority = register_test_worker(port, "default", "old-authority");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        authority.register_function(
+            "configuration::migrate",
+            RegisterFunction::new_async(move |_input: Value| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"action": "preserved", "entry": null}))
+                }
+            }),
+        );
+        if let Some(capabilities) = advertised {
+            authority.register_function(
+                "configuration::migration-capabilities",
+                RegisterFunction::new_async(move |_input: Value| {
+                    let capabilities = capabilities.clone();
+                    async move { Ok(capabilities) }
+                }),
+            );
+        }
+        let address = format!("ws://127.0.0.1:{port}");
+        let compose =
+            iii_compose::engine::EngineClient::connect(&address, "compatibility-test", "default");
+        assert_eq!(
+            compose
+                .migrate_config("old", "new")
+                .await
+                .unwrap_err()
+                .code(),
+            "CONFIG_MIGRATION_FAILED"
+        );
+        let bridge = BridgeAdapter::new(address).await.unwrap();
+        let error = bridge.migrate("old", "new").await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("upgrade remote configuration authority")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        bridge.destroy().await.unwrap();
+        authority.shutdown_async().await;
+    }
+}

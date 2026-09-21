@@ -36,7 +36,11 @@ Compose migrates only the exact previous namespace/key hash before starting a st
 After hashed migration, only the `default` namespace adopts the exact bare container key,
 unless another container explicitly owns it. The bare source wins over an existing destination;
 `configuration::migrate` is the single operation, delegated through bridges to the authority.
-It returns `{ action, entry }` with `migrated`, `preserved` (absent source or same id), or `missing`.
+It returns `{ action, entry }` with `migrated`, `preserved` (existing destination with absent
+source, or matching IDs with an existing entry), or `missing` (both source and destination absent).
+Before migration, Compose and every bridge hop query the read-only
+`configuration::migration-capabilities` and require `source_priority_archive_revision: 1`.
+Unknown or unavailable capabilities fail closed before invoking migration; upgrade the authority.
 It replaces the destination with the raw source entry, then archives the original source as
 `<source>.yaml.bak`. The previous destination is not backed up. `.yaml.bak`, `.bak.yaml`, and
 `.bkup.yaml` files are ignored during loading, watching and legacy directory migration.
