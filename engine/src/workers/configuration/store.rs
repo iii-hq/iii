@@ -25,7 +25,8 @@ use crate::workers::configuration::adapters::{
     RegisterKind, RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::structs::{
-    ConfigurationEntry, ConfigurationSchemaView, EnsureAction,
+    ConfigurationEntry, ConfigurationMigrateResult, ConfigurationSchemaView, EnsureAction,
+    MigrateAction,
 };
 
 /// Regex matching a single `${VAR}` / `${VAR:default}` reference. The class
@@ -216,7 +217,8 @@ pub struct ConfigurationStore {
     /// cannot be interleaved by a concurrent mutation that would overwrite it
     /// with a stale value. Held across the adapter await; the `entries` lock is
     /// only taken for the short cache reads/writes inside, never across the
-    /// await, so reads (get/list/schema) never block on this lock and no
+    /// await, except migration which holds it across the commit so cancellation
+    /// cannot split storage/cache updates. Other reads do not block and no
     /// lock-order deadlock is possible. Scope: one engine process / store.
     write_lock: TokioMutex<()>,
 }
@@ -511,6 +513,52 @@ impl ConfigurationStore {
         Ok(outcome)
     }
 
+    /// Migrate through the authority under the same lock as register/set/ensure.
+    /// Adapter errors never seed a destination or turn into first-boot absence.
+    pub async fn migrate(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<ConfigurationMigrateResult, StoreError> {
+        Self::validate_id(from_id)?;
+        Self::validate_id(to_id)?;
+        let _write = self.write_lock.lock().await;
+        // Hold the entry guard before committing storage: once the adapter
+        // returns there is no cancellation point before the cache catches up.
+        let mut cache = self.entries.write().await;
+        let result = self.adapter.migrate(from_id, to_id).await;
+        match &result {
+            Ok(outcome) => {
+                if outcome.action != MigrateAction::Preserved {
+                    cache.remove(from_id);
+                }
+                if let Some(entry) = &outcome.entry {
+                    cache.insert(to_id.to_string(), entry.clone());
+                } else {
+                    cache.remove(to_id);
+                }
+            }
+            Err(_) if self.adapter.ensure_support() == EnsureSupport::Local => {
+                // A destination may have committed before source cleanup failed.
+                // Reconcile without masking the original error or guessing absence.
+                for id in [from_id, to_id] {
+                    if let Ok(entry) = self.adapter.get(id).await {
+                        match entry {
+                            Some(entry) => {
+                                cache.insert(id.to_string(), entry);
+                            }
+                            None => {
+                                cache.remove(id);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        result.map_err(StoreError::Adapter)
+    }
+
     /// Return the last committed raw entry without holding the mutation lock across caller work.
     pub async fn get(&self, id: &str) -> Option<ConfigurationEntry> {
         self.entries.read().await.get(id).cloned()
@@ -671,6 +719,60 @@ impl ConfigurationStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn migration_serializes_with_register_set_and_other_migrations() {
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+        for _ in 0..12 {
+            let dir = tempfile::tempdir().unwrap();
+            let adapter = Arc::new(
+                FsAdapter::new(Some(json!({ "directory": dir.path() })))
+                    .await
+                    .unwrap(),
+            );
+            let store = ConfigurationStore::new(adapter.clone());
+            store
+                .register(
+                    "old".into(),
+                    "manual".into(),
+                    "manual".into(),
+                    json!({}),
+                    Some(json!({"count": 0})),
+                    Some(json!({"keep": true})),
+                )
+                .await
+                .unwrap();
+            let (migration, set, target, again) = tokio::join!(
+                store.migrate("old", "new"),
+                store.set("old", json!({"count": 1})),
+                store.register(
+                    "new".into(),
+                    "target".into(),
+                    "target".into(),
+                    json!({}),
+                    Some(json!({"target": true})),
+                    None
+                ),
+                store.migrate("old", "new"),
+            );
+            migration.unwrap();
+            again.unwrap();
+            target.unwrap();
+            if let Err(err) = set {
+                assert!(matches!(err, StoreError::NotRegistered(_)));
+            }
+            assert_eq!(
+                store.get("new").await.unwrap().value,
+                json!({"target": true})
+            );
+            for id in ["old", "new"] {
+                assert_eq!(
+                    serde_json::to_value(store.get(id).await).unwrap(),
+                    serde_json::to_value(adapter.get(id).await.unwrap()).unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn expand_value_replaces_env_var_in_string() {
@@ -1670,6 +1772,26 @@ mod tests {
 
     /// A `Delegated` adapter that does not override `ensure` (the trait default)
     /// must fail closed rather than let the store seed against a stale cache.
+    #[tokio::test]
+    async fn unsupported_migration_fails_closed_and_retains_cached_values() {
+        let store = ConfigurationStore::new(Arc::new(DefaultDelegatedAdapter));
+        store
+            .entries
+            .write()
+            .await
+            .insert("old".into(), mk_entry("old", json!({"manual": true})));
+        let err = store.migrate("old", "new").await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not support configuration::migrate")
+        );
+        assert_eq!(
+            store.get("old").await.unwrap().value,
+            json!({"manual": true})
+        );
+        assert!(store.get("new").await.is_none());
+    }
+
     struct DefaultDelegatedAdapter;
 
     #[async_trait::async_trait]

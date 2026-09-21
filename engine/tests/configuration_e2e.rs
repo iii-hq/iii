@@ -521,3 +521,95 @@ async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
         _ => panic!("expected get success after set"),
     }
 }
+
+/// Migration changes ids, not values; subscribers and disk reload observe the move.
+#[tokio::test]
+async fn migration_events_and_restart_preserve_the_entry() {
+    use iii::workers::configuration::structs::{ConfigurationMigrateInput, MigrateAction};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, worker) = build_worker(dir.path(), 0).await;
+    worker.initialize().await.unwrap();
+    let original = json!({ "token": "${TOKEN}", "enabled": false, "count": 0, "empty": null });
+    assert!(matches!(
+        worker
+            .register_fn(ConfigurationRegisterInput {
+                id: "default-harness-a14f3656efb8d5ea".into(),
+                name: "Manual name".into(),
+                description: "Manual description".into(),
+                schema: json!({}),
+                initial_value: Some(original.clone()),
+                metadata: Some(json!({"manual": true})),
+            })
+            .await,
+        FunctionResult::Success(_)
+    ));
+    let mut events = install_event_capture(&engine, "test::migration_events");
+    worker
+        .register_trigger(Trigger {
+            id: "migration-events".into(),
+            trigger_type: "configuration".into(),
+            function_id: "test::migration_events".into(),
+            config: json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: "default".into(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
+        })
+        .await
+        .unwrap();
+    let input = ConfigurationMigrateInput {
+        from_id: "default-harness-a14f3656efb8d5ea".into(),
+        to_id: "default-harness".into(),
+    };
+    let FunctionResult::Success(out) = worker.migrate_fn(input.clone()).await else {
+        panic!("migration failed")
+    };
+    assert_eq!(out.action, MigrateAction::Migrated);
+    let entry = out.entry.unwrap();
+    assert_eq!(entry.value, original);
+    assert_eq!(entry.metadata, Some(json!({"manual": true})));
+    let mut observed = Vec::new();
+    for _ in 0..2 {
+        let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        observed.push((
+            event["id"].as_str().unwrap().to_string(),
+            event["event_type"].as_str().unwrap().to_string(),
+        ));
+    }
+    observed.sort();
+    assert_eq!(
+        observed,
+        vec![
+            ("default-harness".into(), "configuration:registered".into()),
+            (input.from_id.clone(), "configuration:deleted".into())
+        ]
+    );
+    let FunctionResult::Success(out) = worker.migrate_fn(input).await else {
+        panic!("repeat failed")
+    };
+    assert_eq!(out.action, MigrateAction::Preserved);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1100), events.recv())
+            .await
+            .is_err()
+    );
+    worker.destroy().await.unwrap();
+    let (_, restarted) = build_worker(dir.path(), 0).await;
+    restarted.initialize().await.unwrap();
+    let FunctionResult::Success(raw) = restarted
+        .get_fn(ConfigurationGetInput {
+            id: "default-harness".into(),
+            raw: true,
+        })
+        .await
+    else {
+        panic!("reload failed")
+    };
+    assert_eq!(raw.value, original);
+    restarted.destroy().await.unwrap();
+}

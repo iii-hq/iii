@@ -10,8 +10,8 @@
 //! a file path in `III_CONFIG`, so a worker never needs credentials to fetch its
 //! own configuration and the daemon can fail a container before spawning it.
 //!
-//! The same value is published under `III_CONFIG_NAME` for workers that read
-//! the configuration service instead of the file.
+//! `III_CONFIG_NAME` identifies the persistent base. Runtime overrides belong
+//! only to `III_CONFIG`; they must never be registered back into the store.
 
 use std::{
     io::Write,
@@ -22,11 +22,22 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{ComposeError, Result};
 
-/// Stable configuration identity for a container in its effective namespace.
-/// The digest includes the component boundary: `a-b` / `c` must not alias
-/// `a` / `b-c`. Keep a readable prefix, but fit the store's 64-byte id limit
-/// even when container keys need sanitizing or names need truncating.
-pub(crate) fn default_config_name(namespace: &str, key: &str) -> String {
+/// Readable configuration identity, without sanitization, truncation, or a hash.
+/// Ambiguous namespace/key boundaries require an explicit `config_name`.
+pub(crate) fn default_config_name(namespace: &str, key: &str) -> Result<String> {
+    let name = format!("{namespace}-{key}");
+    if name.len() > 64
+        || !name
+            .bytes()
+            .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        return Err(ComposeError::InvalidConfigName { name });
+    }
+    Ok(name)
+}
+
+/// Exact previous algorithm, used only to locate this container's legacy entry.
+pub(crate) fn legacy_config_name(namespace: &str, key: &str) -> String {
     let mut digest = Sha256::new();
     digest.update((namespace.len() as u64).to_be_bytes());
     digest.update(namespace.as_bytes());
@@ -172,41 +183,51 @@ impl ConfigFile {
 mod tests {
     use super::*;
 
-    /// Pins the persisted identity so generator changes require an explicit migration decision.
     #[test]
     fn default_config_names_are_stable_and_readable() {
-        let name = default_config_name("orders", "console");
-        assert_eq!(name, "orders-console-946b336ce90783a6");
-        assert!(name.starts_with("orders-console-"), "{name}");
-        assert_eq!(name, default_config_name("orders", "console"));
-        assert_ne!(name, default_config_name("billing", "console"));
-        assert_ne!(name, default_config_name("orders", "http"));
-    }
-
-    /// Distinguishes namespace/key pairs that share the same readable prefix.
-    #[test]
-    fn default_config_names_preserve_component_boundaries() {
-        assert_ne!(
-            default_config_name("a-b", "c"),
-            default_config_name("a", "b-c")
+        assert_eq!(
+            default_config_name("default", "harness").unwrap(),
+            "default-harness"
+        );
+        assert_eq!(
+            default_config_name("orders", "console").unwrap(),
+            "orders-console"
+        );
+        assert_eq!(
+            legacy_config_name("default", "harness"),
+            "default-harness-a14f3656efb8d5ea"
+        );
+        assert_eq!(
+            legacy_config_name("orders", "console"),
+            "orders-console-946b336ce90783a6"
         );
     }
 
-    /// Checks storage limits without losing identity through sanitization or truncation.
     #[test]
-    fn default_config_names_fit_the_store_without_lossy_collisions() {
-        let namespace = "n".repeat(80);
-        let name = default_config_name(&namespace, "Console.日本語");
-        assert_eq!(name.len(), 64);
-        assert!(
-            name.bytes()
-                .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    fn readable_names_require_operator_chosen_disambiguation_across_namespaces() {
+        assert_eq!(
+            default_config_name("a-b", "c").unwrap(),
+            default_config_name("a", "b-c").unwrap()
         );
-        assert_ne!(name, default_config_name(&namespace, "Console.other"));
         assert_ne!(
-            default_config_name("app", "API"),
-            default_config_name("app", "---")
+            legacy_config_name("a-b", "c"),
+            legacy_config_name("a", "b-c")
         );
+    }
+
+    #[test]
+    fn generated_names_reject_invalid_or_long_inputs_without_lossy_conversion() {
+        assert_eq!(default_config_name(&"n".repeat(62), "x").unwrap().len(), 64);
+        for (namespace, key) in [
+            ("n".repeat(63), "x"),
+            ("app".into(), "API"),
+            ("app".into(), "api.v2"),
+            ("app".into(), "日本語"),
+        ] {
+            let error = default_config_name(&namespace, key).unwrap_err();
+            assert_eq!(error.code(), "INVALID_CONFIG_NAME");
+            assert!(error.to_string().contains("config_name"));
+        }
     }
 
     fn yaml(text: &str) -> serde_yaml::Value {
