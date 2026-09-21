@@ -657,7 +657,7 @@ Each key under `containers` is the name the worker registers under.
 | `worker`          | string         | required             | `path://<dir>` or `package://<name>`. A package may name its registry: `package://<registry-host>/<name>`. |
 | `version`         | string         | absent               | Version range. Required for `package://`.                                                                  |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
-| `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
+| `config_name`     | string         | generated            | The [configuration worker](./configuration) entry this worker owns; defaults to a namespace/container-derived ID. |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |
 | `working_dir`     | path           | the worker directory | Resolved against the compose file's directory.                                                             |
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
@@ -723,8 +723,23 @@ Lowest to highest: the configuration a package ships, the entry in the configura
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
 merged result is written to an owner-only file and its path is passed to the
-worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
-the error is `CONFIG_FETCH_FAILED`.
+worker as `III_CONFIG`. The same value is published to the configuration worker before the child starts.
+
+When `config_name` is omitted, Compose derives a stable ID from the effective project namespace
+and the key under `containers`: `<namespace>-<container>-<hash>`. The readable prefix is sanitized
+to `a-z`, `0-9`, `-`, and `_` and shortened when necessary; the 16-character hash includes both
+original components and their boundary, keeping the ID within 64 characters without merging
+otherwise ambiguous names. An explicit `config_name` is used unchanged.
+
+Compose always passes this ID as `III_CONFIG_NAME`, including on a first boot with no stored value,
+package defaults, or override. In that case no configuration file or placeholder value is created;
+the worker can register its defaults under the assigned ID. A missing entry is allowed, but failure
+to reach the configuration service stops the container with `CONFIG_FETCH_FAILED`.
+
+Workers that read the configuration service must honor `III_CONFIG_NAME` for registration, reads,
+writes, and change subscriptions. Workers that hardcode an ID need updating, or an explicit
+`config_name` matching that ID during migration. Existing entries under old IDs are not migrated
+automatically. Projects sharing an engine need distinct namespaces to isolate their generated IDs.
 
 ## The worker environment
 
@@ -755,7 +770,7 @@ exception below; only start workers you trust with that environment.
 | `III_COMPOSE_DIR`       | Canonical directory that contains the owning compose file.                    |
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
-| `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
+| `III_CONFIG_NAME`       | The explicit or generated configuration entry ID. Set even when no value exists yet.        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
