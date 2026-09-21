@@ -1418,7 +1418,21 @@ async fn resolve_config(
     let name = container.resolved_config_name(ctx.project_namespace, key)?;
     if container.config_name.is_none() {
         let legacy = crate::configuration::legacy_config_name(ctx.project_namespace, key);
-        ctx.engine.migrate_config(&legacy, &name).await?;
+        let missing = ctx.engine.migrate_config(&legacy, &name).await?;
+        // Pre-namespace installations used the container key directly. Only
+        // the default namespace may adopt it, and never steal a name another
+        // container in this project explicitly owns. The authority checks the
+        // destination again, so concurrent creation still wins without writes.
+        if missing
+            && ctx.project_namespace == "default"
+            && !ctx
+                .file
+                .containers
+                .values()
+                .any(|other| other.config_name.as_deref() == Some(key))
+        {
+            ctx.engine.migrate_config(key, &name).await?;
+        }
     }
     // Lowest to highest: package defaults, stored value, compose override.
     // NOT_FOUND contributes nothing; transport/service failures still fail boot.

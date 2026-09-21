@@ -33,7 +33,9 @@ A per-id TTL (off by default) cleans up entries whose last subscriber trigger ha
 Compose defaults to `<namespace>-<container-key>` without a hash (for example,
 `default-harness`). Invalid or over-64-character generated names require explicit `config_name`.
 Compose migrates only the exact previous namespace/key hash before starting a stopped worker.
-Explicit names and bare pre-hash worker ids are never guessed. Cross-namespace boundary ambiguity
+If the hashed source and destination are absent, only the `default` namespace tries the exact
+bare container key, unless another container explicitly owns it. Explicit names are never moved.
+Cross-namespace boundary ambiguity
 (`a-b` / `c` versus `a` / `b-c`) requires operator-selected names.
 
 `configuration::migrate { from_id, to_id }` returns `{ action, entry }`, with `action` equal to

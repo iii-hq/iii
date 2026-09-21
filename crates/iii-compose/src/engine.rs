@@ -218,8 +218,9 @@ impl EngineClient {
     }
 
     /// Ask the configuration authority to migrate the exact previous default.
+    /// Returns true only when both source and destination are missing.
     /// A missing function is an upgrade error, never permission to reset defaults.
-    pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<()> {
+    pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
         let response = self
             .client
             .trigger(
@@ -247,7 +248,7 @@ impl EngineClient {
                 message: "invalid migration response".into(),
             });
         }
-        Ok(())
+        Ok(response.get("action").and_then(Value::as_str) == Some("missing"))
     }
 
     /// What the engine already showed for this container, captured *before*

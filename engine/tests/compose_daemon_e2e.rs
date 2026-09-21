@@ -2618,3 +2618,122 @@ containers:
     daemon.shutdown().await;
     child.shutdown_async().await;
 }
+
+/// Pre-namespace entries belong only to default; existing destinations win.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_config_migrates_only_when_default_destination_is_absent() {
+    isolate_state();
+    for (namespace, target_exists) in [("default", false), ("default", true), ("orders", false)] {
+        let storage = tempfile::tempdir().unwrap();
+        let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
+        let daemon = start_daemon_named(port, "bare-supervisor").await;
+        let raw = json!({"token": "${TOKEN}", "enabled": false, "count": 0, "empty": null});
+        call(
+            port,
+            "configuration::register",
+            json!({
+                "id": "state", "name": "Manual", "description": "Retained", "schema": {},
+                "initial_value": raw, "metadata": {"manual": true},
+            }),
+        )
+        .await
+        .unwrap();
+        let target = format!("{namespace}-state");
+        if target_exists {
+            call(
+                port,
+                "configuration::register",
+                json!({
+                    "id": target, "name": "Target", "description": "Wins", "schema": {},
+                    "initial_value": {"target": true},
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let before = std::fs::read(storage.path().join("state.yaml")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project(
+            tmp.path(),
+            &format!(
+                r#"
+namespace: {namespace}
+startup_timeout: 5s
+stop_timeout: 100ms
+required_default: true
+containers:
+  state:
+    worker: path://./workers/state
+    scripts:
+      run: 'if [ -n "$III_CONFIG" ]; then cat "$III_CONFIG" > delivered; fi; touch started; sleep 30'
+"#
+            ),
+            &["state"],
+        );
+        let started = tmp.path().join("workers/state/started");
+        let up = call_in(
+            port,
+            Some("bare-supervisor"),
+            "compose::up",
+            json!({"file": file}),
+        );
+        let ready = async {
+            wait_for_start_markers(&[&started]).await;
+            register_test_worker(port, namespace, "state")
+        };
+        let (result, child) = tokio::join!(up, ready);
+        assert_eq!(result.unwrap()["status"], "ok");
+        if namespace == "default" {
+            let expected = if target_exists {
+                json!({"target": true})
+            } else {
+                raw.clone()
+            };
+            let delivered: Value = serde_yaml::from_slice(
+                &std::fs::read(tmp.path().join("workers/state/delivered")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(delivered, expected);
+            assert_eq!(
+                call(
+                    port,
+                    "configuration::get",
+                    json!({"id": target, "raw": true})
+                )
+                .await
+                .unwrap()["value"],
+                expected
+            );
+            let entry: Value = serde_yaml::from_slice(
+                &std::fs::read(storage.path().join(format!("{target}.yaml"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(entry["id"], target);
+            if !target_exists {
+                assert_eq!(entry["metadata"], json!({"manual": true}));
+                assert!(!storage.path().join("state.yaml").exists());
+                assert!(
+                    call(
+                        port,
+                        "configuration::get",
+                        json!({"id": "state", "raw": true})
+                    )
+                    .await
+                    .unwrap_err()
+                    .contains("NOT_FOUND")
+                );
+            }
+        } else {
+            assert!(!storage.path().join(format!("{target}.yaml")).exists());
+        }
+        if target_exists || namespace != "default" {
+            assert_eq!(
+                std::fs::read(storage.path().join("state.yaml")).unwrap(),
+                before
+            );
+        }
+        daemon.shutdown().await;
+        child.shutdown_async().await;
+    }
+}

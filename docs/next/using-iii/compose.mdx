@@ -754,8 +754,10 @@ and notifies subscribers. It re-reads the source so manual edits awaiting the wa
 If the destination already exists, it wins, even when its value is null. Neither file is rewritten,
 and the source remains available for manual reconciliation. If neither exists, normal first boot
 continues without a placeholder entry. Repeating a completed migration performs no file writes.
-Only the exact previous hashed id is considered: bare worker names such as `harness` and explicitly
-selected hash-looking names are not guessed or moved.
+The exact previous hashed id is tried first. If both it and the destination are absent, the
+`default` namespace also tries the exact container key (`state` becomes `default-state`), unless
+another container explicitly owns that id. Other namespaces never adopt bare ids. Explicit
+`config_name` values are never auto-migrated. An existing destination always leaves the source intact.
 
 Migration commits a complete destination without overwriting another file before deleting the
 source. I/O failures stop startup; failure after publication can leave two recoverable copies.
