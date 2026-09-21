@@ -190,8 +190,6 @@ export type TelemetryOptions = {
   project_name?: string
   /** Framework name, if applicable. */
   framework?: string
-  /** Amplitude API key for product analytics. */
-  amplitude_api_key?: string
 }
 
 /**
@@ -717,7 +715,6 @@ class Sdk implements IIIClient {
           language,
           project_name: telemetryOpts?.project_name ?? detectProjectName(),
           framework: telemetryOpts?.framework?.trim() || 'iii-node',
-          amplitude_api_key: telemetryOpts?.amplitude_api_key,
         },
       },
       action: { type: 'void' },

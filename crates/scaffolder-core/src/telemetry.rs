@@ -7,21 +7,9 @@ use tokio::fs;
 
 use crate::runtime::check::Language;
 
-const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
-const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
-
-#[cfg(test)]
-fn resolve_endpoint() -> String {
-    std::env::var("__AMPLITUDE_ENDPOINT").unwrap_or_else(|_| AMPLITUDE_ENDPOINT.to_string())
-}
-
-#[cfg(not(test))]
-fn resolve_endpoint() -> String {
-    AMPLITUDE_ENDPOINT.to_string()
-}
 
 fn telemetry_yaml_path() -> std::path::PathBuf {
     dirs::home_dir()
@@ -144,7 +132,7 @@ fn millis_epoch() -> i64 {
 }
 
 #[derive(Serialize)]
-struct AmplitudeEvent {
+struct ProductEvent {
     device_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_id: Option<String>,
@@ -157,12 +145,6 @@ struct AmplitudeEvent {
     time: i64,
     insert_id: String,
     ip: Option<String>,
-}
-
-#[derive(Serialize)]
-struct AmplitudePayload<'a> {
-    api_key: &'a str,
-    events: Vec<AmplitudeEvent>,
 }
 
 #[derive(Serialize)]
@@ -179,18 +161,11 @@ struct PostHogEvent {
     uuid: String,
 }
 
-fn build_amplitude_client() -> Option<reqwest::Client> {
+fn build_http_client() -> Option<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok()
-}
-
-async fn post_amplitude(endpoint: &str, payload: &AmplitudePayload<'_>) {
-    let Some(client) = build_amplitude_client() else {
-        return;
-    };
-    let _ = client.post(endpoint).json(payload).send().await;
 }
 
 fn posthog_user_mode(event_type: &str) -> &'static str {
@@ -276,7 +251,7 @@ fn redact_path_values(value: &mut serde_json::Value) {
 
 fn build_posthog_payload<'a>(
     api_key: &'a str,
-    event: &AmplitudeEvent,
+    event: &ProductEvent,
     event_properties: serde_json::Value,
     user_properties: Option<serde_json::Value>,
 ) -> PostHogPayload<'a> {
@@ -313,7 +288,7 @@ fn build_posthog_payload<'a>(
 }
 
 async fn post_posthog(
-    event: &AmplitudeEvent,
+    event: &ProductEvent,
     event_properties: serde_json::Value,
     user_properties: Option<serde_json::Value>,
 ) {
@@ -321,7 +296,7 @@ async fn post_posthog(
         return;
     };
     let host = resolve_posthog_host();
-    let Some(client) = build_amplitude_client() else {
+    let Some(client) = build_http_client() else {
         return;
     };
     let payload = build_posthog_payload(&key, event, event_properties, user_properties);
@@ -334,8 +309,8 @@ async fn post_posthog(
 
 /// Sends a lightweight failure event when telemetry.yaml is missing.
 /// Uses a throwaway device_id since we have no identity to attach to.
-async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &str) {
-    let event = AmplitudeEvent {
+async fn send_telemetry_failed(platform: &str, tools_version: &str) {
+    let event = ProductEvent {
         device_id: format!("unknown-{}", uuid::Uuid::new_v4()),
         user_id: None,
         event_type: "iii_tools_telemetry_failed".to_string(),
@@ -351,36 +326,27 @@ async fn send_telemetry_failed(endpoint: &str, platform: &str, tools_version: &s
         insert_id: uuid::Uuid::new_v4().to_string(),
         ip: Some("$remote".to_string()),
     };
-    let payload = AmplitudePayload {
-        api_key: API_KEY,
-        events: vec![event],
-    };
-    let event = &payload.events[0];
     let mut event_properties = event.event_properties.clone();
     let mut user_properties = event.user_properties.clone();
     redact_path_values(&mut event_properties);
     if let Some(props) = user_properties.as_mut() {
         redact_path_values(props);
     }
-    tokio::join!(
-        post_posthog(event, event_properties, user_properties),
-        post_amplitude(endpoint, &payload)
-    );
+    post_posthog(&event, event_properties, user_properties).await;
 }
 
-async fn send_amplitude_to(
-    endpoint: &str,
+async fn send_event(
     event_type: &str,
     platform: &str,
     tools_version: &str,
     event_properties: serde_json::Value,
 ) {
     let Some(device_id) = read_device_id() else {
-        send_telemetry_failed(endpoint, platform, tools_version).await;
+        send_telemetry_failed(platform, tools_version).await;
         return;
     };
     let user_properties = Some(build_user_properties(tools_version, &device_id));
-    let event = AmplitudeEvent {
+    let event = ProductEvent {
         device_id: device_id.clone(),
         user_id: None,
         event_type: event_type.to_string(),
@@ -393,33 +359,10 @@ async fn send_amplitude_to(
         insert_id: uuid::Uuid::new_v4().to_string(),
         ip: Some("$remote".to_string()),
     };
-    let payload = AmplitudePayload {
-        api_key: API_KEY,
-        events: vec![event],
-    };
-    let event = &payload.events[0];
-    tokio::join!(
-        post_posthog(
-            event,
-            event.event_properties.clone(),
-            event.user_properties.clone(),
-        ),
-        post_amplitude(endpoint, &payload)
-    );
-}
-
-async fn send_amplitude(
-    event_type: &str,
-    platform: &str,
-    tools_version: &str,
-    event_properties: serde_json::Value,
-) {
-    send_amplitude_to(
-        &resolve_endpoint(),
-        event_type,
-        platform,
-        tools_version,
-        event_properties,
+    post_posthog(
+        &event,
+        event.event_properties.clone(),
+        event.user_properties.clone(),
     )
     .await;
 }
@@ -434,7 +377,7 @@ pub fn spawn_project_event(
         return None;
     }
     Some(tokio::spawn(async move {
-        send_amplitude(event_type, platform, &tools_version, event_properties).await;
+        send_event(event_type, platform, &tools_version, event_properties).await;
     }))
 }
 
@@ -648,19 +591,45 @@ mod tests {
         let _ = read_device_id();
     }
 
-    #[tokio::test]
-    #[serial_test::serial(home_env)]
-    async fn sends_failed_event_when_yaml_missing() {
-        let mock_server = MockServer::start().await;
+    /// Points telemetry at a mock PostHog for the duration of one test.
+    ///
+    /// The host is process-wide, so every test that uses it shares the
+    /// `home_env` serial group with the ones that move `HOME`.
+    struct MockHost;
 
+    impl MockHost {
+        fn set(uri: &str) -> Self {
+            unsafe {
+                std::env::set_var("POSTHOG_HOST", uri);
+            }
+            Self
+        }
+    }
+
+    impl Drop for MockHost {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("POSTHOG_HOST");
+            }
+        }
+    }
+
+    async fn mock_posthog() -> MockServer {
+        let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/2/httpapi"))
+            .and(path("/batch/"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&mock_server)
             .await;
+        mock_server
+    }
 
-        let endpoint = format!("{}/2/httpapi", mock_server.uri());
+    #[tokio::test]
+    #[serial_test::serial(home_env)]
+    async fn sends_failed_event_when_yaml_missing() {
+        let mock_server = mock_posthog().await;
+        let _host = MockHost::set(&mock_server.uri());
 
         // Point HOME at a temp dir so telemetry.yaml won't exist
         let tmp = tempfile::tempdir().unwrap();
@@ -668,8 +637,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
 
-        send_amplitude_to(
-            &endpoint,
+        send_event(
             "project_created",
             "iii-tools",
             "0.3.0",
@@ -685,25 +653,16 @@ mod tests {
         assert_eq!(requests.len(), 1);
 
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let event = &body["events"][0];
-        assert_eq!(event["event_type"], "iii_tools_telemetry_failed");
-        assert_eq!(
-            event["event_properties"]["reason"],
-            "telemetry_yaml_missing"
-        );
+        let event = &body["batch"][0];
+        assert_eq!(event["event"], "iii_tools_telemetry_failed");
+        assert_eq!(event["properties"]["reason"], "telemetry_yaml_missing");
     }
 
     #[tokio::test]
     #[serial_test::serial(home_env)]
     async fn sends_normal_event_when_yaml_exists() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/2/httpapi"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        let mock_server = mock_posthog().await;
+        let _host = MockHost::set(&mock_server.uri());
 
         let tmp = tempfile::tempdir().unwrap();
         let iii_dir = tmp.path().join(".iii");
@@ -718,10 +677,7 @@ mod tests {
             std::env::set_var("HOME", tmp.path());
         }
 
-        let endpoint = format!("{}/2/httpapi", mock_server.uri());
-
-        send_amplitude_to(
-            &endpoint,
+        send_event(
             "project_created",
             "iii-tools",
             "0.3.0",
@@ -742,19 +698,16 @@ mod tests {
         assert_eq!(requests.len(), 1);
 
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let event = &body["events"][0];
-        assert_eq!(event["event_type"], "project_created");
-        assert_eq!(event["device_id"], "test-device-abc");
-        assert!(
-            event.get("user_id").is_none() || event["user_id"].is_null(),
-            "user_id should not be sent"
-        );
-        assert_eq!(event["event_properties"]["project_id"], "test-id");
+        let event = &body["batch"][0];
+        assert_eq!(event["event"], "project_created");
+        assert_eq!(event["properties"]["distinct_id"], "test-device-abc");
+        assert!(event.get("user_id").is_none(), "user_id should not be sent");
+        assert_eq!(event["properties"]["project_id"], "test-id");
     }
 
     #[test]
     fn posthog_payload_marks_project_created_as_active_development() {
-        let event = AmplitudeEvent {
+        let event = ProductEvent {
             device_id: "device-1".to_string(),
             user_id: None,
             event_type: "project_created".to_string(),

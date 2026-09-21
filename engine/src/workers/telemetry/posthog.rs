@@ -6,21 +6,16 @@
 
 use serde::Serialize;
 
-const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 const MAX_RETRIES: u32 = 3;
 
-/// Canonical Amplitude API key used by the engine, the CLI, and (via its own
-/// copy) scaffolder-core. Kept here so anyone sending telemetry from the
-/// engine binary references one source of truth.
-pub const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 pub const POSTHOG_PROJECT_API_KEY: &str = "phc_mmRHNXK6hkykVuxVp3JPn7R7sbo3ckSpEZLUKjofCWn6";
 
 /// Strip `/Users/<name>/`, `/home/<name>/`, and Windows `\Users\<name>\` /
 /// `\home\<name>\` prefixes from error strings, and cap the length so we
 /// never ship unbounded backtraces. Applied at the send layer
-/// ([`AmplitudeClient::send_event`]) so every Amplitude event is scrubbed,
-/// regardless of which subsystem produced it.
+/// ([`PostHogClient::send_event`]) so every event is scrubbed, regardless of
+/// which subsystem produced it.
 pub fn sanitize_error(error: &str) -> String {
     const MAX_LEN: usize = 256;
     let mut out = String::with_capacity(error.len().min(MAX_LEN));
@@ -57,7 +52,7 @@ pub fn sanitize_error(error: &str) -> String {
 
 /// Recursively walk a JSON value and apply [`sanitize_error`] to any string
 /// stored under a key named `"error"`. This way the redaction applies to
-/// any Amplitude event whose `event_properties` carry an `error` field,
+/// any event whose `event_properties` carry an `error` field,
 /// without each call site having to remember to sanitize.
 fn sanitize_event_properties(value: &mut serde_json::Value) {
     match value {
@@ -81,9 +76,9 @@ fn sanitize_event_properties(value: &mut serde_json::Value) {
     }
 }
 
-/// An event to be sent to Amplitude.
+/// One product event, before it is shaped for PostHog.
 #[derive(Debug, Clone, Serialize)]
-pub struct AmplitudeEvent {
+pub struct ProductEvent {
     pub device_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
@@ -104,13 +99,6 @@ pub struct AmplitudeEvent {
     pub ip: Option<String>,
 }
 
-/// Payload sent to Amplitude HTTP API.
-#[derive(Serialize)]
-struct AmplitudePayload {
-    api_key: String,
-    events: Vec<AmplitudeEvent>,
-}
-
 #[derive(Serialize)]
 struct PostHogPayload {
     api_key: String,
@@ -124,12 +112,6 @@ struct PostHogEvent {
     properties: serde_json::Value,
     timestamp: String,
     uuid: Option<String>,
-}
-
-/// Client for sending events to Amplitude.
-pub struct AmplitudeClient {
-    api_key: String,
-    client: reqwest::Client,
 }
 
 /// Client for sending anonymous product analytics to PostHog.
@@ -161,7 +143,7 @@ fn should_skip_posthog_user_property(
     properties: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
     match key {
-        // app_version is the canonical PostHog field; iii_version is the Amplitude user prop alias.
+        // app_version is the canonical PostHog field; iii_version is an older alias.
         "iii_version" => properties.contains_key("app_version"),
         _ => false,
     }
@@ -180,7 +162,7 @@ fn should_skip_posthog_event_property(
     }
 }
 
-fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
+fn build_posthog_event(mut event: ProductEvent) -> PostHogEvent {
     sanitize_event_properties(&mut event.event_properties);
     if let Some(props) = event.user_properties.as_mut() {
         sanitize_event_properties(props);
@@ -224,75 +206,6 @@ fn build_posthog_event(mut event: AmplitudeEvent) -> PostHogEvent {
     }
 }
 
-impl AmplitudeClient {
-    /// Create a new Amplitude client with the given API key.
-    pub fn new(api_key: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to build Amplitude HTTP client with custom config, using defaults");
-                reqwest::Client::default()
-            });
-
-        Self { api_key, client }
-    }
-
-    /// Send a single event to Amplitude.
-    pub async fn send_event(&self, mut event: AmplitudeEvent) -> anyhow::Result<()> {
-        sanitize_event_properties(&mut event.event_properties);
-        if let Some(props) = event.user_properties.as_mut() {
-            sanitize_event_properties(props);
-        }
-        self.send_batch(vec![event]).await
-    }
-
-    /// Send a batch of events to Amplitude.
-    /// If the API key is empty, this silently skips sending (for dev/testing).
-    /// Uses exponential backoff (1s, 2s, 4s) with 3 attempts max.
-    /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
-    /// and must never block or fail the caller.
-    pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
-        if self.api_key.is_empty() {
-            return Ok(());
-        }
-
-        if events.is_empty() {
-            return Ok(());
-        }
-
-        let payload = AmplitudePayload {
-            api_key: self.api_key.clone(),
-            events,
-        };
-
-        let mut delay = std::time::Duration::from_secs(1);
-
-        for attempt in 1..=MAX_RETRIES {
-            match self
-                .client
-                .post(AMPLITUDE_ENDPOINT)
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    return Ok(());
-                }
-                Ok(_) | Err(_) => {}
-            }
-
-            if attempt < MAX_RETRIES {
-                tokio::time::sleep(delay).await;
-                delay *= 2;
-            }
-        }
-
-        tracing::debug!("Amplitude: all retry attempts exhausted, dropping events");
-        Ok(())
-    }
-}
-
 impl PostHogClient {
     /// Create a new PostHog client with the given project API key and host.
     pub fn new(api_key: String, host: String) -> Self {
@@ -316,7 +229,7 @@ impl PostHogClient {
     }
 
     /// Send a single anonymous event to PostHog.
-    pub async fn send_event(&self, event: AmplitudeEvent) -> anyhow::Result<()> {
+    pub async fn send_event(&self, event: ProductEvent) -> anyhow::Result<()> {
         self.send_batch(vec![event]).await
     }
 
@@ -324,7 +237,7 @@ impl PostHogClient {
     /// If the API key is empty, this silently skips sending (for dev/testing).
     /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
     /// and must never block or fail the caller.
-    pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
+    pub async fn send_batch(&self, events: Vec<ProductEvent>) -> anyhow::Result<()> {
         if self.api_key.is_empty() || events.is_empty() {
             return Ok(());
         }
@@ -361,8 +274,8 @@ impl PostHogClient {
 mod tests {
     use super::*;
 
-    fn sample_event() -> AmplitudeEvent {
-        AmplitudeEvent {
+    fn sample_event() -> ProductEvent {
+        ProductEvent {
             device_id: "device-1".to_string(),
             user_id: Some("user-1".to_string()),
             event_type: "test_event".to_string(),
@@ -380,7 +293,7 @@ mod tests {
     }
 
     // =========================================================================
-    // AmplitudeEvent serialization
+    // ProductEvent serialization
     // =========================================================================
 
     #[test]
@@ -404,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_event_serialization_skip_none_fields() {
-        let event = AmplitudeEvent {
+        let event = ProductEvent {
             device_id: "d1".to_string(),
             user_id: None,
             event_type: "evt".to_string(),
@@ -465,7 +378,7 @@ mod tests {
     fn test_event_debug_format() {
         let event = sample_event();
         let debug = format!("{:?}", event);
-        assert!(debug.contains("AmplitudeEvent"));
+        assert!(debug.contains("ProductEvent"));
         assert!(debug.contains("test_event"));
         assert!(debug.contains("device-1"));
     }
@@ -478,35 +391,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(parsed.is_object());
         assert_eq!(parsed["event_type"], "test_event");
-    }
-
-    // =========================================================================
-    // AmplitudePayload serialization
-    // =========================================================================
-
-    #[test]
-    fn test_payload_serialization() {
-        let payload = AmplitudePayload {
-            api_key: "test-key".to_string(),
-            events: vec![sample_event()],
-        };
-
-        let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["api_key"], "test-key");
-        assert!(json["events"].is_array());
-        assert_eq!(json["events"].as_array().unwrap().len(), 1);
-        assert_eq!(json["events"][0]["event_type"], "test_event");
-    }
-
-    #[test]
-    fn test_payload_empty_events() {
-        let payload = AmplitudePayload {
-            api_key: "k".to_string(),
-            events: vec![],
-        };
-
-        let json = serde_json::to_value(&payload).unwrap();
-        assert!(json["events"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -547,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_posthog_payload_dedupes_version_and_function_fields() {
-        let event = AmplitudeEvent {
+        let event = ProductEvent {
             device_id: "device-1".to_string(),
             user_id: None,
             event_type: "heartbeat".to_string(),
@@ -585,34 +469,6 @@ mod tests {
         assert_eq!(props.get("project_name").unwrap(), "agentmemory");
     }
 
-    // =========================================================================
-    // AmplitudeClient::send_batch with empty key (no-op)
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_send_batch_empty_api_key_is_noop() {
-        let client = AmplitudeClient::new(String::new());
-        let result = client.send_batch(vec![sample_event()]).await;
-        assert!(result.is_ok(), "empty API key should silently succeed");
-    }
-
-    #[tokio::test]
-    async fn test_send_batch_empty_events_is_noop() {
-        let client = AmplitudeClient::new("some-key".to_string());
-        let result = client.send_batch(vec![]).await;
-        assert!(result.is_ok(), "empty events vec should silently succeed");
-    }
-
-    #[tokio::test]
-    async fn test_send_event_empty_api_key_is_noop() {
-        let client = AmplitudeClient::new(String::new());
-        let result = client.send_event(sample_event()).await;
-        assert!(
-            result.is_ok(),
-            "send_event with empty API key should succeed"
-        );
-    }
-
     #[tokio::test]
     async fn test_posthog_send_batch_empty_api_key_is_noop() {
         let client = PostHogClient::new(String::new(), POSTHOG_DEFAULT_HOST.to_string());
@@ -633,32 +489,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_send_batch_retries_and_drops_on_transport_errors() {
-        let client = AmplitudeClient {
-            api_key: "test-key".to_string(),
-            client: reqwest::Client::builder()
-                .proxy(reqwest::Proxy::all("http://127.0.0.1:9").expect("build proxy"))
-                .timeout(std::time::Duration::from_millis(20))
-                .build()
-                .expect("build reqwest client"),
-        };
-
-        let result = client.send_batch(vec![sample_event()]).await;
-        assert!(result.is_ok(), "telemetry failures should be swallowed");
-    }
-
     // =========================================================================
     // Constants
     // =========================================================================
-
-    #[test]
-    fn test_amplitude_endpoint_is_https() {
-        assert!(
-            AMPLITUDE_ENDPOINT.starts_with("https://"),
-            "Amplitude endpoint should use HTTPS"
-        );
-    }
 
     #[test]
     fn test_max_retries_is_three() {
