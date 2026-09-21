@@ -517,8 +517,13 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         }
     };
 
+    // Held across both prompts: a prefetch that finishes here would otherwise
+    // read as Ctrl-C and cancel the key the operator is part-way through
+    // typing. See [`SigchldGuard`].
+    let sigchld_guard = SigchldGuard::new();
     prompt_provider_key(&dir);
     let extra_env = prompt_extra_env_keys(&dir, &need_envs);
+    drop(sigchld_guard);
 
     let hint = format!("cd ./{} && iii compose --up", dir.display());
     eprintln!();
@@ -1140,6 +1145,42 @@ fn restore_terminal_mode() {
     }
 }
 
+/// Keeps `SIGCHLD` blocked on this thread until dropped.
+///
+/// `cliclack` waits for a keypress inside a blocking `select()` on the
+/// terminal, and `select()` is never restarted after a caught signal, not even
+/// under `SA_RESTART`. Tokio installs a `SIGCHLD` handler to reap the children
+/// [`start_image_prefetch`] spawns, so an image pull finishing while a prompt
+/// is on screen returns `EINTR`, which `console` reports as
+/// `ErrorKind::Interrupted` and `cliclack` cannot tell apart from the operator
+/// pressing Ctrl-C: the prompt cancels itself and the key never gets asked for.
+///
+/// Blocking the signal here leaves it for a thread that is not holding a
+/// prompt, or for after the guard drops. The prefetch is still reaped: the
+/// `wait()` calls that collect it run once the prompts are done.
+struct SigchldGuard(#[cfg(unix)] nix::sys::signal::SigSet);
+
+impl SigchldGuard {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            let mut set = nix::sys::signal::SigSet::empty();
+            set.add(nix::sys::signal::Signal::SIGCHLD);
+            let _ = set.thread_block();
+            Self(set)
+        }
+        #[cfg(not(unix))]
+        Self()
+    }
+}
+
+impl Drop for SigchldGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = self.0.thread_unblock();
+    }
+}
+
 /// `base` if it does not exist under `parent`, else the first free
 /// `base-1`, `base-2`, ...
 fn next_free_dir(parent: &Path, base: &str) -> PathBuf {
@@ -1560,6 +1601,32 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         action: ProjectAction,
+    }
+
+    /// A prefetch finishing mid-prompt used to cancel the API key prompt, so
+    /// the guard has to actually hold `SIGCHLD` off this thread, and has to
+    /// hand it back afterwards so the pull still gets reaped.
+    #[cfg(unix)]
+    #[test]
+    fn sigchld_guard_blocks_only_for_its_lifetime() {
+        fn sigchld_blocked() -> bool {
+            nix::sys::signal::SigSet::thread_get_mask()
+                .expect("the thread has a signal mask")
+                .contains(nix::sys::signal::Signal::SIGCHLD)
+        }
+
+        assert!(
+            !sigchld_blocked(),
+            "nothing blocks SIGCHLD before the guard"
+        );
+        {
+            let _guard = SigchldGuard::new();
+            assert!(
+                sigchld_blocked(),
+                "the guard blocks SIGCHLD while prompting"
+            );
+        }
+        assert!(!sigchld_blocked(), "the guard hands SIGCHLD back on drop");
     }
 
     #[test]
