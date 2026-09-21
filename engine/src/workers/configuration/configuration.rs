@@ -416,39 +416,13 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
 impl ConfigurationWorker {
     #[function(
         id = "configuration::migrate",
-        description = "Move an exact legacy configuration id to an absent destination at the authoritative store. Preserves raw values, schema and metadata; an existing destination wins and leaves the source untouched. Stop source consumers before migrating."
+        description = "Move an exact legacy configuration id at the authority, replacing the destination with the source and retaining the original source as a .yaml.bak backup. Missing source is a no-op. Stop consumers before migrating."
     )]
     pub async fn migrate_fn(
         &self,
         input: ConfigurationMigrateInput,
     ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
-        self.migrate_entry(input, false).await
-    }
-
-    #[function(
-        id = "configuration::migrate-replace",
-        description = "Move a legacy configuration to its destination with source priority. Backs up an existing filesystem destination before replacement. No-op when source is absent; stop consumers before migration. Unsupported adapters fail closed."
-    )]
-    pub async fn migrate_replace_fn(
-        &self,
-        input: ConfigurationMigrateInput,
-    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
-        self.migrate_entry(input, true).await
-    }
-
-    async fn migrate_entry(
-        &self,
-        input: ConfigurationMigrateInput,
-        replace: bool,
-    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
-        let result = if replace {
-            self.store
-                .migrate_replace(&input.from_id, &input.to_id)
-                .await
-        } else {
-            self.store.migrate(&input.from_id, &input.to_id).await
-        };
-        let outcome = match result {
+        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
             Ok(outcome) => outcome,
             Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
         };

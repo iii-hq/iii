@@ -221,26 +221,11 @@ impl EngineClient {
     /// Returns true only when both source and destination are missing.
     /// A missing function is an upgrade error, never permission to reset defaults.
     pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
-        self.migrate_config_with("configuration::migrate", from_id, to_id)
-            .await
-    }
-
-    pub async fn migrate_legacy_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
-        self.migrate_config_with("configuration::migrate-replace", from_id, to_id)
-            .await
-    }
-
-    async fn migrate_config_with(
-        &self,
-        function: &str,
-        from_id: &str,
-        to_id: &str,
-    ) -> Result<bool> {
         let response = self
             .client
             .trigger(
                 TriggerRequest {
-                    function_id: function.to_string(),
+                    function_id: "configuration::migrate".to_string(),
                     payload: json!({ "from_id": from_id, "to_id": to_id }),
                     action: None,
                     timeout_ms: Some(CALL_TIMEOUT_MS),

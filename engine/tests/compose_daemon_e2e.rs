@@ -2539,27 +2539,6 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
         })
         .await
     else {
-        panic!("remote target-wins failed")
-    };
-    assert_eq!(out.action, MigrateAction::Preserved);
-    assert!(out.entry.unwrap().value.is_null());
-    assert_eq!(
-        call(
-            port,
-            "configuration::get",
-            json!({"id": "second-legacy", "raw": true})
-        )
-        .await
-        .unwrap()["value"],
-        json!({"source": true})
-    );
-    let FunctionResult::Success(out) = local
-        .migrate_replace_fn(ConfigurationMigrateInput {
-            from_id: "second-legacy".into(),
-            to_id: "second-target".into(),
-        })
-        .await
-    else {
         panic!("remote source priority failed")
     };
     assert_eq!(out.action, MigrateAction::Migrated);
@@ -2744,7 +2723,7 @@ containers:
         } else {
             assert!(!storage.path().join(format!("{target}.yaml")).exists());
         }
-        if namespace == "default" && target_exists {
+        if namespace == "default" {
             let backups: Vec<_> = std::fs::read_dir(storage.path())
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
@@ -2753,7 +2732,8 @@ containers:
             assert_eq!(backups.len(), 1);
             let backup: Value =
                 serde_yaml::from_slice(&std::fs::read(&backups[0]).unwrap()).unwrap();
-            assert_eq!(backup["value"], json!({"target": true}));
+            assert_eq!(backup["value"], raw);
+            assert_eq!(std::fs::read(&backups[0]).unwrap(), before);
         }
         if namespace != "default" {
             assert_eq!(

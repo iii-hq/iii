@@ -520,34 +520,13 @@ impl ConfigurationStore {
         from_id: &str,
         to_id: &str,
     ) -> Result<ConfigurationMigrateResult, StoreError> {
-        self.migrate_with_policy(from_id, to_id, false).await
-    }
-
-    pub async fn migrate_replace(
-        &self,
-        from_id: &str,
-        to_id: &str,
-    ) -> Result<ConfigurationMigrateResult, StoreError> {
-        self.migrate_with_policy(from_id, to_id, true).await
-    }
-
-    async fn migrate_with_policy(
-        &self,
-        from_id: &str,
-        to_id: &str,
-        replace: bool,
-    ) -> Result<ConfigurationMigrateResult, StoreError> {
         Self::validate_id(from_id)?;
         Self::validate_id(to_id)?;
         let _write = self.write_lock.lock().await;
         // Hold the entry guard before committing storage: once the adapter
         // returns there is no cancellation point before the cache catches up.
         let mut cache = self.entries.write().await;
-        let result = if replace {
-            self.adapter.migrate_replace(from_id, to_id).await
-        } else {
-            self.adapter.migrate(from_id, to_id).await
-        };
+        let result = self.adapter.migrate(from_id, to_id).await;
         match &result {
             Ok(outcome) => {
                 if outcome.action != MigrateAction::Preserved {

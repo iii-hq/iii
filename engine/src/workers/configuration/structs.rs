@@ -57,7 +57,7 @@ impl From<&ConfigurationEntry> for ConfigurationSchemaView {
     }
 }
 
-/// Move one exact legacy id only if the destination is absent.
+/// Move one exact legacy id with source priority, retaining its original backup.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationMigrateInput {
     pub from_id: String,

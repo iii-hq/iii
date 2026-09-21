@@ -150,7 +150,7 @@ pub trait ConfigurationAdapter: Send + Sync {
         )
     }
 
-    /// Move at the authoritative store, preserving a pre-existing destination.
+    /// Move at the authoritative store with source priority, archiving the source.
     /// Implementations must preserve raw values and metadata, serialize with other
     /// mutations, and keep their cache recoverable on failure. No copy/delete fallback.
     async fn migrate(
@@ -161,16 +161,6 @@ pub trait ConfigurationAdapter: Send + Sync {
         anyhow::bail!(
             "this configuration adapter does not support configuration::migrate; refusing an unsafe copy/delete fallback"
         )
-    }
-
-    /// Move a legacy entry even if the destination exists. Implementations
-    /// must back up the replaced destination and fail closed if unsupported.
-    async fn migrate_replace(
-        &self,
-        _from_id: &str,
-        _to_id: &str,
-    ) -> anyhow::Result<ConfigurationMigrateResult> {
-        anyhow::bail!("adapter does not support configuration::migrate-replace")
     }
 
     /// Replace the value of an existing entry. Returns `None` from `get`

@@ -142,8 +142,7 @@ impl FsAdapter {
         let mut moved = 0usize;
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
-            {
+            if !path.is_file() || !Self::is_config_path(&path) {
                 continue;
             }
             let Some(name) = path.file_name() else {
@@ -182,6 +181,13 @@ impl FsAdapter {
         }
     }
 
+    fn is_config_path(path: &Path) -> bool {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        name.ends_with(".yaml") && !name.ends_with(".bak.yaml") && !name.ends_with(".bkup.yaml")
+    }
+
     async fn load_directory(dir: &Path) -> anyhow::Result<HashMap<String, ConfigurationEntry>> {
         let mut entries = HashMap::new();
         let mut read_dir = tokio::fs::read_dir(dir).await?;
@@ -190,7 +196,7 @@ impl FsAdapter {
             if !path.is_file() {
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION) {
+            if !Self::is_config_path(&path) {
                 continue;
             }
             match Self::read_entry(&path).await {
@@ -237,6 +243,9 @@ impl FsAdapter {
     /// the expected layout.
     #[cfg(test)]
     fn id_from_path(path: &Path) -> Option<String> {
+        if !Self::is_config_path(path) {
+            return None;
+        }
         let file = path.file_name()?.to_str()?;
         let stripped = file.strip_suffix(&format!(".{}", FILE_EXTENSION))?;
         if stripped.is_empty() {
@@ -251,7 +260,6 @@ impl FsAdapter {
         &self,
         from_id: &str,
         to_id: &str,
-        replace: bool,
     ) -> anyhow::Result<ConfigurationMigrateResult> {
         use std::io::Write;
         let mut cache = self.cache.write().await;
@@ -279,7 +287,7 @@ impl FsAdapter {
         };
         let prior = read(&target, to_id)?;
         if let Some(entry) = &prior
-            && (!replace || from_id == to_id)
+            && from_id == to_id
         {
             cache.insert(to_id.to_string(), entry.clone());
             return Ok(ConfigurationMigrateResult {
@@ -350,27 +358,9 @@ impl FsAdapter {
             let mut file = options.open(&temporary)?;
             file.write_all(yaml.as_bytes())?;
             file.sync_all()?;
-            // Unlike rename, hard_link atomically refuses an existing target.
-            // Unsupported filesystems fail closed, leaving the source intact.
             #[cfg(test)]
             self.fail_migration_at("publish")?;
-            if replace && prior.is_some() {
-                // Keep the original target under a non-YAML extension so the
-                // watcher/reload never mistakes the backup for another entry.
-                let backup = self
-                    .directory
-                    .join(format!(".{to_id}.migration-{}.bak", uuid::Uuid::new_v4()));
-                #[cfg(test)]
-                self.fail_migration_at("backup")?;
-                std::fs::hard_link(&target, &backup)?;
-                #[cfg(unix)]
-                std::fs::File::open(&self.directory)?.sync_all()?;
-                #[cfg(test)]
-                self.fail_migration_at("replace")?;
-                std::fs::rename(&temporary, &target)?;
-            } else {
-                std::fs::hard_link(&temporary, &target)?;
-            }
+            std::fs::rename(&temporary, &target)?;
             Ok(())
         })();
         let _ = std::fs::remove_file(&temporary);
@@ -384,6 +374,23 @@ impl FsAdapter {
             std::fs::read(&source)? == original,
             "configuration source changed during migration; both copies retained"
         );
+        let backup = source.with_extension("yaml.bak");
+        #[cfg(test)]
+        self.fail_migration_at("backup")?;
+        // Publish the original bytes without replacing any previous backup.
+        // An identical backup permits recovery after interrupted cleanup.
+        match std::fs::hard_link(&source, &backup) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::ensure!(
+                    std::fs::read(&backup)? == original,
+                    "existing backup differs; preserve or relocate it before retrying migration"
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+        #[cfg(unix)]
+        std::fs::File::open(&self.directory)?.sync_all()?;
         #[cfg(test)]
         self.fail_migration_at("delete")?;
         std::fs::remove_file(&source)?;
@@ -432,15 +439,7 @@ impl ConfigurationAdapter for FsAdapter {
         from_id: &str,
         to_id: &str,
     ) -> anyhow::Result<ConfigurationMigrateResult> {
-        self.migrate_entry(from_id, to_id, false).await
-    }
-
-    async fn migrate_replace(
-        &self,
-        from_id: &str,
-        to_id: &str,
-    ) -> anyhow::Result<ConfigurationMigrateResult> {
-        self.migrate_entry(from_id, to_id, true).await
+        self.migrate_entry(from_id, to_id).await
     }
 
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
@@ -709,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn replacement_preserves_source_and_destination_on_failure() {
         use crate::workers::configuration::store::ConfigurationStore;
-        for stage in ["write", "publish", "backup", "replace", "delete"] {
+        for stage in ["write", "publish", "backup", "delete"] {
             let dir = temp_dir();
             let adapter = Arc::new(
                 FsAdapter::new(Some(json!({"directory": dir.path()})))
@@ -727,14 +726,9 @@ mod tests {
             let store = ConfigurationStore::new(adapter.clone());
             store.prime_from_adapter().await.unwrap();
             *adapter.migration_failure.lock().unwrap() = Some(stage);
-            assert!(
-                store
-                    .migrate_replace("state", "default-state")
-                    .await
-                    .is_err()
-            );
+            assert!(store.migrate("state", "default-state").await.is_err());
             assert_eq!(store.get("state").await.unwrap().value, source.value);
-            let committed = stage == "delete";
+            let committed = matches!(stage, "backup" | "delete");
             assert_eq!(
                 store.get("default-state").await.unwrap().value,
                 if committed {
@@ -750,10 +744,7 @@ mod tests {
                 );
             }
             *adapter.migration_failure.lock().unwrap() = None;
-            store
-                .migrate_replace("state", "default-state")
-                .await
-                .unwrap();
+            store.migrate("state", "default-state").await.unwrap();
             assert!(store.get("state").await.is_none());
             let target = adapter.entry_path("default-state");
             let bytes = std::fs::read(&target).unwrap();
@@ -761,7 +752,7 @@ mod tests {
             let count = std::fs::read_dir(dir.path()).unwrap().count();
             assert_eq!(
                 store
-                    .migrate_replace("state", "default-state")
+                    .migrate("state", "default-state")
                     .await
                     .unwrap()
                     .action,
@@ -809,7 +800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_preserves_both_files_when_target_exists_even_if_null() {
+    async fn migration_archives_source_and_replaces_target_even_if_null() {
         let dir = temp_dir();
         let adapter = FsAdapter::new(Some(json!({ "directory": dir.path() })))
             .await
@@ -818,16 +809,20 @@ mod tests {
         let mut target = sample_entry("new");
         target.value = Value::Null;
         adapter.register(target).await.unwrap();
-        let before: Vec<_> = ["old", "new"]
-            .map(|id| std::fs::read(adapter.entry_path(id)).unwrap())
-            .into();
+        let original = std::fs::read(adapter.entry_path("old")).unwrap();
         assert_eq!(
             adapter.migrate("old", "new").await.unwrap().action,
-            MigrateAction::Preserved
+            MigrateAction::Migrated
         );
-        for (id, bytes) in ["old", "new"].into_iter().zip(before) {
-            assert_eq!(std::fs::read(adapter.entry_path(id)).unwrap(), bytes);
-        }
+        assert!(!adapter.entry_path("old").exists());
+        assert_eq!(
+            std::fs::read(dir.path().join("old.yaml.bak")).unwrap(),
+            original
+        );
+        assert_eq!(
+            adapter.get("new").await.unwrap().unwrap().value,
+            json!({"port": 3112})
+        );
         assert_eq!(
             adapter.migrate("new", "new").await.unwrap().action,
             MigrateAction::Preserved
@@ -860,16 +855,12 @@ mod tests {
             assert_eq!(adapter.entry_path("new").exists(), published);
             assert_eq!(
                 std::fs::read_dir(dir.path()).unwrap().count(),
-                if published { 2 } else { 1 }
+                if published { 3 } else { 1 }
             );
             *adapter.migration_failure.lock().unwrap() = None;
             assert_eq!(
                 store.migrate("old", "new").await.unwrap().action,
-                if published {
-                    MigrateAction::Preserved
-                } else {
-                    MigrateAction::Migrated
-                }
+                MigrateAction::Migrated
             );
         }
     }
@@ -888,6 +879,35 @@ mod tests {
         std::fs::write(adapter.entry_path("old"), "invalid: [").unwrap();
         assert!(adapter.migrate("old", "new").await.is_err());
         assert!(!adapter.entry_path("new").exists());
+    }
+
+    #[tokio::test]
+    async fn backups_are_ignored_on_load_watch_and_legacy_directory_migration() {
+        let dir = temp_dir();
+        let legacy = temp_dir();
+        let yaml = serde_yaml::to_string(&sample_entry("state")).unwrap();
+        for name in ["state.yaml.bak", "state.bak.yaml", "state.bkup.yaml"] {
+            std::fs::write(dir.path().join(name), &yaml).unwrap();
+            std::fs::write(legacy.path().join(name), &yaml).unwrap();
+        }
+        FsAdapter::migrate_dir(legacy.path(), dir.path()).await;
+        assert_eq!(std::fs::read_dir(legacy.path()).unwrap().count(), 3);
+        let adapter = FsAdapter::new(Some(json!({"directory": dir.path()})))
+            .await
+            .unwrap();
+        assert!(adapter.list().await.unwrap().is_empty());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+        for name in ["state.yaml.bak", "state.bak.yaml", "state.bkup.yaml"] {
+            std::fs::write(dir.path().join(name), &yaml).unwrap();
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1200), rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(adapter.list().await.unwrap().is_empty());
+        adapter.destroy().await.unwrap();
     }
 
     #[tokio::test]

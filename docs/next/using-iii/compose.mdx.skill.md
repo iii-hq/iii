@@ -745,21 +745,21 @@ migrate the exact hashed id produced by the previous algorithm for that namespac
 The filesystem adapter updates both filename and internal id, and the authority updates its caches
 and notifies subscribers. It re-reads the source so manual edits awaiting the watcher are retained.
 
-Hashed-id migration keeps the existing destination and leaves the hashed source intact.
+Migration gives the legacy source priority over an existing destination.
 After that, the `default` namespace adopts the exact bare container key (`state` becomes
 `default-state`), even when the destination already exists. The bare source replaces the
 whole destination entry, preserving raw values and metadata rather than merging defaults.
 Another container's explicit ownership blocks this adoption; other namespaces and explicit
 `config_name` values never adopt bare entries.
 
-Before replacing a destination, the fs adapter retains its previous contents as
-`.<destination>.migration-<unique-id>.bak` in the same directory. Backups are not loaded as
-configuration entries. Keep them for recovery, or remove them manually after verifying the
-migration. Once the source is gone, repeated starts do not rewrite the destination or create
-more backups. An absent source never clears the destination.
+After publishing the destination, the fs adapter archives the original source as
+`<source>.yaml.bak` (for example, `state.yaml.bak`). The previous destination is replaced,
+not backed up. Files ending in `.yaml.bak`, `.bak.yaml`, or `.bkup.yaml` are ignored during
+loading, watching, and legacy directory migration. Repeated starts with no source perform
+no writes. An existing identical backup permits recovery after interrupted cleanup; a
+conflicting backup is never overwritten and stops migration with an error.
 
-Migration commits a complete destination (backing up any replaced entry) before deleting the
-source. I/O failures stop startup; failure after publication can leave two recoverable copies.
+Migration commits the complete destination before archiving the source. I/O failures stop startup; failure after publication can leave two recoverable copies.
 The filesystem adapter requires same-directory hard-link support and may normalize YAML formatting
 or remove comments on the one migration rewrite; values and unknown document fields are retained.
 Stop source consumers before migration: Compose checks that the child is not already registered,
@@ -767,7 +767,7 @@ and its restart path stops the old child first. Do not run two configuration aut
 the same directory or edit the source concurrently with migration.
 
 The bridge delegates migration to the remote authority. Upgrade that authority together with
-Compose: an absent `configuration::migrate` / `configuration::migrate-replace` or unsupported adapter fails with
+Compose: an absent `configuration::migrate` or unsupported adapter fails with
 `CONFIG_MIGRATION_FAILED`, never a read/copy/delete fallback that could reset stored values.
 
 Within one project, a generated name colliding with another container's explicit name is rejected

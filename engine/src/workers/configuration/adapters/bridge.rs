@@ -144,7 +144,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         })
     }
 
-    /// The remote authority decides target-wins; never copy through a local mirror.
+    /// The remote authority migrates and archives the source; never copy through a local mirror.
     async fn migrate(
         &self,
         from_id: &str,
@@ -154,23 +154,6 @@ impl ConfigurationAdapter for BridgeAdapter {
             from_id: from_id.to_string(), to_id: to_id.to_string(),
         }).await.map_err(|e| anyhow::anyhow!("remote configuration::migrate failed; upgrade the remote engine if unavailable; no copy/delete fallback: {e}"))?;
         serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("decode migration response: {e}"))
-    }
-
-    async fn migrate_replace(
-        &self,
-        from_id: &str,
-        to_id: &str,
-    ) -> anyhow::Result<ConfigurationMigrateResult> {
-        let raw = self
-            .call(
-                "configuration::migrate-replace",
-                ConfigurationMigrateInput {
-                    from_id: from_id.to_string(),
-                    to_id: to_id.to_string(),
-                },
-            )
-            .await?;
-        serde_json::from_value(raw).map_err(Into::into)
     }
 
     /// Replace the authoritative remote value through its validated configuration API.

@@ -1423,7 +1423,7 @@ async fn resolve_config(
         // the default namespace may adopt it, and never steal a name another
         // container in this project explicitly owns. The bare legacy source
         // wins even over a destination created by an earlier Compose version.
-        // The authority backs up that destination before replacing it.
+        // The authority archives the source after publishing the destination.
         if ctx.project_namespace == "default"
             && !ctx
                 .file
@@ -1431,7 +1431,7 @@ async fn resolve_config(
                 .values()
                 .any(|other| other.config_name.as_deref() == Some(key))
         {
-            ctx.engine.migrate_legacy_config(key, &name).await?;
+            ctx.engine.migrate_config(key, &name).await?;
         }
     }
     // Lowest to highest: package defaults, stored value, compose override.
