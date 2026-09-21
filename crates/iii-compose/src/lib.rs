@@ -685,6 +685,13 @@ async fn serve_daemon(
     if let Some(engine) = managed_engine
         && !daemon.engine().is_connected()
     {
+        // Built before the report so the event carries the same code the
+        // operator sees, and cannot drift from it.
+        let error = ComposeError::EngineReadinessTimeout {
+            engine_url: daemon.engine_url.clone(),
+            seconds: accepted_within.as_secs(),
+            tail: engine.log_tail(),
+        };
         if let Some(project) = &mut start {
             project.progress.finish(false, "Connection timed out");
             report_up(
@@ -693,16 +700,12 @@ async fn serve_daemon(
                 &daemon,
                 started,
                 None,
-                Some("ENGINE_READINESS_TIMEOUT"),
+                Some(error.code()),
             )
             .await;
         }
         daemon.shutdown().await;
-        return Err(ComposeError::EngineReadinessTimeout {
-            engine_url: daemon.engine_url.clone(),
-            seconds: accepted_within.as_secs(),
-            tail: engine.log_tail(),
-        });
+        return Err(error);
     }
 
     if daemon.engine().is_connected()
