@@ -229,6 +229,11 @@ Each event holds `sequence`, `operation_id`, `phase`, `detail`, `elapsed_ms`, an
 event: `phase` is `complete` and `terminal` is `true`, whether the operation succeeded, failed, or
 was cancelled.
 
+A succeeded operation does not always mean every worker is up. When a worker whose effective
+`required` value is `false` failed to reach its target state, the terminal event's `detail` names
+those workers instead of claiming they are ready, and points you to `compose::status` and their
+logs. The same detail appears in the snapshot `compose::operation` returns.
+
 #### Checking and cancelling an operation
 
 `compose::operation` takes `operation_id` and returns the operation's latest snapshot, intended for
