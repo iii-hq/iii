@@ -1407,7 +1407,7 @@ pub struct ResolvedConfig {
 }
 
 /// Resolves the identity and merges package defaults, stored values, and overrides.
-/// Publishes before startup; an absent value yields only the identity, while
+/// Delivers a runtime-only file; an absent value yields only the identity, while
 /// service failures propagate rather than silently starting with stale defaults.
 async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
@@ -1415,7 +1415,25 @@ async fn resolve_config(
     key: &str,
     shipped: Option<serde_yaml::Value>,
 ) -> Result<ResolvedConfig> {
-    let name = container.resolved_config_name(ctx.project_namespace, key);
+    let name = container.resolved_config_name(ctx.project_namespace, key)?;
+    if container.config_name.is_none() {
+        let legacy = crate::configuration::legacy_config_name(ctx.project_namespace, key);
+        ctx.engine.migrate_config(&legacy, &name).await?;
+        // Pre-namespace installations used the container key directly. Only
+        // the default namespace may adopt it, and never steal a name another
+        // container in this project explicitly owns. The bare legacy source
+        // wins even over a destination created by an earlier Compose version.
+        // The authority archives the source after publishing the destination.
+        if ctx.project_namespace == "default"
+            && !ctx
+                .file
+                .containers
+                .values()
+                .any(|other| other.config_name.as_deref() == Some(key))
+        {
+            ctx.engine.migrate_config(key, &name).await?;
+        }
+    }
     // Lowest to highest: package defaults, stored value, compose override.
     // NOT_FOUND contributes nothing; transport/service failures still fail boot.
     let mut value = shipped;
@@ -1434,9 +1452,8 @@ async fn resolve_config(
     }
 
     let file = if let Some(value) = value {
-        // Workers must honor III_CONFIG_NAME when reading the service. Both
-        // delivery paths carry the same merged value before the child starts.
-        ctx.engine.publish_config(&name, &value).await?;
+        // The file is an execution snapshot, NOT the persistent base. Workers
+        // must not register this merged value back into configuration storage.
         Some(ConfigFile::write(ctx.config_dir, key, &value)?)
     } else {
         // Do not publish an empty placeholder: let the worker seed its defaults
