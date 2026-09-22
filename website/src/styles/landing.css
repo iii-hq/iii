@@ -3134,7 +3134,11 @@
     min-width:0;
     max-width:100%;
   }
-  .foot-install:hover{ background:var(--rule-2); }
+  /* .cta-install:hover (site-nav.css) inverts to ink/bg; inside the inverted .foot-cta card that
+     leaves bg-coloured text on a rule-2 background. Pin the full hover state here instead. */
+  .foot-install.cta-install:hover{ background:var(--rule-2); color:var(--ink); }
+  .foot-install.cta-install:hover .cmd{ color:var(--ink); }
+  .foot-install.cta-install.copied:hover .cmd{ color:var(--accent); }
   .foot-install .prompt{ color:var(--ink); flex-shrink:0; }
   .foot-install .cmd{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .foot-install .copy-ico{ flex-shrink:0; color:var(--ink); }
