@@ -538,6 +538,10 @@ async fn serve(
 
 /// Reports one foreground `iii compose --up`, and the containers that did not
 /// come up with it.
+///
+/// `exits` says whether the process is about to leave. A process that stays
+/// has somewhere for the send to finish and nothing waits for it; one that
+/// leaves has to wait, or the report never goes out.
 async fn report_up(
     project: &InitialProject,
     outcome: telemetry::UpOutcome,
@@ -545,6 +549,7 @@ async fn report_up(
     started: std::time::Instant,
     result: Option<&lifecycle::OpResult>,
     error_kind: Option<&str>,
+    exits: bool,
 ) {
     let reports = telemetry::up_reports(
         telemetry::up_properties(
@@ -558,14 +563,7 @@ async fn report_up(
         ),
         result,
     );
-    if outcome == telemetry::UpOutcome::Ready {
-        // A project that came up keeps this process alive, so the send has
-        // somewhere to finish and nothing waits for it. Every other outcome
-        // returns from `serve` and exits, so the send has to complete first.
-        tokio::spawn(telemetry::send(reports));
-        return;
-    }
-    telemetry::send(reports).await;
+    telemetry::send_waiting(reports, exits).await;
 }
 
 /// Resolves the daemon's process label before the CLI starts its async runtime.
@@ -701,6 +699,7 @@ async fn serve_daemon(
                 started,
                 None,
                 Some(error.code()),
+                true,
             )
             .await;
         }
@@ -782,6 +781,7 @@ async fn serve_daemon(
         match result {
             Ok(None) => {
                 project.progress.finish(false, "Cancelled");
+                let exits = shutdown.requested() || daemon.stop_requested();
                 report_up(
                     project,
                     telemetry::UpOutcome::Cancelled,
@@ -789,6 +789,7 @@ async fn serve_daemon(
                     started,
                     None,
                     None,
+                    exits,
                 )
                 .await;
                 operation
@@ -797,7 +798,7 @@ async fn serve_daemon(
                         "initial project startup cancelled",
                     )
                     .await;
-                if shutdown.requested() || daemon.stop_requested() {
+                if exits {
                     println!(
                         "{}",
                         "startup interrupted; stopping every project...".dimmed()
@@ -822,6 +823,7 @@ async fn serve_daemon(
                             .as_ref()
                             .map_or(error.code(), |failure| failure.code.as_str()),
                     ),
+                    true,
                 )
                 .await;
                 operation
@@ -839,6 +841,7 @@ async fn serve_daemon(
                     started,
                     Some(&result),
                     None,
+                    false,
                 )
                 .await;
                 operation
@@ -857,6 +860,7 @@ async fn serve_daemon(
                     started,
                     None,
                     Some(err.code()),
+                    true,
                 )
                 .await;
                 operation
