@@ -32,7 +32,7 @@ cargo add iii-sdk
 | SDK | Package | Best for | Important caveat |
 | --- | --- | --- | --- |
 | Node.js | `iii-sdk` | Server-side TypeScript/JavaScript workers | Supports custom headers, Logger, OpenTelemetry, HTTP-invoked functions |
-| Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through an RBAC-protected listener; keep secrets server-side |
+| Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through the `rbac-proxy` worker's public port, never the engine port; keep secrets server-side |
 | Python | `iii-sdk` | Sync or async Python workers | Use `trigger_async` inside async handlers |
 | Rust | `iii-sdk` | High-performance tokio workers | Handler error type should map into `iii_sdk::Error` |
 
@@ -90,7 +90,7 @@ await iii.trigger({
 });
 ```
 
-Do not expose the private engine worker port to untrusted browsers. Browser workers cannot send
+Do not expose the private engine worker port to untrusted browsers; put the `rbac-proxy` worker in front of it (`iii trigger compose::add worker=rbac-proxy`). Browser workers cannot send
 custom WebSocket headers and must not hold backend secrets.
 
 ## Python
@@ -112,7 +112,7 @@ iii.register_function("users::lookup", lookup_user)
 ```
 
 Python handlers may be sync or async. Use `await iii.trigger_async(request)` inside async handlers,
-and `iii.trigger(request)` in sync contexts. `HttpResponse` (from `iii_helpers.http`) uses camelCase `statusCode`.
+and `iii.trigger(request)` in sync contexts. `HttpResponse` (from `iii_helpers.http`) uses `status_code`, like the other helpers packages.
 
 ## Rust
 
@@ -123,10 +123,11 @@ use serde_json::json;
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunction::new("users::lookup", |input: serde_json::Value| {
+    "users::lookup",
+    RegisterFunction::new(|input: serde_json::Value| -> Result<serde_json::Value, iii_sdk::Error> {
         Ok(json!({ "userId": input["userId"], "name": "Ada" }))
     }).description("Look up a user"),
-)?;
+);
 ```
 
 Rust supports typed handlers and schema extraction when input/output types derive
@@ -149,6 +150,6 @@ Rust supports typed handlers and schema extraction when input/output types deriv
 
 - For the common Function/Trigger/Worker model, built-in trigger schemas, custom triggers, and
   invocation mode decisions, use `iii-core-primitives`.
-- For deployment config, queue adapter policy, worker manager, RBAC listeners, and ports, use
+- For deployment config, engine-owned workers, RBAC (`rbac-proxy`), and ports, use
   `iii-engine-config`.
 - For retryability and exception classes, use `iii-error-handling`.

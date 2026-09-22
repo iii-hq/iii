@@ -2,8 +2,8 @@
 name: iii-engine-config
 description: >-
   Configure a managed iii engine through worker-compose.yaml or a directly supervised engine
-  through config.yaml. Use for engine ports, RBAC listeners, streams, sandboxes, and configuration
-  storage.
+  through config.yaml. Use for engine ports, RBAC via the rbac-proxy worker, streams, sandboxes,
+  and configuration storage.
 ---
 
 # Engine Config
@@ -29,10 +29,6 @@ engine:
     iii-worker-manager:
       host: 127.0.0.1
       port: 49134
-    "iii-worker-manager#rbac":
-      host: 0.0.0.0
-      port: 49135
-      middleware_function_id: auth::middleware
     iii-http-functions: {}
     iii-stream:
       host: 127.0.0.1
@@ -73,6 +69,35 @@ HTTP, cron, queue, state, pubsub, bridge, application, and custom workers belong
 iii trigger -n orders-daemon compose::add worker=state
 ```
 
+## RBAC with `rbac-proxy`
+
+Keep the engine's worker-manager port internal and put the `rbac-proxy` worker in front of it when
+untrusted workers, browsers, or agents need to connect:
+
+```bash
+iii trigger -n orders-daemon compose::add worker=rbac-proxy
+```
+
+`rbac-proxy` opens its own WebSocket port, speaks the worker protocol verbatim, and at the boundary
+authenticates each connection (`rbac.auth_function_id`), gates every invocation and trigger binding
+(`rbac.expose_functions`, plus `allowed_functions` / `forbidden_functions` from the auth result),
+namespaces a session's registrations (`function_registration_prefix`), runs
+`middleware_function_id` and the registration hooks, and filters `engine::*` discovery results to
+what the caller may invoke. Its settings live in the `configuration` worker under id `rbac-proxy`:
+
+```yaml
+host: 0.0.0.0
+port: 49200                        # the public RBAC port
+engine_url: ws://127.0.0.1:49134   # the trusted internal engine listener
+rbac:
+  auth_function_id: my-project::auth-function
+  expose_functions:
+    - match("api::*")
+```
+
+Only the proxy's port should face an untrusted network, and a public proxy must always set
+`auth_function_id`. Full schema: https://workers.iii.dev/workers/rbac-proxy.
+
 ## Directly supervised engine
 
 Keep list-shaped `config.yaml` only when systemd, Kubernetes, or another supervisor owns the
@@ -105,8 +130,8 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 
 ## Security and operations
 
-- Bind private worker-manager listeners to `127.0.0.1`.
-- Put public listeners behind `middleware_function_id` and RBAC registration hooks.
+- Bind the worker-manager listener to `127.0.0.1`; expose only the `rbac-proxy` port.
+- Set `rbac.auth_function_id` on every public proxy and keep `expose_functions` narrow.
 - Keep secrets in environment-backed configuration; do not commit literal credentials.
 - Preserve configuration, stream, state, and queue storage paths during migrations.
 - Use `compose::status` for process ownership and `engine::workers::list` for live connections.
@@ -115,7 +140,7 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 ## When to Use
 
 - Use this skill for managed `engine:` maps, direct `config.yaml`, engine-owned workers, ports,
-  adapters, RBAC listeners, or engine lifecycle selection.
+  adapters, RBAC via `rbac-proxy`, or engine lifecycle selection.
 - Use it when migrating engine worker blocks into Compose.
 
 ## Boundaries
