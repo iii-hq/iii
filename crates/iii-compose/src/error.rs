@@ -357,9 +357,15 @@ pub enum ComposeError {
     #[error("managed engine could not start: {message}")]
     EngineSpawnFailed { message: String },
 
-    #[error("managed engine cannot listen at {listener}: {source}")]
+    #[error("managed engine cannot listen at {listener}: {source}. {hint}")]
     ManagedEngineListenerUnavailable {
         listener: String,
+        /// Why the bind failed, in terms the operator can act on: who usually
+        /// holds an occupied port and how to find it, or what to check in
+        /// engine.url for a permission or address failure. The managed-engine
+        /// start adds the recorded pid when an earlier engine could not be
+        /// verified.
+        hint: String,
         #[source]
         source: std::io::Error,
     },

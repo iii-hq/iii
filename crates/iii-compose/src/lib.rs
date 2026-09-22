@@ -451,40 +451,59 @@ async fn serve(
             let Some(spec) = owner.engine.as_ref() else {
                 unreachable!("managed mode is selected only from an engine section");
             };
-            let Some(engine) = shutdown
-                .run(managed_engine::ManagedEngine::start(
-                    spec,
-                    &daemon_namespace,
-                    &owner.path,
-                ))
-                .await
+            // Awaited in full, never raced against the signal: the start
+            // comes to own processes along the way and tears them down
+            // itself when a shutdown request arrives, returning None.
+            let Some(engine) = managed_engine::ManagedEngine::start(
+                spec,
+                &daemon_namespace,
+                &owner.path,
+                &shutdown,
+            )
+            .await?
             else {
                 if let Some(project) = &mut start_project {
                     project.progress.finish(false, "Cancelled");
                 }
                 return Ok(());
             };
-            let engine = engine?;
             if let Some(project) = &start_project {
                 project.progress.engine_waiting();
             }
             report::line(&format!("  {} {}", "pid:".dimmed(), engine.pid()));
+            if engine.is_adopted() {
+                report::line(&format!(
+                    "  {} {}",
+                    "adopted:".dimmed(),
+                    "started by an earlier compose that exited without stopping it; reused as is"
+                ));
+            }
             report::line(&format!("  {} {}", "owner:".dimmed(), owner.path.display()));
             report::line(&format!(
                 "  {} {}",
                 "config:".dimmed(),
                 engine.config_path().display()
             ));
-            report::line(&format!(
-                "  {} {}",
-                "logs:".dimmed(),
-                engine.log_path().display()
-            ));
-            report::line(&format!(
-                "  {} {}",
-                "follow logs:".dimmed(),
-                engine.follow_command()
-            ));
+            if engine.is_adopted() {
+                // The pipes died with the compose that spawned the engine:
+                // the file holds what was captured up to then, nothing newer.
+                report::line(&format!(
+                    "  {} {} (up to the adoption; the adopted engine's output is not captured)",
+                    "logs:".dimmed(),
+                    engine.log_path().display()
+                ));
+            } else {
+                report::line(&format!(
+                    "  {} {}",
+                    "logs:".dimmed(),
+                    engine.log_path().display()
+                ));
+                report::line(&format!(
+                    "  {} {}",
+                    "follow logs:".dimmed(),
+                    engine.follow_command()
+                ));
+            }
             report::line("");
             Some(engine)
         }
