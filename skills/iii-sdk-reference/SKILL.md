@@ -45,7 +45,7 @@ the helpers package — `@iii-dev/helpers` (Node, with submodules like `/observa
 | Capability | Node | Python | Rust |
 | --- | --- | --- | --- |
 | Connect worker | `registerWorker(url, options?)` | `register_worker(address, options?)` | `register_worker(url, InitOptions)` |
-| Register local function | `registerFunction(id, handler, options?)` | `register_function(id, handler, **options)` | `register_function(RegisterFunction::new(...))` |
+| Register local function | `registerFunction(id, handler, options?)` | `register_function(id, handler, **options)` | `register_function("id", RegisterFunction::new(...))` |
 | Register trigger | `registerTrigger({ type, function_id, config })` | `register_trigger({...})` | `register_trigger(RegisterTriggerInput { ... })` |
 | Invoke function | `trigger({ function_id, payload })` | `trigger(request)` / `trigger_async(request)` | `trigger(TriggerRequest)` |
 | Durable enqueue | `TriggerAction.Enqueue({ queue })` | `{"type": "enqueue", "queue": name}` | `TriggerAction::Enqueue { queue }` |

@@ -32,7 +32,7 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 
 ## Retryability
 
-- Retry transient `TIMEOUT`, transport, or worker reconnect failures only when the operation is idempotent.
+- Retry transient `TIMEOUT` (or a lowercase `timeout` forwarded from a target worker), transport, or worker reconnect failures only when the operation is idempotent.
 - Do not retry `FORBIDDEN` without changing auth/policy.
 - Do not retry `function_not_found` by calling the same ID repeatedly; discover functions or install/start the missing worker.
 - For reliable background work, use `TriggerAction.Enqueue({ queue })` and queue retry/DLQ policy.
@@ -64,7 +64,7 @@ try:
 except InvocationError as exc:
     if exc.code == "FORBIDDEN":
         raise RuntimeError("Policy denied orders::charge")
-    if exc.code == "TIMEOUT":
+    if exc.code in ("TIMEOUT", "timeout"):  # a target worker may report lowercase; the engine forwards it as-is
         raise RuntimeError("orders::charge timed out")
     raise RuntimeError(f"{exc.code}: {exc.message}")
 ```

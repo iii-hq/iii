@@ -33,7 +33,7 @@ Add `--non-interactive` after `sh -s --` to install without the setup prompt. `i
 
 A project is one **`worker-compose.yaml`**: the `engine:` block declares the engine and its engine-owned workers, and `containers:` declares the project's workers (registry packages or local `path://` workers). Each worker's runtime settings (ports, hosts, adapters) live in the **configuration worker**, one YAML file per worker under `./config/`. Read those files and the docs; do not assume fixed port numbers from a static list. The list-shaped `config.yaml` is only for an engine that another supervisor owns.
 
-The UI comes from the **console worker**. The project templates include it; once the project is up it serves at http://127.0.0.1:3113. Add it to another project with `iii trigger compose::add worker=console`.
+The UI comes from the **console worker**. The project templates include it; once the project is up it serves at http://127.0.0.1:3113 by default (the port is set in the console worker's configuration under `./config/`). Add it to another project with `iii trigger compose::add worker=console`.
 
 Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. **`iii trigger <function>`** is how a human or an agent outside iii calls a function on the running engine, including the `compose::*` lifecycle functions. Code that runs inside a worker calls functions through the SDK's `trigger`, not by shelling out to the CLI.
 
@@ -83,7 +83,7 @@ The thin-vs-thick harness debate is a composition choice in iii. A thin harness 
 
 ## Process isolation
 
-iii ships a sandbox worker that runs arbitrary ephemeral code on demand. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port, to let agents run untrusted code without risk to the base system. Workers added with `compose::add` boot inside that same isolation. An agent that needs to execute generated or installed code calls those same functions, gated by the same RBAC.
+iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. `compose::add` declares trusted project workers and is not a sandbox: a local worker's setup, install, and start scripts run under the Compose daemon on the engine host. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
 
 ## Discovery and extensibility
 
