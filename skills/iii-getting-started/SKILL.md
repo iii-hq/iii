@@ -44,6 +44,11 @@ iii compose --namespace dev --up --file worker-compose.yaml
 The file's `engine:` section starts the engine; `containers:` starts project workers. The engine
 commonly listens on `ws://localhost:49134`. Keep this foreground supervisor running.
 
+`--namespace dev` names the daemon and becomes `III_NAMESPACE` for every worker it starts, so your
+workers register and call each other in `dev`; that is why the `iii trigger` commands below pass
+`-n dev`. Engine-owned functions (`engine::*`, `configuration::*`) stay in `default`; when a worker
+in `dev` calls one of those, pass `namespace: "default"` on the call (see `iii-sdk-reference`).
+
 ## Step 4: Install the SDK
 
 Pick your language:

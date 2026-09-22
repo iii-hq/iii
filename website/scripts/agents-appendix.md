@@ -60,7 +60,7 @@ Agents should follow:
 
 ## Agent skills (after onboarding)
 
-Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
+Once iii is installed and your project is running, install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
 
 ```bash
 npx skills add iii-hq/iii/skills   # all iii reference skills

@@ -139,6 +139,54 @@ Rust supports typed handlers and schema extraction when input/output types deriv
 - Pass `readerRef` or `writerRef` through a function payload.
 - Reconstruct readers/writers from refs in consumers when the SDK requires it.
 
+## Namespaces
+
+A worker belongs to one namespace: `options.namespace` (`InitOptions.namespace`) → the `III_NAMESPACE`
+environment variable → the engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace
+(`iii compose -n dev ...`) for every worker it starts, so a whole project lands in one namespace
+without any code change. Routing is strict: a function is only reachable in the namespace it
+registered in.
+
+- `iii.trigger({ function_id })` resolves in the calling worker's namespace. Calls to your own
+  functions and to other workers declared in the same `worker-compose.yaml` need no namespace.
+- Engine-owned functions register in `default`: `engine::*`, `configuration::*`, and `stream::*`
+  (from `iii-stream`). `engine::*` resolves there implicitly; for the others pass
+  `namespace: "default"` on the call when your worker runs in a Compose namespace.
+- `registerTrigger` binds in the worker's namespace. Leave `trigger_namespace` unset; the engine
+  looks for the trigger type's provider in your namespace first and the engine's own second, which
+  is what lets a project ship its own `http` provider or fall back to the engine's `cron`.
+- Never prefix a function id with a namespace. The id stays `orders::validate`; the namespace is a
+  separate field.
+- From the CLI, `iii trigger -n dev orders::validate ...` selects the namespace; omitting `-n`
+  resolves in `default`.
+
+```typescript
+// Same-project worker: no namespace
+await iii.trigger({ function_id: "orders::validate", payload: order });
+
+// Engine-owned configuration worker from a namespaced project
+const cfg = await iii.trigger({
+  function_id: "configuration::get",
+  namespace: "default",
+  payload: { id: "orders" },
+});
+```
+
+```python
+cfg = await iii.trigger_async(
+    {"function_id": "configuration::get", "namespace": "default", "payload": {"id": "orders"}}
+)
+```
+
+```rust
+let cfg = iii.trigger(TriggerRequest {
+    function_id: "configuration::get".into(),
+    namespace: Some("default".into()),
+    payload: json!({ "id": "orders" }),
+    ..Default::default()
+}).await?;
+```
+
 ## When to Use
 
 - Use this skill for package names, SDK exports, initialization options, browser security constraints,

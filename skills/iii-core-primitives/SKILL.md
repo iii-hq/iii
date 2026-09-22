@@ -109,6 +109,17 @@ condition function returns `true`.
 Use enqueue for work that must complete with retries. Use void for analytics, notifications, and
 other non-critical side effects.
 
+## Namespaces
+
+Every worker registers in a namespace: the `namespace` init option, else `III_NAMESPACE`, else the
+engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace for every worker it
+starts, so all workers in one `worker-compose.yaml` share a namespace and call each other by bare
+function id. Engine-owned functions (`engine::*`, `configuration::*`, `stream::*`) live in `default`;
+`engine::*` resolves there implicitly, the others need `namespace: "default"` on the call from a
+namespaced worker. Routing is strict and ids are never prefixed with a namespace. From the CLI,
+`iii trigger -n <namespace> <function>` selects it. Details and per-language examples are in
+`iii-sdk-reference`.
+
 ## Code Examples
 
 ### TypeScript
