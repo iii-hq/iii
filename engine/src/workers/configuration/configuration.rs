@@ -33,8 +33,9 @@ use crate::{
                 ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
                 ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
                 ConfigurationGetResult, ConfigurationListInput, ConfigurationListResult,
-                ConfigurationRegisterInput, ConfigurationSchemaInput, ConfigurationSchemaView,
-                ConfigurationSetInput, ConfigurationSetResult,
+                ConfigurationMigrateInput, ConfigurationMigrateResult, ConfigurationRegisterInput,
+                ConfigurationSchemaInput, ConfigurationSchemaView, ConfigurationSetInput,
+                ConfigurationSetResult, MigrateAction,
             },
             trigger::{ConfigurationTriggers, TRIGGER_TYPE},
         },
@@ -413,6 +414,54 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
 
 #[service(name = "configuration")]
 impl ConfigurationWorker {
+    #[function(
+        id = "configuration::migration-capabilities",
+        description = "Read-only migration contract negotiation. Revision 1 guarantees source priority and source archival; it does not migrate or write configuration."
+    )]
+    pub async fn migration_capabilities_fn(
+        &self,
+        _input: Value,
+    ) -> FunctionResult<Value, ErrorBody> {
+        FunctionResult::Success(serde_json::json!({"source_priority_archive_revision": 1}))
+    }
+
+    #[function(
+        id = "configuration::migrate",
+        description = "Move an exact legacy configuration id at the authority, replacing the destination with the source and retaining the original source as a .yaml.bak backup. Missing source is a no-op. Stop consumers before migrating."
+    )]
+    pub async fn migrate_fn(
+        &self,
+        input: ConfigurationMigrateInput,
+    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
+        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
+            Ok(outcome) => outcome,
+            Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
+        };
+        if outcome.action == MigrateAction::Migrated
+            && self.store.adapter().ensure_support()
+                == crate::workers::configuration::adapters::EnsureSupport::Local
+            && let Some(entry) = &outcome.entry
+        {
+            let mut previous = entry.clone();
+            previous.id = input.from_id;
+            self.fan_out(entry_to_event(
+                &previous,
+                ConfigurationEventType::Deleted,
+                Some(previous.value.clone()),
+                None,
+            ))
+            .await;
+            self.fan_out(entry_to_event(
+                entry,
+                ConfigurationEventType::Registered,
+                None,
+                Some(entry.value.clone()),
+            ))
+            .await;
+        }
+        FunctionResult::Success(outcome)
+    }
+
     #[function(
         id = "configuration::register",
         description = "Register a configuration id with a name, description, and JSON Schema. Idempotent — re-registering replaces metadata and (when initial_value is provided) the value. Validates initial_value against the schema."

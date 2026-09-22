@@ -1,0 +1,9 @@
+id: state
+name: State
+description: State configuration for SDK integration tests
+value:
+  adapter:
+    name: kv
+    config:
+      store_method: file_based
+      file_path: ./data/state_store.db

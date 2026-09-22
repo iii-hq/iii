@@ -319,6 +319,29 @@ pub enum ComposeError {
     )]
     ReservedEnvOverride { container: String, name: String },
 
+    #[error(
+        "generated configuration id '{name}' must match [a-z0-9_-]{{1,64}}; set an explicit config_name instead of relying on sanitization or truncation"
+    )]
+    InvalidConfigName { name: String },
+
+    #[error(
+        "containers '{first}' and '{second}' resolve to configuration '{name}'; choose distinct config_name values (sharing requires both names to be explicit)"
+    )]
+    ConfigNameCollision {
+        name: String,
+        first: String,
+        second: String,
+    },
+
+    #[error(
+        "configuration migration from '{from_id}' to '{to_id}' failed: {message}; upgrade the configuration authority if configuration::migrate is unavailable; refusing to start with defaults"
+    )]
+    ConfigMigrationFailed {
+        from_id: String,
+        to_id: String,
+        message: String,
+    },
+
     #[error("configuration '{name}' could not be resolved: {message}")]
     ConfigFetchFailed { name: String, message: String },
 
@@ -582,6 +605,9 @@ impl ComposeError {
             Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
             Self::PackageArtifactEmpty { .. } => "PACKAGE_ARTIFACT_EMPTY",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
+            Self::InvalidConfigName { .. } => "INVALID_CONFIG_NAME",
+            Self::ConfigNameCollision { .. } => "CONFIG_NAME_COLLISION",
+            Self::ConfigMigrationFailed { .. } => "CONFIG_MIGRATION_FAILED",
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",

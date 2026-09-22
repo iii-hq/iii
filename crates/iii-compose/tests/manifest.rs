@@ -325,6 +325,7 @@ containers:
         Some(
             file.containers["api"]
                 .resolved_config_name("orders-abcd1234", "api")
+                .unwrap()
                 .as_str()
         )
     );

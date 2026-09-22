@@ -488,6 +488,7 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         start_with.is_empty() || start_with.iter().any(|spec| is_tour_worker(spec));
     if with_onboarding {
         seed_console_layout(&dir);
+        seed_console_config_name(&dir);
         seed_onboarding_container(&dir);
     }
 
@@ -517,8 +518,13 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         }
     };
 
+    // Held across both prompts: a prefetch that finishes here would otherwise
+    // read as Ctrl-C and cancel the key the operator is part-way through
+    // typing. See [`SigchldGuard`].
+    let sigchld_guard = SigchldGuard::new();
     prompt_provider_key(&dir);
     let extra_env = prompt_extra_env_keys(&dir, &need_envs);
+    drop(sigchld_guard);
 
     let hint = format!("cd ./{} && iii compose --up", dir.display());
     eprintln!();
@@ -652,6 +658,72 @@ fn with_onboarding_container(text: &str) -> Option<String> {
     Some(patched)
 }
 
+/// True for the line that opens the top-level container block named `key`,
+/// with or without a trailing comment.
+fn opens_container(line: &str, key: &str) -> bool {
+    let Some(rest) = line.strip_prefix("  ") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(key) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(':') else {
+        return false;
+    };
+    rest.trim().is_empty() || rest.trim_start().starts_with('#')
+}
+
+/// Points the console's container at the configuration entry the layout seed
+/// writes.
+///
+/// Without it the container takes compose's derived per-container name
+/// (`<namespace>-<key>`, see `resolved_config_name`), which for the tour is
+/// `default-ade` and which nothing seeds, so the console is handed its own
+/// defaults and opens on the stock layout: the tour's pane never appears even
+/// though the entry is on disk.
+fn with_console_config_name(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| opens_container(line, CONSOLE_CONTAINER))?;
+    // The block runs to the next container, so an entry already pointing
+    // somewhere deliberate is left alone.
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| !line.trim().is_empty() && !line.starts_with("   "))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    if lines[start + 1..end]
+        .iter()
+        .any(|line| line.trim_start().starts_with("config_name:"))
+    {
+        return None;
+    }
+
+    let entry = format!("    config_name: {CONSOLE_CONFIG}");
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 1);
+    out.extend_from_slice(&lines[..=start]);
+    out.push(&entry);
+    out.extend_from_slice(&lines[start + 1..]);
+    let mut patched = out.join("\n");
+    if text.ends_with('\n') {
+        patched.push('\n');
+    }
+    Some(patched)
+}
+
+/// Best effort, like the layout seed. A project whose compose file cannot
+/// take the container still starts; its tour pane is the placeholder until
+/// someone declares the worker.
+fn seed_console_config_name(dir: &Path) {
+    let path = dir.join("worker-compose.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if let Some(patched) = with_console_config_name(&text) {
+        let _ = std::fs::write(&path, patched);
+    }
+}
+
 /// Best effort, like the layout seed. A project whose compose file cannot
 /// take the container still starts; its tour pane is the placeholder until
 /// someone declares the worker.
@@ -695,6 +767,9 @@ static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 /// The console worker's configuration entry, and its own default port for
 /// when that entry has no `http_port` yet.
 const CONSOLE_CONFIG: &str = "console";
+/// The console's container key in the template's compose file. Its worker was
+/// renamed to `ade`; the configuration entry above stayed `console`.
+const CONSOLE_CONTAINER: &str = "ade";
 const DEFAULT_CONSOLE_PORT: u16 = 3113;
 const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Room for compose's startup renderer to print its closing line and stop
@@ -1140,6 +1215,42 @@ fn restore_terminal_mode() {
     }
 }
 
+/// Keeps `SIGCHLD` blocked on this thread until dropped.
+///
+/// `cliclack` waits for a keypress inside a blocking `select()` on the
+/// terminal, and `select()` is never restarted after a caught signal, not even
+/// under `SA_RESTART`. Tokio installs a `SIGCHLD` handler to reap the children
+/// [`start_image_prefetch`] spawns, so an image pull finishing while a prompt
+/// is on screen returns `EINTR`, which `console` reports as
+/// `ErrorKind::Interrupted` and `cliclack` cannot tell apart from the operator
+/// pressing Ctrl-C: the prompt cancels itself and the key never gets asked for.
+///
+/// Blocking the signal here leaves it for a thread that is not holding a
+/// prompt, or for after the guard drops. The prefetch is still reaped: the
+/// `wait()` calls that collect it run once the prompts are done.
+struct SigchldGuard(#[cfg(unix)] nix::sys::signal::SigSet);
+
+impl SigchldGuard {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            let mut set = nix::sys::signal::SigSet::empty();
+            set.add(nix::sys::signal::Signal::SIGCHLD);
+            let _ = set.thread_block();
+            Self(set)
+        }
+        #[cfg(not(unix))]
+        Self()
+    }
+}
+
+impl Drop for SigchldGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = self.0.thread_unblock();
+    }
+}
+
 /// `base` if it does not exist under `parent`, else the first free
 /// `base-1`, `base-2`, ...
 fn next_free_dir(parent: &Path, base: &str) -> PathBuf {
@@ -1560,6 +1671,61 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         action: ProjectAction,
+    }
+
+    /// The console reads the `console` entry the layout seed writes, so its
+    /// container has to name it. The template spells the key with a trailing
+    /// comment, which is what the tour actually scaffolds.
+    #[test]
+    fn the_console_container_is_pointed_at_its_config_entry() {
+        let text = "containers:\n  ade: # console\n    worker: package://ade\n    version: \"latest\"\n\n  ide:\n    worker: package://ide\n";
+        let patched = with_console_config_name(text).expect("the console container takes the name");
+        assert!(
+            patched.contains("  ade: # console\n    config_name: console\n"),
+            "{patched}"
+        );
+        assert!(
+            patched.contains("  ide:\n    worker: package://ide\n"),
+            "{patched}"
+        );
+    }
+
+    #[test]
+    fn a_console_container_that_names_its_config_is_left_alone() {
+        let text = "containers:\n  ade:\n    worker: package://ade\n    config_name: console-production\n\n  ide:\n    worker: package://ide\n";
+        assert!(with_console_config_name(text).is_none());
+    }
+
+    #[test]
+    fn a_project_without_a_console_container_is_left_alone() {
+        let text = "containers:\n  ide:\n    worker: package://ide\n";
+        assert!(with_console_config_name(text).is_none());
+    }
+
+    /// A prefetch finishing mid-prompt used to cancel the API key prompt, so
+    /// the guard has to actually hold `SIGCHLD` off this thread, and has to
+    /// hand it back afterwards so the pull still gets reaped.
+    #[cfg(unix)]
+    #[test]
+    fn sigchld_guard_blocks_only_for_its_lifetime() {
+        fn sigchld_blocked() -> bool {
+            nix::sys::signal::SigSet::thread_get_mask()
+                .expect("the thread has a signal mask")
+                .contains(nix::sys::signal::Signal::SIGCHLD)
+        }
+
+        assert!(
+            !sigchld_blocked(),
+            "nothing blocks SIGCHLD before the guard"
+        );
+        {
+            let _guard = SigchldGuard::new();
+            assert!(
+                sigchld_blocked(),
+                "the guard blocks SIGCHLD while prompting"
+            );
+        }
+        assert!(!sigchld_blocked(), "the guard hands SIGCHLD back on drop");
     }
 
     #[test]
