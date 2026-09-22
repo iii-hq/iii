@@ -83,7 +83,7 @@ The thin-vs-thick harness debate is a composition choice in iii. A thin harness 
 
 ## Process isolation
 
-iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. `compose::add` declares trusted project workers and is not a sandbox: a local worker's setup, install, and start scripts run under the Compose daemon on the engine host. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
+iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
 
 ## Discovery and extensibility
 
