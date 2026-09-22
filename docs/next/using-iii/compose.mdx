@@ -763,7 +763,9 @@ After publishing the destination, the fs adapter archives the original source as
 not backed up. Files ending in `.yaml.bak`, `.bak.yaml`, or `.bkup.yaml` are ignored during
 loading, watching, and legacy directory migration. Repeated starts with no source perform
 no writes. An existing identical backup permits recovery after interrupted cleanup; a
-conflicting backup is never overwritten and stops migration with an error.
+conflicting backup is never overwritten: while the destination exists it marks a source
+rewritten after adoption (for example, a worker that still registers the bare id), which is
+left in place with no writes; without a destination it stops migration with an error.
 
 Migration commits the complete destination before archiving the source. I/O failures stop startup; failure after publication can leave two recoverable copies.
 The filesystem adapter requires same-directory hard-link support and may normalize YAML formatting
