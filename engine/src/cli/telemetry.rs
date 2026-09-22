@@ -98,8 +98,8 @@ fn send_fire_and_forget(event: ProductEvent) {
     });
 }
 
-/// How long a compose event may hold the command that is reporting it.
-const COMPOSE_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long an awaited report may hold the command that is sending it.
+const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Lets `iii-compose` report through the same CLI path as every other
 /// command.
@@ -114,20 +114,35 @@ const COMPOSE_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// on its way out, and a spawned task would be dropped with the runtime.
 pub fn install_compose_reporter() {
     iii_compose::telemetry::set_reporter(std::sync::Arc::new(|reports| {
-        let events: Vec<ProductEvent> = reports
-            .into_iter()
-            .filter_map(|(event, properties)| build_event(&event, properties, None))
-            .collect();
-        Box::pin(async move {
-            if events.is_empty() {
-                return;
-            }
-            // Bounded, because compose waits for this before it prints an
-            // error and exits. A report that cannot be sent in time is worth
-            // less than the seconds it would cost the operator.
-            let _ = tokio::time::timeout(COMPOSE_REPORT_TIMEOUT, send_posthog_batch(events)).await;
-        })
+        Box::pin(report_compose_batch(reports))
     }));
+}
+
+/// Builds and sends one compose batch.
+///
+/// Bounded, because compose waits for this before it prints an error and
+/// exits. A report that cannot be sent in time is worth less than the seconds
+/// it would cost the operator. Building the events reads the device id and
+/// hardware id from disk, so that runs on the blocking pool and under the
+/// same clock as the send.
+async fn report_compose_batch(reports: Vec<iii_compose::telemetry::Report>) {
+    let _ = tokio::time::timeout(REPORT_TIMEOUT, async {
+        let Ok(events) = tokio::task::spawn_blocking(move || {
+            reports
+                .into_iter()
+                .filter_map(|(event, properties)| build_event(&event, properties, None))
+                .collect::<Vec<ProductEvent>>()
+        })
+        .await
+        else {
+            return;
+        };
+        if events.is_empty() {
+            return;
+        }
+        send_posthog_batch(events).await;
+    })
+    .await;
 }
 
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
@@ -137,7 +152,9 @@ pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_js
         .map(|s| s.to_string());
     if let Some(mut event) = build_event(event_type, properties, install_method.as_deref()) {
         event.platform = "install-script".to_string();
-        send_direct(event).await;
+        // The install script exits right after this; the retry ladder in
+        // send_direct can otherwise hold it for over a minute.
+        let _ = tokio::time::timeout(REPORT_TIMEOUT, send_direct(event)).await;
     }
 }
 
@@ -276,6 +293,106 @@ mod tests {
     fn test_is_telemetry_not_disabled_when_unset() {
         clear_opt_out_vars();
         assert!(!is_telemetry_disabled());
+    }
+
+    /// A host that accepts every connection and never answers. Without a
+    /// bound, one send against it waits the client's 30s timeout three times
+    /// over, with backoff between attempts.
+    fn black_hole_host() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let port = listener.local_addr().expect("local address").port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn event(event_type: &str) -> ProductEvent {
+        ProductEvent {
+            device_id: "test-device".to_string(),
+            user_id: None,
+            event_type: event_type.to_string(),
+            event_properties: serde_json::json!({}),
+            user_properties: None,
+            platform: "iii".to_string(),
+            os_name: "test".to_string(),
+            app_version: "0.0.0".to_string(),
+            time: 0,
+            insert_id: None,
+            country: None,
+            language: None,
+            ip: None,
+        }
+    }
+
+    /// Generous slack over the bound, for a slow machine.
+    const RELEASED_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+    #[tokio::test]
+    #[serial]
+    async fn a_compose_batch_to_an_unreachable_host_releases_within_the_report_timeout() {
+        clear_opt_out_vars();
+        unsafe {
+            env::set_var("POSTHOG_HOST", black_hole_host());
+        }
+
+        let began = std::time::Instant::now();
+        report_compose_batch(vec![(
+            "compose_up_finished".to_string(),
+            serde_json::json!({"outcome": "failed"}),
+        )])
+        .await;
+        let elapsed = began.elapsed();
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert!(elapsed < RELEASED_WITHIN, "held for {elapsed:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn an_install_event_to_an_unreachable_host_releases_within_the_report_timeout() {
+        clear_opt_out_vars();
+        unsafe {
+            env::set_var("POSTHOG_HOST", black_hole_host());
+        }
+
+        let began = std::time::Instant::now();
+        send_install_lifecycle_event("install_started", serde_json::json!({})).await;
+        let elapsed = began.elapsed();
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert!(elapsed < RELEASED_WITHIN, "held for {elapsed:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_direct_send_to_an_unreachable_host_is_only_bounded_by_the_caller() {
+        // Documents why the exit paths wrap send_direct: on its own it runs
+        // the client's retry ladder. Bounded here so the test itself ends.
+        unsafe {
+            env::set_var("POSTHOG_HOST", black_hole_host());
+        }
+
+        let began = std::time::Instant::now();
+        let released =
+            tokio::time::timeout(REPORT_TIMEOUT, send_direct(event("cli_update_started"))).await;
+        let elapsed = began.elapsed();
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        assert!(
+            released.is_err(),
+            "the send answered on its own in {elapsed:?}"
+        );
+        assert!(elapsed < RELEASED_WITHIN, "held for {elapsed:?}");
     }
 
     #[test]

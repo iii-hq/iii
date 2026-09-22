@@ -82,6 +82,18 @@ pub(crate) async fn report(event: &str, properties: Value) {
     send(vec![(event.to_string(), properties)]).await;
 }
 
+/// Sends a batch, and waits for it only when the process is about to leave.
+///
+/// A process that stays has somewhere for the send to finish and nothing
+/// waits for it. One that leaves has to wait, or the report never goes out.
+pub(crate) async fn send_waiting(reports: Vec<Report>, wait: bool) {
+    if wait {
+        send(reports).await;
+    } else {
+        tokio::spawn(send(reports));
+    }
+}
+
 /// Set once this process has reported a startup.
 ///
 /// A compose file that does not parse, or a lock that is out of date, fails
@@ -258,6 +270,80 @@ pub(crate) fn op_properties(
     })
 }
 
+/// A reporter that records every batch, after holding each one for a moment.
+///
+/// One per process, because [`set_reporter`] keeps the first reporter. The
+/// hold is what lets a test tell a spawned send from an awaited one: an
+/// awaited send returns with its batch already recorded, a spawned send
+/// returns before the hold is over.
+#[cfg(test)]
+pub(crate) mod recorder {
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use super::{Report, set_reporter};
+
+    pub(crate) const HOLD: std::time::Duration = std::time::Duration::from_millis(300);
+
+    #[derive(Default)]
+    pub(crate) struct Recorder {
+        batches: Mutex<Vec<Vec<Report>>>,
+    }
+
+    impl Recorder {
+        /// Every recorded report whose properties satisfy `matches`.
+        pub(crate) fn reports_where(
+            &self,
+            matches: impl Fn(&serde_json::Value) -> bool,
+        ) -> Vec<Report> {
+            self.batches
+                .lock()
+                .unwrap()
+                .iter()
+                .flatten()
+                .filter(|(_, properties)| matches(properties))
+                .cloned()
+                .collect()
+        }
+
+        /// Polls for a matching report to arrive, for up to two seconds.
+        pub(crate) async fn wait_for(
+            &self,
+            matches: impl Fn(&serde_json::Value) -> bool,
+        ) -> Vec<Report> {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let found = self.reports_where(&matches);
+                if !found.is_empty() || tokio::time::Instant::now() > deadline {
+                    return found;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    pub(crate) fn install() -> Arc<Recorder> {
+        static RECORDER: OnceLock<Arc<Recorder>> = OnceLock::new();
+        RECORDER
+            .get_or_init(|| {
+                let recorder = Arc::new(Recorder::default());
+                let sink = Arc::clone(&recorder);
+                set_reporter(Arc::new(move |reports| {
+                    let sink = Arc::clone(&sink);
+                    Box::pin(async move {
+                        tokio::time::sleep(HOLD).await;
+                        sink.batches.lock().unwrap().push(reports);
+                    })
+                }));
+                recorder
+            })
+            .clone()
+    }
+
+    pub(crate) fn marker() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,8 +506,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reporting_with_no_reporter_installed_does_nothing() {
-        // The default for every embedding host and every test binary.
+    async fn reporting_with_an_empty_batch_does_nothing() {
+        send(Vec::new()).await;
         report(UP_FINISHED, json!({})).await;
+    }
+
+    #[tokio::test]
+    async fn a_send_that_waits_returns_with_its_batch_delivered() {
+        let recorder = recorder::install();
+        let marker = recorder::marker();
+
+        let began = std::time::Instant::now();
+        send_waiting(
+            vec![(UP_FINISHED.to_string(), json!({"marker": marker}))],
+            true,
+        )
+        .await;
+
+        assert!(began.elapsed() >= recorder::HOLD, "the send did not wait");
+        assert_eq!(recorder.reports_where(|p| p["marker"] == marker).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_send_that_does_not_wait_returns_before_delivery_and_still_delivers() {
+        let recorder = recorder::install();
+        let marker = recorder::marker();
+
+        let began = std::time::Instant::now();
+        send_waiting(
+            vec![(UP_FINISHED.to_string(), json!({"marker": marker}))],
+            false,
+        )
+        .await;
+
+        assert!(began.elapsed() < recorder::HOLD, "the send held its caller");
+        assert!(recorder.reports_where(|p| p["marker"] == marker).is_empty());
+        assert_eq!(recorder.wait_for(|p| p["marker"] == marker).await.len(), 1);
     }
 }

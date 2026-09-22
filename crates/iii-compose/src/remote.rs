@@ -317,7 +317,7 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
                 };
                 let began = std::time::Instant::now();
                 let result = dispatch(daemon, kind, guard_name, request).await;
-                report_op(op, &result, began.elapsed()).await;
+                report_op(op, &result, began.elapsed());
                 result
             }
         });
@@ -365,7 +365,10 @@ fn reported_op(kind: Operation) -> Option<&'static str> {
 /// still returns `Ok`, carrying `status: failed` and the code of the first
 /// failure. Nothing but the code is taken; the message belongs to the
 /// operator.
-async fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std::time::Duration) {
+///
+/// The send is spawned: the daemon that answered is still running, so the
+/// caller gets its answer now and the report finishes on its own.
+fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std::time::Duration) {
     let (outcome, error_kind) = match result {
         Ok(value) => (
             value.get("status").and_then(Value::as_str).unwrap_or("ok"),
@@ -385,11 +388,10 @@ async fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std
         ),
         Err(_) => ("failed", None),
     };
-    crate::telemetry::report(
+    tokio::spawn(crate::telemetry::report(
         crate::telemetry::OP_FINISHED,
         crate::telemetry::op_properties(op, outcome, elapsed, error_kind),
-    )
-    .await;
+    ));
 }
 
 impl Operation {
@@ -809,7 +811,7 @@ fn spawn_mutation<F>(
         }
 
         let result = mutation.await;
-        report_mutation(details.op, &result, began.elapsed()).await;
+        report_mutation(details.op, &result, began.elapsed());
         match result {
             Ok(outcome) => {
                 let failed = outcome.is_failed();
@@ -846,7 +848,7 @@ fn spawn_mutation<F>(
 }
 
 /// Reports one mutation that ran in the background after it was accepted.
-async fn report_mutation(
+fn report_mutation(
     op: &'static str,
     result: &Result<MutationOutcome, ComposeError>,
     elapsed: std::time::Duration,
@@ -855,7 +857,7 @@ async fn report_mutation(
         Ok(outcome) => Ok(to_value(outcome)),
         Err(error) => Err(compose_error(error)),
     };
-    report_op(op, &reported, elapsed).await;
+    report_op(op, &reported, elapsed);
 }
 
 /// Serialize the generated root schema into the value carried over the wire.
@@ -1616,5 +1618,73 @@ mod tests {
         for d in all {
             assert!(!d.partial.contains("ready") && !d.partial.contains("were "));
         }
+    }
+
+    /// A duration no other test uses, so the report it stamps can be found.
+    fn unique_elapsed() -> std::time::Duration {
+        std::time::Duration::from_millis(uuid::Uuid::new_v4().as_u128() as u64 % 1_000_000_000)
+    }
+
+    #[tokio::test]
+    async fn an_answered_operation_reports_after_the_answer_not_before() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        let began = std::time::Instant::now();
+        report_op(
+            "up",
+            &Ok(json!({"status": "failed", "error": {"code": "SPAWN_FAILED"}})),
+            elapsed,
+        );
+
+        assert!(
+            began.elapsed() < crate::telemetry::recorder::HOLD,
+            "the report held the answer"
+        );
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, crate::telemetry::OP_FINISHED);
+        assert_eq!(reports[0].1["op"], "up");
+        assert_eq!(reports[0].1["outcome"], "failed");
+        assert_eq!(reports[0].1["error_kind"], "SPAWN_FAILED");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_operation_reports_as_cancelled_with_its_code() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op(
+            "restart",
+            &Err(Error::Remote {
+                code: "OPERATION_CANCELLED".to_string(),
+                message: "a message that must never be reported".to_string(),
+                stacktrace: None,
+            }),
+            elapsed,
+        );
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["op"], "restart");
+        assert_eq!(reports[0].1["outcome"], "cancelled");
+        assert_eq!(reports[0].1["error_kind"], "OPERATION_CANCELLED");
+        assert!(!reports[0].1.to_string().contains("must never"));
+    }
+
+    #[tokio::test]
+    async fn a_plain_success_reports_ok_with_no_error_kind() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op("down", &Ok(json!({"changed": true})), elapsed);
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["outcome"], "ok");
+        assert!(reports[0].1["error_kind"].is_null());
     }
 }
