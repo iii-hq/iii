@@ -111,13 +111,11 @@ engine-owned. Put them under `engine.workers` for managed Compose, or in `config
 external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telemetry`, and
 `iii-observability` are injected automatically. They must not be added as Compose package roots.
 
-To admit untrusted workers, browsers, or agents, keep the `iii-worker-manager` port internal and add
-the [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) with
+To admit untrusted workers, browsers, or agents, keep the engine port internal and add the
+[rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) with
 `iii trigger compose::add worker=rbac-proxy`. It opens its own public port and applies the engine's
 RBAC rules (authentication, function gating, registration hooks, filtered discovery) in front of the
-engine. Declaring an additional `iii-worker-manager#<instance>` listener with an `rbac` block is the
-in-engine alternative; its schema is on the
-[iii-worker-manager page](https://workers.iii.dev/workers/iii-worker-manager).
+existing engine port.
 
 ## Workers outside Compose
 

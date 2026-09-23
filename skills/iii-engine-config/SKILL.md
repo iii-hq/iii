@@ -71,7 +71,7 @@ iii trigger -n orders-daemon compose::add worker=state
 
 ## RBAC with `rbac-proxy`
 
-Keep the engine's worker-manager port internal and put the `rbac-proxy` worker in front of it when
+Keep the engine port internal and put the `rbac-proxy` worker in front of it when
 untrusted workers, browsers, or agents need to connect:
 
 ```bash
@@ -95,8 +95,8 @@ rbac:
     - match("api::*")
 ```
 
-Only the proxy's port should face an untrusted network, and a public proxy must always set
-`auth_function_id`. Full schema: https://workers.iii.dev/workers/rbac-proxy.
+RBAC is mandatory on untrusted networks: only the proxy's port may face one, never the engine port,
+and a public proxy must always set `auth_function_id`. Full schema: https://workers.iii.dev/workers/rbac-proxy.
 
 ## Directly supervised engine
 
@@ -130,7 +130,7 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 
 ## Security and operations
 
-- Bind the worker-manager listener to `127.0.0.1`; expose only the `rbac-proxy` port.
+- Bind the engine port to `127.0.0.1`; expose only the `rbac-proxy` port.
 - Set `rbac.auth_function_id` on every public proxy and keep `expose_functions` narrow.
 - Keep secrets in environment-backed configuration; do not commit literal credentials.
 - Preserve configuration, stream, state, and queue storage paths during migrations.

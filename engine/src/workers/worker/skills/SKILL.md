@@ -16,7 +16,7 @@ are mounted on every listener at `/ws/channels/{channel_id}`.
 
 ## When to Use
 
-- Exposing the engine to an untrusted network — prefer the standalone [`rbac-proxy` worker](https://workers.iii.dev/workers/rbac-proxy) (`iii trigger compose::add worker=rbac-proxy`), which applies the same RBAC rules on its own port out of process. A second `iii-worker-manager` entry with an `rbac` block and an `auth_function_id` is the in-engine alternative; never open the main engine port.
+- Exposing the engine to an untrusted network — RBAC is mandatory, never open the engine port itself. Use the standalone [`rbac-proxy` worker](https://workers.iii.dev/workers/rbac-proxy) (`iii trigger compose::add worker=rbac-proxy`), which applies these RBAC rules on its own port out of process. A second `#instance` listener with an `rbac` block and an `auth_function_id` is the in-engine alternative.
 - Restricting which functions a connected worker can invoke — combine `expose_functions` filters (operator-side) with `forbidden_functions` from `AuthResult` (per-session, hard deny).
 - Auditing, rate-limiting, or enriching every invocation — set `middleware_function_id` on the listener; the middleware decides whether to call the target and what to return.
 - Per-tenant or per-session namespace isolation — return `function_registration_prefix` from the auth function so every function/trigger this session registers is transparently prefixed without the worker code knowing.
@@ -25,7 +25,7 @@ are mounted on every listener at `/ws/channels/{channel_id}`.
 ## Boundaries
 
 - The infrastructure carve-out (`engine::channels::create`, `engine::workers::register`, `engine::log::*`, `engine::baggage::*`) is always allowed on RBAC listeners regardless of `expose_functions`. Adding one of those IDs to `forbidden_functions` denies it but logs a warning — workers may behave unpredictably (broken setup, lost logs, missing context).
-- The first `iii-worker-manager` entry is the main engine port and should remain internal. Only `rbac-proxy` or an RBAC-protected `#instance` listener belongs on an external network.
+- The engine port must remain internal. Only `rbac-proxy` or an RBAC-protected `#instance` listener may face an external network.
 - The middleware is **not** a pre-handler — it must invoke the target function itself (typically via `iii.trigger`) and return its result. Returning early without invoking simply skips the call.
 - `forbidden_functions` from the auth result wins over both `allowed_functions` and `expose_functions`. There is no way for a session to override an operator's deny list.
 - Registration hooks return mapped fields or **throw** to deny. Omitted result fields keep their original values; returning `{}` is a no-op (allow as-is).
