@@ -233,6 +233,59 @@ fn cli_usage_command_path(cli: &Cli) -> String {
     }
 }
 
+fn arm_compose_engine_lifeline() -> anyhow::Result<()> {
+    use std::io::Read;
+
+    const ENV: &str = "III_COMPOSE_ENGINE_LIFELINE_STDIN";
+    if std::env::var_os(ENV).is_none() {
+        return Ok(());
+    }
+    // This runs after the Linux process-title re-exec but before the async
+    // runtime or any worker exists. Descendants must not inherit the marker or
+    // consume or propagate the engine's private stdin lifeline.
+    unsafe { std::env::remove_var(ENV) };
+    make_stdin_non_inheritable()?;
+
+    std::thread::Builder::new()
+        .name("compose-engine-lifeline".to_string())
+        .spawn(|| {
+            let mut stdin = std::io::stdin().lock();
+            let mut byte = [0_u8; 1];
+            loop {
+                match stdin.read(&mut byte) {
+                    Ok(0) => std::process::exit(0),
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => std::process::exit(1),
+                }
+            }
+        })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_stdin_non_inheritable() -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFD) };
+    if flags == -1
+        || unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn make_stdin_non_inheritable() -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use winapi::um::{handleapi::SetHandleInformation, winbase::HANDLE_FLAG_INHERIT};
+
+    let stdin = std::io::stdin();
+    if unsafe { SetHandleInformation(stdin.as_raw_handle().cast(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Make sure the config file exists before the engine loads it.
 ///
 /// Missing file: on an interactive terminal, ask before writing (running
@@ -339,6 +392,8 @@ fn main() -> anyhow::Result<()> {
             process_title::set_current(role, &namespace)?;
         }
     }
+
+    arm_compose_engine_lifeline()?;
 
     run(cli_args)
 }

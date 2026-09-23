@@ -3,13 +3,7 @@
 use std::{net::TcpListener, process::Command};
 
 #[cfg(unix)]
-use std::{
-    io::Read,
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
-    time::Instant,
-};
+use std::{process::Stdio, time::Duration, time::Instant};
 
 fn iii_bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_iii"));
@@ -63,6 +57,244 @@ fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) {
     let _ = child.kill();
     let _ = child.wait();
     panic!("compose did not exit after the shutdown signal");
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct ProcessIdentity {
+    pid: i32,
+    start_time: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn process_status(pid: i32) -> Option<(char, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let start_time = fields.nth(18)?.parse().ok()?;
+    Some((state, start_time))
+}
+
+#[cfg(target_os = "linux")]
+fn process_identity(pid: i32) -> Option<ProcessIdentity> {
+    process_status(pid).map(|(_, start_time)| ProcessIdentity { pid, start_time })
+}
+
+#[cfg(target_os = "linux")]
+fn process_has_terminated(identity: ProcessIdentity) -> bool {
+    match process_status(identity.pid) {
+        None => true,
+        Some((state, start_time)) => {
+            start_time != identity.start_time || matches!(state, 'Z' | 'X')
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_process_exit(identity: ProcessIdentity, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if process_has_terminated(identity) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    process_has_terminated(identity)
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_child_identity(parent_pid: u32, timeout: Duration) -> Option<ProcessIdentity> {
+    let children = format!("/proc/{parent_pid}/task/{parent_pid}/children");
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(&children) {
+            for pid in contents
+                .split_whitespace()
+                .filter_map(|pid| pid.parse().ok())
+            {
+                if let Some(identity) = process_identity(pid) {
+                    return Some(identity);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn signal_same_process(identity: ProcessIdentity, signal: nix::sys::signal::Signal) {
+    if process_identity(identity.pid)
+        .is_some_and(|current| current.start_time == identity.start_time)
+    {
+        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(identity.pid), signal);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ptrace_call(request: libc::c_uint, pid: i32, data: usize) -> std::io::Result<()> {
+    let result = unsafe {
+        libc::ptrace(
+            request,
+            pid,
+            std::ptr::null_mut::<libc::c_void>(),
+            data as *mut libc::c_void,
+        )
+    };
+    if result == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn seize_fork_events(pid: i32) -> std::io::Result<()> {
+    ptrace_call(
+        libc::PTRACE_SEIZE,
+        pid,
+        (libc::PTRACE_O_TRACEFORK | libc::PTRACE_O_TRACEVFORK) as usize,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_fork_event(pid: i32, timeout: Duration) -> std::io::Result<i32> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::__WALL) };
+        if waited == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if waited == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            return Err(std::io::Error::other(
+                "Compose exited before spawning its managed engine",
+            ));
+        }
+        if !libc::WIFSTOPPED(status) {
+            continue;
+        }
+
+        let event = status >> 16;
+        if event == libc::PTRACE_EVENT_FORK || event == libc::PTRACE_EVENT_VFORK {
+            let mut child_pid = 0_usize;
+            let result = unsafe {
+                libc::ptrace(
+                    libc::PTRACE_GETEVENTMSG,
+                    pid,
+                    std::ptr::null_mut::<libc::c_void>(),
+                    &mut child_pid as *mut usize as *mut libc::c_void,
+                )
+            };
+            if result == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            return Ok(child_pid as i32);
+        }
+        ptrace_call(libc::PTRACE_CONT, pid, 0)?;
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "Compose did not spawn its managed engine",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_ptrace_stop(pid: i32, timeout: Duration) -> std::io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::__WALL) };
+        if waited == 0 {
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if waited == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::WIFSTOPPED(status) {
+            return Ok(());
+        }
+        return Err(std::io::Error::other(
+            "managed engine exited before its startup gate",
+        ));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "managed engine did not enter its ptrace stop",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+struct ComposeFixture {
+    child: std::process::Child,
+    engine: Option<ProcessIdentity>,
+    engine_traced: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl ComposeFixture {
+    fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            engine: None,
+            engine_traced: false,
+        }
+    }
+
+    fn child(&self) -> &std::process::Child {
+        &self.child
+    }
+
+    fn child_mut(&mut self) -> &mut std::process::Child {
+        &mut self.child
+    }
+
+    fn set_engine(&mut self, engine: ProcessIdentity, traced: bool) {
+        self.engine = Some(engine);
+        self.engine_traced = traced;
+    }
+
+    fn kill_compose(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn detach_engine(&mut self) -> std::io::Result<()> {
+        let Some(engine) = self.engine else {
+            return Ok(());
+        };
+        if self.engine_traced && !process_has_terminated(engine) {
+            ptrace_call(libc::PTRACE_DETACH, engine.pid, 0)?;
+        }
+        self.engine_traced = false;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ComposeFixture {
+    fn drop(&mut self) {
+        if self.engine.is_none() {
+            self.engine = wait_for_child_identity(self.child.id(), Duration::from_millis(100));
+        }
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if let Some(engine) = self.engine {
+            if self.engine_traced && !process_has_terminated(engine) {
+                let _ = ptrace_call(libc::PTRACE_DETACH, engine.pid, 0);
+            }
+            signal_same_process(engine, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -394,7 +626,7 @@ fn compose_up_rejects_an_occupied_managed_engine_listener() {
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(managed_engine_port)]
-fn signal_during_managed_engine_startup_stops_the_engine() {
+fn sighup_during_managed_engine_startup_stops_the_engine() {
     use std::os::unix::fs::PermissionsExt;
 
     let project = tempfile::tempdir().unwrap();
@@ -438,7 +670,7 @@ fn signal_during_managed_engine_startup_stops_the_engine() {
         let _ = child.wait();
         panic!("managed engine config was never created");
     }
-    send_signal(&child, nix::sys::signal::Signal::SIGINT);
+    send_signal(&child, nix::sys::signal::Signal::SIGHUP);
     wait_for_exit(&mut child, Duration::from_secs(20));
     let output = child.wait_with_output().unwrap();
 
@@ -686,286 +918,78 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
 }
 
-/// Collects a child's stream on a thread, so the child can be signalled and
-/// waited for while its output keeps flowing.
-#[cfg(unix)]
-fn pump(mut reader: impl Read + Send + 'static) -> Arc<Mutex<String>> {
-    let buffer = Arc::new(Mutex::new(String::new()));
-    let sink = Arc::clone(&buffer);
-    std::thread::spawn(move || {
-        let mut bytes = [0_u8; 4096];
-        while let Ok(read) = reader.read(&mut bytes) {
-            if read == 0 {
-                break;
-            }
-            sink.lock()
-                .unwrap()
-                .push_str(&String::from_utf8_lossy(&bytes[..read]));
-        }
-    });
-    buffer
-}
-
-/// Polls a pumped buffer until it contains `needle` or `timeout` elapses.
-#[cfg(unix)]
-fn wait_for_text(buffer: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if buffer.lock().unwrap().contains(needle) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-/// Ends whatever a test started and did not get to stop, so a failed
-/// assertion never leaves a compose or an engine behind. Direct children are
-/// killed and reaped through their handles. An engine is not the test's
-/// child: it is remembered with the birth identity compose itself uses, and
-/// signalled only while the pid still is that process.
-#[cfg(unix)]
-#[derive(Default)]
-struct Leftovers {
-    children: Vec<std::process::Child>,
-    engines: Vec<(u32, iii_compose::process::BirthIdentity)>,
-    /// The engine record a daemon under test writes: read on drop, so an
-    /// engine spawned after the pids above were noted is not left behind.
-    record: Option<std::path::PathBuf>,
-}
-
-#[cfg(unix)]
-impl Leftovers {
-    /// Takes ownership of a direct child; the index addresses it from then on.
-    fn child(&mut self, child: std::process::Child) -> usize {
-        self.children.push(child);
-        self.children.len() - 1
-    }
-
-    /// Remembers an engine pid together with the birth identity it has now.
-    fn engine(&mut self, pid: u32) {
-        if !self.engines.iter().any(|(watched, _)| *watched == pid) {
-            self.engines
-                .push((pid, iii_compose::process::birth_identity(pid)));
-        }
-    }
-
-    /// The pid and recorded birth identity in an engine record, if readable.
-    fn recorded_engine(
-        path: &std::path::Path,
-    ) -> Option<(u32, iii_compose::process::BirthIdentity)> {
-        let record: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        let pid = record["process"]["pid"].as_u64()? as u32;
-        let born = serde_json::from_value(record["process"]["birth"].clone()).ok()?;
-        Some((pid, born))
-    }
-}
-
-#[cfg(unix)]
-impl Drop for Leftovers {
-    /// Kills and reaps the children, then signals every engine that is still
-    /// the process it was when noted, the recorded one included.
-    fn drop(&mut self) {
-        for child in &mut self.children {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-        }
-        if let Some(recorded) = self.record.as_deref().and_then(Self::recorded_engine) {
-            self.engines.push(recorded);
-        }
-        for (pid, born) in self.engines.drain(..) {
-            if born.matches(&iii_compose::process::birth_identity(pid)) {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid as i32),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial(managed_engine_port)]
-fn compose_up_adopts_the_engine_a_killed_daemon_left_behind() {
-    use std::net::TcpStream;
-
-    /// Whether `pid` is a live process that is not a zombie.
-    fn is_alive(pid: u32) -> bool {
-        if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err() {
-            return false;
-        }
-        // A zombie still answers signal 0. On Linux its state says so.
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => !stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim_start()
-                .starts_with('Z'),
-            Err(_) => true,
-        }
-    }
-
+fn sigkill_of_compose_stops_its_engine_and_allows_a_clean_restart() {
     let project = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
 
-    let compose = project.path().join("worker-compose.yaml");
     std::fs::write(
-        &compose,
+        project.path().join("worker-compose.yaml"),
         format!(
-            "namespace: adopt-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers: {{}}\n"
+            "namespace: abrupt-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers: {{}}\ncontainers: {{}}\n"
         ),
     )
     .unwrap();
-    let record_path = state
-        .path()
-        .join(iii_compose::state::project_slug(
-            &compose.canonicalize().unwrap(),
-        ))
-        .join("adopt-test/engine.json");
-    let record = || -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap()
-    };
-    let spawn_compose = || {
+
+    let spawn = || {
         iii_bin()
             .current_dir(project.path())
             .env("III_COMPOSE_STATE_DIR", state.path())
-            .args(["compose", "--namespace", "adopt-test", "--up"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .args(["compose", "--namespace", "abrupt-e2e", "--up"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .expect("run iii compose --up")
     };
 
-    let mut leftovers = Leftovers::default();
-    leftovers.record = Some(record_path.clone());
-    let first = leftovers.child(spawn_compose());
-    let first_out = pump(leftovers.children[first].stdout.take().unwrap());
-    let first_err = pump(leftovers.children[first].stderr.take().unwrap());
-    if !wait_for_text(&first_err, "Containers Ready", Duration::from_secs(30)) {
-        if let Some(pid) = std::fs::read_to_string(&record_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|record| record["process"]["pid"].as_u64())
-        {
-            leftovers.engine(pid as u32);
-        }
-        panic!(
-            "first compose never came up:\n{}{}",
-            first_out.lock().unwrap(),
-            first_err.lock().unwrap()
-        );
-    }
-    let engine_pid = record()["process"]["pid"]
-        .as_u64()
-        .expect("engine pid recorded") as u32;
-    leftovers.engine(engine_pid);
-    assert!(is_alive(engine_pid));
-
-    // The daemon dies with no chance to stop anything: kill -9, the OOM
-    // killer, an IDE ending the whole process tree. The engine lives in its
-    // own process group precisely so that it survives this.
-    send_signal(
-        &leftovers.children[first],
-        nix::sys::signal::Signal::SIGKILL,
-    );
-    let _ = leftovers.children[first].wait();
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(is_alive(engine_pid), "the engine must outlive its daemon");
-    TcpStream::connect(("127.0.0.1", port)).expect("the surviving engine still serves");
-
-    // The next --up used to lose the port to that engine. Now it recognises
-    // the engine as its own and carries on with it.
-    let second = leftovers.child(spawn_compose());
-    let second_out = pump(leftovers.children[second].stdout.take().unwrap());
-    let second_err = pump(leftovers.children[second].stderr.take().unwrap());
-    let came_up = wait_for_text(&second_err, "Containers Ready", Duration::from_secs(30));
-    let terminal = || {
-        format!(
-            "{}{}",
-            second_out.lock().unwrap(),
-            second_err.lock().unwrap()
-        )
-    };
-    // Whatever the second daemon recorded, adopted or freshly spawned, is
-    // ours to clean up if an assertion below fails.
-    if let Some(pid) = std::fs::read_to_string(&record_path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|record| record["process"]["pid"].as_u64())
-    {
-        leftovers.engine(pid as u32);
-    }
-    if !came_up {
-        panic!("second compose did not come up:\n{}", terminal());
-    }
+    let mut first = ComposeFixture::new(spawn());
+    let engine = wait_for_child_identity(first.child().id(), Duration::from_secs(20))
+        .expect("Compose never spawned its managed engine");
+    first.set_engine(engine, false);
     assert!(
-        !terminal().contains("MANAGED_ENGINE_LISTENER_UNAVAILABLE"),
-        "{}",
-        terminal()
+        wait_for_port(port, Duration::from_secs(20)),
+        "managed engine never became ready"
     );
-    assert!(terminal().contains("adopted:"), "{}", terminal());
-    assert!(
-        terminal().contains(&format!("pid: {engine_pid}")),
-        "{}",
-        terminal()
-    );
-    assert_eq!(
-        record()["process"]["pid"].as_u64().unwrap() as u32,
-        engine_pid,
-        "adoption must not restart the engine"
-    );
+    first.kill_compose();
 
-    // From here on the adopting daemon owns the engine: its shutdown stops it.
-    send_signal(
-        &leftovers.children[second],
-        nix::sys::signal::Signal::SIGINT,
+    assert!(
+        wait_for_process_exit(engine, Duration::from_secs(10)),
+        "managed engine survived SIGKILL of its Compose owner"
     );
-    wait_for_exit(&mut leftovers.children[second], Duration::from_secs(20));
-    assert!(!is_alive(engine_pid), "the adopted engine was not stopped");
-    TcpListener::bind(("127.0.0.1", port)).expect("the adopted engine should be stopped");
-    assert_eq!(record()["process"]["status"], "stopped");
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("managed engine kept its listener after owner death");
+
+    let mut restarted = ComposeFixture::new(spawn());
+    let restarted_engine = wait_for_child_identity(restarted.child().id(), Duration::from_secs(20))
+        .expect("restarted Compose never spawned its managed engine");
+    restarted.set_engine(restarted_engine, false);
+    assert!(
+        wait_for_port(port, Duration::from_secs(20)),
+        "a new Compose could not start a fresh managed engine"
+    );
+    send_signal(restarted.child(), nix::sys::signal::Signal::SIGTERM);
+    wait_for_exit(restarted.child_mut(), Duration::from_secs(20));
+    let status = restarted.child_mut().wait().unwrap();
+    assert!(status.success(), "restarted Compose exited with {status}");
+
+    assert!(
+        wait_for_process_exit(restarted_engine, Duration::from_secs(10)),
+        "fresh managed engine survived graceful Compose shutdown"
+    );
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("fresh managed engine kept its listener after graceful shutdown");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial(managed_engine_port)]
-fn a_signal_during_an_engine_replacement_waits_for_the_stop() {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    };
-
-    /// A process that must not outlive the test: killed on drop unless it is
-    /// known to have exited, and only while the pid is still that process.
-    struct Doomed {
-        pid: u32,
-        birth: iii_compose::process::BirthIdentity,
-        exited: Arc<AtomicBool>,
-    }
-
-    impl Drop for Doomed {
-        /// SIGKILL, unless the process exited or the pid is someone else's.
-        fn drop(&mut self) {
-            if !self.exited.load(Ordering::Acquire)
-                && self
-                    .birth
-                    .matches(&iii_compose::process::birth_identity(self.pid))
-            {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(self.pid as i32),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-            }
-        }
-    }
+fn sigkill_before_engine_readiness_does_not_orphan_the_engine() {
+    use std::{ffi::CString, io::Write as _, os::unix::ffi::OsStrExt};
 
     let project = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
@@ -973,156 +997,104 @@ fn a_signal_during_an_engine_replacement_waits_for_the_stop() {
     let port = probe.local_addr().unwrap().port();
     drop(probe);
 
-    let compose = project.path().join("worker-compose.yaml");
     std::fs::write(
-        &compose,
+        project.path().join("worker-compose.yaml"),
         format!(
-            "namespace: replace-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: {port}\ncontainers: {{}}\n"
+            "namespace: abrupt-startup-test\nengine:\n  url: ws://127.0.0.1:{port}\n  workers: {{}}\ncontainers: {{}}\n"
         ),
     )
     .unwrap();
-    let compose = compose.canonicalize().unwrap();
-    let namespace_dir = state
-        .path()
-        .join(iii_compose::state::project_slug(&compose))
-        .join("replace-test");
-    std::fs::create_dir_all(&namespace_dir).unwrap();
 
-    // The engine an earlier compose of this file left behind: verifiably its
-    // own, but started from another engine section, so this start replaces
-    // it. It ignores SIGTERM, which makes the replacement take the whole
-    // grace, and it says when it was asked. A thread reaps it the moment it
-    // dies and notes the time: a zombie would still look alive to compose.
-    let armed = project.path().join("armed");
-    let signalled = project.path().join("signalled");
-    // In its own process group, as compose spawns engines: the stop signals
-    // the group, not the pid.
-    let mut survivor = std::os::unix::process::CommandExt::process_group(
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "trap 'touch {}' TERM INT; touch {}; while :; do sleep 1; done",
-                shell_quote(&signalled),
-                shell_quote(&armed)
-            ))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
+    let gate = project.path().join("startup.gate");
+    let gate_ready = project.path().join("startup-gate.ready");
+    let gate_name = CString::new(gate.as_os_str().as_bytes()).unwrap();
+    assert_eq!(
+        unsafe { libc::mkfifo(gate_name.as_ptr(), 0o600) },
         0,
-    )
-    .spawn()
-    .expect("spawn the surviving engine stand-in");
-    let survivor_pid = survivor.id();
-    let survivor_birth = iii_compose::process::birth_identity(survivor_pid);
-    let exited = Arc::new(AtomicBool::new(false));
-    let (survivor_exited, survivor_exit) = mpsc::channel();
-    std::thread::spawn({
-        let exited = Arc::clone(&exited);
-        move || {
-            let _ = survivor.wait();
-            let at = Instant::now();
-            exited.store(true, Ordering::Release);
-            let _ = survivor_exited.send(at);
-        }
-    });
-    let _doomed = Doomed {
-        pid: survivor_pid,
-        birth: survivor_birth,
-        exited,
-    };
-    assert!(
-        wait_for_file(&armed, Duration::from_secs(5)),
-        "the survivor never armed its trap"
+        "could not create startup gate: {}",
+        std::io::Error::last_os_error()
     );
-    let record = serde_json::json!({
-        "compose_path": compose,
-        "launch": {
-            "engine_url": "ws://old",
-            "listener": "old",
-            "cwd": "/old",
-            "executable": { "path": "/old", "len": 0, "modified": null, "sha256": "old" },
-            "env_fingerprint": "old",
-        },
-        "process": {
-            "pid": survivor_pid,
-            "birth": iii_compose::process::birth_identity(survivor_pid),
-            "status": "starting",
-            "started_at": 0,
-        },
-    });
-    std::fs::write(
-        namespace_dir.join("engine.json"),
-        serde_json::to_vec(&record).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(namespace_dir.join("engine-config.yaml"), "workers: []\n").unwrap();
 
-    let mut leftovers = Leftovers::default();
-    leftovers.record = Some(namespace_dir.join("engine.json"));
-    let daemon = leftovers.child(
+    let mut command = Command::new("/bin/sh");
+    command
+        .current_dir(project.path())
+        .env_remove("III_URL")
+        .env_remove("III_COMPOSE_NAMESPACE")
+        .env_remove("CLICOLOR_FORCE")
+        .env("NO_COLOR", "1")
+        .env("III_COMPOSE_STATE_DIR", state.path())
+        .arg("-c")
+        .arg("printf ready > \"$1\"; read _ < \"$2\"; shift 2; exec \"$@\"")
+        .arg("managed-engine-startup-gate")
+        .arg(&gate_ready)
+        .arg(&gate)
+        .arg(env!("CARGO_BIN_EXE_iii"))
+        .args(["compose", "--namespace", "abrupt-startup-e2e", "--up"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let mut compose = ComposeFixture::new(command.spawn().expect("run gated iii compose --up"));
+    assert!(
+        wait_for_file(&gate_ready, Duration::from_secs(10)),
+        "Compose wrapper never reached the startup gate"
+    );
+    seize_fork_events(compose.child().id() as i32).expect("attach startup tracer to Compose");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&gate)
+        .and_then(|mut release| release.write_all(b"\n"))
+        .expect("release Compose startup gate");
+
+    let engine_pid = wait_for_fork_event(compose.child().id() as i32, Duration::from_secs(20))
+        .expect("observe the managed engine spawn");
+    let engine = process_identity(engine_pid).expect("record managed engine identity");
+    compose.set_engine(engine, true);
+    wait_for_ptrace_stop(engine_pid, Duration::from_secs(5))
+        .expect("hold the managed engine before it can execute");
+
+    assert!(
+        !wait_for_port(port, Duration::from_millis(250)),
+        "startup gate allowed the managed engine to become ready"
+    );
+    compose.kill_compose();
+    compose
+        .detach_engine()
+        .expect("release managed engine after owner death");
+
+    assert!(
+        wait_for_process_exit(engine, Duration::from_secs(10)),
+        "managed engine survived SIGKILL of Compose before readiness"
+    );
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("early managed engine kept its listener after owner death");
+
+    let spawn = || {
         iii_bin()
             .current_dir(project.path())
             .env("III_COMPOSE_STATE_DIR", state.path())
-            .args(["compose", "--namespace", "replace-test", "--up"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .args(["compose", "--namespace", "abrupt-startup-e2e", "--up"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
-            .expect("run iii compose --up"),
-    );
-    let daemon_out = pump(leftovers.children[daemon].stdout.take().unwrap());
-    let daemon_err = pump(leftovers.children[daemon].stderr.take().unwrap());
-    let terminal = || {
-        format!(
-            "{}{}",
-            daemon_out.lock().unwrap(),
-            daemon_err.lock().unwrap()
-        )
+            .expect("restart iii compose --up")
     };
+    let mut restarted = ComposeFixture::new(spawn());
+    let restarted_engine = wait_for_child_identity(restarted.child().id(), Duration::from_secs(20))
+        .expect("restarted Compose never spawned its managed engine");
+    restarted.set_engine(restarted_engine, false);
     assert!(
-        wait_for_file(&signalled, Duration::from_secs(30)),
-        "compose never asked the surviving engine to stop:\n{}",
-        terminal()
+        wait_for_port(port, Duration::from_secs(20)),
+        "a new Compose could not start after early owner death"
     );
+    send_signal(restarted.child(), nix::sys::signal::Signal::SIGTERM);
+    wait_for_exit(restarted.child_mut(), Duration::from_secs(20));
+    let status = restarted.child_mut().wait().unwrap();
+    assert!(status.success(), "restarted Compose exited with {status}");
 
-    // The shutdown request lands while the replacement is in flight. Compose
-    // may only exit once the engine it was stopping is gone: SIGTERM,
-    // grace, SIGKILL, and never earlier.
-    send_signal(
-        &leftovers.children[daemon],
-        nix::sys::signal::Signal::SIGINT,
-    );
-    wait_for_exit(&mut leftovers.children[daemon], Duration::from_secs(40));
-    let compose_exit = Instant::now();
-    let status = leftovers.children[daemon]
-        .try_wait()
-        .unwrap()
-        .expect("compose has exited");
-    // Whatever the daemon recorded, adopted or freshly spawned, is ours to
-    // clean up if an assertion below fails.
-    if let Some(pid) = std::fs::read_to_string(namespace_dir.join("engine.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|record| record["process"]["pid"].as_u64())
-    {
-        leftovers.engine(pid as u32);
-    }
-
-    // The reaper thread notes the instant right after `wait()` returns; it
-    // may not have been scheduled yet when the poll above saw compose exit.
-    // A bounded receive keeps the proof: the instants still compare.
-    let survivor_exit = survivor_exit
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the replaced engine must be gone before compose exits");
     assert!(
-        survivor_exit <= compose_exit,
-        "compose exited before the engine it was replacing:\n{}",
-        terminal()
+        wait_for_process_exit(restarted_engine, Duration::from_secs(10)),
+        "restarted managed engine survived graceful Compose shutdown"
     );
-    assert!(status.success(), "{}", terminal());
-    // The pumps may still be copying the last lines the daemon wrote.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !terminal().contains("Cancelled") && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(terminal().contains("Cancelled"), "{}", terminal());
-    TcpListener::bind(("127.0.0.1", port)).expect("no engine may have been started");
+    TcpListener::bind(("127.0.0.1", port))
+        .expect("restarted managed engine kept its listener after graceful shutdown");
 }
