@@ -7,7 +7,7 @@
 //! An address the user gave us becomes a property on this device's person.
 //!
 //! A worker that captures an email (the onboarding signup box, and the
-//! console's own prompt) publishes it on the `telemetry:identify` topic. The
+//! console's own prompt) publishes it on the `email:signup` topic. The
 //! engine subscribes, and reports one `user_identified` event carrying a
 //! PostHog `$set`, so the address lands on the person keyed by THIS process's
 //! `device_id`. The publishing worker never learns the `device_id`, and the
@@ -37,7 +37,7 @@ use crate::{
 };
 
 /// Topic a worker publishes a captured address on.
-pub const IDENTIFY_TOPIC: &str = "telemetry:identify";
+pub const IDENTIFY_TOPIC: &str = "email:signup";
 pub const IDENTIFY_FN_ID: &str = "iii-telemetry::on-identify";
 pub const IDENTIFY_TRIGGER_ID: &str = "iii-telemetry::identify-watch";
 
