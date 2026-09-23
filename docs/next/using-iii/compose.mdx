@@ -728,12 +728,16 @@ worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails
 Lowest to highest: the configuration a package ships, the entry in the configuration worker, then
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
-merged result is written to an owner-only file and its path is passed to the
-worker as `III_CONFIG`. This is a private execution snapshot, separate from the persistent
-`config/<id>.yaml` entry. Compose never writes `config_override` (or the merged execution value)
-back to the configuration service. Workers must use `III_CONFIG` for the execution override and
-must not register that snapshot as `initial_value`; service-only consumers see the stored base.
-Removing an override restores the stored setting on the next start. Configuration read failures
+merged result is delivered through `configuration::set` with `flush: false` before the worker starts.
+`III_CONFIG_NAME` identifies the entry read through `configuration::get`. Compose does not create
+an execution snapshot file or set `III_CONFIG`. The persistent `config/<id>.yaml` remains unchanged
+by this memory-only update. `configuration::ensure` seeds defaults only into the base and preserves
+the active value. `configuration::set` with `flush: true` (the default) persists the complete
+submitted object, including values originally supplied by an override. Both forms notify consumers.
+Each start reads the current configuration with `configuration::get` and `raw: true`, then applies
+the declared override. Removing a field from the override keeps its current value; it does not
+restore the value from disk. Stopping a worker leaves the active value available. Restarting the
+configuration service discards unsaved memory values and reloads its adapter. Read or update failures
 stop startup with `CONFIG_FETCH_FAILED`, rather than silently falling back to defaults.
 
 ### Readable configuration names and migration
@@ -809,7 +813,6 @@ exception below; only start workers you trust with that environment.
 | `III_COMPOSE_FILE`      | Canonical path of the compose file that owns this worker.                     |
 | `III_COMPOSE_DIR`       | Canonical directory that contains the owning compose file.                    |
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
-| `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
 | `III_CONFIG_NAME`       | The explicit configuration id or `<namespace>-<container-key>`, always present.        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.

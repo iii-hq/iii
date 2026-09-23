@@ -803,10 +803,6 @@ impl Project {
         self.store.dir()
     }
 
-    fn config_dir(&self) -> PathBuf {
-        self.store.dir().join("config")
-    }
-
     /// Per-container VM state: rootfs, boot script, pid file. Keyed by project
     /// rather than by worker name, so two projects using the same container key
     /// stay apart.
@@ -835,7 +831,6 @@ impl Project {
         shutdown: crate::shutdown::ShutdownSignal,
     ) -> Option<OpResult> {
         let shutdown = shutdown.or(self.shutdown.signal());
-        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = shutdown.run(self.inner.lock()).await?;
@@ -853,7 +848,6 @@ impl Project {
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
-            config_dir: &config_dir,
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
@@ -885,7 +879,6 @@ impl Project {
         restart: &[String],
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult, bool) {
-        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -907,7 +900,6 @@ impl Project {
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
-            config_dir: &config_dir,
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
@@ -975,7 +967,6 @@ impl Project {
         removed: &[String],
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult) {
-        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -996,7 +987,6 @@ impl Project {
                 compose_namespace: &self.compose_namespace,
                 project_namespace: &self.project_namespace,
                 engine_url: &self.engine_url,
-                config_dir: &config_dir,
                 logs: &self.logs,
                 package_cache: &package_cache,
                 vm_dir: &vm_dir,
@@ -1031,7 +1021,6 @@ impl Project {
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
-            config_dir: &config_dir,
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
@@ -1074,7 +1063,6 @@ impl Project {
         operation_id: String,
         supervised_attempt: Option<(u32, u32)>,
     ) -> OpResult {
-        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let Inner {
@@ -1089,7 +1077,6 @@ impl Project {
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
-            config_dir: &config_dir,
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
@@ -1112,7 +1099,6 @@ impl Project {
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
-        let config_dir = self.config_dir();
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
@@ -1130,7 +1116,6 @@ impl Project {
             compose_namespace: &self.compose_namespace,
             project_namespace: &self.project_namespace,
             engine_url: &self.engine_url,
-            config_dir: &config_dir,
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,

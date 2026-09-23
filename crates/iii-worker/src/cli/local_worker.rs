@@ -1033,8 +1033,8 @@ pub struct VmOverride<'a> {
     /// Merged over the manifest's own env, and under the reserved keys
     /// [`build_local_env`] owns.
     pub extra_env: HashMap<String, String>,
-    /// Host directory published to the guest at [`GUEST_CONFIG_DIR`]. The
-    /// caller points `III_CONFIG` at a file inside it.
+    /// Optional caller-owned directory published at [`GUEST_CONFIG_DIR`].
+    /// Compose configuration is delivered through the engine, not this mount.
     pub config_dir: Option<PathBuf>,
 }
 
@@ -1484,10 +1484,8 @@ async fn start_worker_impl(
         "/workspace"
     };
     let mut mounts = build_local_mounts(project_path, workspace_guest);
-    // The caller's config directory, so `III_CONFIG` can name a file the guest
-    // can actually open. Only this container's config is shared: the directory
-    // is per-container, because virtiofs publishes a whole tree and the
-    // project's config dir holds every sibling's file too.
+    // Optional per-container files supplied by callers of the VM API.
+    // Never share sibling directories: virtiofs publishes the entire tree.
     if let Some(config_dir) = over.as_ref().and_then(|over| over.config_dir.as_ref()) {
         mounts.push((
             config_dir.to_string_lossy().into_owned(),

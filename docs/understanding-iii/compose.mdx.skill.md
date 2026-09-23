@@ -88,10 +88,10 @@ explicit, unambiguous `compose::*` call. The directory is the canonical parent o
 workers one stable base for project-owned data. Letting the container replace these values could
 send a lifecycle edit to another project or write data outside that project.
 
-`III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery. Compose merges the configuration,
-writes it to the file the first names, and publishes the same value to the entry the second names. A
-container pointed at a different file would read one value while the configuration worker held
-another, and the two would drift apart with nobody able to say which was in force.
+`III_CONFIG_NAME` identifies the configuration service entry. Compose reads the current value,
+merges execution overrides, and calls `configuration::set` with `flush: false` before spawn.
+Workers read that value through the same GET. Explicit saves persist the submitted object.
+Removing an override does not restore an older disk value. No snapshot file is delivered.
 
 ### A container that belongs in another namespace
 

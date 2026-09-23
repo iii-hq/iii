@@ -427,20 +427,24 @@ impl ConfigurationWorker {
 
     #[function(
         id = "configuration::migrate",
-        description = "Move an exact legacy configuration id at the authority, replacing the destination with the source and retaining the original source as a .yaml.bak backup. Missing source is a no-op. Stop consumers before migrating."
+        description = "Move an exact legacy configuration id at the authority, replacing the destination with the source and archiving the source as .yaml.bak. Active memory follows a successful move without being persisted. An absent persisted source leaves the destination unchanged and retires orphan source memory. The response contains the persisted entry. Stop consumers before migrating."
     )]
     pub async fn migrate_fn(
         &self,
         input: ConfigurationMigrateInput,
     ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
-        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
+        let outcome = match self
+            .store
+            .migrate_with_active(&input.from_id, &input.to_id)
+            .await
+        {
             Ok(outcome) => outcome,
             Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
         };
-        if outcome.action == MigrateAction::Migrated
+        if outcome.persisted.action == MigrateAction::Migrated
             && self.store.adapter().ensure_support()
                 == crate::workers::configuration::adapters::EnsureSupport::Local
-            && let Some(entry) = &outcome.entry
+            && let Some(entry) = &outcome.active_entry
         {
             let mut previous = entry.clone();
             previous.id = input.from_id;
@@ -459,7 +463,7 @@ impl ConfigurationWorker {
             ))
             .await;
         }
-        FunctionResult::Success(outcome)
+        FunctionResult::Success(outcome.persisted)
     }
 
     #[function(
@@ -497,7 +501,9 @@ impl ConfigurationWorker {
             outcome.old_value.clone(),
             Some(outcome.entry.value.clone()),
         );
-        self.fan_out(event).await;
+        if !self.store.is_injected(&outcome.entry.id).await {
+            self.fan_out(event).await;
+        }
 
         FunctionResult::Success(outcome.entry)
     }
@@ -531,7 +537,9 @@ impl ConfigurationWorker {
         // (bridge) adapter register_kind is `None`: the authoritative remote
         // engine emits its own `configuration:*` event, relayed to local
         // subscribers via the bridge watcher, so firing here would duplicate it.
-        if let Some(kind) = outcome.register_kind {
+        if let Some(kind) = outcome.register_kind
+            && !self.store.is_injected(&outcome.entry.id).await
+        {
             let event_type = match kind {
                 RegisterKind::Created => ConfigurationEventType::Registered,
                 RegisterKind::Replaced => ConfigurationEventType::Updated,
@@ -553,13 +561,18 @@ impl ConfigurationWorker {
 
     #[function(
         id = "configuration::set",
-        description = "Replace the value of an already-registered configuration. Validates the value against the registered JSON Schema and emits a configuration:updated event."
+        description = "Replace the active configuration and notify consumers. flush=true (default) validates and persists the complete value for a registered id. flush=false updates memory only and may precede registration; validation uses the schema when available. No automatic later flush."
     )]
     pub async fn set_fn(
         &self,
         input: ConfigurationSetInput,
     ) -> FunctionResult<ConfigurationSetResult, ErrorBody> {
-        let outcome = match self.store.set(&input.id, input.value).await {
+        let result = if input.flush {
+            self.store.set(&input.id, input.value).await
+        } else {
+            self.store.set_memory(&input.id, input.value).await
+        };
+        let outcome = match result {
             Ok(o) => o,
             Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
         };
@@ -580,13 +593,13 @@ impl ConfigurationWorker {
 
     #[function(
         id = "configuration::get",
-        description = "Read a configuration by id. Expands ${VAR:default} placeholders against the live process env unless raw=true is passed."
+        description = "Read the active configuration by id (execution injection when present, otherwise the persistent base). Expands ${VAR:default} placeholders against the live process env unless raw=true is passed."
     )]
     pub async fn get_fn(
         &self,
         input: ConfigurationGetInput,
     ) -> FunctionResult<ConfigurationGetResult, ErrorBody> {
-        match self.store.get(&input.id).await {
+        match self.store.get_active(&input.id).await {
             Some(entry) => {
                 if input.raw {
                     return FunctionResult::Success(ConfigurationGetResult {
@@ -763,6 +776,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_only_set_precedes_registration_and_default_set_flushes() {
+        let (_engine, worker, dir) = setup().await;
+        let input: ConfigurationSetInput = serde_json::from_value(json!({
+            "id": "iii-stream", "value": {"port": 4242}, "flush": false
+        }))
+        .unwrap();
+        match worker.set_fn(input).await {
+            FunctionResult::Success(result) => {
+                assert_eq!(result.old_value, None);
+                assert_eq!(result.new_value, json!({"port": 4242}));
+            }
+            _ => panic!("memory-only set must work before registration"),
+        }
+        assert!(!dir.path().join("iii-stream.yaml").exists());
+        worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "test".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({"port": 3112})),
+                metadata: None,
+            })
+            .await;
+        match worker
+            .get_fn(ConfigurationGetInput {
+                id: "iii-stream".into(),
+                raw: false,
+            })
+            .await
+        {
+            FunctionResult::Success(result) => assert_eq!(result.value, json!({"port": 4242})),
+            _ => panic!("ensure must retain active value"),
+        }
+        let input: ConfigurationSetInput = serde_json::from_value(json!({
+            "id": "iii-stream", "value": {"port": 4242}
+        }))
+        .unwrap();
+        assert!(input.flush, "existing callers must persist by default");
+        assert!(matches!(
+            worker.set_fn(input).await,
+            FunctionResult::Success(_)
+        ));
+        let disk: Value =
+            serde_yaml::from_slice(&std::fs::read(dir.path().join("iii-stream.yaml")).unwrap())
+                .unwrap();
+        assert_eq!(disk["value"], json!({"port": 4242}));
+    }
+
+    #[tokio::test]
     async fn set_validates_against_registered_schema() {
         let (_engine, worker, _dir) = setup().await;
         worker
@@ -771,6 +834,7 @@ mod tests {
 
         let bad = worker
             .set_fn(ConfigurationSetInput {
+                flush: true,
                 id: "iii-stream".into(),
                 value: json!({ "port": "wrong" }),
             })
@@ -782,6 +846,7 @@ mod tests {
 
         let good = worker
             .set_fn(ConfigurationSetInput {
+                flush: true,
                 id: "iii-stream".into(),
                 value: json!({ "port": 4242 }),
             })
@@ -800,6 +865,7 @@ mod tests {
         let (_engine, worker, _dir) = setup().await;
         let result = worker
             .set_fn(ConfigurationSetInput {
+                flush: true,
                 id: "missing".into(),
                 value: json!({}),
             })
@@ -827,6 +893,7 @@ mod tests {
             .await;
         let result = worker
             .set_fn(ConfigurationSetInput {
+                flush: true,
                 id: "iii-stream".into(),
                 value: json!({ "port": 4242 }),
             })

@@ -124,8 +124,16 @@ pub struct ConfigurationEnsureInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationSetInput {
     pub id: String,
-    /// New configuration value. Validated against the registered schema.
+    /// New configuration value. Validated against the schema when available.
     pub value: Value,
+    /// Persist the complete value (default true). False updates only active memory
+    /// and permits delivery before the owning worker registers its schema.
+    #[serde(default = "default_flush")]
+    pub flush: bool,
+}
+
+fn default_flush() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

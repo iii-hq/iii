@@ -129,6 +129,7 @@ async fn register_set_get_round_trip_with_env_var_expansion() {
 
     let set = worker
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-stream".into(),
             value: json!({ "host": "${CFG_E2E_HOST:fallback}", "port": 4242 }),
         })
@@ -305,6 +306,7 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
 
     worker
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-stream".into(),
             value: json!({ "host": "set.local" }),
         })
@@ -505,6 +507,7 @@ async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
     // An explicit set still overrides after seeding.
     let set = worker
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-stream".into(),
             value: json!({ "port": 4242 }),
         })
@@ -543,6 +546,22 @@ async fn migration_events_and_restart_preserve_the_entry() {
             .await,
         FunctionResult::Success(_)
     ));
+    let active = json!({"token": "runtime-only", "enabled": true});
+    for (id, value) in [
+        ("default-harness-a14f3656efb8d5ea", active.clone()),
+        ("default-harness", json!({"stale_destination": true})),
+    ] {
+        assert!(matches!(
+            worker
+                .set_fn(ConfigurationSetInput {
+                    id: id.into(),
+                    value,
+                    flush: false,
+                })
+                .await,
+            FunctionResult::Success(_)
+        ));
+    }
     let mut events = install_event_capture(&engine, "test::migration_events");
     worker
         .register_trigger(Trigger {
@@ -570,12 +589,35 @@ async fn migration_events_and_restart_preserve_the_entry() {
     let entry = out.entry.unwrap();
     assert_eq!(entry.value, original);
     assert_eq!(entry.metadata, Some(json!({"manual": true})));
+    match worker
+        .get_fn(ConfigurationGetInput {
+            id: input.from_id.clone(),
+            raw: true,
+        })
+        .await
+    {
+        FunctionResult::Failure(error) => assert_eq!(error.code, "NOT_FOUND"),
+        _ => panic!("the retired id must not remain readable through runtime memory"),
+    }
+    let FunctionResult::Success(current) = worker
+        .get_fn(ConfigurationGetInput {
+            id: input.to_id.clone(),
+            raw: true,
+        })
+        .await
+    else {
+        panic!("the active value must follow the destination")
+    };
+    assert_eq!(current.value, active);
     let mut observed = Vec::new();
     for _ in 0..2 {
         let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
             .await
             .unwrap()
             .unwrap();
+        if event["event_type"] == "configuration:registered" {
+            assert_eq!(event["new_value"], active, "event must agree with GET");
+        }
         observed.push((
             event["id"].as_str().unwrap().to_string(),
             event["event_type"].as_str().unwrap().to_string(),

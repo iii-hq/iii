@@ -100,6 +100,12 @@ fn project(dir: &std::path::Path, compose: &str, workers: &[&str]) -> std::path:
     path
 }
 
+/// Inspect actual adapter persistence, independently of the active GET value.
+fn saved_configuration(storage: &std::path::Path, id: &str) -> Value {
+    let bytes = std::fs::read(storage.join(format!("{id}.yaml"))).unwrap();
+    serde_yaml::from_slice(&bytes).unwrap()
+}
+
 /// Calls a `compose::*` function the way an operator does: in `default`, with
 /// the project named in the payload.
 async fn call(port: u16, function: &str, payload: Value) -> Result<Value, String> {
@@ -686,7 +692,7 @@ containers:
             "workers": [{
                 "worker": "./workers/database",
                 "start_after": ["existing"],
-                "scripts": {"pre_run": "printf '%s' \"$MODE\" > mode && cat \"$III_CONFIG\" > config"},
+                "scripts": {"pre_run": "printf '%s' \"$MODE\" > mode"},
                 "environment": {"MODE": "dev"},
                 "config_override": {"port": 3000}
             }, "./workers/web"],
@@ -738,10 +744,14 @@ containers:
         std::fs::read_to_string(tmp.path().join("workers/database/mode")).unwrap(),
         "dev"
     );
-    let delivered: Value = serde_yaml::from_str(
-        &std::fs::read_to_string(tmp.path().join("workers/database/config")).unwrap(),
+    let delivered = call(
+        port,
+        "configuration::get",
+        json!({"id": "addition-database", "raw": true}),
     )
-    .unwrap();
+    .await
+    .unwrap()["value"]
+        .clone();
     assert_eq!(delivered, json!({"port": 3000}));
     for worker in ["database", "web"] {
         assert_eq!(
@@ -2183,7 +2193,7 @@ containers:
     config_override:
       http_port: {port_number}
     scripts:
-      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; cat "$III_CONFIG" > delivered; touch started; sleep 30'
+      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; test -z "$III_CONFIG" || exit 42; touch started; sleep 30'
   fresh:
     worker: path://./workers/fresh
     scripts:
@@ -2194,7 +2204,7 @@ containers:
     config_override:
       http_port: 9999
     scripts:
-      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; cat "$III_CONFIG" > delivered; touch started; sleep 30'
+      run: 'printf "%s" "$III_CONFIG_NAME" > config-name; test -z "$III_CONFIG" || exit 42; touch started; sleep 30'
 "#
             ),
             &["console", "fresh", "explicit"],
@@ -2250,21 +2260,15 @@ containers:
         let delivered_name =
             std::fs::read_to_string(tmp.path().join("workers/console/config-name")).unwrap();
         assert_eq!(delivered_name, name);
-        let delivered: Value = serde_yaml::from_str(
-            &std::fs::read_to_string(tmp.path().join("workers/console/delivered")).unwrap(),
-        )
-        .unwrap();
+        let delivered = call(port, "configuration::get", json!({"id": name, "raw": true}))
+            .await
+            .unwrap()["value"]
+            .clone();
         assert_eq!(
             delivered,
             json!({ "http_port": port_number, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null })
         );
-        let stored = call(
-            port,
-            "configuration::get",
-            json!({ "id": name, "raw": true }),
-        )
-        .await
-        .unwrap();
+        let stored = saved_configuration(storage.path(), &name);
         let base = json!({ "http_port": 3113, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null });
         assert_eq!(
             stored["value"], base,
@@ -2294,16 +2298,7 @@ containers:
         )
         .await
         .unwrap();
-        assert_eq!(
-            call(
-                port,
-                "configuration::get",
-                json!({ "id": name, "raw": true })
-            )
-            .await
-            .unwrap()["value"],
-            base
-        );
+        assert_eq!(saved_configuration(storage.path(), &name)["value"], base);
 
         let fresh_name =
             std::fs::read_to_string(tmp.path().join("workers/fresh/config-name")).unwrap();
@@ -2342,10 +2337,14 @@ containers:
             std::fs::read_to_string(tmp.path().join("workers/explicit/config-name")).unwrap(),
             format!("{namespace}-custom")
         );
-        let explicit: Value = serde_yaml::from_str(
-            &std::fs::read_to_string(tmp.path().join("workers/explicit/delivered")).unwrap(),
+        let explicit = call(
+            port,
+            "configuration::get",
+            json!({"id": format!("{namespace}-custom"), "raw": true}),
         )
-        .unwrap();
+        .await
+        .unwrap()["value"]
+            .clone();
         assert_eq!(
             explicit,
             json!({ "http_port": 9999, "retained": true, "raw": "${TOKEN}", "zero": 0, "empty": null })
@@ -2364,13 +2363,7 @@ containers:
     assert_ne!(names[0].0, names[1].0);
     for (name, expected_port) in names {
         assert_eq!(
-            call(
-                port,
-                "configuration::get",
-                json!({ "id": name, "raw": true })
-            )
-            .await
-            .unwrap()["value"]["http_port"],
+            saved_configuration(storage.path(), &name)["value"]["http_port"],
             expected_port
         );
     }
@@ -2556,7 +2549,106 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
     local.destroy().await.unwrap();
 }
 
-/// An override-only first boot creates an execution snapshot, never a stored entry.
+/// Every start merges the current GET value; removing an override does not restore disk.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_override_merges_current_value_and_survives_removal_until_replaced() {
+    isolate_state();
+    let storage = tempfile::tempdir().unwrap();
+    let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "runtime-api";
+    call(
+        port,
+        "configuration::register",
+        json!({
+            "id": id, "name": "API", "description": "test", "schema": {},
+            "initial_value": {"b": 1}
+        }),
+    )
+    .await
+    .unwrap();
+    for (index, expected) in [2, 2, 2, 9].into_iter().enumerate() {
+        // A fresh supervisor reads the edited declaration instead of its cached project.
+        let supervisor = format!("runtime-supervisor-{index}");
+        let daemon = start_daemon_named(port, &supervisor).await;
+        let mut declaration = json!({
+            "namespace": "runtime-cycle", "startup_timeout": "5s", "stop_timeout": "100ms",
+            "required_default": true,
+            "containers": {"api": {
+                "worker": "path://./workers/api", "config_name": id,
+                "scripts": {"run": format!("test -z \"$III_CONFIG\" || exit 42; touch started-{index}; sleep 30")}
+            }}
+        });
+        if index < 2 {
+            declaration["containers"]["api"]["config_override"] = json!({"b": 2});
+        } else if index == 3 {
+            declaration["containers"]["api"]["config_override"] = json!({"b": 9});
+        }
+        let file = project(
+            tmp.path(),
+            &serde_yaml::to_string(&declaration).unwrap(),
+            &["api"],
+        );
+        let started = tmp.path().join(format!("workers/api/started-{index}"));
+        let up = call_in(
+            port,
+            Some(&supervisor),
+            "compose::up",
+            json!({"file": file}),
+        );
+        let ready = async {
+            wait_for_start_markers(&[&started]).await;
+            register_test_worker(port, "runtime-cycle", "api")
+        };
+        let (up, child) = tokio::join!(up, ready);
+        assert_eq!(up.unwrap()["status"], "ok");
+        assert_eq!(
+            call(port, "configuration::get", json!({"id": id}))
+                .await
+                .unwrap()["value"],
+            json!({"b": expected})
+        );
+        let base = if index == 0 { 1 } else { 3 };
+        assert_eq!(
+            saved_configuration(storage.path(), id)["value"],
+            json!({"b": base})
+        );
+        if index == 0 {
+            call(
+                port,
+                "configuration::set",
+                json!({"id": id, "value": {"b": 3}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                call(port, "configuration::get", json!({"id": id}))
+                    .await
+                    .unwrap()["value"],
+                json!({"b": 3})
+            );
+        }
+        child.shutdown_async().await;
+        call_in(
+            port,
+            Some(&supervisor),
+            "compose::down",
+            json!({"file": file}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            call(port, "configuration::get", json!({"id": id}))
+                .await
+                .unwrap()["value"],
+            json!({"b": if index == 0 { 3 } else { expected }})
+        );
+        daemon.shutdown().await;
+    }
+}
+
+/// An override-only first boot injects a value, never a snapshot file or stored entry.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn override_only_start_leaves_persistent_configuration_directory_empty() {
@@ -2580,7 +2672,7 @@ containers:
       count: 0
       token: ${TOKEN}
     scripts:
-      run: 'cat "$III_CONFIG" > delivered; touch started; sleep 30'
+      run: 'test -z "$III_CONFIG" || exit 42; touch started; sleep 30'
 "#,
         &["api"],
     );
@@ -2597,23 +2689,19 @@ containers:
     };
     let (result, child) = tokio::join!(up, ready);
     assert_eq!(result.unwrap()["status"], "ok");
-    let delivered: Value =
-        serde_yaml::from_slice(&std::fs::read(tmp.path().join("workers/api/delivered")).unwrap())
-            .unwrap();
+    let delivered = call(
+        port,
+        "configuration::get",
+        json!({"id": "override-only-api", "raw": true}),
+    )
+    .await
+    .unwrap()["value"]
+        .clone();
     assert_eq!(
         delivered,
         json!({"enabled": false, "count": 0, "token": "${TOKEN}"})
     );
-    assert!(
-        call(
-            port,
-            "configuration::get",
-            json!({"id": "override-only-api", "raw": true})
-        )
-        .await
-        .unwrap_err()
-        .contains("NOT_FOUND")
-    );
+    assert!(!storage.path().join("override-only-api.yaml").exists());
     assert_eq!(std::fs::read_dir(storage.path()).unwrap().count(), 0);
     daemon.shutdown().await;
     child.shutdown_async().await;
@@ -2666,7 +2754,7 @@ containers:
   state:
     worker: path://./workers/state
     scripts:
-      run: 'if [ -n "$III_CONFIG" ]; then cat "$III_CONFIG" > delivered; fi; touch started; sleep 30'
+      run: 'test -z "$III_CONFIG" || exit 42; touch started; sleep 30'
 "#
             ),
             &["state"],
@@ -2686,10 +2774,14 @@ containers:
         assert_eq!(result.unwrap()["status"], "ok");
         if namespace == "default" {
             let expected = raw.clone();
-            let delivered: Value = serde_yaml::from_slice(
-                &std::fs::read(tmp.path().join("workers/state/delivered")).unwrap(),
+            let delivered = call(
+                port,
+                "configuration::get",
+                json!({"id": target, "raw": true}),
             )
-            .unwrap();
+            .await
+            .unwrap()["value"]
+                .clone();
             assert_eq!(delivered, expected);
             assert_eq!(
                 call(

@@ -182,12 +182,7 @@ impl EngineClient {
             .trigger(
                 TriggerRequest {
                     function_id: "configuration::get".to_string(),
-                    // Raw, so `${VAR}` placeholders survive the round trip. The
-                    // worker pushes this value back into the store at boot, and an
-                    // expanded fetch would persist the secret a lazy reference was
-                    // there to avoid — turning `password: ${DB_PASSWORD}` into the
-                    // password, permanently. Expansion belongs to the read that
-                    // uses the value, not to a copy passing through.
+                    // Use the current configuration, preserving raw env placeholders.
                     payload: json!({ "id": name, "raw": true }),
                     action: None,
                     timeout_ms: Some(CALL_TIMEOUT_MS),
@@ -215,6 +210,30 @@ impl EngineClient {
                 name: name.to_string(),
                 message: err.to_string(),
             })
+    }
+
+    /// Update active configuration before spawn without touching persistent storage.
+    pub async fn set_config(&self, name: &str, value: serde_yaml::Value) -> Result<()> {
+        let value = serde_json::to_value(value).map_err(|err| ComposeError::ConfigFetchFailed {
+            name: name.into(),
+            message: err.to_string(),
+        })?;
+        self.client
+            .trigger(
+                TriggerRequest {
+                    function_id: "configuration::set".into(),
+                    payload: json!({"id": name, "value": value, "flush": false}),
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
+            .await
+            .map_err(|err| ComposeError::ConfigFetchFailed {
+                name: name.into(),
+                message: format!("runtime configuration injection failed: {err}"),
+            })?;
+        Ok(())
     }
 
     /// Ask the configuration authority to migrate the exact previous default.

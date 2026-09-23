@@ -836,7 +836,7 @@ mod tests {
     #[tokio::test]
     async fn migration_failures_leave_recoverable_data_and_truthful_caches() {
         use crate::workers::configuration::store::ConfigurationStore;
-        for stage in ["write", "publish", "delete"] {
+        for stage in ["write", "publish", "backup", "delete"] {
             let dir = temp_dir();
             let adapter = Arc::new(
                 FsAdapter::new(Some(json!({ "directory": dir.path() })))
@@ -847,6 +847,14 @@ mod tests {
             let original = std::fs::read(adapter.entry_path("old")).unwrap();
             let store = ConfigurationStore::new(adapter.clone());
             store.prime_from_adapter().await.unwrap();
+            store
+                .set_memory("old", json!({"port": 4242}))
+                .await
+                .unwrap();
+            store
+                .set_memory("new", json!({"port": 9999}))
+                .await
+                .unwrap();
             *adapter.migration_failure.lock().unwrap() = Some(stage);
             assert!(store.migrate("old", "new").await.is_err(), "{stage}");
             assert_eq!(std::fs::read(adapter.entry_path("old")).unwrap(), original);
@@ -854,17 +862,43 @@ mod tests {
                 store.get("old").await.unwrap().value,
                 json!({ "port": 3112 })
             );
-            let published = stage == "delete";
+            let published = stage == "backup" || stage == "delete";
+            assert_eq!(
+                store.get_active("old").await.unwrap().value,
+                json!({"port": 4242}),
+                "failed migration must preserve source memory: {stage}"
+            );
+            assert_eq!(
+                store.get_active("new").await.unwrap().value,
+                json!({"port": 9999}),
+                "failed migration must preserve destination memory: {stage}"
+            );
             assert_eq!(store.get("new").await.is_some(), published);
             assert_eq!(adapter.entry_path("new").exists(), published);
             assert_eq!(
                 std::fs::read_dir(dir.path()).unwrap().count(),
-                if published { 3 } else { 1 }
+                if stage == "delete" {
+                    3
+                } else if published {
+                    2
+                } else {
+                    1
+                }
             );
             *adapter.migration_failure.lock().unwrap() = None;
             assert_eq!(
                 store.migrate("old", "new").await.unwrap().action,
                 MigrateAction::Migrated
+            );
+            assert!(store.get_active("old").await.is_none());
+            assert_eq!(
+                store.get_active("new").await.unwrap().value,
+                json!({"port": 4242})
+            );
+            assert_eq!(
+                adapter.get("new").await.unwrap().unwrap().value,
+                json!({"port": 3112}),
+                "retry must not persist the runtime value"
             );
         }
     }

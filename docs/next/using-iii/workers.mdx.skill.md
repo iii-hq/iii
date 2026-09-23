@@ -101,8 +101,9 @@ containers:
       port: 3111
 ```
 
-Compose passes the merged value through `III_CONFIG` and, when declared, publishes it to
-`III_CONFIG_NAME`. See [Configuration](./configuration).
+Compose injects the merged execution value into configuration service memory under
+`III_CONFIG_NAME`, without persisting it. Workers read it through `configuration::get`.
+Explicit saves persist the submitted value. See [Configuration](./configuration).
 
 ## Engine-managed exceptions
 

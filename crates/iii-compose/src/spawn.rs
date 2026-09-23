@@ -24,10 +24,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these eight
+/// would be the wrong way round for most settings. Because each of these seven
 /// is already declared in the compose file, and a second declaration of the
 /// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding a ninth is a decision, not a habit:
+/// separately, so adding an eighth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -44,17 +44,14 @@ use crate::manifest::StartSpec;
 ///   and one daemon may own several compose files, so the namespace and file
 ///   are required for an unambiguous control-plane call. The directory is the
 ///   canonical parent of that file.
-/// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
-///   merged value is written to the file and published to the entry. Pointing
-///   the child at a different file leaves it reading one value while the
-///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 8] = [
+/// - `III_CONFIG_NAME` identifies the configuration service entry. Compose
+///   injects the merged execution value there without persisting overrides.
+pub const RESERVED_ENV: [&str; 7] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
     "III_COMPOSE_FILE",
     "III_COMPOSE_DIR",
-    "III_CONFIG",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
 ];
@@ -80,8 +77,6 @@ pub struct SpawnCtx<'a> {
     pub compose_file: &'a Path,
     pub container_key: &'a str,
     pub start: &'a StartSpec,
-    /// Path of the resolved configuration file, when the container has config.
-    pub config_path: Option<&'a Path>,
     /// Which configuration entry this container's value was written to, and
     /// therefore the one it should read from.
     ///
@@ -224,18 +219,8 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
         env.insert(HOST_USER_ID_ENV.to_string(), device_id);
     }
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
-    match ctx.config_path {
-        Some(config_path) => {
-            env.insert(
-                "III_CONFIG".to_string(),
-                config_path.to_string_lossy().to_string(),
-            );
-        }
-        // No config for this container: the key must be absent, not stale.
-        None => {
-            env.remove("III_CONFIG");
-        }
-    }
+    // Retired delivery channel: do not inherit a stale snapshot from the host.
+    env.retain(|name, _| !name.eq_ignore_ascii_case("III_CONFIG"));
     match ctx.config_name {
         Some(name) => {
             env.insert("III_CONFIG_NAME".to_string(), name.to_string());
@@ -318,7 +303,7 @@ mod tests {
 
     fn ctx<'a>(
         start: &'a StartSpec,
-        config: Option<&'a Path>,
+        _config: Option<&'a Path>,
         user_env: &'a BTreeMap<String, String>,
     ) -> SpawnCtx<'a> {
         SpawnCtx {
@@ -328,7 +313,6 @@ mod tests {
             compose_file: Path::new("/srv/app/worker-compose.yaml"),
             container_key: "api",
             start,
-            config_path: config,
             config_name: None,
             working_dir: Path::new("/srv/app/workers/api"),
             user_env,
@@ -447,13 +431,14 @@ mod tests {
     }
 
     #[test]
-    fn config_path_becomes_iii_config() {
+    fn retired_snapshot_variable_is_not_inherited() {
         let start = StartSpec::Shell("cargo run".to_string());
-        let config = PathBuf::from("/run/iii/compose/api.yaml");
         let user_env = BTreeMap::new();
-        let plan = spawn_plan(&ctx(&start, Some(&config), &user_env));
-
-        assert_eq!(plan.env["III_CONFIG"], "/run/iii/compose/api.yaml");
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &user_env),
+            env_of(&[("III_CONFIG", "/stale/snapshot.yaml")]),
+        );
+        assert!(!plan.env.contains_key("III_CONFIG"));
     }
 
     #[test]

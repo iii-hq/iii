@@ -57,7 +57,6 @@ fn machine_environment_probe() {
         compose_file: &compose_file,
         container_key: "api",
         start: &start,
-        config_path: None,
         config_name: None,
         working_dir: tmp.path(),
         user_env: &user_env,

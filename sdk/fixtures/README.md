@@ -7,10 +7,10 @@ child engine. Each engine instance receives its own mutable copy; tracked fixtur
 files are never used as the writable configuration store.
 
 These entries are test base configuration, not Compose runtime overrides. The
-pinned released workers read configuration from the service and do not consume
-the `III_CONFIG` execution snapshot. SDK tests exercise SDK behavior rather than
-worker support for runtime overrides; Compose tests cover non-persistence of
-`config_override` separately.
+pinned released workers read configuration from the service. Compose injects
+runtime overrides into that service without persisting them; no snapshot file
+is delivered. SDK tests exercise SDK behavior, while Compose tests cover the
+execution configuration and its separation from the persistent base.
 
 An optional `ready-port` companion file requires that TCP port on 127.0.0.1 to be
 reachable after Compose reports startup success. The main SDK fixture requires

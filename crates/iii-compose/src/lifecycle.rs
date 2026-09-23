@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::{
     config::{ComposeFile, Container, RestartPolicy},
-    configuration::{ConfigFile, merge},
+    configuration::merge,
     dag,
     engine::EngineClient,
     error::{ComposeError, Result},
@@ -107,8 +107,6 @@ pub struct LifecycleCtx<'a> {
     /// Namespace the *children* register in — not the daemon's own.
     pub project_namespace: &'a str,
     pub engine_url: &'a str,
-    /// Directory for resolved config files, owner-only.
-    pub config_dir: &'a std::path::Path,
     /// Where installed packages live, shared across projects on this machine.
     pub package_cache: &'a std::path::Path,
     /// Persistent, bounded stdout and stderr for every project worker.
@@ -1020,7 +1018,6 @@ async fn start_one_until_shutdown(
         compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
-        config_path: config.file.as_ref().map(ConfigFile::path),
         config_name: Some(&config.name),
         working_dir: &working_dir,
         user_env: &user_env,
@@ -1058,12 +1055,12 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.file.as_ref())).map_err(
-                |message| ComposeError::SpawnFailed {
+            wait_or_interrupt!(vm_command(ctx, key, &start, &plan)).map_err(|message| {
+                ComposeError::SpawnFailed {
                     container: key.to_string(),
                     message,
-                },
-            )?
+                }
+            })?
         }
     };
 
@@ -1137,17 +1134,13 @@ async fn start_one_until_shutdown(
 /// which is the same split the installer makes by shipping `iii-worker` as its
 /// own asset.
 ///
-/// The environment sent is the one a host container would get, with one
-/// substitution: `III_CONFIG` names a host path, and the guest cannot open it.
-/// The container's config directory is published into the VM and the variable
-/// is repointed at the file inside it, so a worker reads its configuration the
-/// same way whichever side of the boundary it runs on.
+/// Uses the host container environment. Configuration is served by the engine,
+/// not mounted into the guest.
 async fn vm_command(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     start: &StartSpec,
     plan: &crate::spawn::SpawnPlan,
-    config: Option<&ConfigFile>,
 ) -> std::result::Result<tokio::process::Command, String> {
     let (worker_dir, run_override, prepare_command) = match start {
         StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
@@ -1158,47 +1151,13 @@ async fn vm_command(
         _ => return Err("not a VM container".to_string()),
     };
 
-    let mut env: BTreeMap<String, String> = plan.env.clone();
-    let config_dir = match config {
-        Some(config) => {
-            // Published through a directory of this container's own, not the
-            // project's `config/`. virtiofs shares a whole tree, so mounting
-            // the shared one would put every sibling's resolved secrets inside
-            // this guest. Beside the rootfs rather than inside it: the rootfs
-            // is the guest's `/`, and a `config` directory there would collide
-            // with whatever the image already has.
-            let path = config.path();
-            let Some(name) = path.file_name() else {
-                return Err(format!("config file has no name: {}", path.display()));
-            };
-            let dir = ctx.vm_dir.join(format!("{key}-config"));
-            std::fs::create_dir_all(&dir)
-                .map_err(|err| format!("cannot make {}: {err}", dir.display()))?;
-            let published = dir.join(name);
-            std::fs::copy(path, &published)
-                .map_err(|err| format!("cannot publish the config for the VM: {err}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600));
-            }
-            env.insert(
-                "III_CONFIG".to_string(),
-                format!("{GUEST_CONFIG_DIR}/{}", name.to_string_lossy()),
-            );
-            Some(dir)
-        }
-        None => None,
-    };
-
+    let env: BTreeMap<String, String> = plan.env.clone();
     let request = serde_json::json!({
         "worker_name": key,
         "worker_dir": worker_dir,
         "state_dir": ctx.vm_dir.join(key),
         "engine_url": ctx.engine_url,
         "extra_env": env,
-        "config_dir": config_dir,
         "run_override": run_override,
     });
 
@@ -1216,10 +1175,6 @@ async fn vm_command(
     command.stdin(std::process::Stdio::null());
     Ok(command)
 }
-
-/// Where a container's config directory appears inside the guest. The same
-/// constant `iii-worker` mounts it at; it is part of the request contract.
-const GUEST_CONFIG_DIR: &str = "/run/iii/config";
 
 /// What an `iii-worker` VM prepare command answers: a program, its arguments, and
 /// the environment to start it with.
@@ -1366,7 +1321,6 @@ async fn stop_one(
             compose_file: &ctx.file.path,
             container_key: key,
             start: &start,
-            config_path: None,
             config_name: None,
             working_dir: &working_dir,
             user_env: &user_env,
@@ -1399,15 +1353,13 @@ async fn rollback(
     }
 }
 
-/// The configuration identity is always delivered, even before a worker has
-/// seeded its first value. A file exists only when there is a value to deliver.
+/// The configuration identity is always delivered, even before first registration.
 pub struct ResolvedConfig {
-    pub file: Option<ConfigFile>,
     pub name: String,
 }
 
-/// Resolves the identity and merges package defaults, stored values, and overrides.
-/// Delivers a runtime-only file; an absent value yields only the identity, while
+/// Resolves the identity and merges package defaults, current values, and overrides.
+/// Injects the execution value into the service without persisting it, while
 /// service failures propagate rather than silently starting with stale defaults.
 async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
@@ -1434,7 +1386,7 @@ async fn resolve_config(
             ctx.engine.migrate_config(key, &name).await?;
         }
     }
-    // Lowest to highest: package defaults, stored value, compose override.
+    // Lowest to highest: package defaults, current active value, compose override.
     // NOT_FOUND contributes nothing; transport/service failures still fail boot.
     let mut value = shipped;
     if let Some(fetched) = ctx.engine.fetch_config(&name).await? {
@@ -1451,16 +1403,12 @@ async fn resolve_config(
         });
     }
 
-    let file = if let Some(value) = value {
-        // The file is an execution snapshot, NOT the persistent base. Workers
-        // must not register this merged value back into configuration storage.
-        Some(ConfigFile::write(ctx.config_dir, key, &value)?)
-    } else {
-        // Do not publish an empty placeholder: let the worker seed its defaults
-        // under the assigned name on its first registration.
-        None
-    };
-    Ok(ResolvedConfig { file, name })
+    // GET supplies the current active value, not a forced reload from disk.
+    // Omitting an override keeps that value, including after a worker restart.
+    if let Some(value) = value {
+        ctx.engine.set_config(&name, value).await?;
+    }
+    Ok(ResolvedConfig { name })
 }
 
 async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {

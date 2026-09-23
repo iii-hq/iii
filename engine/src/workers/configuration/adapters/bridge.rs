@@ -171,6 +171,7 @@ impl ConfigurationAdapter for BridgeAdapter {
             .call(
                 "configuration::set",
                 ConfigurationSetInput {
+                    flush: true,
                     id: id.to_string(),
                     value,
                 },
