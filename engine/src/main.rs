@@ -289,6 +289,8 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
 
     let config = EngineConfig::config_file(config_path)?;
     logging::init_log_from_config(Some(config_path));
+    #[cfg(unix)]
+    raise_nofile_limit();
 
     let engine = EngineBuilder::new()
         .with_config(config)
@@ -297,6 +299,50 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         .await?;
     engine.serve().await?;
     Ok(())
+}
+
+/// Raises the soft open-file limit toward the hard one. The engine holds a
+/// socket per worker and per attached channel end, and macOS hands processes
+/// started from a terminal a soft limit of 256, which a burst of HTTP traffic
+/// (two channels per request) exhausts: accept then fails with EMFILE.
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let Some(target) = nofile_target(lim.rlim_cur, lim.rlim_max) else {
+        return;
+    };
+    let raised = libc::rlimit {
+        rlim_cur: target,
+        ..lim
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+        tracing::info!(from = lim.rlim_cur, to = target, "Raised open file limit");
+    } else {
+        tracing::warn!(
+            limit = lim.rlim_cur,
+            error = %std::io::Error::last_os_error(),
+            "Could not raise open file limit; the engine may hit EMFILE under load"
+        );
+    }
+}
+
+/// The soft limit to raise to, or `None` when it is already there. macOS
+/// rejects a soft `RLIMIT_NOFILE` above `OPEN_MAX` (10240, see setrlimit(2))
+/// even when the hard limit is unlimited.
+#[cfg(unix)]
+fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t> {
+    let target = if cfg!(target_os = "macos") {
+        hard.min(10_240)
+    } else {
+        hard
+    };
+    (soft < target).then_some(target)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -432,6 +478,23 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[cfg(unix)]
+    #[test]
+    fn nofile_target_raises_soft_toward_hard_and_never_lowers() {
+        let cap = if cfg!(target_os = "macos") {
+            10_240
+        } else {
+            65_536
+        };
+        assert_eq!(nofile_target(256, 65_536), Some(cap));
+        assert_eq!(nofile_target(256, 1_024), Some(1_024));
+        assert_eq!(nofile_target(1_024, 1_024), None);
+        if cfg!(target_os = "macos") {
+            assert_eq!(nofile_target(256, libc::RLIM_INFINITY), Some(10_240));
+            assert_eq!(nofile_target(1_048_576, libc::RLIM_INFINITY), None);
+        }
+    }
 
     #[test]
     fn trigger_parses_with_positional_fn_path_only() {

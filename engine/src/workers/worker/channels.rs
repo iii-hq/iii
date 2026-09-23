@@ -144,7 +144,7 @@ impl ChannelManager {
             let tx_taken = ch.tx.lock().await.is_none();
             let rx_taken = ch.rx.lock().await.is_none();
             // If both endpoints were taken, the channel is actively in use
-            // and will be cleaned up by ws_handler or views.rs when done.
+            // and ws_handler removes it when the reader finishes.
             // Stale = at least one side never connected.
             if !tx_taken || !rx_taken {
                 stale_ids.push(id);
