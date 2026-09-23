@@ -52,18 +52,25 @@ const MAX_EMAIL_LENGTH: usize = 254;
 /// topic is reachable by anything in the project, and this is the one place in
 /// telemetry that sends something a person typed, so it does not send a
 /// paragraph, an empty string, or a list of addresses.
+///
+/// The address is lowercased so that the same person typing it with different
+/// case on two machines, or twice on one, is one dedupe key and one person
+/// property value, which is what a `GROUP BY email` needs.
 pub fn identify_properties(payload: Value) -> Option<Value> {
     let Value::Object(fields) = payload else {
         return None;
     };
-    let email = fields.get("email")?.as_str()?.trim();
+    let email = fields.get("email")?.as_str()?.trim().to_lowercase();
     if email.is_empty() || email.len() > MAX_EMAIL_LENGTH {
         return None;
     }
     // One address: exactly one `@`, something either side, a dot in the
-    // domain, and none of the characters that would make this a list or a
-    // display name wrapping an address.
-    if email.contains([' ', '\t', ',', ';', '<', '>']) {
+    // domain, and none of the characters that would make this a list, a
+    // display name wrapping an address, or something with a control character
+    // or inner whitespace hidden in it.
+    if email.contains([',', ';', '<', '>'])
+        || email.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return None;
     }
     let (local, domain) = email.split_once('@')?;
@@ -179,6 +186,15 @@ mod tests {
     }
 
     #[test]
+    fn the_address_is_lowercased() {
+        // Two spellings of one address are one dedupe key and one person
+        // property value.
+        let props =
+            identify_properties(json!({ "email": "Someone@Example.COM" })).expect("reported");
+        assert_eq!(props["email"], "someone@example.com");
+    }
+
+    #[test]
     fn the_source_is_optional() {
         let props = identify_properties(json!({ "email": "a@b.co" })).expect("reported");
         assert_eq!(props["email"], "a@b.co");
@@ -197,6 +213,10 @@ mod tests {
             json!({ "email": "someone@.com" }),
             json!({ "email": "one@a.co, two@b.co" }),
             json!({ "email": "one@a.co two@b.co" }),
+            json!({ "email": "one@a.co\ttwo@b.co" }),
+            json!({ "email": "some\u{7}one@example.com" }),
+            json!({ "email": "someone@example.com\u{0}" }),
+            json!({ "email": "some\u{a0}one@example.com" }),
             json!({ "email": "Someone <someone@a.co>" }),
             json!({ "email": 7 }),
             json!("someone@example.com"),

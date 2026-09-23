@@ -163,10 +163,26 @@ fn posthog_timestamp_millis(ms: i64) -> String {
         .to_rfc3339()
 }
 
+/// Whether a property key belongs to PostHog or to this module rather than to
+/// the event that carried it.
+///
+/// `distinct_id` is the attribution and every `$` key is a PostHog control
+/// (`$set`, `$set_once`, `$process_person_profile`, `$geoip_disable`...). Some
+/// events are built from a message any worker in the project can publish, so a
+/// key like that in the payload must not reach the wire: it would let a
+/// publisher re-attribute the event or write person properties. The keys this
+/// module adds itself are inserted after the copy, so they are unaffected.
+fn is_reserved_posthog_key(key: &str) -> bool {
+    key == "distinct_id" || key.starts_with('$')
+}
+
 fn should_skip_posthog_user_property(
     key: &str,
     properties: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
+    if is_reserved_posthog_key(key) {
+        return true;
+    }
     match key {
         // app_version is the canonical PostHog field; iii_version is an older alias.
         "iii_version" => properties.contains_key("app_version"),
@@ -178,6 +194,9 @@ fn should_skip_posthog_event_property(
     key: &str,
     properties: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
+    if is_reserved_posthog_key(key) {
+        return true;
+    }
     match key {
         "version" => {
             properties.contains_key("app_version") || properties.contains_key("iii_version")
@@ -679,6 +698,63 @@ mod tests {
 
         assert!(event.properties.get("$set").is_none());
         assert_eq!(event.properties["$process_person_profile"], false);
+    }
+
+    #[test]
+    fn a_publisher_cannot_re_attribute_an_event_or_write_person_properties() {
+        // Harness and identify events are built from a message any worker in
+        // the project can publish. PostHog's own keys in that message must not
+        // reach the wire, or the publisher picks the person the event lands on
+        // and what gets written to it.
+        let mut event = sample_event();
+        event.event_type = "harness_session_progress".to_string();
+        event.event_properties = serde_json::json!({
+            "turn_index": 2,
+            "distinct_id": "someone-else",
+            "$process_person_profile": true,
+            "$set": { "email": "victim@example.com" },
+            "$set_once": { "uptime_is_greater_than_200_secs": true },
+            "$geoip_disable": true,
+        });
+        event.user_properties = Some(serde_json::json!({
+            "plan": "free",
+            "distinct_id": "someone-else",
+            "$set": { "email": "victim@example.com" },
+        }));
+        let event = unflagged(event);
+
+        assert_eq!(event.properties["distinct_id"], "device-1");
+        assert_eq!(event.properties["$process_person_profile"], false);
+        assert!(event.properties.get("$set").is_none());
+        assert!(event.properties.get("$set_once").is_none());
+        assert!(event.properties.get("$geoip_disable").is_none());
+        // The event's own properties still arrive.
+        assert_eq!(event.properties["turn_index"], 2);
+        assert_eq!(event.properties["plan"], "free");
+    }
+
+    #[test]
+    fn the_flag_and_the_identify_still_write_their_own_keys() {
+        // The reserved-key filter runs on the copied properties only; the
+        // `$set_once` and `$set` this module adds afterwards must survive it.
+        let mut event = sample_event();
+        event.event_type = "heartbeat".to_string();
+        event.event_properties = serde_json::json!({ "uptime_secs": 300, "$set_once": { "x": 1 } });
+        let event = unflagged(event);
+        assert_eq!(
+            event.properties["$set_once"],
+            serde_json::json!({ "uptime_is_greater_than_200_secs": true })
+        );
+
+        let mut event = sample_event();
+        event.event_type = IDENTIFY_EVENT.to_string();
+        event.event_properties =
+            serde_json::json!({ "email": "someone@example.com", "$set": { "x": 1 } });
+        let event = unflagged(event);
+        assert_eq!(
+            event.properties["$set"],
+            serde_json::json!({ "email": "someone@example.com" })
+        );
     }
 
     #[test]

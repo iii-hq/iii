@@ -94,6 +94,18 @@ impl ReportedUsage {
     }
 }
 
+/// The event this message reports, if it is a valid one that this process has
+/// not reported yet.
+///
+/// Validation runs before the claim, so a rejected message cannot spend a
+/// `dedupe_key` and silence the valid report that arrives with the same key
+/// later in the run.
+pub fn claim_usage_event(reported: &ReportedUsage, payload: Value) -> Option<(String, Value)> {
+    let key = json!({ "dedupe_key": payload.get("dedupe_key").cloned() });
+    let event = usage_event(payload)?;
+    reported.claim(&key).then_some(event)
+}
+
 /// Register the handler that turns one published message into one product event.
 pub(super) fn register_handler(
     engine: &Arc<Engine>,
@@ -117,9 +129,7 @@ pub(super) fn register_handler(
                 // A duplicate, and a message this handler does not report,
                 // both still succeed: the queue must see the message taken, or
                 // it redelivers the one thing this filter exists to suppress.
-                if reported.claim(&input)
-                    && let Some((name, properties)) = usage_event(input)
-                {
+                if let Some((name, properties)) = claim_usage_event(&reported, input) {
                     let event = ctx.build_event(&name, properties, None);
                     send_product_event(posthog_client.as_deref(), event).await;
                 }
@@ -242,5 +252,28 @@ mod tests {
 
         // A fresh process starts over, which is what a restart gives us.
         assert!(ReportedUsage::default().claim(&progress()));
+    }
+
+    #[test]
+    fn a_rejected_message_does_not_spend_its_dedupe_key() {
+        let reported = ReportedUsage::default();
+
+        // Same key as the real report, but an event name this handler does
+        // not report.
+        let mut stray = progress();
+        stray["event"] = json!("harnes_session_progress");
+        assert!(claim_usage_event(&reported, stray).is_none());
+
+        // The real report with that key still goes out once.
+        let (name, props) = claim_usage_event(&reported, progress()).expect("reported");
+        assert_eq!(name, PROGRESS_EVENT);
+        assert_eq!(props["turn_index"], 2);
+        assert!(props.get("dedupe_key").is_none());
+        assert!(claim_usage_event(&reported, progress()).is_none());
+
+        // No key: cannot be deduplicated, reports every time.
+        let keyless = json!({ "event": FAILED_EVENT, "outcome": "failed" });
+        assert!(claim_usage_event(&reported, keyless.clone()).is_some());
+        assert!(claim_usage_event(&reported, keyless).is_some());
     }
 }
