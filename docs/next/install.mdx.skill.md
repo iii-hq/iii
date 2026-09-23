@@ -7,58 +7,22 @@
 
 ## Start a project
 
-The recipe below installs the engine, creates a project from our templates, and starts it. Once
-started you can explore the project via https://127.0.0.1:3113.
+The recipe below installs the engine and starts a project. Once started you can explore the project
+via http://127.0.0.1:3113.
 
-Select your llm provider, or select **no llm**.
+Select **llm** to let the installer set up the harness for you, or select **no llm**.
 
 <div className="iii-qs" role="group" aria-label="quickstart recipe">
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-none" defaultChecked />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai-codex" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-deepseek" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-kimi" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openrouter" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-xai" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-zai" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-github-copilot" />
-  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llm" defaultChecked />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-none" />
 
 <div className="iii-qs-head">
   <div className="iii-qs-picker">
+    <label className="iii-qs-pill" htmlFor="qs-llm">
+      llm
+    </label>
     <label className="iii-qs-pill" htmlFor="qs-none">
       no llm
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-openai">
-      openai api
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-openai-codex">
-      openai codex
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-anthropic">
-      anthropic
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-deepseek">
-      deepseek
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-kimi">
-      kimi (moonshot)
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-openrouter">
-      openrouter
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-xai">
-      xai (grok)
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-zai">
-      z.ai
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-github-copilot">
-      github copilot
-    </label>
-    <label className="iii-qs-pill" htmlFor="qs-llamacpp">
-      llama.cpp (local)
     </label>
   </div>
 </div>
@@ -70,197 +34,137 @@ Select your llm provider, or select **no llm**.
         <span>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</span>
       </div>
     <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-slot" data-qs="llm">
+      {/* prettier-ignore */}
+      <div className="iii-qs-comment">{`# You'll be prompted to try out the harness. Press "y" at the prompt.`}</div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
+    </div>
     <div className="iii-qs-slot" data-qs="none">
+      {/* prettier-ignore */}
+      <div className="iii-qs-comment">{`# You'll be prompted to try out the harness. Press "n" at the prompt.`}</div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># Create a project</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>iii project init my-app && cd my-app</span>
       </div>
-      <div className="iii-qs-comment"># No llm. The base template starts only the console.</div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openai">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># provider-openai is enabled by default. Set OPENAI_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="anthropic">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># provider-anthropic is enabled by default. Set ANTHROPIC_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openai-codex">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># No api key. Uses your chatgpt subscription. Sign in with the codex cli so ~/.codex/auth.json exists:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>codex login</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="deepseek">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Set DEEPSEEK_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="kimi">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Set MOONSHOT_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openrouter">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Set OPENROUTER_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="xai">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Set XAI_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="zai">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Set ZAI_API_KEY in .env:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="github-copilot">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
-    </div>
-    <div className="iii-qs-slot" data-qs="llamacpp">
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>{'iii project init my-harness --template harness && cd my-harness'}</span>
-      </div>
-      <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default.</div>
-      <div className="iii-qs-comment">{'# A key is only needed when llama-server runs with --api-key (set LLAMACPP_API_KEY in .env):'}</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>nano .env</span>
-      </div>
-    </div>
-    <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Start the engine and your project</div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># Start your project</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>{'iii compose --up'}</span>
       </div>
-    <div className="iii-qs-slot" data-qs="openai-codex">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-openai-codex</span>
-      </div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      {/* prettier-ignore */}
+      <div className="iii-qs-comment"># You can also check out <a href="./quickstart">iii.dev/docs/quickstart</a> to learn more about iii</div>
     </div>
-    <div className="iii-qs-slot" data-qs="deepseek">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-deepseek</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="kimi">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-kimi</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="openrouter">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-openrouter</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="xai">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-xai</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="zai">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-zai</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="github-copilot">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-github-copilot</span>
-      </div>
-      <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger provider::github-copilot::login::start</span>
-      </div>
-    </div>
-    <div className="iii-qs-slot" data-qs="llamacpp">
-      <div className="iii-qs-comment"># Add the provider to your running project:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger compose::add worker=provider-llamacpp</span>
-      </div>
-    </div>
-    <div className="iii-qs-gap" aria-hidden="true" />
-    <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
   </div>
 </div>
 
-The panel above is one recipe with a provider picker. Plain form: install iii, run `iii project init my-harness --template harness && cd my-harness`. The harness template ships console, the harness worker, and provider-openai and provider-anthropic enabled by default. Put your provider key in `.env` (edit with `nano .env`); for any other provider, set its key in `.env` first, then start the whole stack with `iii compose --up` and add the provider with `iii trigger compose::add worker=provider-<name>`. Open http://127.0.0.1:3113. Without an llm, skip the key and the console still starts.
+The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then prompts you to try the harness. Press `y` and the installer scaffolds and starts the harness for you. Press `n` for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser.
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 
 {/* TODO: re-add a "## 4. Add Agent Skills (Optional)" section with `npx skills add iii-hq/iii/skills` once the iii skills worker ships (owned by Sergio). */}
+
+## Installer options
+
+The installer takes its options after `sh -s --`. To see them all:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --help
+```
+
+### Run the setup against an installed engine
+
+`--skip-bin-download` skips the download and the install, and runs the setup offer against the iii
+that is on the machine already. Use it to repeat the setup, or when you build the engine yourself:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --skip-bin-download --start-with database
+```
+
+### Install a pre-release
+
+Use `--next` for the latest `next` pre-release, or `--rc` for the latest release candidate:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
+```
+
+To install one exact version, give the version as the last argument:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
+```
+
+### Install without questions
+
+The installer asks nothing when no terminal is attached. A `docker build` step, a CI job, and a
+plain `curl ... | sh` in a script are already non-interactive, and they do the install and then
+print the setup command.
+
+`--non-interactive` makes that behavior explicit, and keeps it when a terminal is attached. The
+effect is the same as an answer of `n` at the prompt: the installer does the install, does not run
+the setup, and prints the setup command. Use it when a terminal is attached but you want the install
+only, for example `docker run -it`, `docker compose run`, or a wrapper that gives the command a
+terminal:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
+```
+
+A non-empty `III_NON_INTERACTIVE` does the same:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 sh
+```
+
+### Start the harness with your workers
+
+`--start-with` takes a comma-separated worker list. The setup offer at the end of the install
+scaffolds a harness project named after the first worker in the list, starts it, and adds every
+worker in the list with `compose::add`:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --start-with database,storage
+```
+
+This example creates `iii-database`, starts it, then adds the `database` and `storage` workers. Each
+added worker reads the project `.env` file. Put `onboarding` in the list to also get the guided tour
+that the plain install offers.
+
+### Ask for more environment variables
+
+`--need-envs` takes a comma-separated list of variable names. The setup asks for each one after the
+inference provider key, writes the answers to the project `.env` file, and puts them in the
+environment of the `iii compose --up` process. Use it for a worker that needs its own key:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --start-with worker1 --need-envs WORKER_API_KEY
+```
+
+`--need-envs` is only valid together with `--start-with`.
+
+<Warning>
+  Every worker in the `--start-with` list receives the full project `.env` file. Use these flags
+  with workers you trust.
+</Warning>
+
+### Control the install with environment variables
+
+| Variable              | Effect                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `VERSION`             | Engine version to install, for example `0.23.1`.                                    |
+| `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
+| `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
+| `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
+| `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
+| `GITHUB_TOKEN`        | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
+| `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                           |
 
 ## Next Steps
 

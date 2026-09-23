@@ -185,13 +185,13 @@ impl SpanExporter for EngineSpanExporter {
         }
     }
 
-    fn shutdown(&mut self) -> OTelSdkResult {
+    fn shutdown(&self) -> OTelSdkResult {
         Ok(())
     }
 
     /// No-op: the synchronous SpanExporter trait cannot perform async I/O.
     /// Use `flush_otel()` for a full async flush of the connection layer.
-    fn force_flush(&mut self) -> OTelSdkResult {
+    fn force_flush(&self) -> OTelSdkResult {
         Ok(())
     }
 

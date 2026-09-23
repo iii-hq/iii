@@ -50,6 +50,7 @@ iii compose <COMMAND>
 | `--engine <URL>` | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
 | `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
+| `--frozen` | Require worker-compose.lock to match the compose file and use only its exact package resolutions. Missing cache artifacts are downloaded from the URLs in the lock |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
 
 #### `iii compose build`
@@ -63,6 +64,7 @@ iii compose build [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
+| `--frozen` | Require an existing, current lock and do not resolve package selectors |
 
 #### `iii compose logs`
 
@@ -130,6 +132,9 @@ iii project init [OPTIONS] [NAME]
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
+| `--learn-iii` | Start the iii harness and take a quick look at what iii can do: scaffold the "harness" template into NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then start `iii compose --up` inside it. Cannot be combined with any other scaffolding option |
+| `--start-with <WORKERS>` | Start the harness with these workers already declared: a comma-separated list. The project directory is named after the first worker (`--start-with worker1` scaffolds `./iii-worker1`), and every worker in the list is added through `compose::add` once the project is up |
+| `--need-envs <VARS>` | Environment variables to ask for on top of the inference provider key, comma-separated. A worker outside the provider list needs its own key this way: `--start-with worker1 --need-envs WORKER_API_KEY`. Each answer is written to the new project's `.env` |
 
 ### `iii trigger`
 
@@ -149,8 +154,9 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 | Option | Description |
 | ------ | ----------- |
 | `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
-| `--address <ADDRESS>` | Engine host address [default: localhost] |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+| `--engine <URL>` | Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and the working directory's compose file. The local default is used when none of them supplies a URL. Encrypted (`wss://`) connections are not supported |
+| `--address <ADDRESS>` | DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else `localhost` |
+| `--port <PORT>` | DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else 49134 |
 | `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
 | `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
 

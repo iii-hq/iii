@@ -5,7 +5,7 @@
  * via a shared WebSocket connection using OTLP JSON format.
  */
 
-import { Resource } from '@opentelemetry/resources'
+import { resourceFromAttributes } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 import { randomUUID } from 'node:crypto'
 import {
@@ -115,7 +115,7 @@ export function initOtel(config: OtelConfig = {}): void {
   if (serviceNamespace) {
     resourceAttributes[ATTR_SERVICE_NAMESPACE] = serviceNamespace
   }
-  const resource = new Resource(resourceAttributes)
+  const resource = resourceFromAttributes(resourceAttributes)
 
   // Create shared WebSocket connection.
   // OTEL always connects to the engine's dedicated `/otel` endpoint so
@@ -212,13 +212,16 @@ export function initOtel(config: OtelConfig = {}): void {
   const logsMaxExportBatchSize =
     config.logsBatchSize ?? parseIntegerEnv(process.env.OTEL_LOGS_BATCH_SIZE, 1) ?? DEFAULT_OTEL_CONFIG.logsBatchSize
 
-  loggerProvider = new LoggerProvider({ resource })
-  loggerProvider.addLogRecordProcessor(
-    new BatchLogRecordProcessor(logExporter, {
-      scheduledDelayMillis: logsScheduledDelayMillis,
-      maxExportBatchSize: logsMaxExportBatchSize,
-    }),
-  )
+  loggerProvider = new LoggerProvider({
+    resource,
+    processors: [
+      new BatchLogRecordProcessor({
+        exporter: logExporter,
+        scheduledDelayMillis: logsScheduledDelayMillis,
+        maxExportBatchSize: logsMaxExportBatchSize,
+      }),
+    ],
+  })
   logger = loggerProvider.getLogger(serviceName)
 
   console.debug(`[OTel] Logs initialized: delay=${logsScheduledDelayMillis}ms, batch=${logsMaxExportBatchSize}`)

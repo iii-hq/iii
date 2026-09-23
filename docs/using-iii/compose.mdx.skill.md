@@ -181,8 +181,89 @@ ready stay as they are.
 
 #### compose::up failures
 
-A project that fails to start due to a project-related issue ends the command with
-`PROJECT_DID_NOT_START`. Partial starts are rolled back in reverse dependency order.
+A worker is not required by default. If it fails to start, its failure is reported against that
+worker, nothing is rolled back, and the operation still returns `ok`. Workers that name it in
+`start_after` start anyway, because `start_after` is a start order and not a claim that the dependent
+cannot run without it. The response lists every worker that failed this way in
+`not_required_failures`. A response with `status: ok` has no top-level `error`; that field is present
+only when the operation returns `status: failed`.
+
+Set `required: true` when a worker must fail the operation:
+
+```yaml
+containers:
+  database:
+    worker: path://./workers/database
+    required: true
+```
+
+A required failure ends the command with `PROJECT_DID_NOT_START`. Partial starts are rolled back in
+reverse dependency order.
+
+Use `required_default` to change the fallback for all containers in the file. An explicit container
+value wins over the file value:
+
+```yaml
+required_default: true
+
+containers:
+  queue:
+    worker: package://queue
+    version: "0.21.9"
+    required: false
+  state:
+    worker: package://state
+    version: "0.22.5-rc.1"
+```
+
+In this example, `state` inherits `required_default: true`, while `queue` remains false. If both
+fields are absent, the effective value is false.
+
+#### Retrying a worker that fails
+
+By default, a failed first start settles immediately. A worker that exits after it was ready takes
+its dependents down with it and stays down. To retry either case, declare a restart policy:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart: on-failure
+```
+
+`no` is the default. `on-failure` retries a failed start or a worker that exits with a non-zero
+status. `always` also restarts it when it exits successfully after it was ready.
+
+The short form uses five attempts, a 500ms base delay, a 30-second maximum delay, and a 60-second
+stability window. Use the object form to change these values for one worker:
+
+```yaml
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: 500ms
+      max_delay: 30s
+      max_attempts: 5
+      window: 60s
+```
+
+| Field | Description | Default |
+| ----- | ----------- | ------- |
+| `condition` | Required in the object form. Accepts `no`, `on-failure`, or `always`. | `no` in the short form |
+| `delay` | Base delay for exponential backoff after a replacement fails. | `500ms` |
+| `max_delay` | Maximum delay between replacement attempts. | `30s` |
+| `max_attempts` | Maximum replacement attempts after the original process fails. | `5` |
+| `window` | Time a ready worker must stay active before its run-time attempt budget resets. | `60s` |
+
+The first replacement is immediate. If it fails, later attempts use exponential backoff from
+`delay` up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a
+run-time exit, only the named worker bounces: workers that name it in `start_after` keep running and
+see their connection drop and reconnect. `compose::status` reports the worker as `restarting` while
+it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
+startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
+`last_error` says the supervisor gave up.
 
 ### Stopping a project
 
@@ -368,18 +449,20 @@ the next time the worker is restarted.
 
 ### Checking status
 
-`compose::status` reports each declared worker with its `state`, its `pid`, an `owned` flag, its
-rotating `log_path`, and `last_error` when there is one. `owned` is `false` for a worker this daemon
-has knowledge of but does not manage (ie. was not started by the compose daemon).
+`compose::status` reports each declared worker with its `state`, the active process `pid` when one
+exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+`false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
+compose daemon).
 
 #### Worker states
 
-| State      | Meaning                                                    |
-| ---------- | ---------------------------------------------------------- |
-| `starting` | Spawned. The engine has not registered it yet.             |
-| `ready`    | Registered in the engine under `(namespace, container)`.   |
-| `failed`   | Exited without being asked to, or one of its hooks failed. |
-| `stopped`  | Stopped by this daemon.                                    |
+| State        | Meaning                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `starting`   | Spawned. The engine has not registered it yet.                                                |
+| `ready`      | Registered in the engine under `(namespace, container)`.                                      |
+| `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
+| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
+| `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
 
 ### Viewing logs
 
@@ -449,17 +532,11 @@ iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
-## Namespaces
+## Configure a namespace
 
-Namespaces are used to allow advanced architectures that require more than one running copy of a
-given worker, multi-tenancy, some multi-agent workflows, and various isolation schemes between
-different parts of a iii application.
-
-Namespaces are arbitrary and their usage depends largely on the given usecase. They do not prescribe
-a specific way of constructing your iii application.
-
-The two primary points where Namespaces are used are during Worker registration via Compose and
-during Trigger and Function interactions. All have ways of declaring which namespace to use.
+Set the namespace in `worker-compose.yaml` or pass `--namespace` when starting Compose. Use the same
+namespace in Trigger and Function calls that target the project's workers. For the daemon namespace,
+project namespace, and routing model, see [Compose architecture](../understanding-iii/compose).
 
 ### Precedence
 
@@ -469,7 +546,7 @@ during Trigger and Function interactions. All have ways of declaring which names
 | `namespace:` in the file | The daemon namespace when `--namespace` is absent, and the project namespace. |
 | Neither                  | `default`.                                                                    |
 
-`namespace` is commonly defined in `worker-compose.yaml` but can be overriden on compose daemon
+`namespace` is commonly defined in `worker-compose.yaml` but can be overridden on compose daemon
 startup with the `--namespace` flag.
 
 Likewise, compose's own `compose::*` functions will exist within the same declared namespace.
@@ -533,13 +610,14 @@ containers:
 
 ### Top-level fields
 
-| Field             | Type   | Default | Description                                                                                   |
-| ----------------- | ------ | ------- | --------------------------------------------------------------------------------------------- |
-| `namespace`       | string | absent  | Namespace the project's workers register in. A project that declares none lands in `default`. |
-| `startup_timeout` | string | `60s`   | Readiness budget for every worker. A worker may override it.                                  |
-| `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                            |
-| `engine`          | map    | absent  | Present when this Compose invocation owns and configures the engine.                          |
-| `containers`      | map    | empty   | Project workers. May be empty only when `engine:` is present.                                 |
+| Field              | Type    | Default | Description                                                                                         |
+| ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `namespace`        | string  | absent  | Namespace the project's workers register in. A project that declares none lands in `default`.       |
+| `startup_timeout`  | string  | `60s`   | Readiness budget for every worker. A worker may override it.                                        |
+| `stop_timeout`     | string  | `10s`   | Grace between the polite stop and the forced kill.                                                  |
+| `required_default` | boolean | `false` | Fallback for workers that omit `required`. An explicit worker value wins.                            |
+| `engine`           | map     | absent  | Present when this Compose invocation owns and configures the engine.                                |
+| `containers`       | map     | empty   | Project workers. May be empty only when `engine:` is present.                                       |
 
 ### Engine fields
 
@@ -551,12 +629,24 @@ containers:
 
 Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
 and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
-`iii-worker-manager#rbac`. The engine starts `iii-engine-functions`, `iii-telemetry`, and
-`iii-observability` automatically. Do not declare these workers in the compose file.
+`iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
+usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
+these workers.
 
 <Note>
   Changes to these worker configurations take effect only after the engine restarts.
 </Note>
+
+#### Which engine Compose uses
+
+Compose takes the engine address from the first of these that supplies one: the `--engine` flag,
+the `III_URL` environment variable, the `engine:` section of the compose file, then
+`ws://127.0.0.1:49134`.
+
+An address from `--engine` or `III_URL` names an engine that already runs, so Compose connects to
+it and starts no engine of its own, even with `--up`. Only the compose file can give Compose an
+engine to own, and only `--up` takes it: an `engine:` section carries the engine's whole
+configuration, not only an address.
 
 ### Worker fields
 
@@ -573,6 +663,8 @@ Each key under `containers` is the name the worker registers under.
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
 | `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
+| `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
+| `restart`         | string         | `no`                 | What happens after a failed start or a run-time exit. `no`, `on-failure`, or `always`.                     |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with
@@ -631,18 +723,77 @@ Lowest to highest: the configuration a package ships, the entry in the configura
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
 merged result is written to an owner-only file and its path is passed to the
-worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
-the error is `CONFIG_FETCH_FAILED`.
+worker as `III_CONFIG`. This is a private execution snapshot, separate from the persistent
+`config/<id>.yaml` entry. Compose never writes `config_override` (or the merged execution value)
+back to the configuration service. Workers must use `III_CONFIG` for the execution override and
+must not register that snapshot as `initial_value`; service-only consumers see the stored base.
+Removing an override restores the stored setting on the next start. Configuration read failures
+stop startup with `CONFIG_FETCH_FAILED`, rather than silently falling back to defaults.
+
+### Readable configuration names and migration
+
+Without an explicit `config_name`, the entry id is exactly `<namespace>-<container-key>`.
+For example, `default` plus `harness` uses `default-harness` and the filesystem adapter stores
+`config/default-harness.yaml`. The id must match `[a-z0-9_-]{1,64}`. Compose rejects an invalid or
+long generated name with `INVALID_CONFIG_NAME` and asks for an explicit `config_name`; it never
+sanitizes, truncates, or adds a hash. Explicit names remain unchanged and are never auto-migrated.
+
+Before reading configuration or starting the child, Compose asks the configuration authority to
+migrate the exact hashed id produced by the previous algorithm for that namespace and key.
+`default-harness-a14f3656efb8d5ea` therefore becomes `default-harness`. Stored raw values (including
+`${VAR}`, `false`, `0`, and `null`), name, description, metadata, and available schema are preserved.
+The filesystem adapter updates both filename and internal id, and the authority updates its caches
+and notifies subscribers. It re-reads the source so manual edits awaiting the watcher are retained.
+
+Migration gives the legacy source priority over an existing destination.
+After that, the `default` namespace adopts the exact bare container key (`state` becomes
+`default-state`), even when the destination already exists. The bare source replaces the
+whole destination entry, preserving raw values and metadata rather than merging defaults.
+Another container's explicit ownership blocks this adoption; other namespaces and explicit
+`config_name` values never adopt bare entries.
+
+After publishing the destination, the fs adapter archives the original source as
+`<source>.yaml.bak` (for example, `state.yaml.bak`). The previous destination is replaced,
+not backed up. Files ending in `.yaml.bak`, `.bak.yaml`, or `.bkup.yaml` are ignored during
+loading, watching, and legacy directory migration. Repeated starts with no source perform
+no writes. An existing identical backup permits recovery after interrupted cleanup; a
+conflicting backup is never overwritten and stops migration with an error.
+
+Migration commits the complete destination before archiving the source. I/O failures stop startup; failure after publication can leave two recoverable copies.
+The filesystem adapter requires same-directory hard-link support and may normalize YAML formatting
+or remove comments on the one migration rewrite; values and unknown document fields are retained.
+Stop source consumers before migration: Compose checks that the child is not already registered,
+and its restart path stops the old child first. Do not run two configuration authorities against
+the same directory or edit the source concurrently with migration.
+
+The bridge delegates migration to the remote authority. Upgrade that authority together with
+Compose: an absent `configuration::migrate` or unsupported adapter fails with
+`CONFIG_MIGRATION_FAILED`, never a read/copy/delete fallback that could reset stored values.
+
+Within one project, a generated name colliding with another container's explicit name is rejected
+before startup. Sharing is allowed only when both names are explicit. Across namespaces, `a-b` / `c`
+and `a` / `b-c` both produce `a-b-c`; choose unambiguous namespaces or distinct explicit `config_name`
+values. Readable names do not claim cross-project ownership.
 
 ## The worker environment
 
-A worker's environment is defined by the following sources:
+A worker's environment combines the following sources, from lowest to highest precedence:
 
-1. A host baseline. On Unix: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `TZ`,
-   `LANG`, `LC_ALL`. Windows adds the variables the platform needs, such as `SystemRoot`, `COMSPEC`,
-   and `PATHEXT`.
-2. The worker's `env_file` entries, then its `environment` map.
-3. The reserved variables, which the daemon owns.
+1. The machine environment visible to the Compose daemon. Variables are inherited even when
+   neither `env_file` nor `environment` is declared. Non-Unicode names and values are skipped.
+2. The worker's `env_file` entries, in declaration order. Later files override earlier files.
+3. The worker's `environment` map. Nonempty values override env files; an empty string preserves
+   an existing env-file value, or supplies an empty value when no env file defines the key.
+4. The reserved variables, which the daemon owns.
+
+Export machine variables before starting the daemon. Changing another shell's environment does
+not update an already-running daemon. Workers and hooks inherit the daemon's Unicode machine
+variables, including credentials, subject to the daemon-owned values above and the project identity
+exception below; only start workers you trust with that environment.
+
+`III_HOST_USER_ID` is not inherited from the machine: it comes from the current project's
+`.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
+`environment` value can still override it, including an empty value.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |
@@ -653,7 +804,7 @@ A worker's environment is defined by the following sources:
 | `III_COMPOSE_DIR`       | Canonical directory that contains the owning compose file.                    |
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
-| `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
+| `III_CONFIG_NAME`       | The explicit configuration id or `<namespace>-<container-key>`, always present.        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
@@ -727,10 +878,12 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
 | A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
-After a worker is ready, the daemon checks it every 250 ms. A worker that exits takes its transitive
-dependents down with it and is recorded as `failed`. Automatic restarts are not performed. When the
-engine connection drops and comes back, every running worker gets its `startup_timeout` to register
-again.
+After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
+happens after it exits. An eligible retry keeps its dependents running and reports `restarting`
+between attempts. A successful exit without an eligible retry is recorded as `stopped`. An
+unsuccessful exit without an eligible retry, or one that exhausts its retries, is recorded as
+`failed`. When no retry remains, its transitive dependents stop. When the engine connection drops
+and comes back, every running worker gets its `startup_timeout` to register again.
 
 Dependency shutdown is dependent upon when a shutdown happens:
 
@@ -795,6 +948,11 @@ Compose can output the following error codes:
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED` |
 | Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                   |
 | Command line        | `FILE_REQUIRES_UP`, `BUILD_CONFLICTS_WITH_SERVE_OPTIONS`                                                                                                                                                                                                                                                                                                        |
+
+These are literal diagnostic identifiers emitted by Compose, not worker categories.
+`ENGINE_WORKER_IS_BUILTIN` reports that a worker declared under `containers` is already supplied
+by the engine. Its name is retained for compatibility; it does not define a separate worker type.
+All workers follow the same Function/Trigger/Worker model.
 
 ## Related
 

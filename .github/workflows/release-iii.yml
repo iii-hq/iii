@@ -174,7 +174,7 @@ jobs:
           key: iii-init-${{ matrix.target }}
 
       - name: Build iii-init
-        run: cargo build -p iii-init --target ${{ matrix.target }} --release
+        run: cargo build --locked -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
         uses: actions/upload-artifact@v4

@@ -207,12 +207,8 @@ impl EngineClient {
         };
 
         let value = response.get("value").cloned().unwrap_or(response);
-        // A stored `null` is an entry with nothing in it, which is what an
-        // absent one is. Passing it on as a value makes a container start
-        // against a configuration of `null` instead of its own defaults.
-        if value.is_null() {
-            return Ok(None);
-        }
+        // Absence is NOT_FOUND; explicit null is a stored value, including
+        // during migration. Never replace it with package defaults implicitly.
         serde_yaml::to_value(value)
             .map(Some)
             .map_err(|err| ComposeError::ConfigFetchFailed {
@@ -221,84 +217,57 @@ impl EngineClient {
             })
     }
 
-    /// Writes the resolved configuration into the configuration worker, under
-    /// the entry the container named.
-    ///
-    /// This is what makes a worker configurable by compose without the worker
-    /// knowing compose exists. A worker reads its configuration from the
-    /// configuration worker, and re-registering its own schema without an
-    /// `initial_value` reuses whatever is stored — so a value written here,
-    /// before the child starts, is the value it boots on. Nothing in the fleet
-    /// has to change.
-    ///
-    /// The existing schema, name and description are carried over rather than
-    /// replaced. A worker that has run before keeps its schema, which means the
-    /// value written here is validated against it; and the console keeps the
-    /// name the worker gave the entry instead of a placeholder from compose.
-    /// On a first boot there is nothing to carry, so the write is permissive
-    /// and the worker's own registration fills the metadata in moments later.
-    pub async fn publish_config(&self, name: &str, value: &serde_yaml::Value) -> Result<()> {
-        let existing = self.config_metadata(name).await;
-        let value = serde_json::to_value(value).map_err(|err| ComposeError::ConfigFetchFailed {
-            name: name.to_string(),
-            message: err.to_string(),
+    /// Ask the configuration authority to migrate the exact previous default.
+    /// Returns true only when both source and destination are missing.
+    /// A missing function is an upgrade error, never permission to reset defaults.
+    pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
+        let capabilities = self.client.trigger(TriggerRequest {
+            function_id: "configuration::migration-capabilities".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(CALL_TIMEOUT_MS),
+        }.namespace(DEFAULT_NAMESPACE)).await.map_err(|source| ComposeError::ConfigMigrationFailed {
+            from_id: from_id.into(), to_id: to_id.into(),
+            message: format!("upgrade the configuration authority: migration capabilities unavailable: {source}"),
         })?;
-
-        let existing = existing.unwrap_or_default();
-        // An entry can exist with no schema at all — one seeded from a config
-        // file, or registered before its worker declared one. `null` is not a
-        // JSON Schema, and carrying it through would be rejected, so absent and
-        // null both mean the same permissive thing here. The worker replaces it
-        // with its own on its next boot.
-        let schema = match existing.get("schema") {
-            Some(schema) if !schema.is_null() => schema.clone(),
-            _ => json!({}),
-        };
-
-        let payload = json!({
-            "id": name,
-            "name": existing.get("name").cloned().unwrap_or_else(|| json!(name)),
-            "description": existing
-                .get("description")
-                .cloned()
-                .unwrap_or_else(|| json!("resolved by compose")),
-            "schema": schema,
-            "initial_value": value,
-        });
-
-        self.client
+        if capabilities
+            .get("source_priority_archive_revision")
+            .and_then(Value::as_u64)
+            != Some(1)
+        {
+            return Err(ComposeError::ConfigMigrationFailed {
+                from_id: from_id.into(), to_id: to_id.into(),
+                message: "upgrade the configuration authority: source-priority archival contract is unknown".into(),
+            });
+        }
+        let response = self
+            .client
             .trigger(
                 TriggerRequest {
-                    function_id: "configuration::register".to_string(),
-                    payload,
+                    function_id: "configuration::migrate".to_string(),
+                    payload: json!({ "from_id": from_id, "to_id": to_id }),
                     action: None,
                     timeout_ms: Some(CALL_TIMEOUT_MS),
                 }
                 .namespace(DEFAULT_NAMESPACE),
             )
             .await
-            .map(|_| ())
-            .map_err(|source| ComposeError::ConfigPublishFailed {
-                name: name.to_string(),
+            .map_err(|source| ComposeError::ConfigMigrationFailed {
+                from_id: from_id.to_string(),
+                to_id: to_id.to_string(),
                 message: source.to_string(),
-            })
-    }
-
-    /// The schema and metadata already registered for `name`, if any.
-    async fn config_metadata(&self, name: &str) -> Option<serde_json::Map<String, Value>> {
-        self.client
-            .trigger(
-                TriggerRequest {
-                    function_id: "configuration::schema".to_string(),
-                    payload: json!({ "id": name }),
-                    action: None,
-                    timeout_ms: Some(CALL_TIMEOUT_MS),
-                }
-                .namespace(DEFAULT_NAMESPACE),
-            )
-            .await
-            .ok()
-            .and_then(|response| response.as_object().cloned())
+            })?;
+        if !matches!(
+            response.get("action").and_then(Value::as_str),
+            Some("migrated" | "preserved" | "missing")
+        ) {
+            return Err(ComposeError::ConfigMigrationFailed {
+                from_id: from_id.to_string(),
+                to_id: to_id.to_string(),
+                message: "invalid migration response".into(),
+            });
+        }
+        Ok(response.get("action").and_then(Value::as_str) == Some("missing"))
     }
 
     /// What the engine already showed for this container, captured *before*

@@ -221,6 +221,7 @@ mod tests {
 
     #[test]
     fn canonical_path_is_slug_based_and_stable() {
+        let _g = crate::cli::test_support::lock_home();
         let a = canonical_path("docker.io/library/python:3.13");
         let b = canonical_path("docker.io/library/python:3.13");
         assert_eq!(a, b);
@@ -237,6 +238,7 @@ mod tests {
 
     #[test]
     fn resolve_cached_returns_none_on_total_miss() {
+        let _g = crate::cli::test_support::lock_home();
         // Use a slug nothing on disk will have. Canonical_path respects
         // $HOME, so we don't need to redirect that — just pick an image
         // reference that will hash to a unique slug per test run.
@@ -287,6 +289,7 @@ mod tests {
 
     #[test]
     fn the_lock_file_sits_beside_the_rootfs_it_guards() {
+        let _g = crate::cli::test_support::lock_home();
         let dest = canonical_path("docker.io/iiidev/node:latest");
         let lock = lock_path_for_image("docker.io/iiidev/node:latest");
         // Beside, never inside: the pull begins by deleting `dest`.

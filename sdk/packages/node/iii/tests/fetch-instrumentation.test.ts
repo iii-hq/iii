@@ -11,12 +11,10 @@ import type { Instrumentation } from '@opentelemetry/instrumentation'
 
 // Mock WebSocket to prevent real connections
 vi.mock('ws', () => {
-  const MockWebSocket = vi.fn().mockImplementation(() => ({
-    on: vi.fn(),
-    close: vi.fn(),
-    send: vi.fn(),
-    readyState: 0,
-  }))
+  // vitest 4 invokes mock implementations with `new`, so this must be constructable.
+  const MockWebSocket = vi.fn(function () {
+    return { on: vi.fn(), close: vi.fn(), send: vi.fn(), readyState: 0 }
+  })
   return { WebSocket: MockWebSocket, default: { WebSocket: MockWebSocket } }
 })
 
@@ -43,7 +41,6 @@ vi.mock('@opentelemetry/sdk-metrics', () => ({
 vi.mock('@opentelemetry/sdk-logs', () => ({
   LoggerProvider: vi.fn().mockImplementation(() => ({
     getLogger: vi.fn().mockReturnValue({ emit: vi.fn() }),
-    addLogRecordProcessor: vi.fn(),
     forceFlush: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
   })),

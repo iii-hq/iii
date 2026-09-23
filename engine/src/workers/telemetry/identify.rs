@@ -33,7 +33,7 @@ use super::{TelemetryContext, harness::ReportedUsage, send_product_event};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    workers::telemetry::amplitude::{AmplitudeClient, PostHogClient},
+    workers::telemetry::posthog::PostHogClient,
 };
 
 /// Topic a worker publishes a captured address on.
@@ -90,7 +90,6 @@ pub fn identify_properties(payload: Value) -> Option<Value> {
 pub(super) fn register_handler(
     engine: &Arc<Engine>,
     ctx: TelemetryContext,
-    client: Arc<AmplitudeClient>,
     posthog_client: Option<Arc<PostHogClient>>,
 ) {
     let reported = Arc::new(ReportedUsage::default());
@@ -104,7 +103,6 @@ pub(super) fn register_handler(
         },
         Handler::new(move |input: Value| {
             let ctx = ctx.clone();
-            let client = Arc::clone(&client);
             let posthog_client = posthog_client.clone();
             let reported = Arc::clone(&reported);
             async move {
@@ -117,8 +115,8 @@ pub(super) fn register_handler(
                     let key = json!({ "dedupe_key": properties["email"].clone() });
                     if reported.claim(&key) {
                         let event =
-                            ctx.build_event(super::amplitude::IDENTIFY_EVENT, properties, None);
-                        send_product_event(&client, posthog_client.as_deref(), event).await;
+                            ctx.build_event(super::posthog::IDENTIFY_EVENT, properties, None);
+                        send_product_event(posthog_client.as_deref(), event).await;
                     }
                 }
                 FunctionResult::Success(Some(json!({})))

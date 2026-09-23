@@ -1644,10 +1644,9 @@ workers:
     // semantics change, update both sides.
     // ──────────────────────────────────────────────────────────────────
 
-    /// Serialize env-var manipulating tests. `std::env::set_var` mutates
-    /// global process state and is unsafe to run in parallel with other
-    /// tests that read the same vars.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Env-var, HOME and cwd mutations are serialized by the crate-wide
+    // TEST_HOME_LOCK: every test below takes `lock_home()` for its whole body.
+    use crate::cli::test_support::lock_home;
 
     /// Scoped env-var setter that restores the prior value on drop so a
     /// failing test can't leak state into siblings.
@@ -1658,7 +1657,7 @@ workers:
     impl EnvGuard {
         fn set(key: &str, value: &str) -> Self {
             let prior = std::env::var(key).ok();
-            // SAFETY: tests holding ENV_LOCK serialize all env mutation.
+            // SAFETY: tests holding TEST_HOME_LOCK (lock_home) serialize all env mutation.
             unsafe { std::env::set_var(key, value) };
             Self {
                 key: key.to_string(),
@@ -1685,7 +1684,7 @@ workers:
 
     #[test]
     fn expand_env_vars_substitutes_known_var() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::set("TEST_EXPAND_FOO", "bar");
         let out = expand_env_vars("k: ${TEST_EXPAND_FOO}\n").unwrap();
         assert_eq!(out, "k: bar\n");
@@ -1693,7 +1692,7 @@ workers:
 
     #[test]
     fn expand_env_vars_uses_default_when_missing() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::unset("TEST_EXPAND_UNSET");
         let out = expand_env_vars("k: ${TEST_EXPAND_UNSET:fallback}\n").unwrap();
         assert_eq!(out, "k: fallback\n");
@@ -1701,7 +1700,7 @@ workers:
 
     #[test]
     fn expand_env_vars_default_ignored_when_var_present() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::set("TEST_EXPAND_HAS", "real");
         let out = expand_env_vars("k: ${TEST_EXPAND_HAS:fallback}\n").unwrap();
         assert_eq!(out, "k: real\n");
@@ -1715,7 +1714,7 @@ workers:
 
     #[test]
     fn expand_env_vars_errors_on_missing_var_with_no_default() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::unset("TEST_EXPAND_REQUIRED");
         let err = expand_env_vars("k: ${TEST_EXPAND_REQUIRED}\n").unwrap_err();
         assert!(err.contains("TEST_EXPAND_REQUIRED"), "got: {err}");
@@ -1724,7 +1723,7 @@ workers:
 
     #[test]
     fn expand_env_vars_lists_all_missing_vars() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g1 = EnvGuard::unset("TEST_EXPAND_MISSING_A");
         let _g2 = EnvGuard::unset("TEST_EXPAND_MISSING_B");
         let err = expand_env_vars("a: ${TEST_EXPAND_MISSING_A}\nb: ${TEST_EXPAND_MISSING_B}\n")
@@ -1735,7 +1734,7 @@ workers:
 
     #[test]
     fn expand_env_vars_handles_multiple_same_var() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::set("TEST_EXPAND_REPEAT", "x");
         let out = expand_env_vars("a: ${TEST_EXPAND_REPEAT}\nb: ${TEST_EXPAND_REPEAT}\n").unwrap();
         assert_eq!(out, "a: x\nb: x\n");
@@ -1743,7 +1742,7 @@ workers:
 
     #[test]
     fn expand_env_vars_empty_default_allowed() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::unset("TEST_EXPAND_EMPTY_DEF");
         let out = expand_env_vars("k: ${TEST_EXPAND_EMPTY_DEF:}\n").unwrap();
         assert_eq!(out, "k: \n");
@@ -1754,7 +1753,7 @@ workers:
 
     #[test]
     fn expand_env_vars_default_with_special_chars() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::unset("TEST_EXPAND_SPECIAL");
         let out = expand_env_vars("k: ${TEST_EXPAND_SPECIAL:hello world}\n").unwrap();
         assert_eq!(out, "k: hello world\n");
@@ -1762,7 +1761,7 @@ workers:
 
     #[test]
     fn expand_env_vars_adjacent_variables() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g1 = EnvGuard::set("TEST_EXPAND_SCHEME", "https");
         let _g2 = EnvGuard::set("TEST_EXPAND_HOST", "example.com");
         let _g3 = EnvGuard::set("TEST_EXPAND_PORT", "443");
@@ -1775,7 +1774,7 @@ workers:
 
     #[test]
     fn expand_env_vars_var_with_underscore_and_numbers() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::set("TEST_EXPAND_MY_VAR_123", "ok");
         let out = expand_env_vars("k: ${TEST_EXPAND_MY_VAR_123}\n").unwrap();
         assert_eq!(out, "k: ok\n");
@@ -1783,7 +1782,7 @@ workers:
 
     #[test]
     fn expand_env_vars_surrounding_text_preserved() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_home();
         let _g = EnvGuard::set("TEST_EXPAND_MIDDLE", "VAL");
         let out = expand_env_vars("k: prefix-${TEST_EXPAND_MIDDLE}-suffix\n").unwrap();
         assert_eq!(out, "k: prefix-VAL-suffix\n");
@@ -1795,10 +1794,7 @@ workers:
     // path "config.yaml".
     // ──────────────────────────────────────────────────────────────────
 
-    /// Process-wide guard for tests that touch `config.yaml` in cwd.
-    /// `set_current_dir` is global, so these can't overlap with other
-    /// tests in this crate that read/write `config.yaml`.
-    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // cwd changes are serialized by the same `lock_home()` the callers hold.
 
     fn with_temp_config<R>(yaml: &str, f: impl FnOnce() -> R) -> R {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1813,15 +1809,14 @@ workers:
     // ──────────────────────────────────────────────────────────────────
     // III_CONFIG_PATH — the engine exports it to spawned processes so this
     // module targets the engine's actual config file, not ./config.yaml.
-    // These tests hold BOTH the crate-wide TEST_HOME_LOCK (other modules'
-    // config-reading tests serialize on it) and this module's ENV_LOCK,
+    // These tests hold the crate-wide TEST_HOME_LOCK (`lock_home()`), which
+    // serializes every test in this crate that touches env vars, HOME or cwd,
     // because the env override redirects every reader in the process.
     // ──────────────────────────────────────────────────────────────────
 
     #[test]
     fn config_path_defaults_to_config_yaml() {
         let _home = crate::cli::test_support::lock_home();
-        let _env_lock = ENV_LOCK.lock().unwrap();
         let _g = EnvGuard::unset("III_CONFIG_PATH");
         assert_eq!(config_path(), std::path::PathBuf::from("config.yaml"));
         assert_eq!(config_display_name(), "config.yaml");
@@ -1830,7 +1825,6 @@ workers:
     #[test]
     fn config_path_honors_env_override() {
         let _home = crate::cli::test_support::lock_home();
-        let _env_lock = ENV_LOCK.lock().unwrap();
         let _g = EnvGuard::set("III_CONFIG_PATH", "/srv/proj/config.yml");
         assert_eq!(
             config_path(),
@@ -1842,16 +1836,13 @@ workers:
     #[test]
     fn config_path_ignores_empty_env_override() {
         let _home = crate::cli::test_support::lock_home();
-        let _env_lock = ENV_LOCK.lock().unwrap();
         let _g = EnvGuard::set("III_CONFIG_PATH", "");
         assert_eq!(config_path(), std::path::PathBuf::from("config.yaml"));
     }
 
     #[test]
     fn worker_ops_follow_env_override_to_a_custom_file_name() {
-        let _cwd = CWD_LOCK.lock().unwrap();
         let _home = crate::cli::test_support::lock_home();
-        let _env_lock = ENV_LOCK.lock().unwrap();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let custom = dir.path().join("config.yml");
@@ -1888,8 +1879,7 @@ workers:
 
     #[test]
     fn get_worker_config_as_env_expands_known_var() {
-        let _cwd = CWD_LOCK.lock().unwrap();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_home();
         let _g = EnvGuard::set("TEST_WORKER_KEY", "sk-real-value");
         let yaml =
             "workers:\n  - name: my-worker\n    config:\n      api_key: ${TEST_WORKER_KEY}\n";
@@ -1902,8 +1892,7 @@ workers:
 
     #[test]
     fn get_worker_config_as_env_uses_default_when_var_missing() {
-        let _cwd = CWD_LOCK.lock().unwrap();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_home();
         let _g = EnvGuard::unset("TEST_WORKER_UNSET");
         let yaml =
             "workers:\n  - name: w\n    config:\n      host: ${TEST_WORKER_UNSET:localhost}\n";
@@ -1913,8 +1902,7 @@ workers:
 
     #[test]
     fn get_worker_config_as_env_returns_empty_on_missing_required_var() {
-        let _cwd = CWD_LOCK.lock().unwrap();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_home();
         let _g = EnvGuard::unset("TEST_WORKER_REQUIRED");
         let yaml = "workers:\n  - name: w\n    config:\n      api_key: ${TEST_WORKER_REQUIRED}\n";
         let env = with_temp_config(yaml, || get_worker_config_as_env("w"));
@@ -1925,8 +1913,7 @@ workers:
 
     #[test]
     fn get_worker_config_as_env_expands_inside_nested_block() {
-        let _cwd = CWD_LOCK.lock().unwrap();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_home();
         let _g = EnvGuard::set("TEST_WORKER_DB_HOST", "db.prod.internal");
         let yaml = "workers:\n  - name: w\n    config:\n      database:\n        host: ${TEST_WORKER_DB_HOST}\n        port: 5432\n";
         let env = with_temp_config(yaml, || get_worker_config_as_env("w"));

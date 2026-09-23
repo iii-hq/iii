@@ -25,12 +25,17 @@ use crate::{
         configuration::{
             adapters::{ConfigurationAdapter, ExternalChange, RegisterKind},
             config::ConfigurationModuleConfig,
-            store::{ConfigurationStore, StoreError, expand_value, validate_against_schema},
+            store::{
+                ConfigurationStore, ExternalApply, StoreError, expand_value,
+                validate_against_schema,
+            },
             structs::{
-                ConfigurationEntry, ConfigurationEventData, ConfigurationEventType,
-                ConfigurationGetInput, ConfigurationGetResult, ConfigurationListInput,
-                ConfigurationListResult, ConfigurationRegisterInput, ConfigurationSchemaInput,
-                ConfigurationSchemaView, ConfigurationSetInput, ConfigurationSetResult,
+                ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
+                ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
+                ConfigurationGetResult, ConfigurationListInput, ConfigurationListResult,
+                ConfigurationMigrateInput, ConfigurationMigrateResult, ConfigurationRegisterInput,
+                ConfigurationSchemaInput, ConfigurationSchemaView, ConfigurationSetInput,
+                ConfigurationSetResult, MigrateAction,
             },
             trigger::{ConfigurationTriggers, TRIGGER_TYPE},
         },
@@ -253,15 +258,23 @@ impl ConfigurationWorker {
         );
     }
 
-    /// Apply a watcher-surfaced change into the cache and broadcast.
+    /// Reconcile a watcher-surfaced change into the cache and broadcast it.
     ///
     /// A hand-edit of a `<id>.yaml` file must not be able to clobber the running
     /// config with an invalid value. For create/update edits we validate the
     /// APPLIED (env-expanded + coerced) value against the cached schema (the
-    /// adapter's watcher carries the real schema forward — disk never holds it);
+    /// adapter's watcher carries the real schema forward, disk never holds it);
     /// on failure we log a WARNING and drop the edit, leaving the previous good
     /// value in the store. We never write the file back here, so this path can't
-    /// feed the watcher and create a save→reload→save loop.
+    /// feed the watcher and create a save->reload->save loop.
+    ///
+    /// The change was captured by the watcher and queued, so a newer local
+    /// mutation may have committed before it arrives.
+    /// [`ConfigurationStore::apply_external`] reconciles it against the
+    /// authoritative adapter and reports [`ExternalApply::Suppressed`] when the
+    /// queued snapshot was superseded; we then skip the fan-out so no stale
+    /// `configuration:*` event is emitted (the superseding local mutation
+    /// already emitted its own).
     pub(crate) async fn handle_external_change(&self, change: ExternalChange) {
         let edited = match &change {
             ExternalChange::Registered(entry) | ExternalChange::Updated { entry, .. } => {
@@ -291,7 +304,12 @@ impl ConfigurationWorker {
             }
         }
 
-        self.store.apply_external(&change).await;
+        // Reconcile against the authoritative adapter. A queued snapshot a newer
+        // local mutation already superseded is dropped there; skip the fan-out
+        // so we never emit a stale `configuration:*` event for it.
+        if self.store.apply_external(&change).await == ExternalApply::Suppressed {
+            return;
+        }
         let event = match change {
             ExternalChange::Registered(entry) => entry_to_event(
                 &entry,
@@ -397,9 +415,58 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
 #[service(name = "configuration")]
 impl ConfigurationWorker {
     #[function(
+        id = "configuration::migration-capabilities",
+        description = "Read-only migration contract negotiation. Revision 1 guarantees source priority and source archival; it does not migrate or write configuration."
+    )]
+    pub async fn migration_capabilities_fn(
+        &self,
+        _input: Value,
+    ) -> FunctionResult<Value, ErrorBody> {
+        FunctionResult::Success(serde_json::json!({"source_priority_archive_revision": 1}))
+    }
+
+    #[function(
+        id = "configuration::migrate",
+        description = "Move an exact legacy configuration id at the authority, replacing the destination with the source and retaining the original source as a .yaml.bak backup. Missing source is a no-op. Stop consumers before migrating."
+    )]
+    pub async fn migrate_fn(
+        &self,
+        input: ConfigurationMigrateInput,
+    ) -> FunctionResult<ConfigurationMigrateResult, ErrorBody> {
+        let outcome = match self.store.migrate(&input.from_id, &input.to_id).await {
+            Ok(outcome) => outcome,
+            Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
+        };
+        if outcome.action == MigrateAction::Migrated
+            && self.store.adapter().ensure_support()
+                == crate::workers::configuration::adapters::EnsureSupport::Local
+            && let Some(entry) = &outcome.entry
+        {
+            let mut previous = entry.clone();
+            previous.id = input.from_id;
+            self.fan_out(entry_to_event(
+                &previous,
+                ConfigurationEventType::Deleted,
+                Some(previous.value.clone()),
+                None,
+            ))
+            .await;
+            self.fan_out(entry_to_event(
+                entry,
+                ConfigurationEventType::Registered,
+                None,
+                Some(entry.value.clone()),
+            ))
+            .await;
+        }
+        FunctionResult::Success(outcome)
+    }
+
+    #[function(
         id = "configuration::register",
         description = "Register a configuration id with a name, description, and JSON Schema. Idempotent — re-registering replaces metadata and (when initial_value is provided) the value. Validates initial_value against the schema."
     )]
+    /// Apply explicit legacy registration semantics and notify subscribers after the store commits.
     pub async fn register_fn(
         &self,
         input: ConfigurationRegisterInput,
@@ -433,6 +500,55 @@ impl ConfigurationWorker {
         self.fan_out(event).await;
 
         FunctionResult::Success(outcome.entry)
+    }
+
+    #[function(
+        id = "configuration::ensure",
+        description = "Atomically ensure a configuration id exists with a schema, name, description, and metadata, seeding initial_value ONLY when no non-null value is stored yet. An existing non-null value (including false, 0, or empty string) is preserved verbatim and the candidate seed is ignored (and not validated). Unlike configuration::register, ensure never overwrites a stored value, so it is the race-free way for one or many workers to seed a default. Fires configuration:registered on first creation or configuration:updated when an existing entry is refreshed."
+    )]
+    /// Initialize conditionally at the authoritative store and emit only locally owned events.
+    pub async fn ensure_fn(
+        &self,
+        input: ConfigurationEnsureInput,
+    ) -> FunctionResult<ConfigurationEnsureResult, ErrorBody> {
+        let outcome = match self
+            .store
+            .ensure(
+                input.id,
+                input.name,
+                input.description,
+                input.schema,
+                input.initial_value,
+                input.metadata,
+            )
+            .await
+        {
+            Ok(o) => o,
+            Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
+        };
+
+        // Only fan out locally when THIS store owns the event. For a delegated
+        // (bridge) adapter register_kind is `None`: the authoritative remote
+        // engine emits its own `configuration:*` event, relayed to local
+        // subscribers via the bridge watcher, so firing here would duplicate it.
+        if let Some(kind) = outcome.register_kind {
+            let event_type = match kind {
+                RegisterKind::Created => ConfigurationEventType::Registered,
+                RegisterKind::Replaced => ConfigurationEventType::Updated,
+            };
+            let event = entry_to_event(
+                &outcome.entry,
+                event_type,
+                outcome.old_value.clone(),
+                Some(outcome.entry.value.clone()),
+            );
+            self.fan_out(event).await;
+        }
+
+        FunctionResult::Success(ConfigurationEnsureResult {
+            action: outcome.action,
+            entry: outcome.entry,
+        })
     }
 
     #[function(
@@ -765,6 +881,7 @@ mod tests {
     // #1916: a templated integer field must register (validation runs on the
     // APPLIED value) and `get` must coerce it to a real integer.
     #[tokio::test]
+    /// Validate the expanded integer while retaining the raw environment template in storage.
     async fn register_and_get_coerces_templated_integer_port() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
@@ -815,21 +932,31 @@ mod tests {
     // Disk-loaded entries skip register validation, then the worker re-registers
     // the schema — replicated here by injecting the entry directly.
     #[tokio::test]
+    /// Revalidate externally applied values against the schema instead of returning invalid data.
     async fn get_fails_schema_invalid_when_applied_value_violates_schema() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
             std::env::remove_var("CFG_GET_BADPORT");
         }
+        let entry = ConfigurationEntry {
+            id: "iii-stream".into(),
+            name: "iii-stream".into(),
+            description: String::new(),
+            schema: schema_object_required_port(),
+            value: json!({ "port": "${CFG_GET_BADPORT:notaport}" }),
+            metadata: None,
+        };
+        // The watcher updates the adapter's authoritative state before surfacing
+        // the change; mirror that so `apply_external` reconciles against it.
         worker
             .store
-            .apply_external(&ExternalChange::Registered(ConfigurationEntry {
-                id: "iii-stream".into(),
-                name: "iii-stream".into(),
-                description: String::new(),
-                schema: schema_object_required_port(),
-                value: json!({ "port": "${CFG_GET_BADPORT:notaport}" }),
-                metadata: None,
-            }))
+            .adapter()
+            .register(entry.clone())
+            .await
+            .unwrap();
+        worker
+            .store
+            .apply_external(&ExternalChange::Registered(entry))
             .await;
 
         let got = worker
@@ -847,21 +974,31 @@ mod tests {
     // #1916: a `${VAR}` with no env value and no default can't be evaluated at
     // read time — `get` must fail with EXPAND_FAILED (and not panic).
     #[tokio::test]
+    /// A raw external template remains stored, but an applied read requires its environment value.
     async fn get_fails_expand_failed_when_required_var_missing() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
             std::env::remove_var("CFG_GET_REQUIRED");
         }
+        let entry = ConfigurationEntry {
+            id: "iii-stream".into(),
+            name: "iii-stream".into(),
+            description: String::new(),
+            schema: schema_object_required_port(),
+            value: json!({ "port": "${CFG_GET_REQUIRED}" }),
+            metadata: None,
+        };
+        // The watcher updates the adapter's authoritative state before surfacing
+        // the change; mirror that so `apply_external` reconciles against it.
         worker
             .store
-            .apply_external(&ExternalChange::Registered(ConfigurationEntry {
-                id: "iii-stream".into(),
-                name: "iii-stream".into(),
-                description: String::new(),
-                schema: schema_object_required_port(),
-                value: json!({ "port": "${CFG_GET_REQUIRED}" }),
-                metadata: None,
-            }))
+            .adapter()
+            .register(entry.clone())
+            .await
+            .unwrap();
+        worker
+            .store
+            .apply_external(&ExternalChange::Registered(entry))
             .await;
 
         let got = worker
@@ -878,6 +1015,7 @@ mod tests {
 
     // --- hot-reload: external file-edit validation ---
 
+    /// Build a queued watcher update with matching schema and old/new values for reconciliation tests.
     fn updated_change(value: Value, old: Value) -> ExternalChange {
         ExternalChange::Updated {
             entry: ConfigurationEntry {
@@ -893,12 +1031,21 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Mirror the watcher's adapter-first update and reconcile the live cache to that value.
     async fn external_change_applies_valid_edit() {
         let (_engine, worker, _dir) = setup().await;
         worker
             .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
             .await;
 
+        // Mirror the watcher: the adapter's authoritative state already holds
+        // the new value before the change is surfaced.
+        worker
+            .store
+            .adapter()
+            .set("iii-stream", json!({ "port": 2 }))
+            .await
+            .unwrap();
         worker
             .handle_external_change(updated_change(json!({ "port": 2 }), json!({ "port": 1 })))
             .await;
@@ -934,6 +1081,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// A live external edit with missing required environment values cannot replace the applied cache.
     async fn external_change_rejects_unresolved_env_var() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
@@ -959,20 +1107,30 @@ mod tests {
     }
 
     #[tokio::test]
+    /// External entries can enter the cache before their owning worker refreshes the schema.
     async fn external_change_applies_when_schema_unknown() {
         let (_engine, worker, _dir) = setup().await;
         // A brand-new file the owning worker hasn't claimed yet: schema is null,
         // so it can't be validated here — apply it and let `get` validate later
         // once the owner registers a real schema.
+        let fresh = ConfigurationEntry {
+            id: "fresh".into(),
+            name: "fresh".into(),
+            description: String::new(),
+            schema: Value::Null,
+            value: json!({ "port": "anything" }),
+            metadata: None,
+        };
+        // The watcher creates the adapter entry before surfacing the change, so
+        // `apply_external` reconciles against an adapter that already holds it.
         worker
-            .handle_external_change(ExternalChange::Registered(ConfigurationEntry {
-                id: "fresh".into(),
-                name: "fresh".into(),
-                description: String::new(),
-                schema: Value::Null,
-                value: json!({ "port": "anything" }),
-                metadata: None,
-            }))
+            .store
+            .adapter()
+            .register(fresh.clone())
+            .await
+            .unwrap();
+        worker
+            .handle_external_change(ExternalChange::Registered(fresh))
             .await;
 
         let entry = worker.store.get("fresh").await.expect("entry applied");
@@ -1095,6 +1253,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Metadata-only legacy registration preserves the current value while refreshing form metadata.
     async fn re_register_replaces_metadata_keeps_value_when_initial_omitted() {
         let (_engine, worker, _dir) = setup().await;
         worker
@@ -1108,5 +1267,111 @@ mod tests {
         let entry = worker.store.get("iii-stream").await.expect("entry");
         assert_eq!(entry.description, "updated");
         assert_eq!(entry.value, json!({ "port": 3112 }));
+    }
+
+    use crate::workers::configuration::structs::EnsureAction;
+
+    #[tokio::test]
+    /// The public handler returns a seeded outcome for first initialization.
+    async fn ensure_fn_seeds_when_absent_and_reports_seeded() {
+        let (_engine, worker, _dir) = setup().await;
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "test".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": 3112 })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.action, EnsureAction::Seeded);
+                assert_eq!(out.entry.value, json!({ "port": 3112 }));
+            }
+            _ => panic!("expected ensure success"),
+        }
+    }
+
+    #[tokio::test]
+    /// Refreshing entry metadata cannot replace an existing non-null operator value.
+    async fn ensure_fn_preserves_existing_value_but_refreshes_metadata() {
+        let (_engine, worker, _dir) = setup().await;
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 3112 }))))
+            .await;
+
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "changed".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": 9999 })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.action, EnsureAction::Preserved);
+                assert_eq!(out.entry.value, json!({ "port": 3112 }));
+                assert_eq!(out.entry.description, "changed");
+            }
+            _ => panic!("expected ensure success"),
+        }
+        let entry = worker.store.get("iii-stream").await.expect("entry");
+        assert_eq!(entry.value, json!({ "port": 3112 }));
+    }
+
+    #[tokio::test]
+    /// Surface schema rejection when a first-boot candidate would persist an invalid applied value.
+    async fn ensure_fn_rejects_invalid_applied_seed() {
+        let (_engine, worker, _dir) = setup().await;
+        let result = worker
+            .ensure_fn(ConfigurationEnsureInput {
+                id: "iii-stream".into(),
+                name: "Stream".into(),
+                description: "test".into(),
+                schema: schema_object_required_port(),
+                initial_value: Some(json!({ "port": "nope" })),
+                metadata: None,
+            })
+            .await;
+        match result {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "SCHEMA_INVALID"),
+            _ => panic!("expected SCHEMA_INVALID"),
+        }
+    }
+
+    // Schema / wire contract for the new `configuration::ensure` surface.
+    #[test]
+    /// Pin required input fields and outcome action names used by worker callers.
+    fn ensure_input_schema_and_action_wire_contract() {
+        // Input shape mirrors register: id/name/description/schema/
+        // initial_value/metadata.
+        let schema_str =
+            serde_json::to_string(&schemars::schema_for!(ConfigurationEnsureInput)).unwrap();
+        for key in [
+            "id",
+            "name",
+            "description",
+            "schema",
+            "initial_value",
+            "metadata",
+        ] {
+            assert!(
+                schema_str.contains(key),
+                "ensure input schema must expose `{key}`"
+            );
+        }
+        // The action wire values are the stable contract callers branch on.
+        for (action, wire) in [
+            (EnsureAction::Seeded, "seeded"),
+            (EnsureAction::Preserved, "preserved"),
+            (EnsureAction::Registered, "registered"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), json!(wire));
+        }
     }
 }

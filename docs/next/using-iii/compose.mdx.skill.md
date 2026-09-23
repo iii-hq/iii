@@ -723,18 +723,77 @@ Lowest to highest: the configuration a package ships, the entry in the configura
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
 merged result is written to an owner-only file and its path is passed to the
-worker as `III_CONFIG`. A worker that declares `config_name` does not start when the fetch fails;
-the error is `CONFIG_FETCH_FAILED`.
+worker as `III_CONFIG`. This is a private execution snapshot, separate from the persistent
+`config/<id>.yaml` entry. Compose never writes `config_override` (or the merged execution value)
+back to the configuration service. Workers must use `III_CONFIG` for the execution override and
+must not register that snapshot as `initial_value`; service-only consumers see the stored base.
+Removing an override restores the stored setting on the next start. Configuration read failures
+stop startup with `CONFIG_FETCH_FAILED`, rather than silently falling back to defaults.
+
+### Readable configuration names and migration
+
+Without an explicit `config_name`, the entry id is exactly `<namespace>-<container-key>`.
+For example, `default` plus `harness` uses `default-harness` and the filesystem adapter stores
+`config/default-harness.yaml`. The id must match `[a-z0-9_-]{1,64}`. Compose rejects an invalid or
+long generated name with `INVALID_CONFIG_NAME` and asks for an explicit `config_name`; it never
+sanitizes, truncates, or adds a hash. Explicit names remain unchanged and are never auto-migrated.
+
+Before reading configuration or starting the child, Compose asks the configuration authority to
+migrate the exact hashed id produced by the previous algorithm for that namespace and key.
+`default-harness-a14f3656efb8d5ea` therefore becomes `default-harness`. Stored raw values (including
+`${VAR}`, `false`, `0`, and `null`), name, description, metadata, and available schema are preserved.
+The filesystem adapter updates both filename and internal id, and the authority updates its caches
+and notifies subscribers. It re-reads the source so manual edits awaiting the watcher are retained.
+
+Migration gives the legacy source priority over an existing destination.
+After that, the `default` namespace adopts the exact bare container key (`state` becomes
+`default-state`), even when the destination already exists. The bare source replaces the
+whole destination entry, preserving raw values and metadata rather than merging defaults.
+Another container's explicit ownership blocks this adoption; other namespaces and explicit
+`config_name` values never adopt bare entries.
+
+After publishing the destination, the fs adapter archives the original source as
+`<source>.yaml.bak` (for example, `state.yaml.bak`). The previous destination is replaced,
+not backed up. Files ending in `.yaml.bak`, `.bak.yaml`, or `.bkup.yaml` are ignored during
+loading, watching, and legacy directory migration. Repeated starts with no source perform
+no writes. An existing identical backup permits recovery after interrupted cleanup; a
+conflicting backup is never overwritten and stops migration with an error.
+
+Migration commits the complete destination before archiving the source. I/O failures stop startup; failure after publication can leave two recoverable copies.
+The filesystem adapter requires same-directory hard-link support and may normalize YAML formatting
+or remove comments on the one migration rewrite; values and unknown document fields are retained.
+Stop source consumers before migration: Compose checks that the child is not already registered,
+and its restart path stops the old child first. Do not run two configuration authorities against
+the same directory or edit the source concurrently with migration.
+
+The bridge delegates migration to the remote authority. Upgrade that authority together with
+Compose: an absent `configuration::migrate` or unsupported adapter fails with
+`CONFIG_MIGRATION_FAILED`, never a read/copy/delete fallback that could reset stored values.
+
+Within one project, a generated name colliding with another container's explicit name is rejected
+before startup. Sharing is allowed only when both names are explicit. Across namespaces, `a-b` / `c`
+and `a` / `b-c` both produce `a-b-c`; choose unambiguous namespaces or distinct explicit `config_name`
+values. Readable names do not claim cross-project ownership.
 
 ## The worker environment
 
-A worker's environment is defined by the following sources:
+A worker's environment combines the following sources, from lowest to highest precedence:
 
-1. A host baseline. On Unix: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `TZ`,
-   `LANG`, `LC_ALL`. Windows adds the variables the platform needs, such as `SystemRoot`, `COMSPEC`,
-   and `PATHEXT`.
-2. The worker's `env_file` entries, then its `environment` map.
-3. The reserved variables, which the daemon owns.
+1. The machine environment visible to the Compose daemon. Variables are inherited even when
+   neither `env_file` nor `environment` is declared. Non-Unicode names and values are skipped.
+2. The worker's `env_file` entries, in declaration order. Later files override earlier files.
+3. The worker's `environment` map. Nonempty values override env files; an empty string preserves
+   an existing env-file value, or supplies an empty value when no env file defines the key.
+4. The reserved variables, which the daemon owns.
+
+Export machine variables before starting the daemon. Changing another shell's environment does
+not update an already-running daemon. Workers and hooks inherit the daemon's Unicode machine
+variables, including credentials, subject to the daemon-owned values above and the project identity
+exception below; only start workers you trust with that environment.
+
+`III_HOST_USER_ID` is not inherited from the machine: it comes from the current project's
+`.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
+`environment` value can still override it, including an empty value.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |
@@ -745,7 +804,7 @@ A worker's environment is defined by the following sources:
 | `III_COMPOSE_DIR`       | Canonical directory that contains the owning compose file.                    |
 | `III_WORKER_NAME`       | The key under `containers`.                                                   |
 | `III_CONFIG`            | Path to the resolved configuration file. Absent when there is none.           |
-| `III_CONFIG_NAME`       | The configuration entry the worker owns. Absent when it declares none.        |
+| `III_CONFIG_NAME`       | The explicit configuration id or `<namespace>-<container-key>`, always present.        |
 
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
@@ -889,6 +948,11 @@ Compose can output the following error codes:
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED` |
 | Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                   |
 | Command line        | `FILE_REQUIRES_UP`, `BUILD_CONFLICTS_WITH_SERVE_OPTIONS`                                                                                                                                                                                                                                                                                                        |
+
+These are literal diagnostic identifiers emitted by Compose, not worker categories.
+`ENGINE_WORKER_IS_BUILTIN` reports that a worker declared under `containers` is already supplied
+by the engine. Its name is retained for compatibility; it does not define a separate worker type.
+All workers follow the same Function/Trigger/Worker model.
 
 ## Related
 

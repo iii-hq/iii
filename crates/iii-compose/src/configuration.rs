@@ -10,15 +10,51 @@
 //! a file path in `III_CONFIG`, so a worker never needs credentials to fetch its
 //! own configuration and the daemon can fail a container before spawning it.
 //!
-//! Fetching the base entry from the configuration worker needs an engine
-//! connection and is not wired yet; merge and delivery are.
+//! `III_CONFIG_NAME` identifies the persistent base. Runtime overrides belong
+//! only to `III_CONFIG`; they must never be registered back into the store.
 
 use std::{
     io::Write,
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
+
 use crate::error::{ComposeError, Result};
+
+/// Readable configuration identity, without sanitization, truncation, or a hash.
+/// Ambiguous namespace/key boundaries require an explicit `config_name`.
+pub(crate) fn default_config_name(namespace: &str, key: &str) -> Result<String> {
+    let name = format!("{namespace}-{key}");
+    if name.len() > 64
+        || !name
+            .bytes()
+            .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        return Err(ComposeError::InvalidConfigName { name });
+    }
+    Ok(name)
+}
+
+/// Exact previous algorithm, used only to locate this container's legacy entry.
+pub(crate) fn legacy_config_name(namespace: &str, key: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update((namespace.len() as u64).to_be_bytes());
+    digest.update(namespace.as_bytes());
+    digest.update(key.as_bytes());
+    let suffix = hex::encode(&digest.finalize()[..8]);
+    let prefix: String = namespace
+        .chars()
+        .chain(std::iter::once('-'))
+        .chain(key.chars())
+        .map(|ch| match ch {
+            'a'..='z' | '0'..='9' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .take(47)
+        .collect();
+    format!("{prefix}-{suffix}")
+}
 
 /// Merges `config_override` onto a fetched base.
 ///
@@ -146,6 +182,53 @@ impl ConfigFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_config_names_are_stable_and_readable() {
+        assert_eq!(
+            default_config_name("default", "harness").unwrap(),
+            "default-harness"
+        );
+        assert_eq!(
+            default_config_name("orders", "console").unwrap(),
+            "orders-console"
+        );
+        assert_eq!(
+            legacy_config_name("default", "harness"),
+            "default-harness-a14f3656efb8d5ea"
+        );
+        assert_eq!(
+            legacy_config_name("orders", "console"),
+            "orders-console-946b336ce90783a6"
+        );
+    }
+
+    #[test]
+    fn readable_names_require_operator_chosen_disambiguation_across_namespaces() {
+        assert_eq!(
+            default_config_name("a-b", "c").unwrap(),
+            default_config_name("a", "b-c").unwrap()
+        );
+        assert_ne!(
+            legacy_config_name("a-b", "c"),
+            legacy_config_name("a", "b-c")
+        );
+    }
+
+    #[test]
+    fn generated_names_reject_invalid_or_long_inputs_without_lossy_conversion() {
+        assert_eq!(default_config_name(&"n".repeat(62), "x").unwrap().len(), 64);
+        for (namespace, key) in [
+            ("n".repeat(63), "x"),
+            ("app".into(), "API"),
+            ("app".into(), "api.v2"),
+            ("app".into(), "日本語"),
+        ] {
+            let error = default_config_name(&namespace, key).unwrap_err();
+            assert_eq!(error.code(), "INVALID_CONFIG_NAME");
+            assert!(error.to_string().contains("config_name"));
+        }
+    }
 
     fn yaml(text: &str) -> serde_yaml::Value {
         serde_yaml::from_str(text).unwrap()
