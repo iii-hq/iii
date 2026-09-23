@@ -26,17 +26,14 @@ iii --version
 ## Step 2: Create a Project
 
 ```bash
-iii create
+iii project init my-app              # barebones project
+iii project init my-app -t harness   # or: the harness template (agent + console UI)
+cd my-app
 ```
 
-Follow the interactive prompts to select a template and language. The default quickstart template
-includes TypeScript, Python, and Rust workers.
-
-Then change into the project directory you chose at the prompt:
-
-```bash
-cd <your-project>
-```
+`iii project init --learn-iii` scaffolds the harness template and starts it in one step; the
+installer offers the same when you answer "y" at its prompt. `iii project init --template quickstart`
+scaffolds the Quickstart with a Python and a TypeScript worker.
 
 ## Step 3: Start the Project
 
@@ -46,6 +43,11 @@ iii compose --namespace dev --up --file worker-compose.yaml
 
 The file's `engine:` section starts the engine; `containers:` starts project workers. The engine
 commonly listens on `ws://localhost:49134`. Keep this foreground supervisor running.
+
+`--namespace dev` names the daemon and becomes `III_NAMESPACE` for every worker it starts, so your
+workers register and call each other in `dev`; that is why the `iii trigger` commands below pass
+`-n dev`. Engine-owned functions (`engine::*`, `configuration::*`) stay in `default`; when a worker
+in `dev` calls one of those, pass `namespace: "default"` on the call (see `iii-sdk-reference`).
 
 ## Step 4: Install the SDK
 
@@ -119,7 +121,8 @@ use serde_json::json;
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunction::new("hello::greet", |input: serde_json::Value| -> Result<serde_json::Value, String> {
+    "hello::greet",
+    RegisterFunction::new(|input: serde_json::Value| -> Result<serde_json::Value, iii_sdk::Error> {
         let logger = Logger::new();
         let name = input["name"].as_str().unwrap_or("world");
         logger.info("Greeting user", Some(json!({ "name": name })));
@@ -136,6 +139,13 @@ iii.register_trigger(RegisterTriggerInput {
 ```
 
 ## Step 6: Test It
+
+The `http` trigger type comes from the `http` worker. Add it once through the running Compose
+daemon, then call your endpoint:
+
+```bash
+iii trigger -n dev compose::add worker=http
+```
 
 ```bash
 curl -X POST http://localhost:3111/hello \
@@ -201,11 +211,13 @@ After getting your first worker running:
 ## Key Resources
 
 - [Quickstart Guide](https://iii.dev/docs/quickstart)
-- [SDK Reference — Node.js](https://iii.dev/docs/api-reference/sdk-node)
-- [SDK Reference — Python](https://iii.dev/docs/api-reference/sdk-python)
-- [SDK Reference — Rust](https://iii.dev/docs/api-reference/sdk-rust)
-- [Engine Configuration](https://iii.dev/docs/configuration)
-- [Console](https://iii.dev/docs/console)
+- [SDK Reference — Node.js](https://iii.dev/docs/reference/sdk-node)
+- [SDK Reference — Python](https://iii.dev/docs/reference/sdk-python)
+- [SDK Reference — Rust](https://iii.dev/docs/reference/sdk-rust)
+- [Compose](https://iii.dev/docs/using-iii/compose)
+- [Configuration](https://iii.dev/docs/using-iii/configuration)
+- [Console](https://iii.dev/docs/using-iii/console)
+- Every docs page is also available as Markdown by adding a `.md` suffix to its URL.
 
 ## Pattern Boundaries
 
@@ -214,7 +226,7 @@ After getting your first worker running:
   `iii-core-primitives`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
-- For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker docs under `engine/src/workers/**/skills`
+- For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker page on https://workers.iii.dev/
 - Stay with `iii-getting-started` for installation, initial setup, and first-worker guidance
 
 ## When to Use

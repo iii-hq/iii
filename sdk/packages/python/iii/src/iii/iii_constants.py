@@ -42,13 +42,11 @@ class TelemetryOptions:
         language: Programming language of the worker.
         project_name: Name of the project this worker belongs to.
         framework: Framework name, if applicable.
-        amplitude_api_key: Amplitude API key for product analytics.
     """
 
     language: str | None = None
     project_name: str | None = None
     framework: str | None = None
-    amplitude_api_key: str | None = None
 
 
 @dataclass
