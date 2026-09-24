@@ -23,8 +23,8 @@ in the working directory and starts only the compose worker.
 the workers specified in `worker-compose.yaml`. It is approximately the equivalent of running `iii`,
 `iii compose`, and `iii trigger compose::up` as separate commands.
 
-`iii compose --up` is recommended for ease of development while more granular control and
-independent operation of `iii` and `iii compose` daemons is suggested for production.
+`iii compose --up` combines engine and project startup for development. Independent `iii` and
+`iii compose` daemons provide separate lifecycle control for production deployments.
 
 ### Starting a project with the daemon
 
@@ -105,9 +105,8 @@ Each line is prefixed with the worker name, and stderr uses a bold prefix on a t
 
 Compose does not background or daemonize itself.
 
-To accomplish this please use standard tooling
-
-For example on most terminals (bash, zsh) you can run:
+Standard process-management tooling, such as shell backgrounding or systemd, runs the daemon
+in the background. Bash and zsh support the following invocation:
 
 ```bash
 iii compose --namespace dev --engine ws://127.0.0.1:49134 >> ~/iii-compose.log 2>&1 &
