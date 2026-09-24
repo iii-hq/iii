@@ -277,6 +277,12 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
             source,
         })?;
         for (name, _) in crate::config::parse_env_file(&text) {
+            if crate::spawn::is_retired_config_env(&name) {
+                return Err(ComposeError::RetiredConfigEnv {
+                    container: key.to_string(),
+                    name,
+                });
+            }
             if crate::spawn::is_reserved_env(&name) {
                 return Err(ComposeError::ReservedEnvOverride {
                     container: key.to_string(),

@@ -301,6 +301,56 @@ containers:
 }
 
 #[test]
+fn retired_config_is_rejected_in_environment_and_env_files() {
+    let names = if cfg!(windows) {
+        vec!["III_CONFIG", "iii_config", "Iii_Config"]
+    } else {
+        vec!["III_CONFIG"]
+    };
+    for name in names {
+        for value in ["\"path.yaml\"", "\"\"", "null", "~", ""] {
+            let yaml = format!(
+                "containers:\n  api:\n    worker: path://./api\n    environment:\n      {name}: {value}\n"
+            );
+            let err = ComposeFile::parse(&yaml, "/tmp/worker-compose.yaml").unwrap_err();
+            assert_eq!(err.code(), "RETIRED_CONFIG_ENV");
+            assert!(err.to_string().contains("config_override"));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml = "containers:\n  api:\n    worker: path://./api\n    env_file: [settings.env]\n";
+        let contents = format!("{name}=path.yaml\n");
+        let file = project(tmp.path(), yaml, &[("settings.env", &contents)]);
+        assert_eq!(
+            file.containers["api"]
+                .resolve_user_env("api")
+                .unwrap_err()
+                .code(),
+            "RETIRED_CONFIG_ENV"
+        );
+        assert_eq!(
+            iii_compose::manifest::validate_offline(&file, "default")
+                .unwrap_err()
+                .code(),
+            "RETIRED_CONFIG_ENV"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn lowercase_config_variable_is_distinct_on_unix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: path://./api\n    environment:\n      iii_config: explicit\n    env_file: [settings.env]\n",
+        &[("settings.env", "Iii_Config=file\n")],
+    );
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+    assert_eq!(env["iii_config"], "explicit");
+    assert_eq!(env["Iii_Config"], "file");
+}
+
+#[test]
 fn blank_environment_values_cannot_bypass_reserved_key_validation() {
     for reserved in iii_compose::spawn::RESERVED_ENV {
         for value in ["\"\"", "", "null", "~"] {

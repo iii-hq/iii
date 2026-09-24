@@ -320,6 +320,11 @@ pub enum ComposeError {
     ReservedEnvOverride { container: String, name: String },
 
     #[error(
+        "container '{container}': '{name}' is retired and cannot be set by environment or env_file; use config_override and III_CONFIG_NAME with the configuration service instead"
+    )]
+    RetiredConfigEnv { container: String, name: String },
+
+    #[error(
         "generated configuration id '{name}' must match [a-z0-9_-]{{1,64}}; set an explicit config_name instead of relying on sanitization or truncation"
     )]
     InvalidConfigName { name: String },
@@ -605,6 +610,7 @@ impl ComposeError {
             Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
             Self::PackageArtifactEmpty { .. } => "PACKAGE_ARTIFACT_EMPTY",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
+            Self::RetiredConfigEnv { .. } => "RETIRED_CONFIG_ENV",
             Self::InvalidConfigName { .. } => "INVALID_CONFIG_NAME",
             Self::ConfigNameCollision { .. } => "CONFIG_NAME_COLLISION",
             Self::ConfigMigrationFailed { .. } => "CONFIG_MIGRATION_FAILED",

@@ -554,6 +554,12 @@ fn validate_container(
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
     for (name, value) in &raw.environment {
+        if crate::spawn::is_retired_config_env(name) {
+            return Err(ComposeError::RetiredConfigEnv {
+                container: key.to_string(),
+                name: name.clone(),
+            });
+        }
         if is_reserved_env(name.as_str()) {
             return Err(ComposeError::ReservedEnvOverride {
                 container: key.to_string(),
@@ -656,6 +662,12 @@ impl Container {
                 source,
             })?;
             for (name, value) in parse_env_file(&text) {
+                if crate::spawn::is_retired_config_env(&name) {
+                    return Err(ComposeError::RetiredConfigEnv {
+                        container: container_key.to_string(),
+                        name,
+                    });
+                }
                 if is_reserved_env(name.as_str()) {
                     return Err(ComposeError::ReservedEnvOverride {
                         container: container_key.to_string(),

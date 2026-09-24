@@ -63,11 +63,11 @@ reports a duplicate for every other worker as well.
   [Namespaces](./namespaces).
 </Note>
 
-## Why the daemon owns eight variables
+## Why the daemon owns seven variables
 
-A container's environment is its own, with eight exceptions the daemon sets and refuses to let a
+A container's environment is its own, with seven exceptions the daemon sets and refuses to let a
 container replace. The rule is not that static configuration outranks an environment variable, which
-would be the wrong way round for most settings. It is that each of these eight is already declared
+would be the wrong way round for most settings. It is that each of these seven is already declared
 somewhere in the compose file, and a second declaration of the same thing is a disagreement nobody
 resolves.
 
@@ -91,7 +91,9 @@ send a lifecycle edit to another project or write data outside that project.
 `III_CONFIG_NAME` identifies the configuration service entry. Compose reads the current value,
 merges execution overrides, and calls `configuration::set` with `flush: false` before spawn.
 Workers read that value through the same GET. Explicit saves persist the submitted object.
-Removing an override does not restore an older disk value. No snapshot file is delivered.
+Removing an override does not restore an older disk value. No snapshot file is delivered. The retired `III_CONFIG` name is rejected in explicit
+`environment` and `env_file` declarations with `RETIRED_CONFIG_ENV`; stale inherited values are
+removed. Matching is case-sensitive on Unix and follows native case-insensitive rules on Windows.
 
 ### A container that belongs in another namespace
 

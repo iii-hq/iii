@@ -68,6 +68,18 @@ pub(crate) fn is_reserved_env(name: &str) -> bool {
     }
 }
 
+/// Retired snapshot key, matched using native environment name semantics.
+pub(crate) fn is_retired_config_env(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        windows_env_key_eq(name, "III_CONFIG")
+    }
+    #[cfg(not(windows))]
+    {
+        name == "III_CONFIG"
+    }
+}
+
 /// Cloneable so hooks can reuse a container's context with a different command.
 #[derive(Debug, Clone)]
 pub struct SpawnCtx<'a> {
@@ -220,7 +232,7 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     }
     env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
     // Retired delivery channel: do not inherit a stale snapshot from the host.
-    env.retain(|name, _| !name.eq_ignore_ascii_case("III_CONFIG"));
+    env.retain(|name, _| !is_retired_config_env(name));
     match ctx.config_name {
         Some(name) => {
             env.insert("III_CONFIG_NAME".to_string(), name.to_string());
@@ -439,6 +451,32 @@ mod tests {
             env_of(&[("III_CONFIG", "/stale/snapshot.yaml")]),
         );
         assert!(!plan.env.contains_key("III_CONFIG"));
+    }
+
+    #[test]
+    fn retired_config_filter_respects_platform_environment_names() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let explicit = if cfg!(windows) {
+            BTreeMap::new()
+        } else {
+            env_of(&[("iii_config", "explicit")])
+        };
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &explicit),
+            env_of(&[
+                ("III_CONFIG", "stale"),
+                ("iii_config", "lower"),
+                ("Iii_Config", "mixed"),
+            ]),
+        );
+        assert!(!plan.env.contains_key("III_CONFIG"));
+        if cfg!(windows) {
+            assert!(!plan.env.contains_key("iii_config"));
+            assert!(!plan.env.contains_key("Iii_Config"));
+        } else {
+            assert_eq!(plan.env["iii_config"], "explicit");
+            assert_eq!(plan.env["Iii_Config"], "mixed");
+        }
     }
 
     #[test]
