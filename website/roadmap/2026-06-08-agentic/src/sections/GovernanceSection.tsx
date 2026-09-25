@@ -1,24 +1,24 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { Button } from '@lib/components/schematic/Button'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { cn } from '@lib/lib/utils'
-import { useState } from 'react'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { Button } from "@lib/components/schematic/Button"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { cn } from "@lib/lib/utils"
+import { useState } from "react"
 
-type Decision = 'pending' | 'approved' | 'denied'
+type Decision = "pending" | "approved" | "denied"
 
 const FLOW = [
-  { id: 'hold', label: 'gate holds the call' },
-  { id: 'pending', label: 'pending_created fires' },
-  { id: 'human', label: 'a human decides' },
-  { id: 'resolve', label: 'function::resolve' },
-  { id: 'resume', label: 'the turn resumes' },
+  { id: "hold", label: "gate holds the call" },
+  { id: "pending", label: "pending_created fires" },
+  { id: "human", label: "a human decides" },
+  { id: "resolve", label: "function::resolve" },
+  { id: "resume", label: "the turn resumes" },
 ] as const
 
 export function GovernanceSection() {
-  const [decision, setDecision] = useState<Decision>('pending')
-  const flowIndex = decision === 'pending' ? 1 : 4
+  const [decision, setDecision] = useState<Decision>("pending")
+  const flowIndex = decision === "pending" ? 1 : 4
 
   return (
     <Section
@@ -34,9 +34,9 @@ export function GovernanceSection() {
           <span key={stage.id} className="flex items-center">
             <span
               className={cn(
-                'font-mono text-[11px] lowercase px-2 py-1 border transition-colors',
-                i <= flowIndex ? 'border-rule text-ink bg-panel' : 'border-rule-2 text-ink-ghost',
-                i === flowIndex && 'border-accent text-accent bg-bg',
+                "font-mono text-[11px] lowercase px-2 py-1 border transition-colors",
+                i <= flowIndex ? "border-rule text-ink bg-panel" : "border-rule-2 text-ink-ghost",
+                i === flowIndex && "border-accent text-accent bg-bg",
               )}
             >
               {stage.label}
@@ -54,11 +54,11 @@ export function GovernanceSection() {
           </div>
           <pre className="px-4 py-3.5 font-mono text-[12px] leading-[1.6] text-ink overflow-x-auto">
             <code>
-              {'agent_trigger {\n  function: '}
+              {"agent_trigger {\n  function: "}
               <span className="text-accent">"shell::exec"</span>
-              {',\n  payload: {\n    command: '}
+              {",\n  payload: {\n    command: "}
               <span className="text-accent">"rm -rf ./build"</span>
-              {'\n  }\n}'}
+              {"\n  }\n}"}
             </code>
           </pre>
           <div className="px-4 pb-4 mt-auto flex flex-col gap-y-1.5">
@@ -75,9 +75,9 @@ export function GovernanceSection() {
         {/* the decision */}
         <div
           className={cn(
-            'border flex flex-col transition-colors',
-            decision === 'pending' ? 'border-warn' : 'border-rule',
-            'bg-bg',
+            "border flex flex-col transition-colors",
+            decision === "pending" ? "border-warn" : "border-rule",
+            "bg-bg",
           )}
         >
           <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
@@ -85,9 +85,9 @@ export function GovernanceSection() {
               2 — the pending inbox
             </span>
             <span className="flex items-center gap-x-1.5">
-              <StatusDot tone={decision === 'pending' ? 'warn' : 'accent'} pulse={decision === 'pending'} />
+              <StatusDot tone={decision === "pending" ? "warn" : "accent"} pulse={decision === "pending"} />
               <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-                {decision === 'pending' ? 'awaiting decision' : 'resolved'}
+                {decision === "pending" ? "awaiting decision" : "resolved"}
               </span>
             </span>
           </div>
@@ -104,12 +104,12 @@ export function GovernanceSection() {
             </div>
           </div>
           <div className="px-4 pb-4 mt-auto">
-            {decision === 'pending' ? (
+            {decision === "pending" ? (
               <div className="flex gap-x-2">
-                <Button size="sm" onClick={() => setDecision('approved')}>
+                <Button size="sm" onClick={() => setDecision("approved")}>
                   approve
                 </Button>
-                <Button variant="pill" size="sm" onClick={() => setDecision('denied')}>
+                <Button variant="pill" size="sm" onClick={() => setDecision("denied")}>
                   deny
                 </Button>
               </div>
@@ -117,13 +117,13 @@ export function GovernanceSection() {
               <div className="flex items-center justify-between gap-x-2">
                 <span
                   className={cn(
-                    'font-mono text-[12px] lowercase font-semibold',
-                    decision === 'approved' ? 'text-accent' : 'text-alert',
+                    "font-mono text-[12px] lowercase font-semibold",
+                    decision === "approved" ? "text-accent" : "text-alert",
                   )}
                 >
-                  {decision === 'approved' ? 'approved — released for execution' : 'denied — answered as an error'}
+                  {decision === "approved" ? "approved — released for execution" : "denied — answered as an error"}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => setDecision('pending')}>
+                <Button variant="ghost" size="sm" onClick={() => setDecision("pending")}>
                   replay
                 </Button>
               </div>
@@ -136,7 +136,7 @@ export function GovernanceSection() {
           <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
             3 — the parked turn
           </div>
-          {decision === 'pending' ? (
+          {decision === "pending" ? (
             <div className="px-4 py-3.5 flex flex-col gap-y-2.5">
               <div className="font-mono text-[12.5px] text-ink lowercase">turn t_004 — parked</div>
               <p className="font-mono text-[11.5px] leading-[1.65] text-ink-faint lowercase">
@@ -145,7 +145,7 @@ export function GovernanceSection() {
                 tomorrow.
               </p>
             </div>
-          ) : decision === 'approved' ? (
+          ) : decision === "approved" ? (
             <div className="px-4 py-3.5 flex flex-col gap-y-2.5">
               <div className="font-mono text-[12.5px] text-accent lowercase">released — the harness executes</div>
               <p className="font-mono text-[11.5px] leading-[1.65] text-ink-faint lowercase">

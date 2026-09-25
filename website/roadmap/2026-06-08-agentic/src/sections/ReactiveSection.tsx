@@ -1,21 +1,21 @@
-import { EventFanOut } from '@lib/components/diagrams/EventFanOut'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { FANOUT_EDGES, FANOUT_HANDLERS } from '../content/fanout'
+import { EventFanOut } from "@lib/components/diagrams/EventFanOut"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { FANOUT_EDGES, FANOUT_HANDLERS } from "../content/fanout"
 
 const EVENT_SOURCES = [
-  'http',
-  'cron',
-  'state',
-  'stream',
-  'subscribe',
-  'durable queue',
-  'session::message-added',
-  'session::status-changed',
-  'harness::turn_completed',
-  'approval::pending_created',
+  "http",
+  "cron",
+  "state",
+  "stream",
+  "subscribe",
+  "durable queue",
+  "session::message-added",
+  "session::status-changed",
+  "harness::turn_completed",
+  "approval::pending_created",
 ] as const
 
 export function ReactiveSection() {
@@ -41,22 +41,22 @@ export function ReactiveSection() {
 
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-2 gap-4 items-start">
         <CodeBlock title="the whole reactive pattern — two calls">
-          <C>// 1. register the function</C>
-          {'\n'}
+          <C>{"// 1. register the function"}</C>
+          {"\n"}
           iii.<K>registerFunction</K>(<S>"tg::on-message-updated"</S>, handler);
-          {'\n\n'}
-          <C>// 2. bind it to a trigger type</C>
-          {'\n'}
-          iii.<K>registerTrigger</K>(<M>{'{'}</M>
-          {'\n'}
-          {'  '}type: <S>"session::message-updated"</S>,{'\n'}
-          {'  '}function_id: <S>"tg::on-message-updated"</S>,{'\n'}
-          {'  '}config: <M>{'{'}</M> roles: [<S>"assistant"</S>] <M>{'}'}</M>,{'\n'}
-          <M>{'}'}</M>);
-          {'\n\n'}
-          <C>// that's it. no publish step, no broker to run —</C>
-          {'\n'}
-          <C>// the emitting worker filters and delivers.</C>
+          {"\n\n"}
+          <C>{"// 2. bind it to a trigger type"}</C>
+          {"\n"}
+          iii.<K>registerTrigger</K>(<M>{"{"}</M>
+          {"\n"}
+          {"  "}type: <S>"session::message-updated"</S>,{"\n"}
+          {"  "}function_id: <S>"tg::on-message-updated"</S>,{"\n"}
+          {"  "}config: <M>{"{"}</M> roles: [<S>"assistant"</S>] <M>{"}"}</M>,{"\n"}
+          <M>{"}"}</M>);
+          {"\n\n"}
+          <C>{"// that's it. no publish step, no broker to run —"}</C>
+          {"\n"}
+          <C>{"// the emitting worker filters and delivers."}</C>
         </CodeBlock>
 
         <div className="flex flex-col gap-4 min-w-0">
@@ -74,7 +74,7 @@ export function ReactiveSection() {
                 <FnChip tone="ghost">any custom type a worker registers</FnChip>
               </div>
               <p className="mt-4 font-mono text-[12px] leading-[1.65] text-ink-faint lowercase max-w-[58ch]">
-                every one of these is a trigger type a function can be bound to — and that function can call{' '}
+                every one of these is a trigger type a function can be bound to — and that function can call{" "}
                 <span className="text-ink">harness::run</span> with a goal. a webhook, a schedule, a state change, or
                 another agent finishing: any event in the system can set an agent in motion toward an outcome.
               </p>

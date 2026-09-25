@@ -17,7 +17,7 @@ export interface Spec {
   /** e.g. "jun 29"; null when the date has no day component */
   dayLabel: string | null
   tags: string[]
-  status: 'live' | 'draft'
+  status: "live" | "draft"
   featured: boolean
   hasDeck: boolean
 }

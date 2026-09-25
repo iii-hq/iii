@@ -1,7 +1,7 @@
-import { PlayerControls } from '@lib/components/PlayerControls'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { useStepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
+import { PlayerControls } from "@lib/components/PlayerControls"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { useStepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
 
 /**
  * A16 - a lifecycle told as a steppable timeline of stages, each stage pairing
@@ -10,7 +10,7 @@ import { cn } from '@lib/lib/utils'
  * All content arrives via props — stage data lives in the deck's content/.
  */
 
-export type TimelineTone = 'ink' | 'alert' | 'warn' | 'accent'
+export type TimelineTone = "ink" | "alert" | "warn" | "accent"
 
 export interface TimelineStage {
   id: string
@@ -25,10 +25,10 @@ export interface TimelineStage {
 }
 
 const toneClasses: Record<TimelineTone, { box: string; active: string; label: string }> = {
-  ink: { box: 'border-rule', active: 'border-ink bg-panel', label: 'text-ink' },
-  alert: { box: 'border-alert/50', active: 'border-alert bg-panel', label: 'text-alert' },
-  warn: { box: 'border-warn/50', active: 'border-warn bg-panel', label: 'text-warn' },
-  accent: { box: 'border-rule', active: 'border-accent bg-panel', label: 'text-accent' },
+  ink: { box: "border-rule", active: "border-ink bg-panel", label: "text-ink" },
+  alert: { box: "border-alert/50", active: "border-alert bg-panel", label: "text-alert" },
+  warn: { box: "border-warn/50", active: "border-warn bg-panel", label: "text-warn" },
+  accent: { box: "border-rule", active: "border-accent bg-panel", label: "text-accent" },
 }
 
 export function DurabilityTimeline({
@@ -53,7 +53,7 @@ export function DurabilityTimeline({
   const active = stages[stepper.step]
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{heading}</span>
         {headingNote ? (
@@ -76,20 +76,20 @@ export function DurabilityTimeline({
                   type="button"
                   onClick={() => stepper.goTo(i)}
                   className={cn(
-                    'border bg-bg px-2.5 py-2 w-full min-w-0 text-left transition-all duration-200 cursor-pointer',
-                    reached ? tone.box : 'border-rule-2 opacity-45',
+                    "border bg-bg px-2.5 py-2 w-full min-w-0 text-left transition-all duration-200 cursor-pointer",
+                    reached ? tone.box : "border-rule-2 opacity-45",
                     isActive && tone.active,
-                    isActive && stage.tone === 'ink' && 'border-accent',
+                    isActive && stage.tone === "ink" && "border-accent",
                   )}
                 >
                   <div
                     className={cn(
-                      'font-mono text-[10.5px] font-semibold leading-[1.35] truncate',
-                      reached ? tone.label : 'text-ink-ghost',
-                      isActive && stage.tone === 'ink' && 'text-ink',
+                      "font-mono text-[10.5px] font-semibold leading-[1.35] truncate",
+                      reached ? tone.label : "text-ink-ghost",
+                      isActive && stage.tone === "ink" && "text-ink",
                     )}
                   >
-                    {stage.tone === 'alert' ? '⚡ ' : stage.tone === 'warn' ? '⏸ ' : ''}
+                    {stage.tone === "alert" ? "⚡ " : stage.tone === "warn" ? "⏸ " : ""}
                     {stage.label}
                   </div>
                   <div className="mt-0.5 font-mono text-[9px] tracking-[0.03em] text-ink-ghost truncate">
@@ -100,9 +100,9 @@ export function DurabilityTimeline({
                   <span
                     aria-hidden
                     className={cn(
-                      'h-px w-4 shrink-0',
-                      i < stepper.step ? 'bg-ink-faint' : 'bg-rule',
-                      stage.gapAfter && 'w-6 border-t border-dashed border-rule bg-transparent',
+                      "h-px w-4 shrink-0",
+                      i < stepper.step ? "bg-ink-faint" : "bg-rule",
+                      stage.gapAfter && "w-6 border-t border-dashed border-rule bg-transparent",
                     )}
                   />
                 ) : null}
@@ -117,7 +117,7 @@ export function DurabilityTimeline({
         <div className="px-4 py-3.5 min-h-[108px]">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
-              {String(stepper.step + 1).padStart(2, '0')}
+              {String(stepper.step + 1).padStart(2, "0")}
             </span>
             <span className="font-mono text-[14px] font-semibold lowercase text-ink">{active.title}</span>
           </div>

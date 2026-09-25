@@ -1,8 +1,9 @@
-import { Section } from '@lib/components/Section'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { Cell } from '@lib/components/schematic/Cell'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { CLI_NOTES, CLI_STANDARD, CLI_TODAY } from '../content/cli'
+import { Section } from "@lib/components/Section"
+import { Cell } from "@lib/components/schematic/Cell"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { keyed } from "@lib/lib/keys"
+import { CLI_NOTES, CLI_STANDARD, CLI_TODAY } from "../content/cli"
 
 /**
  * Before/after — 41 binaries and three conventions on the left, one contract
@@ -36,7 +37,10 @@ export function CliSection() {
           <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">the standard</div>
           <div className="border border-rule bg-bg flex flex-col">
             {CLI_STANDARD.map((row) => (
-              <div key={row.param} className="flex items-baseline gap-x-3 px-4 py-3 border-b border-rule-2 last:border-b-0">
+              <div
+                key={row.param}
+                className="flex items-baseline gap-x-3 px-4 py-3 border-b border-rule-2 last:border-b-0"
+              >
                 <span className="font-mono text-[13px] text-ink lowercase flex-1 min-w-0">{row.param}</span>
                 <FnChip>{row.flag}</FnChip>
                 <FnChip tone="faint">{row.env}</FnChip>
@@ -46,14 +50,14 @@ export function CliSection() {
           <div className="mt-4">
             <CodeBlock title="worker code, complete">
               <div>
-                <K>import</K> {'{ registerWorker }'} <K>from</K> <S>'iii'</S>
+                <K>import</K> {"{ registerWorker }"} <K>from</K> <S>'iii'</S>
               </div>
               <div>&nbsp;</div>
               <div>
-                <C>{'// no url. no namespace. no config path.'}</C>
+                <C>{"// no url. no namespace. no config path."}</C>
               </div>
               <div>
-                <C>{'// the env contract fills all three — under compose, iii worker, or by hand.'}</C>
+                <C>{"// the env contract fills all three — under compose, iii worker, or by hand."}</C>
               </div>
               <div>
                 <K>const</K> iii = <M>registerWorker</M>()
@@ -64,8 +68,8 @@ export function CliSection() {
       </div>
 
       <div className="mt-4 grid grid-cols-1 @2xl:grid-cols-2 gap-px bg-rule border border-rule">
-        {CLI_NOTES.map((note, i) => (
-          <Cell key={i} className="border-0" bodyClassName="max-w-none">
+        {keyed(CLI_NOTES, (note) => note).map(({ key, item: note }) => (
+          <Cell key={key} className="border-0" bodyClassName="max-w-none">
             {note}
           </Cell>
         ))}

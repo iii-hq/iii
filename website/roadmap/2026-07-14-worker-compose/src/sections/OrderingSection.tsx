@@ -1,6 +1,6 @@
-import { SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { Section } from '@lib/components/Section'
-import { ORDER_LANES, ORDER_STEPS } from '../content/ordering'
+import { SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { Section } from "@lib/components/Section"
+import { ORDER_LANES, ORDER_STEPS } from "../content/ordering"
 
 /**
  * A5 — the optimistic registration buffer: a route that arrives before its

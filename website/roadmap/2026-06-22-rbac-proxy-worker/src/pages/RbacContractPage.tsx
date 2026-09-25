@@ -1,6 +1,6 @@
-import { PageShell } from '@lib/components/PageShell'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, M, S } from '@lib/components/schematic/CodeBlock'
+import { PageShell } from "@lib/components/PageShell"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, M, S } from "@lib/components/schematic/CodeBlock"
 import {
   AUTH_INPUT_FIELDS,
   AUTH_RESULT_FIELDS,
@@ -8,7 +8,7 @@ import {
   HOOK_ROWS,
   MIDDLEWARE_FIELDS,
   RESOLUTION_RULES,
-} from '../content/rbac'
+} from "../content/rbac"
 
 /**
  * A14 — deep dive on the rbac contract: the behavioural promise is parity with
@@ -21,7 +21,7 @@ export function RbacContractPage() {
       eyebrow="deep dive"
       title="the rbac contract"
       description="a connection through rbac-proxy is gated exactly as the same connection through an engine rbac listener would be. the decision logic is vendored verbatim from the engine, so there is no second, drifting copy of the rules, only a second home for them."
-      related={[{ slug: 'engine-overrides', label: 'discovery overrides' }]}
+      related={[{ slug: "engine-overrides", label: "discovery overrides" }]}
     >
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
@@ -34,7 +34,7 @@ export function RbacContractPage() {
               <span className="font-mono text-[13px] text-ink lowercase flex-1 min-w-0">{rule.text}</span>
               <span
                 className={`font-mono text-[11px] uppercase tracking-[0.08em] shrink-0 ${
-                  rule.verdict === 'allow' ? 'text-accent' : 'text-alert'
+                  rule.verdict === "allow" ? "text-accent" : "text-alert"
                 }`}
               >
                 {rule.verdict}
@@ -69,17 +69,17 @@ export function RbacContractPage() {
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
         <CodeBlock title="expose_functions · two filter shapes, mixable">
           <M>expose_functions:</M>
-          {'\n  - '}
+          {"\n  - "}
           <S>match(&quot;api::*&quot;)</S>
-          {'        '}
-          <C>{'# wildcard, anchored'}</C>
-          {'\n  - '}
+          {"        "}
+          <C>{"# wildcard, anchored"}</C>
+          {"\n  - "}
           <S>match(&quot;*::public&quot;)</S>
-          {'\n  - '}
+          {"\n  - "}
           <M>metadata:</M>
-          {'             '}
-          <C>{'# all keys AND; filters OR'}</C>
-          {'\n      '}public: <S>true</S>
+          {"             "}
+          <C>{"# all keys AND; filters OR"}</C>
+          {"\n      "}public: <S>true</S>
         </CodeBlock>
 
         <SpecSheet title="middleware" meta="its return is the result" defaultOpen>
@@ -126,23 +126,23 @@ export function RbacContractPage() {
 
       <CodeBlock title="full example · configuration: rbac-proxy">
         host: <S>0.0.0.0</S>
-        {'\n'}
+        {"\n"}
         port: <S>49200</S>
-        {'\n'}
+        {"\n"}
         engine_url: <S>ws://127.0.0.1:49134</S>
-        {'\n'}
+        {"\n"}
         expose_worker_internals: <S>false</S>
-        {'\n'}
+        {"\n"}
         middleware_function_id: <S>my-project::middleware-function</S>
-        {'\n'}
+        {"\n"}
         <M>rbac:</M>
-        {'\n  '}auth_function_id: <S>my-project::auth-function</S>
-        {'\n  '}on_function_registration_function_id: <S>my-project::on-function-reg</S>
-        {'\n  '}on_trigger_registration_function_id: <S>my-project::on-trigger-reg</S>
-        {'\n  '}expose_functions:
-        {'\n    - '}
+        {"\n  "}auth_function_id: <S>my-project::auth-function</S>
+        {"\n  "}on_function_registration_function_id: <S>my-project::on-function-reg</S>
+        {"\n  "}on_trigger_registration_function_id: <S>my-project::on-trigger-reg</S>
+        {"\n  "}expose_functions:
+        {"\n    - "}
         <S>match(&quot;api::*&quot;)</S>
-        {'\n    - '}
+        {"\n    - "}
         <S>match(&quot;*::public&quot;)</S>
       </CodeBlock>
 

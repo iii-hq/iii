@@ -1,7 +1,7 @@
-import { DurabilityTimeline } from '@lib/components/diagrams/DurabilityTimeline'
-import { PageShell } from '@lib/components/PageShell'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { CRASH_STAGES } from '../content/crash-restart'
+import { DurabilityTimeline } from "@lib/components/diagrams/DurabilityTimeline"
+import { PageShell } from "@lib/components/PageShell"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { CRASH_STAGES } from "../content/crash-restart"
 
 /**
  * A14 deep dive — the daemon's own crash. Children outlive it; a durable
@@ -29,8 +29,7 @@ export function CrashRestartPage() {
             losing the engine connection never stops children; the daemon reconnects and reconciles.
           </SpecRow>
           <SpecRow name="verify before signal">
-            a recorded pid is signaled only after its birth identity matches — a recycled pid is reported, never
-            killed.
+            a recorded pid is signaled only after its birth identity matches — a recycled pid is reported, never killed.
           </SpecRow>
           <SpecRow name="dead child → full accounting">
             stale state removed, registration released, local dependents cascaded, cause logged.

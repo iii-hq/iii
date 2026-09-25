@@ -1,8 +1,8 @@
-import { SpawnTree } from '@lib/components/diagrams/SpawnTree'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { SPAWN_CHILDREN, SPAWN_PARENT_LABELS, SPAWN_STATES } from '../content/spawn'
+import { SpawnTree } from "@lib/components/diagrams/SpawnTree"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { SPAWN_CHILDREN, SPAWN_PARENT_LABELS, SPAWN_STATES } from "../content/spawn"
 
 export function SpawnSection() {
   return (
@@ -15,10 +15,10 @@ export function SpawnSection() {
     >
       <SpawnTree
         heading="harness::spawn — fan out, join back"
-        chips={['depth ≤ 3', 'fan-out ≤ 5', 'turns ≤ parent budget']}
+        chips={["depth ≤ 3", "fan-out ≤ 5", "turns ≤ parent budget"]}
         parentTitle="parent turn — s_7a1 / t_004"
         parentLabels={SPAWN_PARENT_LABELS}
-        parentCallLine={{ first: 'model emits: harness::spawn ×3', rest: 'calls: 3 × harness::spawn' }}
+        parentCallLine={{ first: "model emits: harness::spawn ×3", rest: "calls: 3 × harness::spawn" }}
         nodes={SPAWN_CHILDREN}
         states={SPAWN_STATES}
         ariaLabel="a parent agent spawning three parallel sub-agents and joining their results"
@@ -26,30 +26,30 @@ export function SpawnSection() {
 
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-2 gap-4 items-start">
         <CodeBlock title="what the model actually emits">
-          <K>agent_trigger</K> <M>{'{'}</M>
-          {'\n'}
-          {'  '}function: <S>"harness::spawn"</S>,{'\n'}
-          {'  '}payload: <M>{'{'}</M>
-          {'\n'}
-          {'    '}task: <S>"compare pricing + limits across providers"</S>,{'\n'}
-          {'    '}options: <M>{'{'}</M>
-          {'\n'}
-          {'      '}output: <M>{'{'}</M> type: <S>"json"</S>, schema: <M>{'{ … }'}</M> <M>{'}'}</M>,{'\n'}
-          {'      '}functions: <M>{'{'}</M> allow: [<S>"search::web"</S>, <S>"router::models::list"</S>] <M>{'}'}</M>
-          {'\n'}
-          {'    '}
-          <M>{'}'}</M>
-          {'\n'}
-          {'  '}
-          <M>{'}'}</M>
-          {'\n'}
-          <M>{'}'}</M>
-          {'\n\n'}
-          <C>// the child's allow-list is intersected with the parent's —</C>
-          {'\n'}
-          <C>// narrow, never escalate. linkage is injected by the harness,</C>
-          {'\n'}
-          <C>// never trusted from model arguments.</C>
+          <K>agent_trigger</K> <M>{"{"}</M>
+          {"\n"}
+          {"  "}function: <S>"harness::spawn"</S>,{"\n"}
+          {"  "}payload: <M>{"{"}</M>
+          {"\n"}
+          {"    "}task: <S>"compare pricing + limits across providers"</S>,{"\n"}
+          {"    "}options: <M>{"{"}</M>
+          {"\n"}
+          {"      "}output: <M>{"{"}</M> type: <S>"json"</S>, schema: <M>{"{ … }"}</M> <M>{"}"}</M>,{"\n"}
+          {"      "}functions: <M>{"{"}</M> allow: [<S>"search::web"</S>, <S>"router::models::list"</S>] <M>{"}"}</M>
+          {"\n"}
+          {"    "}
+          <M>{"}"}</M>
+          {"\n"}
+          {"  "}
+          <M>{"}"}</M>
+          {"\n"}
+          <M>{"}"}</M>
+          {"\n\n"}
+          <C>{"// the child's allow-list is intersected with the parent's —"}</C>
+          {"\n"}
+          <C>{"// narrow, never escalate. linkage is injected by the harness,"}</C>
+          {"\n"}
+          <C>{"// never trusted from model arguments."}</C>
         </CodeBlock>
 
         <SpecSheet title="the spawn dispatch, step by step" meta="5 moves" defaultOpen>

@@ -1,11 +1,13 @@
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { cn } from '@lib/lib/utils'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { WORKERS } from '../content/workers'
+import { ScrollFadePanel } from "@lib/components/ScrollFadePanel"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
+import { WORKERS } from "../content/workers"
 
-type NodeKind = 'core' | 'consumer' | 'sibling'
+type NodeKind = "core" | "consumer" | "sibling"
 
 interface MapNode {
   id: string
@@ -26,167 +28,167 @@ interface MapEdge {
   label: string
   lx: number
   ly: number
-  anchor?: 'start' | 'middle' | 'end'
+  anchor?: "start" | "middle" | "end"
   dashed?: boolean
   dur?: number
 }
 
 const NODES: MapNode[] = [
-  { id: 'chat', x: 30, y: 60, w: 180, h: 56, title: 'chat', sub: 'console web app', kind: 'consumer' },
-  { id: 'telegram-bot', x: 30, y: 185, w: 180, h: 56, title: 'telegram-bot', sub: 'webhook bridge', kind: 'consumer' },
-  { id: 'third-party', x: 30, y: 310, w: 180, h: 56, title: 'third-party-worker', sub: 'any worker', kind: 'consumer' },
-  { id: 'session-manager', x: 425, y: 28, w: 210, h: 60, title: 'session-manager', sub: 'session::*', kind: 'core' },
-  { id: 'harness', x: 425, y: 168, w: 210, h: 92, title: 'harness', sub: 'harness::* — the loop', kind: 'core' },
-  { id: 'context-manager', x: 425, y: 330, w: 210, h: 60, title: 'context-manager', sub: 'context::*', kind: 'core' },
-  { id: 'approval-gate', x: 800, y: 28, w: 200, h: 60, title: 'approval-gate', sub: 'approval::*', kind: 'sibling' },
-  { id: 'llm-router', x: 800, y: 168, w: 200, h: 60, title: 'llm-router', sub: 'router::*', kind: 'core' },
+  { id: "chat", x: 30, y: 60, w: 180, h: 56, title: "chat", sub: "console web app", kind: "consumer" },
+  { id: "telegram-bot", x: 30, y: 185, w: 180, h: 56, title: "telegram-bot", sub: "webhook bridge", kind: "consumer" },
+  { id: "third-party", x: 30, y: 310, w: 180, h: 56, title: "third-party-worker", sub: "any worker", kind: "consumer" },
+  { id: "session-manager", x: 425, y: 28, w: 210, h: 60, title: "session-manager", sub: "session::*", kind: "core" },
+  { id: "harness", x: 425, y: 168, w: 210, h: 92, title: "harness", sub: "harness::* — the loop", kind: "core" },
+  { id: "context-manager", x: 425, y: 330, w: 210, h: 60, title: "context-manager", sub: "context::*", kind: "core" },
+  { id: "approval-gate", x: 800, y: 28, w: 200, h: 60, title: "approval-gate", sub: "approval::*", kind: "sibling" },
+  { id: "llm-router", x: 800, y: 168, w: 200, h: 60, title: "llm-router", sub: "router::*", kind: "core" },
 ]
 
 const EDGES: MapEdge[] = [
   {
-    id: 'chat-send',
-    from: 'chat',
-    to: 'harness',
-    d: 'M 210 92 C 300 92, 340 196, 425 196',
-    label: 'harness::send',
+    id: "chat-send",
+    from: "chat",
+    to: "harness",
+    d: "M 210 92 C 300 92, 340 196, 425 196",
+    label: "harness::send",
     lx: 308,
     ly: 132,
     dur: 2.2,
   },
   {
-    id: 'session-events',
-    from: 'session-manager',
-    to: 'chat',
-    d: 'M 425 50 C 340 50, 300 76, 214 84',
-    label: 'live session events',
+    id: "session-events",
+    from: "session-manager",
+    to: "chat",
+    d: "M 425 50 C 340 50, 300 76, 214 84",
+    label: "live session events",
     lx: 318,
     ly: 42,
     dur: 2.2,
   },
   {
-    id: 'tg-send',
-    from: 'telegram-bot',
-    to: 'harness',
-    d: 'M 210 213 C 300 213, 340 214, 425 214',
-    label: 'harness::send',
+    id: "tg-send",
+    from: "telegram-bot",
+    to: "harness",
+    d: "M 210 213 C 300 213, 340 214, 425 214",
+    label: "harness::send",
     lx: 304,
     ly: 206,
     dur: 2.2,
   },
   {
-    id: 'persist',
-    from: 'harness',
-    to: 'session-manager',
-    d: 'M 460 168 L 460 92',
-    label: 'append / stream deltas',
+    id: "persist",
+    from: "harness",
+    to: "session-manager",
+    d: "M 460 168 L 460 92",
+    label: "append / stream deltas",
     lx: 452,
     ly: 136,
-    anchor: 'end',
+    anchor: "end",
     dur: 1.6,
   },
   {
-    id: 'assemble',
-    from: 'harness',
-    to: 'context-manager',
-    d: 'M 540 260 L 540 326',
-    label: 'context::assemble',
+    id: "assemble",
+    from: "harness",
+    to: "context-manager",
+    d: "M 540 260 L 540 326",
+    label: "context::assemble",
     lx: 548,
     ly: 298,
-    anchor: 'start',
+    anchor: "start",
     dur: 1.6,
   },
   {
-    id: 'generate',
-    from: 'harness',
-    to: 'llm-router',
-    d: 'M 635 200 L 796 200',
-    label: 'router::chat',
+    id: "generate",
+    from: "harness",
+    to: "llm-router",
+    d: "M 635 200 L 796 200",
+    label: "router::chat",
     lx: 712,
     ly: 192,
     dur: 1.8,
   },
   {
-    id: 'providers',
-    from: 'llm-router',
-    to: 'providers',
-    d: 'M 900 228 L 900 296',
-    label: 'provider::<id>::stream',
+    id: "providers",
+    from: "llm-router",
+    to: "providers",
+    d: "M 900 228 L 900 296",
+    label: "provider::<id>::stream",
     lx: 908,
     ly: 266,
-    anchor: 'start',
+    anchor: "start",
     dur: 1.6,
   },
   {
-    id: 'hook',
-    from: 'harness',
-    to: 'approval-gate',
-    d: 'M 638 176 C 716 142, 750 84, 796 60',
-    label: 'hook: pre_trigger',
+    id: "hook",
+    from: "harness",
+    to: "approval-gate",
+    d: "M 638 176 C 716 142, 750 84, 796 60",
+    label: "hook: pre_trigger",
     lx: 712,
     ly: 94,
     dashed: true,
     dur: 2.2,
   },
   {
-    id: 'resolve',
-    from: 'approval-gate',
-    to: 'harness',
-    d: 'M 798 76 C 730 102, 690 142, 640 188',
-    label: 'function::resolve',
+    id: "resolve",
+    from: "approval-gate",
+    to: "harness",
+    d: "M 798 76 C 730 102, 690 142, 640 188",
+    label: "function::resolve",
     lx: 758,
     ly: 134,
-    anchor: 'start',
+    anchor: "start",
     dashed: true,
     dur: 2.2,
   },
   {
-    id: 'dispatch',
-    from: 'harness',
-    to: 'substrate',
-    d: 'M 455 260 C 400 320, 340 400, 300 458',
-    label: 'agent_trigger → any allowed function',
+    id: "dispatch",
+    from: "harness",
+    to: "substrate",
+    d: "M 455 260 C 400 320, 340 400, 300 458",
+    label: "agent_trigger → any allowed function",
     lx: 312,
     ly: 392,
-    anchor: 'start',
+    anchor: "start",
     dur: 2.4,
   },
   {
-    id: 'callback',
-    from: 'substrate',
-    to: 'chat',
-    d: 'M 250 462 L 250 134 C 250 116, 240 104, 214 98',
-    label: 'functions can call consumers back',
+    id: "callback",
+    from: "substrate",
+    to: "chat",
+    d: "M 250 462 L 250 134 C 250 116, 240 104, 214 98",
+    label: "functions can call consumers back",
     lx: 258,
     ly: 286,
-    anchor: 'start',
+    anchor: "start",
     dur: 3,
   },
   {
-    id: 'run',
-    from: 'third-party',
-    to: 'harness',
-    d: 'M 210 326 C 300 318, 350 250, 425 238',
-    label: 'harness::run',
+    id: "run",
+    from: "third-party",
+    to: "harness",
+    d: "M 210 326 C 300 318, 350 250, 425 238",
+    label: "harness::run",
     lx: 296,
     ly: 288,
     dur: 2.2,
   },
   {
-    id: 'direct',
-    from: 'third-party',
-    to: 'llm-router',
-    d: 'M 210 352 C 460 450, 720 410, 798 212',
-    label: 'router::chat — no loop needed',
+    id: "direct",
+    from: "third-party",
+    to: "llm-router",
+    d: "M 210 352 C 460 450, 720 410, 798 212",
+    label: "router::chat — no loop needed",
     lx: 560,
     ly: 428,
     dur: 3,
   },
   {
-    id: 'spawn',
-    from: 'harness',
-    to: 'harness',
-    d: 'M 520 168 C 520 118, 620 118, 620 168',
-    label: 'harness::spawn → child sessions',
+    id: "spawn",
+    from: "harness",
+    to: "harness",
+    d: "M 520 168 C 520 118, 620 118, 620 168",
+    label: "harness::spawn → child sessions",
     lx: 575,
     ly: 110,
     dur: 2.4,
@@ -194,24 +196,34 @@ const EDGES: MapEdge[] = [
 ]
 
 const SUBSTRATE_CHIPS: Array<{ id: string; ghost?: boolean }> = [
-  { id: 'shell::exec' },
-  { id: 'email::send' },
-  { id: 'database::query' },
-  { id: 'storage::put' },
-  { id: 'image-resize::convert' },
-  { id: 'todo::create' },
-  { id: 'coder::apply_patch' },
-  { id: 'search::web' },
-  { id: 'engine::functions::list' },
-  { id: 'harness::spawn' },
-  { id: 'anything::you_register', ghost: true },
+  { id: "shell::exec" },
+  { id: "email::send" },
+  { id: "database::query" },
+  { id: "storage::put" },
+  { id: "image-resize::convert" },
+  { id: "todo::create" },
+  { id: "coder::apply_patch" },
+  { id: "search::web" },
+  { id: "engine::functions::list" },
+  { id: "harness::spawn" },
+  { id: "anything::you_register", ghost: true },
 ]
 
 const SUBSTRATE = { x: 30, y: 462, w: 970, h: 108 }
 
+/** the provider stack's footprint — three offset cards, 800..1000 × 300..372 */
+const PROVIDERS = { x: 800, y: 300, w: 200, h: 72 }
+
 function chipWidth(label: string) {
   return Math.round(label.length * 6.6) + 18
 }
+
+/**
+ * the clickable area of a map node: an invisible html button laid over the
+ * node's box through a foreignObject, so the map's controls are real buttons
+ * (keyboard + screen reader) while the drawing stays plain svg.
+ */
+const HIT_TARGET = "block h-full w-full cursor-pointer border-0 bg-transparent p-0 focus:outline-none"
 
 interface SystemMapProps {
   selected: string
@@ -219,10 +231,7 @@ interface SystemMapProps {
 }
 
 export function SystemMap({ selected, onSelect }: SystemMapProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   const activeEdges = useMemo(
     () => new Set(EDGES.filter((e) => e.from === selected || e.to === selected).map((e) => e.id)),
@@ -254,12 +263,11 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
     return rows
   }, [])
 
-  const substrateActive = selected === 'substrate'
+  const substrateActive = selected === "substrate"
 
   return (
     <svg
       viewBox="0 0 1030 600"
-      role="group"
       aria-label="system map of the agentic workers"
       className="w-full h-auto font-mono select-none"
     >
@@ -297,9 +305,9 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
               d={edge.d}
               fill="none"
               strokeWidth={active ? 1.4 : 1}
-              strokeDasharray={edge.dashed ? '5 4' : undefined}
-              markerEnd={`url(#${active ? 'arr-accent' : 'arr-faint'})`}
-              className={cn('transition-[stroke] duration-200', active ? 'stroke-accent' : 'stroke-rule')}
+              strokeDasharray={edge.dashed ? "5 4" : undefined}
+              markerEnd={`url(#${active ? "arr-accent" : "arr-faint"})`}
+              className={cn("transition-[stroke] duration-200", active ? "stroke-accent" : "stroke-rule")}
             />
             {active && !reducedMotion ? (
               <circle r="2.6" className="fill-accent">
@@ -309,11 +317,11 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
             <text
               x={edge.lx}
               y={edge.ly}
-              textAnchor={edge.anchor ?? 'middle'}
+              textAnchor={edge.anchor ?? "middle"}
               fontSize="9.5"
               letterSpacing="0.04em"
-              className={cn(active ? 'fill-ink' : 'fill-ink-ghost', 'transition-[fill] duration-200')}
-              style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 4 }}
+              className={cn(active ? "fill-ink" : "fill-ink-ghost", "transition-[fill] duration-200")}
+              style={{ paintOrder: "stroke", stroke: "var(--color-bg)", strokeWidth: 4 }}
             >
               {edge.label}
             </text>
@@ -326,39 +334,25 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
         const isSelected = node.id === selected
         const isConnected = connected.has(node.id)
         return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            aria-pressed={isSelected}
-            aria-label={`select ${node.title}`}
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
-            className="cursor-pointer focus:outline-none group"
-          >
+          <g key={node.id} className="group">
             <rect
               x={node.x}
               y={node.y}
               width={node.w}
               height={node.h}
-              strokeWidth={isSelected ? 1.5 : node.kind === 'core' ? 1.25 : 1}
-              strokeDasharray={node.kind === 'sibling' ? '5 4' : undefined}
+              strokeWidth={isSelected ? 1.5 : node.kind === "core" ? 1.25 : 1}
+              strokeDasharray={node.kind === "sibling" ? "5 4" : undefined}
               className={cn(
-                'transition-all duration-200',
-                isSelected ? 'fill-panel stroke-accent' : 'fill-bg group-hover:fill-panel',
+                "transition-all duration-200",
+                isSelected ? "fill-panel stroke-accent" : "fill-bg group-hover:fill-panel",
                 !isSelected &&
-                  (node.kind === 'core'
+                  (node.kind === "core"
                     ? isConnected
-                      ? 'stroke-ink'
-                      : 'stroke-ink-ghost'
+                      ? "stroke-ink"
+                      : "stroke-ink-ghost"
                     : isConnected
-                      ? 'stroke-ink-faint'
-                      : 'stroke-rule'),
+                      ? "stroke-ink-faint"
+                      : "stroke-rule"),
               )}
             />
             {isSelected ? <rect x={node.x} y={node.y} width={3} height={node.h} className="fill-accent" /> : null}
@@ -368,7 +362,7 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
               textAnchor="middle"
               fontSize="14"
               fontWeight={600}
-              className={cn(isSelected || isConnected || node.kind === 'core' ? 'fill-ink' : 'fill-ink-faint')}
+              className={cn(isSelected || isConnected || node.kind === "core" ? "fill-ink" : "fill-ink-faint")}
             >
               {node.title}
             </text>
@@ -388,22 +382,25 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
               textAnchor="end"
               fontSize="8"
               letterSpacing="0.08em"
-              className={cn('uppercase', isSelected ? 'fill-accent' : 'fill-ink-ghost')}
+              className={cn("uppercase", isSelected ? "fill-accent" : "fill-ink-ghost")}
             >
-              {node.kind === 'core' ? 'worker' : node.kind === 'sibling' ? 'optional' : 'consumer'}
+              {node.kind === "core" ? "worker" : node.kind === "sibling" ? "optional" : "consumer"}
             </text>
+            <foreignObject x={node.x} y={node.y} width={node.w} height={node.h}>
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                aria-label={`select ${node.title}`}
+                onClick={() => onSelect(node.id)}
+                className={HIT_TARGET}
+              />
+            </foreignObject>
           </g>
         )
       })}
 
       {/* provider stack (ghost — llm-router's protocol side) */}
-      <g
-        role="button"
-        tabIndex={0}
-        aria-label="select provider workers"
-        onClick={() => onSelect('llm-router')}
-        className="cursor-pointer"
-      >
+      <g>
         {[0, 1, 2].map((i) => (
           <rect
             key={i}
@@ -412,8 +409,8 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
             width={190}
             height={62}
             className={cn(
-              'fill-bg transition-colors',
-              connected.has('providers') || selected === 'llm-router' ? 'stroke-ink-faint' : 'stroke-rule',
+              "fill-bg transition-colors",
+              connected.has("providers") || selected === "llm-router" ? "stroke-ink-faint" : "stroke-rule",
             )}
             strokeWidth={1}
           />
@@ -424,23 +421,18 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
         <text x={905} y={349} textAnchor="middle" fontSize="9" letterSpacing="0.05em" className="fill-ink-ghost">
           anthropic / openai / google / …
         </text>
+        <foreignObject x={PROVIDERS.x} y={PROVIDERS.y} width={PROVIDERS.w} height={PROVIDERS.h}>
+          <button
+            type="button"
+            aria-label="select provider workers"
+            onClick={() => onSelect("llm-router")}
+            className={HIT_TARGET}
+          />
+        </foreignObject>
       </g>
 
       {/* the substrate band */}
-      <g
-        role="button"
-        tabIndex={0}
-        aria-pressed={substrateActive}
-        aria-label="select the substrate"
-        onClick={() => onSelect('substrate')}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            onSelect('substrate')
-          }
-        }}
-        className="cursor-pointer focus:outline-none group"
-      >
+      <g className="group">
         <rect
           x={SUBSTRATE.x}
           y={SUBSTRATE.y}
@@ -448,8 +440,8 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
           height={SUBSTRATE.h}
           strokeWidth={substrateActive ? 1.5 : 1}
           className={cn(
-            'transition-all duration-200',
-            substrateActive ? 'fill-panel stroke-accent' : 'fill-paper-2 stroke-rule group-hover:stroke-ink-faint',
+            "transition-all duration-200",
+            substrateActive ? "fill-panel stroke-accent" : "fill-paper-2 stroke-rule group-hover:stroke-ink-faint",
           )}
         />
         <text
@@ -457,7 +449,7 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
           y={SUBSTRATE.y + 22}
           fontSize="10"
           letterSpacing="0.14em"
-          className={cn('uppercase', substrateActive ? 'fill-accent' : 'fill-ink-faint')}
+          className={cn("uppercase", substrateActive ? "fill-accent" : "fill-ink-faint")}
         >
           the substrate — every function registered on the bus
         </text>
@@ -479,7 +471,7 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
                 y={SUBSTRATE.y + 36 + rowIdx * 30}
                 width={chip.w}
                 height={22}
-                className={cn('fill-bg', chip.ghost ? 'stroke-rule-2' : 'stroke-rule')}
+                className={cn("fill-bg", chip.ghost ? "stroke-rule-2" : "stroke-rule")}
                 strokeWidth={1}
               />
               <text
@@ -487,93 +479,24 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
                 y={SUBSTRATE.y + 36 + rowIdx * 30 + 15}
                 textAnchor="middle"
                 fontSize="10"
-                className={chip.ghost ? 'fill-ink-ghost' : 'fill-ink-faint'}
+                className={chip.ghost ? "fill-ink-ghost" : "fill-ink-faint"}
               >
                 {chip.id}
               </text>
             </g>
           )),
         )}
+        <foreignObject x={SUBSTRATE.x} y={SUBSTRATE.y} width={SUBSTRATE.w} height={SUBSTRATE.h}>
+          <button
+            type="button"
+            aria-pressed={substrateActive}
+            aria-label="select the substrate"
+            onClick={() => onSelect("substrate")}
+            className={HIT_TARGET}
+          />
+        </foreignObject>
       </g>
     </svg>
-  )
-}
-
-function ScrollFadePanel({
-  children,
-  contentKey,
-  layoutKey,
-}: {
-  children: ReactNode
-  contentKey: string
-  layoutKey?: string | number
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
-
-  const updateScrollState = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const { scrollTop, scrollHeight, clientHeight } = el
-    const overflow = scrollHeight - clientHeight > 8
-    setCanScrollUp(overflow && scrollTop > 4)
-    setCanScrollDown(overflow && scrollTop + clientHeight < scrollHeight - 4)
-  }, [])
-
-  useEffect(() => {
-    const scrollEl = scrollRef.current
-    const contentEl = contentRef.current
-    if (!scrollEl || !contentEl) return
-
-    scrollEl.scrollTop = 0
-
-    const sync = () => {
-      updateScrollState()
-    }
-
-    sync()
-    requestAnimationFrame(sync)
-
-    scrollEl.addEventListener('scroll', sync, { passive: true })
-    const observer = new ResizeObserver(sync)
-    observer.observe(scrollEl)
-    observer.observe(contentEl)
-
-    return () => {
-      scrollEl.removeEventListener('scroll', sync)
-      observer.disconnect()
-    }
-  }, [contentKey, layoutKey, updateScrollState])
-
-  return (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
-      <div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-        <div ref={contentRef}>{children}</div>
-      </div>
-      {canScrollUp ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 border-b border-rule bg-gradient-to-b from-bg via-bg/95 to-transparent"
-        />
-      ) : null}
-      {canScrollDown ? (
-        <>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-12 bg-gradient-to-t from-bg via-bg/95 to-transparent"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-center gap-x-1.5 pb-2"
-          >
-            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-accent">scroll</span>
-            <span className="font-mono text-[10px] leading-none text-accent">↓</span>
-          </div>
-        </>
-      ) : null}
-    </div>
   )
 }
 
@@ -589,7 +512,7 @@ export function MapDatasheet({
 }) {
   const info = WORKERS[selected] ?? WORKERS.harness
   return (
-    <aside className={cn('border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden', className)}>
+    <aside className={cn("border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden", className)}>
       <header className="shrink-0 flex items-center justify-between gap-x-3 bg-panel px-4 py-3 border-b border-rule">
         <span className="font-mono text-[16px] font-semibold text-ink">{info.id}</span>
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint whitespace-nowrap">
@@ -597,7 +520,7 @@ export function MapDatasheet({
         </span>
       </header>
 
-      <ScrollFadePanel contentKey={info.id} layoutKey={layoutKey}>
+      <ScrollFadePanel key={`${info.id}:${layoutKey ?? ""}`}>
         <div className="px-4 py-3.5 font-mono text-[13px] leading-[1.7] text-ink lowercase border-b border-rule-2">
           {info.role}
         </div>

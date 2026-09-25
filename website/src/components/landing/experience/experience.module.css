@@ -1,0 +1,68 @@
+/* Blinking text caret (composer + terminal). A keyframe loop reads better as CSS than as Motion props. */
+.caret {
+  animation: xp-blink 1s steps(2, end) infinite;
+}
+
+@keyframes xp-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Where the flow is waiting for you: a soft ring breathes out of the control
+   so the eye lands on it, and a thin sweep along its bottom edge shows the
+   flow will carry on by itself if you don't. */
+.nudge {
+  position: relative;
+  display: inline-flex;
+  border-radius: 10px;
+}
+
+.nudge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: xp-nudge 1.8s cubic-bezier(0.2, 0.8, 0.3, 1) infinite;
+}
+
+@keyframes xp-nudge {
+  0% {
+    box-shadow: 0 0 0 0 var(--gray-9);
+    opacity: 0.9;
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px var(--gray-9);
+    opacity: 0;
+  }
+}
+
+.sweep {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: currentColor;
+  opacity: 0.35;
+  transform-origin: left;
+  animation: xp-sweep linear forwards;
+}
+
+@keyframes xp-sweep {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .nudge::after {
+    animation: none;
+  }
+}

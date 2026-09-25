@@ -1,10 +1,11 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, M, S } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { ModeToggle } from '@lib/components/schematic/ModeToggle'
-import { useMemo, useState } from 'react'
-import { ACCESS_CATALOG, ACCESS_PROFILES, filterLabel, resolveAccess } from '../content/access'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, M, S } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { ModeToggle } from "@lib/components/schematic/ModeToggle"
+import { keyed } from "@lib/lib/keys"
+import { useMemo, useState } from "react"
+import { ACCESS_CATALOG, ACCESS_PROFILES, filterLabel, resolveAccess } from "../content/access"
 
 /**
  * A9 — the access-resolution explorer. Switch the session profile and every
@@ -27,7 +28,7 @@ export function AccessSection() {
     ) : (
       <>
         <M>[</M>
-        <S>{ids.join(', ')}</S>
+        <S>{ids.join(", ")}</S>
         <M>]</M>
       </>
     )
@@ -48,7 +49,7 @@ export function AccessSection() {
             options={ACCESS_PROFILES.map((p) => ({ value: p.id, label: p.label }))}
           />
           <span className="font-mono text-[12px] uppercase tracking-[0.06em] text-ink-faint">
-            <span className="text-accent text-[15px] font-semibold tabular-nums">{callable}</span> /{' '}
+            <span className="text-accent text-[15px] font-semibold tabular-nums">{callable}</span> /{" "}
             {ACCESS_CATALOG.length} callable
           </span>
         </div>
@@ -56,17 +57,17 @@ export function AccessSection() {
         <div className="flex flex-wrap gap-2 p-4">
           {verdicts.map(({ fn, v }) => {
             const isPicked = picked === fn.id
-            const tone = isPicked ? 'accent' : v.allowed ? 'ink' : 'ghost'
+            const tone = isPicked ? "accent" : v.allowed ? "ink" : "ghost"
             return (
               <button
                 key={fn.id}
                 type="button"
                 aria-pressed={isPicked}
                 onClick={() => setPicked(isPicked ? null : fn.id)}
-                title={`${v.allowed ? 'allowed' : 'denied'} · ${v.rule}`}
+                title={`${v.allowed ? "allowed" : "denied"} · ${v.rule}`}
                 className="cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               >
-                <FnChip tone={tone} className={v.allowed ? '' : 'line-through opacity-55 decoration-alert/70'}>
+                <FnChip tone={tone} className={v.allowed ? "" : "line-through opacity-55 decoration-alert/70"}>
                   {fn.id}
                 </FnChip>
               </button>
@@ -77,13 +78,13 @@ export function AccessSection() {
         <div className="border-t border-rule px-4 py-3 min-h-[58px] flex items-center">
           {pickedVerdict ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-              <FnChip tone={pickedVerdict.v.allowed ? 'accent' : 'alert'}>{pickedVerdict.fn.id}</FnChip>
+              <FnChip tone={pickedVerdict.v.allowed ? "accent" : "alert"}>{pickedVerdict.fn.id}</FnChip>
               <span
                 className={`font-mono text-[13px] font-semibold lowercase ${
-                  pickedVerdict.v.allowed ? 'text-accent' : 'text-alert'
+                  pickedVerdict.v.allowed ? "text-accent" : "text-alert"
                 }`}
               >
-                {pickedVerdict.v.allowed ? 'allowed' : 'denied'}
+                {pickedVerdict.v.allowed ? "allowed" : "denied"}
               </span>
               <span className="font-mono text-[12px] text-ink-faint">{pickedVerdict.v.rule}</span>
             </div>
@@ -98,20 +99,20 @@ export function AccessSection() {
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
         <CodeBlock title="active policy · configuration: rbac-proxy">
           <M>rbac:</M>
-          {'\n  forbidden_functions: '}
+          {"\n  forbidden_functions: "}
           {list(profile.forbidden_functions)}
-          {'\n  allowed_functions: '}
+          {"\n  allowed_functions: "}
           {list(profile.allowed_functions)}
-          {'\n  expose_functions:'}
+          {"\n  expose_functions:"}
           {profile.expose.length === 0 ? <M> []</M> : null}
-          {profile.expose.map((f, i) => (
-            <span key={i}>
-              {'\n    - '}
+          {keyed(profile.expose, filterLabel).map(({ key, item: f }) => (
+            <span key={key}>
+              {"\n    - "}
               <S>{filterLabel(f)}</S>
             </span>
           ))}
-          {'\n'}
-          <C>{'# carve-out (10 ids) stays callable regardless'}</C>
+          {"\n"}
+          <C>{"# carve-out (10 ids) stays callable regardless"}</C>
         </CodeBlock>
 
         <SpecSheet title="the resolution order" meta="forbidden wins" defaultOpen>

@@ -1,7 +1,7 @@
-import type { Route } from '@lib/hooks/useHashRoute'
-import type { NavItem } from '@lib/lib/deck-types'
-import { cn } from '@lib/lib/utils'
-import { useEffect, useState } from 'react'
+import type { Route } from "@lib/hooks/useHashRoute"
+import type { NavItem } from "@lib/lib/deck-types"
+import { cn } from "@lib/lib/utils"
+import { useEffect, useState } from "react"
 
 /**
  * The deck's in-page section nav. Branding and theme switching live in the
@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react'
 export function TopNav({
   route,
   nav,
-  specHref = '#/spec',
+  specHref = "#/spec",
 }: {
   route: Route
   nav: NavItem[]
@@ -24,7 +24,7 @@ export function TopNav({
 
   // scroll-spy: highlight the section currently in view (home page only)
   useEffect(() => {
-    if (route.kind !== 'home') return
+    if (route.kind !== "home") return
     const sections = nav.map((l) => document.getElementById(l.id)).filter((el): el is HTMLElement => el !== null)
     if (sections.length === 0) return
     const observer = new IntersectionObserver(
@@ -33,7 +33,7 @@ export function TopNav({
           if (entry.isIntersecting) setActive(entry.target.id)
         }
       },
-      { rootMargin: '-20% 0px -70% 0px' },
+      { rootMargin: "-20% 0px -70% 0px" },
     )
     for (const el of sections) observer.observe(el)
     return () => observer.disconnect()
@@ -42,15 +42,15 @@ export function TopNav({
   return (
     <header className="border-b border-rule bg-bg">
       <div className="flex items-center gap-x-5 px-4 py-2.5 @3xl:px-9">
-        {route.kind === 'home' ? (
+        {route.kind === "home" ? (
           <nav className="flex items-center gap-x-4 min-w-0 overflow-x-auto">
             {nav.map((link) => (
               <a
                 key={link.id}
                 href={`#${link.id}`}
                 className={cn(
-                  'font-mono text-[12px] lowercase py-1.5 transition-colors whitespace-nowrap',
-                  active === link.id ? 'text-accent' : 'text-ink-faint hover:text-ink',
+                  "font-mono text-[12px] lowercase py-1.5 transition-colors whitespace-nowrap",
+                  active === link.id ? "text-accent" : "text-ink-faint hover:text-ink",
                 )}
               >
                 {link.label}
@@ -67,8 +67,8 @@ export function TopNav({
           <a
             href={specHref}
             className={cn(
-              'ml-auto shrink-0 font-mono text-[12px] lowercase whitespace-nowrap transition-colors',
-              route.kind === 'page' && route.slug === 'spec' ? 'text-accent' : 'text-ink-faint hover:text-ink',
+              "ml-auto shrink-0 font-mono text-[12px] lowercase whitespace-nowrap transition-colors",
+              route.kind === "page" && route.slug === "spec" ? "text-accent" : "text-ink-faint hover:text-ink",
             )}
           >
             spec

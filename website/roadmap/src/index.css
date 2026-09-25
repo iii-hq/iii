@@ -1,13 +1,31 @@
-/* scan the whole roadmap tree (shared src + every deck + the viewer) for
-   utility classes, plus the Astro pages/layouts that mount them */
+/* The decks' own Tailwind root, separate from the site's (src/app/(site)/globals.css).
+   Scan the roadmap tree (shared src + every deck) for utility classes, plus the
+   Next route group that mounts them — not the rest of src/, which is the site's. */
 @import "tailwindcss" source("../");
-@source "../../src";
+@source "../../src/app/(deck)";
+
+/* Chivo Mono, self-hosted from public/fonts/ (declared here since the deck
+   layout is the only document that uses it) */
+@font-face {
+  font-family: "Chivo Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/ChivoMono-VariableFont_wght.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Chivo Mono";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/ChivoMono-Italic-VariableFont_wght.ttf") format("truetype");
+}
 
 @theme {
-  --font-sans: "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, "Liberation Mono", "Courier New", monospace;
-  --font-mono: "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-sans:
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-mono:
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
   /* paper / surface ramp (3-step) */
   --color-bg: #f2f0ed;
@@ -79,7 +97,11 @@
     color: var(--color-ink);
     /* explicitly disable decorative ligatures — the schematic feel relies on
        monospace columns, not typographic flourishes */
-    font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "dlig" 0;
+    font-feature-settings:
+      "liga" 0,
+      "clig" 0,
+      "calt" 0,
+      "dlig" 0;
   }
 
   ::selection {
@@ -116,8 +138,14 @@
 }
 
 @keyframes blink {
-  0%, 49% { opacity: 1; }
-  50%, 100% { opacity: 0; }
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 
 @utility blink {
@@ -125,9 +153,17 @@
 }
 
 @keyframes wiggle {
-  0%, 90%, 100% { transform: rotate(0deg); }
-  93% { transform: rotate(-3deg); }
-  96% { transform: rotate(3deg); }
+  0%,
+  90%,
+  100% {
+    transform: rotate(0deg);
+  }
+  93% {
+    transform: rotate(-3deg);
+  }
+  96% {
+    transform: rotate(3deg);
+  }
 }
 
 @utility wiggle {
@@ -136,7 +172,8 @@
 
 /* the one sanctioned shadow stack — used only for stacked "deal" cards */
 @utility deal-shadow {
-  box-shadow: -2px 0 0 var(--color-rule),
+  box-shadow:
+    -2px 0 0 var(--color-rule),
     -16px 4px 36px -10px rgba(0, 0, 0, 0.22);
 }
 
@@ -196,29 +233,14 @@
 @utility reveal {
   opacity: 0;
   transform: translateY(8px);
-  transition: opacity 0.55s ease-out, transform 0.55s ease-out;
+  transition:
+    opacity 0.55s ease-out,
+    transform 0.55s ease-out;
 }
 
 @utility reveal-in {
   opacity: 1;
   transform: translateY(0);
-}
-
-/* gallery cards stagger in on load; fill-mode `both` holds opacity:0 through
-   the stagger delay so cards appear in order */
-@keyframes card-rise {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@utility card-rise {
-  animation: card-rise 0.5s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -230,7 +252,6 @@
   .ripple-ring,
   .pulse-dot,
   .wiggle,
-  .card-rise,
   .fade-rise {
     animation: none;
   }

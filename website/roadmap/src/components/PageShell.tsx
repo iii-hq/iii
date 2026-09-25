@@ -1,5 +1,5 @@
-import { Prompt } from '@lib/components/schematic/Prompt'
-import type * as React from 'react'
+import { Prompt } from "@lib/components/schematic/Prompt"
+import type * as React from "react"
 
 export interface RelatedLink {
   /** page slug, used to build the `#/<slug>` href */

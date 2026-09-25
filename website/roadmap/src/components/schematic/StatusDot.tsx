@@ -1,14 +1,14 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
 
-type DotTone = 'accent' | 'alert' | 'warn' | 'ink' | 'ghost'
+type DotTone = "accent" | "alert" | "warn" | "ink" | "ghost"
 
 const dotTone: Record<DotTone, string> = {
-  accent: 'bg-accent',
-  alert: 'bg-alert',
-  warn: 'bg-warn',
-  ink: 'bg-ink',
-  ghost: 'bg-ink-ghost',
+  accent: "bg-accent",
+  alert: "bg-alert",
+  warn: "bg-warn",
+  ink: "bg-ink",
+  ghost: "bg-ink-ghost",
 }
 
 interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
@@ -16,11 +16,11 @@ interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
   pulse?: boolean
 }
 
-export function StatusDot({ tone = 'accent', pulse, className, ...props }: StatusDotProps) {
+export function StatusDot({ tone = "accent", pulse, className, ...props }: StatusDotProps) {
   return (
     <span
       aria-hidden
-      className={cn('inline-block size-1.5 rounded-full shrink-0', dotTone[tone], pulse && 'pulse-dot', className)}
+      className={cn("inline-block size-1.5 rounded-full shrink-0", dotTone[tone], pulse && "pulse-dot", className)}
       {...props}
     />
   )

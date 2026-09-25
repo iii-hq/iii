@@ -1,6 +1,6 @@
-import { Section } from '@lib/components/Section'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { WHY_CARDS, WHY_NOTE } from '../content/why'
+import { Section } from "@lib/components/Section"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { WHY_CARDS, WHY_NOTE } from "../content/why"
 
 /**
  * A2 — the problem. The four compile-time extension paths, each with its
@@ -24,12 +24,7 @@ export function WhySection() {
         ))}
       </div>
 
-      <StatusPanel
-        className="mt-6"
-        variant="warn"
-        headline={WHY_NOTE.headline}
-        detail={WHY_NOTE.detail}
-      />
+      <StatusPanel className="mt-6" variant="warn" headline={WHY_NOTE.headline} detail={WHY_NOTE.detail} />
     </Section>
   )
 }

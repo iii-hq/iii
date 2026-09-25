@@ -64,12 +64,13 @@
       capture_pageview: true,
       capture_pageleave: true,
       session_recording: {
-        // The hero and agent visualizations animate SVG packets every frame,
-        // emitting ~900 DOM mutations/sec. Recording those mutations pegs CPU
-        // and grows memory unbounded in the replay buffer. Block the animated
-        // layers from session replay; the live page is unaffected.
+        // Several sections mutate the DOM every frame: the hero graph's packet
+        // and call layers, the two harness-race transcripts, the workers ticker
+        // and the console demo iframe. Recording those pegs CPU and grows the
+        // replay buffer without bound, so they are blocked from session replay.
+        // The live page is unaffected.
         blockSelector:
-          '#hv-packets, #hv-edges-ephemeral, #ag-a-packets, #ag-a-edges-eph',
+          '#hv-packets, #hv-edges-ephemeral, #harness figure, #workers [role="img"], #console-live iframe',
       },
     });
   };

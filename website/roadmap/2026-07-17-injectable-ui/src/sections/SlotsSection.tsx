@@ -1,16 +1,16 @@
-import { Section } from '@lib/components/Section'
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { ModeToggle } from '@lib/components/schematic/ModeToggle'
-import { useState } from 'react'
-import { SLOT_OPTIONS, SLOTS, type SlotId } from '../content/slots'
+import { Section } from "@lib/components/Section"
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { ModeToggle } from "@lib/components/schematic/ModeToggle"
+import { useState } from "react"
+import { SLOT_OPTIONS, SLOTS, type SlotId } from "../content/slots"
 
 /**
  * A9 — the four registrars behind one setup(host) contract. Toggle a slot to
  * read its mount point, exact props, and the walls the host keeps.
  */
 export function SlotsSection() {
-  const [slot, setSlot] = useState<SlotId>('composer')
+  const [slot, setSlot] = useState<SlotId>("composer")
   const spec = SLOTS[slot]
 
   return (
@@ -62,7 +62,7 @@ export function SlotsSection() {
         <FnChip tone="accent">setup(host)</FnChip>
       </div>
       <p className="mt-3 font-mono text-[12px] text-ink-faint lowercase">
-        full worker-side walkthrough →{' '}
+        full worker-side walkthrough →{" "}
         <a href="#/authoring" className="text-ink underline decoration-rule underline-offset-4 hover:text-accent">
           the author&apos;s chair
         </a>

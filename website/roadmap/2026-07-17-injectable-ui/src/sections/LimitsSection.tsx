@@ -1,6 +1,6 @@
-import { Section } from '@lib/components/Section'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { LIMITS } from '../content/limits'
+import { Section } from "@lib/components/Section"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { LIMITS } from "../content/limits"
 
 /**
  * The honesty beat — v1 boundaries stated as the spec states them, not
@@ -17,12 +17,7 @@ export function LimitsSection() {
     >
       <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-3">
         {LIMITS.map((limit) => (
-          <StatusPanel
-            key={limit.headline}
-            variant={limit.variant}
-            headline={limit.headline}
-            detail={limit.detail}
-          />
+          <StatusPanel key={limit.headline} variant={limit.variant} headline={limit.headline} detail={limit.detail} />
         ))}
       </div>
     </Section>

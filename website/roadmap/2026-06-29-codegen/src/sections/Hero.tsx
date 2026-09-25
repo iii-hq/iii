@@ -1,9 +1,9 @@
-import { Caret } from '@lib/components/schematic/Caret'
-import { Cell } from '@lib/components/schematic/Cell'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
-import { HERO_CLAIMS, HERO_STATS } from '../content/hero'
+import { Caret } from "@lib/components/schematic/Caret"
+import { Cell } from "@lib/components/schematic/Cell"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { Terminal, TerminalRow } from "@lib/components/schematic/Terminal"
+import { HERO_CLAIMS, HERO_STATS } from "../content/hero"
 
 /**
  * A1 - the hero. Leads with the call every developer already writes by hand,
@@ -24,8 +24,8 @@ export function Hero() {
             call, fully typed.
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[58ch]">
-            you already write <span className="text-ink">iii.trigger({'{ function_id, payload }'})</span> by hand.
-            codegen reads the engine's live catalog and generates the <span className="text-ink">typed wrapper</span>{' '}
+            you already write <span className="text-ink">iii.trigger({"{ function_id, payload }"})</span> by hand.
+            codegen reads the engine's live catalog and generates the <span className="text-ink">typed wrapper</span>{" "}
             for you, in typescript, rust, python, and javascript.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -63,7 +63,7 @@ export function Hero() {
                     <span className="text-ink-faint">{'{ message: "summarise the readme" }'}</span>)
                   </>
                 }
-                output={<span className="tabular-nums">{'↳ SendResult { session_id, turn_id, accepted }'}</span>}
+                output={<span className="tabular-nums">{"↳ SendResult { session_id, turn_id, accepted }"}</span>}
               />
               <div className="flex items-center gap-x-2">
                 <Prompt symbol="$" />

@@ -1,5 +1,5 @@
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
+import { cn } from "@lib/lib/utils"
 
 /**
  * archetype A7 — one event fans out to many handlers.
@@ -35,11 +35,8 @@ const HANDLER_H = 46
 const ROW_GAP = 26 // vertical gap between handler boxes
 const TOP = 30 // top padding above the first handler
 
-export function FanOut({ source, trigger, handlers, title = 'one write, every handler', className }: FanOutProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    [],
-  )
+export function FanOut({ source, trigger, handlers, title = "one write, every handler", className }: FanOutProps) {
+  const reducedMotion = usePrefersReducedMotion()
 
   // total drawing height grows with the handler count; the source + trigger
   // nodes center on the vertical midpoint of the stacked handlers.
@@ -52,7 +49,7 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
   const emitY = midY
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{title}</span>
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost tabular-nums">
@@ -64,7 +61,6 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
         <svg
           viewBox={`0 0 980 ${height}`}
           className="w-full h-auto min-w-[720px] font-mono select-none"
-          role="group"
           aria-label={`${source.label} emits ${trigger}, fanning out to ${handlers.length} bound handlers`}
         >
           <defs>
@@ -139,7 +135,7 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
             fontSize="9"
             letterSpacing="0.04em"
             className="fill-ink-ghost"
-            style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 3.5 }}
+            style={{ paintOrder: "stroke", stroke: "var(--color-bg)", strokeWidth: 3.5 }}
           >
             emits
           </text>
@@ -183,7 +179,7 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
                 cy={emitY}
                 className="fill-none stroke-accent ripple-ring"
                 strokeWidth={1}
-                style={{ animationDelay: '0.8s' }}
+                style={{ animationDelay: "0.8s" }}
               />
             </>
           ) : null}

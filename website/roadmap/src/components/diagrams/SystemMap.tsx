@@ -1,8 +1,10 @@
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { cn } from '@lib/lib/utils'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ScrollFadePanel } from "@lib/components/ScrollFadePanel"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
 
 /**
  * A1 / A4 — the system map archetype.
@@ -15,7 +17,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
  * space as the node x/y/w/h (default 1030×600 viewBox).
  */
 
-export type MapNodeKind = 'primary' | 'secondary' | 'optional' | 'external'
+export type MapNodeKind = "primary" | "secondary" | "optional" | "external"
 
 export interface MapNode {
   id: string
@@ -40,18 +42,25 @@ export interface MapEdge {
   /** label anchor point */
   lx?: number
   ly?: number
-  anchor?: 'start' | 'middle' | 'end'
+  anchor?: "start" | "middle" | "end"
   dashed?: boolean
   /** seconds for the travelling pulse on the active edge */
   dur?: number
 }
 
 const KIND_TAG: Record<MapNodeKind, string> = {
-  primary: 'core',
-  secondary: 'worker',
-  optional: 'optional',
-  external: 'external',
+  primary: "core",
+  secondary: "worker",
+  optional: "optional",
+  external: "external",
 }
+
+/**
+ * the clickable area of a map node: an invisible html button laid over the
+ * node's box through a foreignObject, so the map's controls are real buttons
+ * (keyboard + screen reader) while the drawing stays plain svg.
+ */
+const HIT_TARGET = "block h-full w-full cursor-pointer border-0 bg-transparent p-0 focus:outline-none"
 
 interface SystemMapProps {
   nodes: MapNode[]
@@ -65,10 +74,7 @@ interface SystemMapProps {
 }
 
 export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, height = 600, className }: SystemMapProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   const activeEdges = useMemo(
     () => new Set(edges.filter((e) => e.from === selected || e.to === selected).map((e) => e.id)),
@@ -86,9 +92,8 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
   return (
     <svg
       viewBox={`0 0 ${width} ${height}`}
-      role="group"
       aria-label="system map"
-      className={cn('w-full h-auto font-mono select-none', className)}
+      className={cn("w-full h-auto font-mono select-none", className)}
     >
       <defs>
         <marker
@@ -124,9 +129,9 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               d={edge.d}
               fill="none"
               strokeWidth={active ? 1.4 : 1}
-              strokeDasharray={edge.dashed ? '5 4' : undefined}
-              markerEnd={`url(#${active ? 'map-arr-accent' : 'map-arr-faint'})`}
-              className={cn('transition-[stroke] duration-200', active ? 'stroke-accent' : 'stroke-rule')}
+              strokeDasharray={edge.dashed ? "5 4" : undefined}
+              markerEnd={`url(#${active ? "map-arr-accent" : "map-arr-faint"})`}
+              className={cn("transition-[stroke] duration-200", active ? "stroke-accent" : "stroke-rule")}
             />
             {active && !reducedMotion ? (
               <circle r="2.6" className="fill-accent">
@@ -137,13 +142,13 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               <text
                 x={edge.lx ?? 0}
                 y={edge.ly ?? 0}
-                textAnchor={edge.anchor ?? 'middle'}
+                textAnchor={edge.anchor ?? "middle"}
                 fontSize="9.5"
                 letterSpacing="0.04em"
-                className={cn(active ? 'fill-ink' : 'fill-ink-ghost', 'transition-[fill] duration-200')}
+                className={cn(active ? "fill-ink" : "fill-ink-ghost", "transition-[fill] duration-200")}
                 style={{
-                  paintOrder: 'stroke',
-                  stroke: 'var(--color-bg)',
+                  paintOrder: "stroke",
+                  stroke: "var(--color-bg)",
                   strokeWidth: 4,
                 }}
               >
@@ -158,41 +163,27 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
       {nodes.map((node) => {
         const isSelected = node.id === selected
         const isConnected = connected.has(node.id)
-        const strong = node.kind === 'primary'
+        const strong = node.kind === "primary"
         return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            aria-pressed={isSelected}
-            aria-label={`select ${node.title}`}
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
-            className="cursor-pointer focus:outline-none group"
-          >
+          <g key={node.id} className="group">
             <rect
               x={node.x}
               y={node.y}
               width={node.w}
               height={node.h}
               strokeWidth={isSelected ? 1.5 : strong ? 1.25 : 1}
-              strokeDasharray={node.kind === 'optional' ? '5 4' : undefined}
+              strokeDasharray={node.kind === "optional" ? "5 4" : undefined}
               className={cn(
-                'transition-all duration-200',
-                isSelected ? 'fill-panel stroke-accent' : 'fill-bg group-hover:fill-panel',
+                "transition-all duration-200",
+                isSelected ? "fill-panel stroke-accent" : "fill-bg group-hover:fill-panel",
                 !isSelected &&
                   (strong
                     ? isConnected
-                      ? 'stroke-ink'
-                      : 'stroke-ink-ghost'
+                      ? "stroke-ink"
+                      : "stroke-ink-ghost"
                     : isConnected
-                      ? 'stroke-ink-faint'
-                      : 'stroke-rule'),
+                      ? "stroke-ink-faint"
+                      : "stroke-rule"),
               )}
             />
             {isSelected ? <rect x={node.x} y={node.y} width={3} height={node.h} className="fill-accent" /> : null}
@@ -202,7 +193,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               textAnchor="middle"
               fontSize="14"
               fontWeight={600}
-              className={cn(isSelected || isConnected || strong ? 'fill-ink' : 'fill-ink-faint')}
+              className={cn(isSelected || isConnected || strong ? "fill-ink" : "fill-ink-faint")}
             >
               {node.title}
             </text>
@@ -224,10 +215,19 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               textAnchor="end"
               fontSize="8"
               letterSpacing="0.08em"
-              className={cn('uppercase', isSelected ? 'fill-accent' : 'fill-ink-ghost')}
+              className={cn("uppercase", isSelected ? "fill-accent" : "fill-ink-ghost")}
             >
               {node.tag ?? KIND_TAG[node.kind]}
             </text>
+            <foreignObject x={node.x} y={node.y} width={node.w} height={node.h}>
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                aria-label={`select ${node.title}`}
+                onClick={() => onSelect(node.id)}
+                className={HIT_TARGET}
+              />
+            </foreignObject>
           </g>
         )
       })}
@@ -265,84 +265,6 @@ export interface MapNodeInfo {
   install?: string
 }
 
-function ScrollFadePanel({
-  children,
-  contentKey,
-  layoutKey,
-}: {
-  children: ReactNode
-  contentKey: string
-  layoutKey?: string | number
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
-
-  const updateScrollState = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const { scrollTop, scrollHeight, clientHeight } = el
-    const overflow = scrollHeight - clientHeight > 8
-    setCanScrollUp(overflow && scrollTop > 4)
-    setCanScrollDown(overflow && scrollTop + clientHeight < scrollHeight - 4)
-  }, [])
-
-  useEffect(() => {
-    const scrollEl = scrollRef.current
-    const contentEl = contentRef.current
-    if (!scrollEl || !contentEl) return
-
-    scrollEl.scrollTop = 0
-
-    const sync = () => {
-      updateScrollState()
-    }
-
-    sync()
-    requestAnimationFrame(sync)
-
-    scrollEl.addEventListener('scroll', sync, { passive: true })
-    const observer = new ResizeObserver(sync)
-    observer.observe(scrollEl)
-    observer.observe(contentEl)
-
-    return () => {
-      scrollEl.removeEventListener('scroll', sync)
-      observer.disconnect()
-    }
-  }, [contentKey, layoutKey, updateScrollState])
-
-  return (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
-      <div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-        <div ref={contentRef}>{children}</div>
-      </div>
-      {canScrollUp ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 border-b border-rule bg-gradient-to-b from-bg via-bg/95 to-transparent"
-        />
-      ) : null}
-      {canScrollDown ? (
-        <>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-12 bg-gradient-to-t from-bg via-bg/95 to-transparent"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-center gap-x-1.5 pb-2"
-          >
-            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-accent">scroll</span>
-            <span className="font-mono text-[10px] leading-none text-accent">↓</span>
-          </div>
-        </>
-      ) : null}
-    </div>
-  )
-}
-
 /** the side datasheet for the selected map node */
 export function MapDatasheet({
   info,
@@ -354,7 +276,7 @@ export function MapDatasheet({
   layoutKey?: string | number
 }) {
   return (
-    <aside className={cn('border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden', className)}>
+    <aside className={cn("border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden", className)}>
       <header className="shrink-0 flex items-center justify-between gap-x-3 bg-panel px-4 py-3 border-b border-rule">
         <span className="font-mono text-[16px] font-semibold text-ink">{info.id}</span>
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint whitespace-nowrap">
@@ -362,7 +284,7 @@ export function MapDatasheet({
         </span>
       </header>
 
-      <ScrollFadePanel contentKey={info.id} layoutKey={layoutKey}>
+      <ScrollFadePanel key={`${info.id}:${layoutKey ?? ""}`}>
         <div className="px-4 py-3.5 font-mono text-[13px] leading-[1.7] text-ink lowercase border-b border-rule-2">
           {info.role}
         </div>

@@ -1,6 +1,6 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { COMPARE_ROWS } from '../content/coexistence'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { COMPARE_ROWS } from "../content/coexistence"
 
 /**
  * A11-style contrast — the adoption beat. The engine-native worker-gateway is
@@ -38,7 +38,7 @@ export function CoexistenceSection() {
               <div className="bg-bg px-4 py-3.5 min-w-0">
                 <span
                   className={`font-mono text-[12.5px] leading-[1.5] lowercase ${
-                    row.win ? 'text-accent' : 'text-ink-faint'
+                    row.win ? "text-accent" : "text-ink-faint"
                   }`}
                 >
                   {row.proxy}

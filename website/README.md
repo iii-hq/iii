@@ -1,105 +1,85 @@
 # iii.dev website
 
-One [Astro](https://astro.build) project (the Vite-based static-site generator)
-that builds **all of iii.dev** into `dist/` — fully static, prerendered HTML,
-nothing rendered at request time:
+One [Next.js](https://nextjs.org) app (App Router, static export) that builds **all of iii.dev** into `dist/`:
+prerendered HTML, nothing rendered at request time. Deployed to S3 + CloudFront by
+`.github/workflows/deploy-website.yml`; Vercel builds previews from the same `pnpm build`.
 
 | URL | Source |
 | --- | --- |
-| `/` | `src/pages/index.astro` — the landing page |
-| `/manifesto`, `/privacy-policy` | `src/pages/{manifesto,privacy-policy}.astro` |
-| `/blog/`, `/blog/<slug>/`, `/blog/rss.xml` | markdown posts in `src/content/blog/` |
-| `/roadmap/`, `/roadmap/<slug>/` | `src/pages/roadmap/` — gallery + one page per tech spec, rendering the deck React islands from `roadmap/` ([roadmap/README.md](./roadmap/README.md)) |
-| `/sitemap.xml`, `/llms.txt`, `/AGENTS.md` | generated into `dist/` by `scripts/` at build time |
-| `/robots.txt`, `/fonts/*`, `/favicon.svg`, `/og-image.png`, `/posthog-consent.js` | `public/` (copied verbatim) |
+| `/` | `src/app/(site)/page.tsx` and `src/components/landing/` |
+| `/manifesto`, `/privacy-policy` | `src/app/(site)/{manifesto,privacy-policy}/` (copy in the sibling `*-data.ts`) |
+| `/blog/`, `/blog/<slug>/`, `/blog/rss.xml`, `/blog/<slug>.md`, `/blog/index.md` | markdown posts in `src/content/blog/`; the `.md` twins are written by `scripts/generate-blog-md.ts` |
+| `/roadmap/`, `/roadmap/<slug>/`, `/roadmap/<slug>/<file>.md`, `/roadmap/index.json` | tech specs read from `../tech-specs/` (markdown only, frontmatter in each `README.md`) |
+| `/roadmap/<slug>/deck/` | the interactive presentation for a spec, from `roadmap/<slug>/src/App.tsx` ([roadmap/README.md](./roadmap/README.md)) |
+| `/sitemap.xml`, `/llms.txt`, `/AGENTS.md` | generated into `dist/` by `scripts/` after the Next build |
+| `/robots.txt`, `/favicon.svg`, `/og-image.png`, `/posthog-consent.js`, `/blog/<slug>/*`, `/console-demo/*`, `/fonts/*` | `public/` (copied verbatim) |
 
 ## Local development
 
 ```bash
 pnpm install            # repo root (workspace)
-pnpm dev                # THE dev server at :4321 — the whole site, one origin, HMR everywhere
-pnpm build              # the full site → dist/  (roadmap contract checks → astro build →
-                        #   llms/AGENTS → sitemap)
+pnpm dev                # http://localhost:3100 (regenerates the roadmap manifest first)
+pnpm build              # the full site → dist/ (roadmap checks → manifest → next build →
+                        #   dist shaping → blog .md → llms/AGENTS → sitemap)
 pnpm preview            # serve dist/ at :4321
 pnpm test               # script unit tests + CloudFront function tests (no build needed)
 pnpm test:dist          # post-build contract for the whole dist/ tree (run after pnpm build)
-pnpm type-check         # strict TS over the roadmap tree (shared lib + every deck)
+pnpm type-check         # tsc over the site and the roadmap decks
+pnpm lint               # biome
 ```
 
-From the repo root, prefix with `pnpm --filter iii-website <script>` (or use
-`pnpm dev:website`).
+From the repo root: `pnpm --filter iii-website <script>`, or `pnpm dev:website`.
+
+## How the export is shaped
+
+Next writes every page as `<route>.html`. `scripts/finalize-dist.ts` then moves the pages under `blog/` and
+`roadmap/` into `<route>/index.html`, because the CloudFront edge function
+(`infra/terraform/website/cloudfront_functions/redirects.js`) serves those two prefixes as directory sites with
+trailing-slash canonical URLs. Top-level pages stay `manifesto.html`, `privacy-policy.html`: the deploy syncs the
+`/<page>` → `/<page>.html` map into a CloudFront KeyValueStore from `scripts/routes-kvs.ts`. Adding a page is a
+content-only change. Do not change these shapes; they are the site's canonical URLs.
 
 ## Writing a blog post
 
-Add a markdown file at `src/content/blog/<slug>.md` — the filename is the URL
-(`/blog/<slug>/`):
+Add a markdown file at `src/content/blog/<slug>.md`; the filename is the URL (`/blog/<slug>/`). Frontmatter:
 
 ```yaml
 ---
 title: 'The Harness Is the Backend'
-description: 'One-or-two-sentence summary; becomes the meta description and RSS blurb.'
-pubDate: 2026-04-28
-author: 'Mike Piccolo, Founder & CEO of iii'   # optional
-tags: ['agents', 'architecture']               # optional
-updatedDate: 2026-05-02                        # optional
-draft: true                                    # optional — hides from build, sitemap, RSS
+description: 'One or two sentences; becomes the meta description and RSS blurb.'
+pubDate: 2026-05-07
+updatedDate: 2026-05-09      # optional
+ogImage: ../../assets/blog/<slug>/banner.png   # optional; the file lives in public/blog/<slug>/
+tags: [agents, architecture]
+draft: false
 ---
-
-Post body in markdown (MDX also works).
 ```
 
-Images live in `src/assets/blog/<slug>/` and are referenced relatively
-(`![alt](../../assets/blog/<slug>/banner.png)`) — Astro hashes and optimizes
-them at build. Every post automatically gets a canonical URL, OpenGraph
-`article` tags, BlogPosting JSON-LD, the RSS entry, and a sitemap entry.
+Images: put the files in `public/blog/<slug>/` and reference them as `../../assets/blog/<slug>/<file>` in the
+markdown (the historical path, rewritten at render time and in the `.md` export).
 
-## Landing page structure
+## Adding a tech spec or a deck
 
-The landing page (and manifesto/privacy) markup is hand-written HTML that
-predates Astro. It is kept **byte-faithful** as raw fragments:
+See [roadmap/README.md](./roadmap/README.md). A spec is a `tech-specs/<slug>/` folder of markdown with frontmatter;
+it gets a page at `/roadmap/<slug>/` automatically. A deck is `roadmap/<slug>/src/App.tsx`; when present the spec
+page links to `/roadmap/<slug>/deck/`.
 
-- `src/components/landing/sections/*.html` — one file per page section
-- `src/components/landing/scripts/*.html` — the page's inline script blocks
-- `src/styles/landing.css` — the page stylesheet (built, hashed, cached immutable)
-- `src/pages/index.astro` — only assembles the fragments via `set:html`
+## Design system
 
-Edit the fragments directly. They are injected raw, so Astro's template
-compiler never reinterprets their braces or tag balance — what's in the file
-is what ships. Shared chrome lives once: `src/components/AnalyticsHead.astro`
-(consent-gated GTM / Common Room / PostHog), `CookieBanner.astro`,
-`ThemeInit.astro`, and the `src/layouts/HtmlShell.astro` head.
+Black and white, dark first. Inter (UI) and Geist Mono (code) through `next/font`; Shiki with Vesper and Min Light
+for code. Tokens are the `--gray-1…12` scale in `src/app/(site)/globals.css` (light follows shadcn neutral). Dark mode is
+the `.dark` class on `<html>`, set before first paint from the `iii_theme` localStorage key. Motion runs through
+`LazyMotion` (`m.*` components only). shadcn/ui components live in `src/components/ui/`; add one with
+`pnpm dlx shadcn@latest add <component>` from this directory.
 
-## SEO invariants (load-bearing — don't change casually)
+## Environment
 
-- **URL shapes are contracts.** `build.format: 'preserve'` keeps them exact:
-  marketing pages are extensionless without trailing slash (`/manifesto` →
-  `manifesto.html`, resolved at the edge by the CloudFront KVS route map);
-  blog and roadmap pages are directory-style with trailing slash
-  (`/blog/<slug>/`, `/roadmap/<slug>/`, rewritten to `…/index.html` by the
-  CloudFront redirects function). See `infra/terraform/website/`.
-- **Adding a top-level page** is content-only: create `src/pages/foo.astro`,
-  link to `/foo` — the deploy syncs the KVS route map from `dist/*.html`
-  (`scripts/routes-kvs.ts`); add the path to `scripts/routes.ts` so the
-  sitemap lists it.
-- Every page emits a canonical URL, meta description, OG/Twitter cards, and
-  the shared `og-image.png`; the landing page carries Organization / WebSite /
-  SoftwareApplication JSON-LD, blog posts carry BlogPosting JSON-LD.
-- `sitemap.xml`, `llms.txt`, and `AGENTS.md` are **generated at build** into
-  `dist/` (`scripts/generate-sitemap.ts`, `scripts/generate-llms-agents.ts` —
-  the latter scrapes the built homepage and fails the build if the landing
-  sections it extracts from disappear).
+See [`.env.example`](./.env.example). Production builds load GTM, PostHog and Common Room (after cookie consent) and
+post email signups to Mailmodo by default, as the previous site did. Set `NEXT_PUBLIC_ENABLE_ANALYTICS=false` and
+`NEXT_PUBLIC_MAILMODO_FORM_URL=` on preview or demo projects to keep their traffic and test signups out.
 
-## Deploying
+## Deploy
 
-Merging to `main` runs `.github/workflows/deploy-website.yml`:
-`pnpm --filter iii-website build`, two `aws s3 sync`s of `dist/` (immutable
-hashed assets vs must-revalidate content files), the CloudFront KVS route-map
-sync, then a CloudFront invalidation. No Vercel, no manual steps.
-
-### Mailmodo
-
-The hero and footer email forms POST to a Mailmodo endpoint configured via a
-meta tag (`iii:mailmodo-form-url`) in
-`src/components/landing/head-extras.html`. The endpoint is public-client-safe
-(the same URL any front-end form would embed), so it lives in source. Edit the
-`content` attribute and redeploy to change it.
+Production: merge to `main`; `deploy-website.yml` builds and syncs `dist/` to S3, updates the KeyValueStore route map,
+and invalidates CloudFront. Vercel previews: Root Directory `website`, framework Next.js (set in `vercel.json`),
+"Include source files outside of the Root Directory" enabled so `../tech-specs` is available at build time.

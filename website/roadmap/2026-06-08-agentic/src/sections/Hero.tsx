@@ -1,26 +1,26 @@
-import { Caret } from '@lib/components/schematic/Caret'
-import { Cell } from '@lib/components/schematic/Cell'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
-import { STATS } from '../content/workers'
+import { Caret } from "@lib/components/schematic/Caret"
+import { Cell } from "@lib/components/schematic/Cell"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { Terminal, TerminalRow } from "@lib/components/schematic/Terminal"
+import { STATS } from "../content/workers"
 
 const CLAIMS = [
   {
-    title: 'standalone first',
-    body: 'each worker installs alone and is useful alone. the loop is one command away — not a framework to adopt.',
+    title: "standalone first",
+    body: "each worker installs alone and is useful alone. the loop is one command away — not a framework to adopt.",
   },
   {
-    title: 'reactive everywhere',
-    body: 'every mutation emits an event. bind a function to a trigger type once and render live — no status chasing, ever.',
+    title: "reactive everywhere",
+    body: "every mutation emits an event. bind a function to a trigger type once and render live — no status chasing, ever.",
   },
   {
-    title: 'durable execution',
-    body: 'turns run as queued, resumable steps. a crash, a restart, or a week-long approval never loses work.',
+    title: "durable execution",
+    body: "turns run as queued, resumable steps. a crash, a restart, or a week-long approval never loses work.",
   },
   {
-    title: 'fail closed',
-    body: 'agents reach only what policy allows. provenance follows every nested call — nothing gets laundered.',
+    title: "fail closed",
+    body: "agents reach only what policy allows. provenance follows every nested call — nothing gets laundered.",
   },
 ] as const
 
@@ -38,7 +38,7 @@ export function Hero() {
             one agent backend.
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[56ch]">
-            an agentic stack assembled from standalone iii workers that talk only over the bus —{' '}
+            an agentic stack assembled from standalone iii workers that talk only over the bus —{" "}
             <span className="text-ink">reactive</span> at every surface, <span className="text-ink">durable</span> at
             every step, <span className="text-ink">governable</span> at every call.
           </p>
@@ -73,7 +73,7 @@ export function Hero() {
               <TerminalRow
                 command={
                   <>
-                    iii trigger harness::send <span className="text-ink-faint">{'{ message, model }'}</span>
+                    iii trigger harness::send <span className="text-ink-faint">{"{ message, model }"}</span>
                   </>
                 }
                 output={

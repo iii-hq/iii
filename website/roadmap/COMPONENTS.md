@@ -4,19 +4,27 @@ every shared file under `src/` has exactly one entry here (heading = file
 basename). before building any visual for a deck, read this file — **reuse
 first**. to add a component, meet the checklist in the presentation skill's
 `reference/component-standards.md`, then append an entry in alphabetical order
-within its kind. `node build.mjs` warns when a src file has no entry (or an
-entry has no file); `--strict-registry` turns the warning into a failure.
+within its kind. `pnpm exec tsx scripts/validate-roadmap.ts` (website/) warns when a src file
+has no entry (or an entry has no file); `--strict` turns the warning into a failure.
 
-kinds, in section order: **layout · primitive · archetype · hook · util · gallery**
+kinds, in section order: **layout · primitive · archetype · hook · util**
 
 ## layout
 
-### Footer
+### DeckShell
 - kind: layout
-- import: `import { Footer } from '@lib/components/Footer'`
-- purpose: deck footer — eyebrow, big closing line, command chip, attribution bar
-- props: `{ footer: FooterSpec }` (from the deck's `content/deck.ts`)
-- use when: every deck; wired once in App.tsx
+- import: `import { DeckShell } from '@lib/components/DeckShell'`
+- purpose: the frame every deck App renders — container root, Sheet, TopNav, then home / `#/<slug>` page / not-found by route
+- props: `{ route: Route; nav: NavItem[]; pages: Record<string, ComponentType>; home: ReactNode }`
+- use when: every deck's App.tsx; pass the PAGES registry and `<Home />`
+- used by: all decks
+
+### MapLayout
+- kind: layout
+- import: `import { MapLayout, MapLegend } from '@lib/components/MapLayout'`
+- purpose: the system-map slide body — legend strip, scrollable map left, sticky datasheet right (height-locked to the map at @5xl, stacked below it otherwise)
+- props: `MapLayout { map: ReactNode; datasheet: (slot: { className?: string; layoutKey: string | number }) => ReactNode }`; `MapLegend { items: { swatch: ReactNode; label: string }[] }`
+- use when: any slide pairing a SystemMap with a MapDatasheet
 - used by: all decks
 
 ### PageShell
@@ -27,6 +35,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - use when: any `#/<slug>` deep-dive page
 - used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
+### Payoff
+- kind: layout
+- import: `import { PayoffScorecard, PayoffTable } from '@lib/components/Payoff'`
+- purpose: A11 — the before → after scorecard and the problem → answer table that close a deck
+- props: `PayoffScorecard { metrics: { label; before; after }[]; valueClassName?; wrap? }`; `PayoffTable { rows: { problem; answer; detail }[]; problemHeading; answerHeading; answerClassName? }`
+- use when: the payoff slide; metrics + rows come from the deck's `content/payoff.ts`
+- used by: 2026-06-22-rbac-proxy-worker, 2026-06-29-codegen, 2026-07-17-injectable-ui
+
 ### PlayerControls
 - kind: layout
 - import: `import { PlayerControls } from '@lib/components/PlayerControls'`
@@ -34,6 +50,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `{ stepper: Stepper; total: number; label?: string; className?: string }`
 - use when: any diagram driven by `useStepper`
 - used by: all decks (via archetypes)
+
+### ScrollFadePanel
+- kind: layout
+- import: `import { ScrollFadePanel } from '@lib/components/ScrollFadePanel'`
+- purpose: fill-height scroll region that fades its clipped edges and hints "scroll ↓" while more sits below
+- props: `{ children }` — remount it via `key` to start a new content set at the top
+- use when: a height-locked side panel whose content may overflow (datasheets)
+- used by: SystemMap (shared + the agentic fork)
 
 ### Section
 - kind: layout
@@ -56,8 +80,8 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - import: `import { TopNav } from '@lib/components/TopNav'`
 - purpose: sticky top nav — wordmark, scroll-spy section links, spec link, theme toggle
 - props: `{ route: Route; meta: DeckMeta; nav: NavItem[]; specHref?: string | null }`
-- use when: every deck; wired once in App.tsx (viewer passes `specHref={null}`)
-- used by: all decks, _viewer
+- use when: every deck; wired once in App.tsx
+- used by: all decks
 
 ## primitive
 
@@ -107,7 +131,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: bordered segmented toggle (theme, policy modes, language tracks)
 - props: `{ value: T; onChange: (next: T) => void; options: ModeToggleOption<T>[]; className? }`
 - use when: switching between 2–4 named modes; active = accent border + text
-- used by: all decks, gallery
+- used by: all decks
 
 ### Prompt
 - kind: primitive
@@ -115,7 +139,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: terminal prompt symbol prefix (`$`, `//`)
 - props: `{ symbol?: string; className?: string; children? }`
 - use when: eyebrows and command lines
-- used by: all decks, gallery
+- used by: all decks
 
 ### Sheet
 - kind: primitive
@@ -123,7 +147,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: the centered max-w-[1200px] drafting sheet with left/right rules
 - props: `{ children; className? }`
 - use when: the root shell of every page; use container queries inside, not viewport
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ### StatusDot
 - kind: primitive
@@ -131,7 +155,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: status dot, optional pulse animation
 - props: `{ tone?: DotTone; pulse?: boolean }`
 - use when: live/running/draft indicators
-- used by: all decks, gallery
+- used by: all decks
 
 ### StatusPanel
 - kind: primitive
@@ -155,7 +179,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: the iii brand mark
 - props: `{ className?: string }`
 - use when: nav + footer chrome only
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ### WorkerCard
 - kind: primitive
@@ -250,7 +274,15 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: hash routing — `#/` home with scroll anchors, `#/<slug>[/rest]` pages
 - props: returns `Route = { kind: 'home' } | { kind: 'page'; slug: string; rest: string[] }`
 - use when: every deck App.tsx; SpecPage reads `rest[0]` for `#/spec/<file>`
-- used by: all decks, _viewer
+- used by: all decks
+
+### usePrefersReducedMotion
+- kind: hook
+- import: `import { usePrefersReducedMotion } from '@lib/hooks/usePrefersReducedMotion'`
+- purpose: `prefers-reduced-motion: reduce` as a `useSyncExternalStore` — no `window` reads in render, tracks the OS setting live
+- props: returns `boolean`
+- use when: gating ambient animation (marching dots, fade-rise) in a diagram archetype
+- used by: all diagram archetypes
 
 ### useStepper
 - kind: hook
@@ -266,7 +298,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: light/dark theme state persisted to localStorage, sets `data-theme`
 - props: returns `[theme, setTheme]`
 - use when: chrome with a theme toggle (TopNav/SiteHeader already wire it)
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ## util
 
@@ -286,13 +318,21 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - use when: highlighted code from string data (CodeBlock covers JSX-authored code)
 - used by: all decks (markdown), 2026-06-29-codegen
 
+### keys
+- kind: util
+- import: `import { keyed } from '@lib/lib/keys'`
+- purpose: `keyed(items, text)` — content-derived React keys for lists without ids (duplicates get a counter)
+- props: returns `{ key: string; item: T }[]`
+- use when: mapping static strings / tokens to elements; never key by array index
+- used by: markdown, SequencePlayer, StepReveal, deck sections
+
 ### markdown
 - kind: util
 - import: `import { Markdown } from '@lib/content/markdown'`
 - purpose: trusted spec markdown → React in the drafting-sheet system; strips leading frontmatter; ```mermaid fences render live
 - props: `{ source: string }`
-- use when: rendering spec md (SpecPage/viewer do this for you)
-- used by: SpecPage, _viewer
+- use when: rendering spec md (SpecPage does this for you)
+- used by: SpecPage
 
 ### mermaid
 - kind: util
@@ -308,7 +348,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A15 — the `#/spec` page: file sidebar + rendered spec markdown
 - props: `{ docs: Record<string, string> }` — pass the deck's `spec-docs.ts` glob
 - use when: every deck (`spec` entry in PAGES); the md-only viewer reuses it
-- used by: all decks, _viewer
+- used by: all decks
 
 ### utils
 - kind: util
@@ -317,38 +357,3 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `cn(...inputs)`
 - use when: any conditional className
 - used by: everything
-
-## gallery
-
-### Gallery
-- kind: gallery
-- import: `import { Gallery } from '@lib/gallery/Gallery'` (gallery app only)
-- purpose: the roadmap timeline — one column, newest first, month markers on a vertical rule, rendered from `virtual:spec-manifest`
-- props: none (reads SPECS)
-- use when: gallery app only
-- used by: gallery
-
-### PresentationCard
-- kind: gallery
-- import: `import { PresentationCard } from '@lib/gallery/PresentationCard'`
-- purpose: one spec card — number, deck/spec badge, title, tagline, tags, open → (the date lives in the timeline gutter)
-- props: `{ spec: SpecEntry; index: number }`
-- use when: gallery app only
-- used by: gallery
-
-### site
-- kind: gallery
-- import: `import { SITE } from '@lib/gallery/site'`
-- purpose: the gallery's repo identity (wordmark label, hero copy, attribution) — set once
-- props: data only
-- use when: gallery chrome; never per-spec data
-- used by: gallery
-
-### SiteFooter
-- kind: gallery
-- import: `import { SiteFooter } from '@lib/gallery/SiteFooter'`
-- purpose: gallery footer bar (attribution + source of truth)
-- props: none
-- use when: gallery app only
-- used by: gallery
-
