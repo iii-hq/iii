@@ -6,44 +6,40 @@ type: "reference"
 ---
 
 <Update label="0.24.3" description="September 2026">
-  ## Configuration overrides through the configuration service
+  ## Configuration overrides reach workers through the configuration service
 
-  - Compose no longer writes an execution snapshot file or sets `III_CONFIG`. Before a worker
-    starts, Compose reads the current entry with `configuration::get` (`raw: true`), merges package
-    defaults and `config_override`, and delivers the result with `configuration::set` and
-    `flush: false`. Workers read the merged value through `configuration::get` using the id in
-    `III_CONFIG_NAME`.
-  - `configuration::set` accepts `flush`, which defaults to `true`. `flush: true` validates and
-    persists the complete submitted object. `flush: false` updates only the active in-memory value,
-    schedules no later disk write, and may precede worker registration; validation uses the schema
-    when available, and reads validate again after registration. Both forms notify consumers.
-  - `configuration::ensure` and metadata registration seed defaults into the persisted base only.
-    They preserve an active in-memory value and do not deliver base defaults in its place.
-    `configuration::migrate` moves an active in-memory value to the new id without saving it.
-  - Removing a field from `config_override` keeps its current active value instead of restoring
-    the value on disk. Stopping a worker leaves the active value in place, and restarting the
-    configuration service discards unsaved values and reloads its adapter. An explicit save with
-    `flush: true` persists every submitted value, including values that came from an override.
-    Distinct concurrent overrides that share one configuration id are not supported.
-  - `III_CONFIG` is retired. Declaring it in `environment` or an `env_file` fails with
-    `RETIRED_CONFIG_ENV`, and stale inherited values are removed from the worker environment.
-    The daemon now owns seven reserved variables instead of eight.
+  - Workers receive `config_override` values the same way they read any other configuration:
+    through `configuration::get` on the id in `III_CONFIG_NAME`. Compose merges package defaults,
+    the stored entry, and `config_override`, and hands the result to the configuration service
+    before the worker starts. There is no longer a separate snapshot file to read.
+  - Override values live in memory only and do not change `config/<id>.yaml`. Saving the
+    configuration, for example from the Console or with `configuration::set`, persists the whole
+    submitted value, including fields that came from the override.
+  - Removing a field from `config_override` does not bring back the value on disk. The worker keeps
+    the current value, across its own restarts, until it is changed or the configuration service
+    restarts, which discards unsaved values and reloads them from disk.
+  - `configuration::set` accepts `flush: false` to update only the active value without writing to
+    disk. Defaults seeded with `configuration::ensure` never replace an active override. Two
+    containers that share one `config_name` must not declare different overrides.
+  - `III_CONFIG` is retired. Declaring it in `environment` or an `env_file` fails startup with
+    `RETIRED_CONFIG_ENV`.
 
   <Callout type="warning">
-    Workers that read the file named by `III_CONFIG` must read their configuration with
-    `configuration::get` and `III_CONFIG_NAME` instead. Remove `III_CONFIG` from `environment` and
-    `env_file` declarations before upgrading, or startup fails with `RETIRED_CONFIG_ENV`.
+    If a worker reads the file named by `III_CONFIG`, switch it to `configuration::get` with
+    `III_CONFIG_NAME` before upgrading, and remove `III_CONFIG` from `environment` and `env_file`
+    declarations.
   </Callout>
 
-  See [Worker Compose](/using-iii/compose) and [Configuration](/using-iii/configuration) for the
-  delivery order and the `flush` semantics.
+  See [Worker Compose](/using-iii/compose) and [Configuration](/using-iii/configuration) for
+  details.
 
   ## Managed engine lifetime
 
   - The engine that `iii compose --up` starts now exits with the Compose process that owns it,
     including when Compose is killed with `SIGKILL` or dies before the engine is ready, so a later
     start can bind the same port cleanly. The engine watches a private stdin lifeline that workers
-    do not inherit. Workers still survive a daemon crash and are re-adopted on restart.
+    do not inherit. Workers still survive a crash of the Compose daemon (`iii compose`) and are
+    re-adopted when it restarts.
   - `SIGHUP`, sent when a terminal window closes or an SSH session drops, now triggers the same
     graceful shutdown as `SIGTERM`. Previously it ended the daemon before teardown and left the
     managed engine serving on its port with no owner.
@@ -56,30 +52,10 @@ type: "reference"
     TTL sweeper removed them minutes later.
   - Channels created with `engine::channels::create` belong to the calling connection, whose
     disconnect releases the ends nobody has attached. In-process callers still rely on the sweeper.
-  - On Unix, the engine raises its soft open-file limit toward the hard limit at startup (capped at
-    10240 on macOS). Terminals on macOS start processes with a soft limit of 256, which a burst of
-    HTTP traffic could exhaust, making `accept` fail with `EMFILE`.
-
-  ## Product telemetry
-
-  - Amplitude is removed; product-usage events go only to PostHog. `amplitude_api_key` is removed
-    from `TelemetryOptions` in the Node, browser, Python, and Rust SDKs.
-  - Compose reports `compose_up_finished` for each foreground `iii compose --up`, up to three
-    `compose_container_failed` events for containers that did not become ready, and
-    `compose_op_finished` for later up, down, add, remove, restart, and update operations. Events
-    carry outcomes, durations, counts, and fixed error codes; they contain no paths, container
-    names, worker references, or error messages. A failing command waits at most two seconds for
-    its report.
-  - The engine reports harness session usage that the `harness` worker publishes on the durable
-    `harness:usage` topic: `harness_session_progress` at root turns 1, 2, 5, 10, 25, and 50, and
-    `harness_turn_failed` once per session and outcome. It subscribes in every namespace that
-    provides `durable:subscriber`.
-  - An email address entered in the onboarding signup box or the Console prompt, published on
-    `email:signup`, is validated, lowercased, and attached to this device's PostHog person through
-    a `user_identified` event. Identities are not aliased or merged.
-  - When telemetry is disabled, nothing is sent: Compose events are skipped, and the engine still
-    consumes and discards `harness:usage` and `email:signup` messages so the durable queue does not
-    accumulate a backlog it would send later.
+  - Under bursts of HTTP traffic on macOS, the engine no longer stops accepting connections with
+    `EMFILE`. Terminals on macOS start processes with a soft limit of 256 open files, and each HTTP
+    request holds two channels. On Unix, the engine now raises its soft open-file limit toward the
+    hard limit at startup (capped at 10240 on macOS).
 
   ## Docs and agent skills
 
@@ -89,10 +65,6 @@ type: "reference"
 
   ## Migration
 
-  - Rust: remove `amplitude_api_key` from `TelemetryOptions` struct literals.
-  - Python: stop passing `amplitude_api_key` to `TelemetryOptions`.
-  - Node: remove `amplitude_api_key` from `telemetry` options; TypeScript reports it as an unknown
-    property.
   - Workers: replace reads of `III_CONFIG` with `configuration::get` on `III_CONFIG_NAME`.
 
   [Compare 0.24.2 to 0.24.3](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.2...iii%2Fv0.24.3).
@@ -115,34 +87,19 @@ type: "reference"
   - `III_CONFIG_NAME` is always present and carries the explicit id or
     `<namespace>-<container-key>`.
 
-  ## Configuration migration
+  ## Automatic configuration migration
 
-  - Before reading configuration or starting a worker, Compose migrates the exact hashed id the
-    previous algorithm produced for that namespace and key. The new `configuration::migrate`
-    (`from_id`, `to_id`) preserves raw values (including `${VAR}`, `false`, `0`, and `null`), name,
-    description, metadata, and schema, and returns `{ action, entry }` with `migrated`,
-    `preserved`, or `missing`. A successful move emits source `:deleted` and destination
-    `:registered`; no-ops emit nothing.
-  - The legacy source takes priority over an existing destination. After that, the `default`
-    namespace adopts an entry named with the bare container key (`state` becomes `default-state`),
-    unless another container explicitly owns it. Other namespaces and explicit `config_name`
-    values never adopt bare entries.
-  - The filesystem adapter archives the original source as `<source>.yaml.bak`; the previous
-    destination is replaced, not backed up. Files ending in `.yaml.bak`, `.bak.yaml`, or
-    `.bkup.yaml` are ignored during loading, watching, and legacy directory migration. A
-    conflicting backup is never overwritten and stops migration with an error.
-  - Over the bridge adapter, migration is delegated to the remote authority. Compose and every
-    bridge hop check `configuration::migration-capabilities` first; an authority without
-    `configuration::migrate` fails with `CONFIG_MIGRATION_FAILED` rather than falling back to a
-    read, copy, and delete that could reset stored values.
-
-  <Callout type="warning">
-    Upgrade the configuration authority, including a remote engine behind the bridge adapter,
-    together with Compose. Stop consumers of the source entry before migration, and do not run two
-    configuration authorities against the same directory. The filesystem adapter requires
-    same-directory hard-link support and may normalize YAML formatting or remove comments during
-    the one migration rewrite; values and unknown document fields are retained.
-  </Callout>
+  - On the first start after upgrading, Compose renames each worker's stored configuration to the
+    readable id and keeps its values, including `${VAR}` placeholders. The hashed id from 0.24.1
+    (`default-harness-a14f3656efb8d5ea`) becomes `default-harness`. In the `default` namespace, an
+    entry named after the bare container key, as earlier releases stored it (`state`), becomes
+    `default-state`. Workers with an explicit `config_name` are not migrated.
+  - When both the old and the new entry exist, the old entry wins. The filesystem adapter keeps the
+    original file as `<old-id>.yaml.bak`, and backup files are ignored when configuration loads.
+    The one migration rewrite may reformat the YAML and drop comments.
+  - Migration runs in the configuration service through the new `configuration::migrate`. With the
+    bridge adapter, upgrade the remote engine together with Compose; an older remote fails startup
+    with `CONFIG_MIGRATION_FAILED` instead of resetting stored values to defaults.
 
   ## Runtime-only overrides
 
