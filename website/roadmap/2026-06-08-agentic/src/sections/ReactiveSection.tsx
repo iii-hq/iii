@@ -41,11 +41,11 @@ export function ReactiveSection() {
 
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-2 gap-4 items-start">
         <CodeBlock title="the whole reactive pattern — two calls">
-          <C>// 1. register the function</C>
+          <C>{"// 1. register the function"}</C>
           {"\n"}
           iii.<K>registerFunction</K>(<S>"tg::on-message-updated"</S>, handler);
           {"\n\n"}
-          <C>// 2. bind it to a trigger type</C>
+          <C>{"// 2. bind it to a trigger type"}</C>
           {"\n"}
           iii.<K>registerTrigger</K>(<M>{"{"}</M>
           {"\n"}
@@ -54,9 +54,9 @@ export function ReactiveSection() {
           {"  "}config: <M>{"{"}</M> roles: [<S>"assistant"</S>] <M>{"}"}</M>,{"\n"}
           <M>{"}"}</M>);
           {"\n\n"}
-          <C>// that's it. no publish step, no broker to run —</C>
+          <C>{"// that's it. no publish step, no broker to run —"}</C>
           {"\n"}
-          <C>// the emitting worker filters and delivers.</C>
+          <C>{"// the emitting worker filters and delivers."}</C>
         </CodeBlock>
 
         <div className="flex flex-col gap-4 min-w-0">

@@ -1,6 +1,7 @@
 import { FanOut } from "@lib/components/diagrams/FanOut"
 import { Section } from "@lib/components/Section"
 import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { keyed } from "@lib/lib/keys"
 import { FAILURE_HANDLERS, FAILURE_NOTES, FAILURE_SOURCE, FAILURE_TRIGGER } from "../content/failure"
 
 /**
@@ -27,8 +28,8 @@ export function FailureSection() {
         <StatusPanel variant="alert" headline="why cascade at all" detail={FAILURE_NOTES[0]} />
         <div className="border border-rule bg-bg px-4 py-3.5">
           <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-2">scope</div>
-          {FAILURE_NOTES.slice(1).map((note, i) => (
-            <p key={i} className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase mt-1.5 first:mt-0">
+          {keyed(FAILURE_NOTES.slice(1), (note) => note).map(({ key, item: note }) => (
+            <p key={key} className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase mt-1.5 first:mt-0">
               {note}
             </p>
           ))}

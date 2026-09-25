@@ -1,6 +1,7 @@
 import { StepReveal } from "@lib/components/diagrams/StepReveal"
 import { Section } from "@lib/components/Section"
 import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { keyed } from "@lib/lib/keys"
 import { SCRIPT_FIELDS, SCRIPT_RULES, SCRIPT_STAGES } from "../content/scripts"
 
 /**
@@ -28,8 +29,8 @@ export function ScriptsSection() {
           ))}
         </SpecSheet>
         <SpecSheet title="the hard lines" meta="validation + teardown">
-          {SCRIPT_RULES.map((rule, i) => (
-            <SpecRow key={i} name={`rule 0${i + 1}`}>
+          {keyed(SCRIPT_RULES, (rule) => rule).map(({ key, item: rule }, i) => (
+            <SpecRow key={key} name={`rule 0${i + 1}`}>
               {rule}
             </SpecRow>
           ))}

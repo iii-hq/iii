@@ -5,6 +5,7 @@ import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
 import { Prompt } from "@lib/components/schematic/Prompt"
 import { StatusDot } from "@lib/components/schematic/StatusDot"
 import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { keyed } from "@lib/lib/keys"
 import { useEffect, useRef, useState } from "react"
 
 const INSTALL_LINES: Array<{ kind: "cmd"; text: string; comment?: string } | { kind: "out"; text: string }> = [
@@ -16,6 +17,8 @@ const INSTALL_LINES: Array<{ kind: "cmd"; text: string; comment?: string } | { k
   { kind: "cmd", text: "iii worker add approval-gate", comment: "# optional" },
   { kind: "out", text: "approval-gate bound to harness::hook::pre_trigger" },
 ]
+// lines keyed by their own text, so a replay re-attaches to the same rows
+const KEYED_INSTALL_LINES = keyed(INSTALL_LINES, (line) => `${line.kind}:${line.text}`)
 
 function InstallTerminal() {
   const [count, setCount] = useState(0)
@@ -69,15 +72,15 @@ function InstallTerminal() {
       </div>
       <div className="p-4 font-mono text-[13px] min-h-[220px]">
         <div className="flex flex-col gap-y-1.5">
-          {INSTALL_LINES.slice(0, count).map((line, i) =>
+          {KEYED_INSTALL_LINES.slice(0, count).map(({ key, item: line }) =>
             line.kind === "cmd" ? (
-              <div key={i} className="flex items-center gap-x-2">
+              <div key={key} className="flex items-center gap-x-2">
                 <Prompt symbol="$" />
                 <span className="text-ink">{line.text}</span>
                 {line.comment ? <span className="text-ink-ghost text-[12px]">{line.comment}</span> : null}
               </div>
             ) : (
-              <div key={i} className="pl-4 text-[12.5px] text-ink-faint flex items-center gap-x-2">
+              <div key={key} className="pl-4 text-[12.5px] text-ink-faint flex items-center gap-x-2">
                 <span className="text-accent">✓</span>
                 <span>{line.text}</span>
               </div>
@@ -128,11 +131,11 @@ export function OnboardingSection() {
             {"\n"}
             <M>{"}"}</M>);
             {"\n"}
-            <C>// → {"{ session_id, turn_id, accepted: true }"}</C>
+            <C>{"// → { session_id, turn_id, accepted: true }"}</C>
           </CodeBlock>
 
           <CodeBlock title="step 3 — bind, and you are live">
-            <C>// reactive: one binding renders every delta</C>
+            <C>{"// reactive: one binding renders every delta"}</C>
             {"\n"}
             iii.<K>registerFunction</K>(<S>"app::render"</S>, paintMessage);
             {"\n"}

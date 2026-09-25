@@ -1,5 +1,4 @@
-import { Sheet } from "@lib/components/schematic/Sheet"
-import { TopNav } from "@lib/components/TopNav"
+import { DeckShell } from "@lib/components/DeckShell"
 import { useHashRoute } from "@lib/hooks/useHashRoute"
 import { SpecPage } from "@lib/pages/SpecPage"
 import type { ComponentType } from "react"
@@ -22,19 +21,23 @@ import { SPEC_DOCS } from "./spec-docs"
  * The ordered home-page sections. The first is the hero; the rest each carry a
  * DOM id matching a NAV entry in content/deck.ts for scroll-spy.
  */
-const SECTIONS: ComponentType[] = [
-  Hero,
-  WhySection,
-  HotEditSection,
-  MapSection,
-  WireSection,
-  SlotsSection,
-  ReactSection,
-  StylingSection,
-  LifecycleSection,
-  LimitsSection,
-  PayoffSection,
-]
+function Home() {
+  return (
+    <main>
+      <Hero />
+      <WhySection />
+      <HotEditSection />
+      <MapSection />
+      <WireSection />
+      <SlotsSection />
+      <ReactSection />
+      <StylingSection />
+      <LifecycleSection />
+      <LimitsSection />
+      <PayoffSection />
+    </main>
+  )
+}
 
 // The built-in spec viewer — never remove. It renders every markdown file of
 // the paired tech-specs/<slug>/ directory with a file sidebar.
@@ -46,39 +49,7 @@ const PAGES: Record<string, ComponentType> = {
   spec: Spec,
 }
 
-function Home() {
-  return (
-    <main>
-      {SECTIONS.map((Component, i) => (
-        <Component key={i} />
-      ))}
-    </main>
-  )
-}
-
-function NotFound() {
-  return (
-    <main className="px-4 py-24 @3xl:px-9">
-      <p className="font-mono text-[14px] lowercase text-ink-faint">
-        nothing here.{" "}
-        <a href="#/" className="text-ink hover:text-accent transition-colors">
-          ← back to the overview
-        </a>
-      </p>
-    </main>
-  )
-}
-
 export default function App() {
   const route = useHashRoute()
-  const Page = route.kind === "page" ? PAGES[route.slug] : undefined
-
-  return (
-    <div className="@container min-h-screen">
-      <Sheet>
-        <TopNav route={route} nav={NAV} />
-        {route.kind === "home" ? <Home /> : Page ? <Page /> : <NotFound />}
-      </Sheet>
-    </div>
-  )
+  return <DeckShell route={route} nav={NAV} pages={PAGES} home={<Home />} />
 }

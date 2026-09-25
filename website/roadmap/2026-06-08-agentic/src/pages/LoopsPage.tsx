@@ -109,7 +109,7 @@ export function LoopsPage() {
           {"\n"}
           <M>{"}"}</M>);
           {"\n\n"}
-          <C>// reactive: the schedule is just a trigger type</C>
+          <C>{"// reactive: the schedule is just a trigger type"}</C>
           {"\n"}
           iii.<K>registerTrigger</K>(<M>{"{"}</M>
           {"\n"}

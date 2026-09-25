@@ -23,7 +23,7 @@ export function ModeToggle<T extends string>({ value, onChange, options, classNa
             key={opt.value}
             type="button"
             role="tab"
-            aria-pressed={active}
+            aria-selected={active}
             onClick={() => onChange(opt.value)}
             className={cn(
               "font-mono text-[13px] px-3 py-1 transition-colors lowercase cursor-pointer",

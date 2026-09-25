@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 
 export interface Stepper {
   step: number
@@ -20,25 +20,20 @@ export interface Stepper {
 export function useStepper(total: number, intervalMs = 2400, autoPlay = false): Stepper {
   const [step, setStep] = useState(0)
   const [playing, setPlaying] = useState(autoPlay)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const atEnd = step >= total - 1
 
+  // one timeout per step (re-armed as `step` changes) keeps the same cadence
+  // as an interval while leaving the state updaters pure: the last step stays
+  // up for a full beat, then playback pauses.
   useEffect(() => {
     if (!playing) return
-    timer.current = setInterval(() => {
-      setStep((s) => {
-        if (s >= total - 1) {
-          setPlaying(false)
-          return s
-        }
-        return s + 1
-      })
+    const timer = setTimeout(() => {
+      if (step >= total - 1) setPlaying(false)
+      else setStep((s) => Math.min(total - 1, s + 1))
     }, intervalMs)
-    return () => {
-      if (timer.current) clearInterval(timer.current)
-    }
-  }, [playing, intervalMs, total])
+    return () => clearTimeout(timer)
+  }, [playing, step, intervalMs, total])
 
   const play = useCallback(() => {
     setStep((s) => (s >= total - 1 ? 0 : s))
@@ -46,11 +41,9 @@ export function useStepper(total: number, intervalMs = 2400, autoPlay = false): 
   }, [total])
   const pause = useCallback(() => setPlaying(false), [])
   const toggle = useCallback(() => {
-    setPlaying((p) => {
-      if (!p) setStep((s) => (s >= total - 1 ? 0 : s))
-      return !p
-    })
-  }, [total])
+    if (!playing) setStep((s) => (s >= total - 1 ? 0 : s))
+    setPlaying(!playing)
+  }, [playing, total])
   const next = useCallback(() => {
     setPlaying(false)
     setStep((s) => Math.min(total - 1, s + 1))

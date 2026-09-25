@@ -1,6 +1,8 @@
 import { PlayerControls } from "@lib/components/PlayerControls"
 import { FnChip } from "@lib/components/schematic/FnChip"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { useStepper } from "@lib/hooks/useStepper"
+import { keyed } from "@lib/lib/keys"
 import { cn } from "@lib/lib/utils"
 import { useMemo } from "react"
 
@@ -48,10 +50,9 @@ const toneGlyph: Record<StageTone, string> = {
  */
 export function StepReveal({ title, stages, intervalMs = 2400, className }: StepRevealProps) {
   const stepper = useStepper(stages.length, intervalMs)
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
+  // a stage is identified by its label (deduplicated), not its position
+  const keyedStages = useMemo(() => keyed(stages, (s) => s.label), [stages])
   const active = stages[stepper.step]
   const activeTone: StageTone = active.tone ?? "ink"
 
@@ -70,12 +71,12 @@ export function StepReveal({ title, stages, intervalMs = 2400, className }: Step
       {/* the strip — numbered stage boxes connected left-to-right */}
       <div className="overflow-x-auto">
         <div className="flex items-stretch gap-0 px-4 py-6" style={{ minWidth: `${minWidth}px` }}>
-          {stages.map((stage, i) => {
+          {keyedStages.map(({ key, item: stage }, i) => {
             const reached = i <= stepper.step
             const isActive = i === stepper.step
             const tone = toneClasses[stage.tone ?? "ink"]
             return (
-              <div key={`${stage.label}-${i}`} className="flex items-center flex-1 min-w-0">
+              <div key={key} className="flex items-center flex-1 min-w-0">
                 <button
                   type="button"
                   onClick={() => stepper.goTo(i)}

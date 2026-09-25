@@ -1,6 +1,7 @@
 import { CodeBlock } from "@lib/components/schematic/CodeBlock"
 import { Highlight, type HlLang } from "@lib/content/highlight"
 import { Mermaid } from "@lib/content/mermaid"
+import { keyed } from "@lib/lib/keys"
 import { cn } from "@lib/lib/utils"
 import { marked } from "marked"
 import { Fragment, type MouseEvent, type ReactNode } from "react"
@@ -32,7 +33,7 @@ const LANG_MAP: Record<string, HlLang> = {
 }
 
 /** GitHub-style heading slug (matches the anchors the specs link to). */
-export function slugify(text: string): string {
+function slugify(text: string): string {
   return text
     .trim()
     .toLowerCase()
@@ -55,33 +56,46 @@ function rewriteHref(href: string): string {
 // marked's Token union is broad; this renderer reads a known subset of fields.
 type Tok = { type: string; [k: string]: unknown }
 
-function renderInline(tokens: Tok[] = [], keyPrefix = "i"): ReactNode[] {
-  return tokens.map((t, i) => {
-    const key = `${keyPrefix}-${i}`
+/**
+ * A token's React key: its type plus its own source text, so a node is
+ * identified by what it is rather than its index. `keyed()` disambiguates
+ * siblings with identical text.
+ */
+function tokenKey(t: Tok): string {
+  const text = typeof t.raw === "string" ? t.raw : typeof t.text === "string" ? t.text : ""
+  return `${t.type}:${text.slice(0, 80)}`
+}
+
+function cellText(cell: Tok): string {
+  return typeof cell.text === "string" ? cell.text : ""
+}
+
+function renderInline(tokens: Tok[] = []): ReactNode[] {
+  return keyed(tokens, tokenKey).map(({ key, item: t }) => {
     const sub = (t.tokens as Tok[] | undefined) ?? []
     switch (t.type) {
       case "text":
         return sub.length ? (
-          <Fragment key={key}>{renderInline(sub, key)}</Fragment>
+          <Fragment key={key}>{renderInline(sub)}</Fragment>
         ) : (
           <Fragment key={key}>{t.text as string}</Fragment>
         )
       case "strong":
         return (
           <strong key={key} className="font-semibold text-ink">
-            {renderInline(sub, key)}
+            {renderInline(sub)}
           </strong>
         )
       case "em":
         return (
           <em key={key} className="italic">
-            {renderInline(sub, key)}
+            {renderInline(sub)}
           </em>
         )
       case "del":
         return (
           <del key={key} className="text-ink-ghost line-through">
-            {renderInline(sub, key)}
+            {renderInline(sub)}
           </del>
         )
       case "codespan":
@@ -111,7 +125,7 @@ function renderInline(tokens: Tok[] = [], keyPrefix = "i"): ReactNode[] {
                 }
               : {})}
           >
-            {renderInline(sub, key)}
+            {renderInline(sub)}
           </a>
         )
       }
@@ -125,14 +139,13 @@ function renderInline(tokens: Tok[] = [], keyPrefix = "i"): ReactNode[] {
   })
 }
 
-function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
-  return tokens.map((t, i) => {
-    const key = `${keyPrefix}-${i}`
+function renderTokens(tokens: Tok[] = []): ReactNode[] {
+  return keyed(tokens, tokenKey).map(({ key, item: t }) => {
     const sub = (t.tokens as Tok[] | undefined) ?? []
     switch (t.type) {
       case "heading": {
         const id = slugify(t.text as string)
-        const inner = renderInline(sub, key)
+        const inner = renderInline(sub)
         const depth = t.depth as number
         if (depth <= 1)
           return (
@@ -173,12 +186,12 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
       case "paragraph":
         return (
           <p key={key} className="font-mono text-[13px] @3xl:text-[14px] leading-[1.7] text-ink-faint my-3">
-            {renderInline(sub, key)}
+            {renderInline(sub)}
           </p>
         )
       case "text":
         return sub.length ? (
-          <Fragment key={key}>{renderInline(sub, key)}</Fragment>
+          <Fragment key={key}>{renderInline(sub)}</Fragment>
         ) : (
           <Fragment key={key}>{t.text as string}</Fragment>
         )
@@ -196,7 +209,7 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
       case "blockquote":
         return (
           <blockquote key={key} className="border-l-2 border-rule pl-4 my-4 [&>p]:text-ink-faint [&>p]:my-2">
-            {renderTokens(sub, key)}
+            {renderTokens(sub)}
           </blockquote>
         )
       case "list": {
@@ -206,9 +219,9 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
           "my-3 pl-5 font-mono text-[13px] @3xl:text-[14px] leading-[1.7] text-ink-faint space-y-1.5 marker:text-ink-ghost",
           ordered ? "list-decimal" : "list-disc",
         )
-        const lis = items.map((it, j) => (
-          <li key={`${key}-${j}`} className="pl-1">
-            {renderTokens((it.tokens as Tok[]) ?? [], `${key}-${j}`)}
+        const lis = keyed(items, tokenKey).map(({ key: itemKey, item: it }) => (
+          <li key={itemKey} className="pl-1">
+            {renderTokens((it.tokens as Tok[]) ?? [])}
           </li>
         ))
         return ordered ? (
@@ -229,25 +242,25 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
             <table className="w-full border-collapse text-[13px] min-w-[480px]">
               <thead>
                 <tr>
-                  {header.map((cell, c) => (
+                  {keyed(header, cellText).map(({ key: cellKey, item: cell }) => (
                     <th
-                      key={c}
+                      key={cellKey}
                       className="border border-rule bg-panel px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint"
                     >
-                      {renderInline((cell.tokens as Tok[]) ?? [], `${key}-h-${c}`)}
+                      {renderInline((cell.tokens as Tok[]) ?? [])}
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, r) => (
-                  <tr key={r}>
-                    {row.map((cell, c) => (
+                {keyed(rows, (row) => row.map(cellText).join(" | ")).map(({ key: rowKey, item: row }) => (
+                  <tr key={rowKey}>
+                    {keyed(row, cellText).map(({ key: cellKey, item: cell }) => (
                       <td
-                        key={c}
+                        key={cellKey}
                         className="border border-rule px-3 py-2 align-top font-mono text-ink-faint leading-[1.6]"
                       >
-                        {renderInline((cell.tokens as Tok[]) ?? [], `${key}-${r}-${c}`)}
+                        {renderInline((cell.tokens as Tok[]) ?? [])}
                       </td>
                     ))}
                   </tr>

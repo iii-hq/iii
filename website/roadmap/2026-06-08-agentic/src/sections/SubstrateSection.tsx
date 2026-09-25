@@ -84,7 +84,7 @@ export function SubstrateSection() {
             {"\n"}
             <M>{"}"}</M>
             {"\n\n"}
-            <C>// discovery is runtime, not setup:</C>
+            <C>{"// discovery is runtime, not setup:"}</C>
             {"\n"}
             <K>agent_trigger</K> <M>{"{"}</M> function: <S>"engine::functions::list"</S> <M>{"}"}</M>
           </CodeBlock>

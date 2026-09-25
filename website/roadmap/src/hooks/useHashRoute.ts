@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useSyncExternalStore } from "react"
 
 export type Route = { kind: "home" } | { kind: "page"; slug: string; rest: string[] }
 
@@ -15,27 +15,36 @@ function parse(hash: string): Route {
   return { kind: "home" }
 }
 
+function subscribe(onChange: () => void): () => void {
+  window.addEventListener("hashchange", onChange)
+  return () => window.removeEventListener("hashchange", onChange)
+}
+
+function getSnapshot(): string {
+  return window.location.hash
+}
+
+// no hash on the server: every deck starts on its home route
+function getServerSnapshot(): string {
+  return ""
+}
+
 /**
  * hash routing with two namespaces: `#/...` paths are routes (deep-dive
  * pages); bare `#section-id` hashes stay native anchor scrolls on the home
  * page. unknown page slugs fall back to home (App renders a not-found note).
  */
 export function useHashRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => parse(window.location.hash))
-
-  useEffect(() => {
-    const onChange = () => setRoute(parse(window.location.hash))
-    window.addEventListener("hashchange", onChange)
-    return () => window.removeEventListener("hashchange", onChange)
-  }, [])
+  const hash = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  const route = useMemo(() => parse(hash), [hash])
 
   useEffect(() => {
     // deep-dive pages and the explicit "#/" home link start at the top;
     // bare "#section" hashes keep native anchor behaviour.
-    if (route.kind === "page" || window.location.hash === "#/") {
+    if (route.kind === "page" || hash === "#/") {
       window.scrollTo({ top: 0, behavior: "instant" })
     }
-  }, [route])
+  }, [route, hash])
 
   return route
 }

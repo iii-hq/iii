@@ -1,5 +1,5 @@
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { cn } from "@lib/lib/utils"
-import { useMemo } from "react"
 
 /**
  * archetype A8 — the "many paths converge to one" funnel.
@@ -45,10 +45,7 @@ const REJECT_H = 64
 const REJECT_Y = 243
 
 export function Funnel({ title = "many paths converge to one", paths, target, reject, className }: FunnelProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   // the input boxes are centered as a block within the left region so the
   // convergence stays visually balanced even when a reject column is shown.

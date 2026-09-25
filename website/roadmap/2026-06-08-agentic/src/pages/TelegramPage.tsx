@@ -84,9 +84,9 @@ export function TelegramPage() {
 
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4 items-start">
         <CodeBlock title="the whole reactive render path">
-          <C>// bind once at startup — then every assistant delta</C>
+          <C>{"// bind once at startup — then every assistant delta"}</C>
           {"\n"}
-          <C>// in any session this worker cares about flows in.</C>
+          <C>{"// in any session this worker cares about flows in."}</C>
           {"\n"}
           iii.<K>registerFunction</K>(<S>"tg::on-message-updated"</S>, <K>async</K> (evt) <M>{"=>"}</M> <M>{"{"}</M>
           {"\n"}
@@ -94,7 +94,7 @@ export function TelegramPage() {
           <K>const</K> chatId = <K>await</K> chatIdForSession(evt.session_id);
           {"\n"}
           {"  "}
-          <K>if</K> (!shouldEdit(evt.revision)) <K>return</K>; <C>// ~1/s throttle</C>
+          <K>if</K> (!shouldEdit(evt.revision)) <K>return</K>; <C>{"// ~1/s throttle"}</C>
           {"\n"}
           {"  "}
           <K>await</K> telegram.editMessageText(chatId, msgId(evt), text(evt));

@@ -1,6 +1,8 @@
 import { PlayerControls } from "@lib/components/PlayerControls"
 import { FnChip } from "@lib/components/schematic/FnChip"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { useStepper } from "@lib/hooks/useStepper"
+import { keyed } from "@lib/lib/keys"
 import { cn } from "@lib/lib/utils"
 import { useMemo } from "react"
 
@@ -46,10 +48,9 @@ export function SequencePlayer({
   const stepper = useStepper(steps.length, intervalMs)
   const height = TOP + steps.length * ROW_H + 18
   const laneById = useMemo(() => Object.fromEntries(lanes.map((l) => [l.id, l])), [lanes])
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  // a step is identified by what it says, not where it sits in the list
+  const keyedSteps = useMemo(() => keyed(steps, (s) => `${s.from}>${s.to}:${s.label}`), [steps])
+  const reducedMotion = usePrefersReducedMotion()
   const active = steps[stepper.step]
   const activeLanes = new Set([active.from, active.to])
 
@@ -131,7 +132,7 @@ export function SequencePlayer({
           })}
 
           {/* one row per revealed step */}
-          {steps.map((step, i) => {
+          {keyedSteps.map(({ key, item: step }, i) => {
             if (i > stepper.step) return null
             const isActive = i === stepper.step
             const y = TOP + i * ROW_H
@@ -143,7 +144,7 @@ export function SequencePlayer({
               : `M ${from.x} ${y} L ${to.x} ${y}`
             const midX = self ? from.x + 70 : (from.x + to.x) / 2
             return (
-              <g key={`${step.label}-${i}`} className={cn(!isActive && "opacity-75")}>
+              <g key={key} className={cn(!isActive && "opacity-75")}>
                 <path
                   d={d}
                   fill="none"

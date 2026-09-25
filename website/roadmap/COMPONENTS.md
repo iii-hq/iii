@@ -11,6 +11,22 @@ kinds, in section order: **layout · primitive · archetype · hook · util**
 
 ## layout
 
+### DeckShell
+- kind: layout
+- import: `import { DeckShell } from '@lib/components/DeckShell'`
+- purpose: the frame every deck App renders — container root, Sheet, TopNav, then home / `#/<slug>` page / not-found by route
+- props: `{ route: Route; nav: NavItem[]; pages: Record<string, ComponentType>; home: ReactNode }`
+- use when: every deck's App.tsx; pass the PAGES registry and `<Home />`
+- used by: all decks
+
+### MapLayout
+- kind: layout
+- import: `import { MapLayout, MapLegend } from '@lib/components/MapLayout'`
+- purpose: the system-map slide body — legend strip, scrollable map left, sticky datasheet right (height-locked to the map at @5xl, stacked below it otherwise)
+- props: `MapLayout { map: ReactNode; datasheet: (slot: { className?: string; layoutKey: string | number }) => ReactNode }`; `MapLegend { items: { swatch: ReactNode; label: string }[] }`
+- use when: any slide pairing a SystemMap with a MapDatasheet
+- used by: all decks
+
 ### PageShell
 - kind: layout
 - import: `import { PageShell } from '@lib/components/PageShell'`
@@ -19,6 +35,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util**
 - use when: any `#/<slug>` deep-dive page
 - used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
+### Payoff
+- kind: layout
+- import: `import { PayoffScorecard, PayoffTable } from '@lib/components/Payoff'`
+- purpose: A11 — the before → after scorecard and the problem → answer table that close a deck
+- props: `PayoffScorecard { metrics: { label; before; after }[]; valueClassName?; wrap? }`; `PayoffTable { rows: { problem; answer; detail }[]; problemHeading; answerHeading; answerClassName? }`
+- use when: the payoff slide; metrics + rows come from the deck's `content/payoff.ts`
+- used by: 2026-06-22-rbac-proxy-worker, 2026-06-29-codegen, 2026-07-17-injectable-ui
+
 ### PlayerControls
 - kind: layout
 - import: `import { PlayerControls } from '@lib/components/PlayerControls'`
@@ -26,6 +50,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util**
 - props: `{ stepper: Stepper; total: number; label?: string; className?: string }`
 - use when: any diagram driven by `useStepper`
 - used by: all decks (via archetypes)
+
+### ScrollFadePanel
+- kind: layout
+- import: `import { ScrollFadePanel } from '@lib/components/ScrollFadePanel'`
+- purpose: fill-height scroll region that fades its clipped edges and hints "scroll ↓" while more sits below
+- props: `{ children }` — remount it via `key` to start a new content set at the top
+- use when: a height-locked side panel whose content may overflow (datasheets)
+- used by: SystemMap (shared + the agentic fork)
 
 ### Section
 - kind: layout
@@ -244,6 +276,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util**
 - use when: every deck App.tsx; SpecPage reads `rest[0]` for `#/spec/<file>`
 - used by: all decks
 
+### usePrefersReducedMotion
+- kind: hook
+- import: `import { usePrefersReducedMotion } from '@lib/hooks/usePrefersReducedMotion'`
+- purpose: `prefers-reduced-motion: reduce` as a `useSyncExternalStore` — no `window` reads in render, tracks the OS setting live
+- props: returns `boolean`
+- use when: gating ambient animation (marching dots, fade-rise) in a diagram archetype
+- used by: all diagram archetypes
+
 ### useStepper
 - kind: hook
 - import: `import { useStepper, type Stepper } from '@lib/hooks/useStepper'`
@@ -277,6 +317,14 @@ kinds, in section order: **layout · primitive · archetype · hook · util**
 - props: `Highlight { code: string; lang: HlLang }`; mount `HighlightStyles` once per page
 - use when: highlighted code from string data (CodeBlock covers JSX-authored code)
 - used by: all decks (markdown), 2026-06-29-codegen
+
+### keys
+- kind: util
+- import: `import { keyed } from '@lib/lib/keys'`
+- purpose: `keyed(items, text)` — content-derived React keys for lists without ids (duplicates get a counter)
+- props: returns `{ key: string; item: T }[]`
+- use when: mapping static strings / tokens to elements; never key by array index
+- used by: markdown, SequencePlayer, StepReveal, deck sections
 
 ### markdown
 - kind: util

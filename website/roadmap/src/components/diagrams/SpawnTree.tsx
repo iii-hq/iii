@@ -1,8 +1,8 @@
 import { PlayerControls } from "@lib/components/PlayerControls"
 import { FnChip } from "@lib/components/schematic/FnChip"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { useStepper } from "@lib/hooks/useStepper"
 import { cn } from "@lib/lib/utils"
-import { useMemo } from "react"
 
 /**
  * A18 - a parent spawns N parallel children and joins their results: fan out,
@@ -70,10 +70,7 @@ export function SpawnTree({
 }) {
   const stepper = useStepper(states.length, intervalMs)
   const state = states[stepper.step]
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   return (
     <div className={cn("border border-rule bg-bg", className)}>

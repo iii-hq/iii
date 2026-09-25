@@ -3,6 +3,7 @@ import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
 import { C, CodeBlock, M, S } from "@lib/components/schematic/CodeBlock"
 import { FnChip } from "@lib/components/schematic/FnChip"
 import { ModeToggle } from "@lib/components/schematic/ModeToggle"
+import { keyed } from "@lib/lib/keys"
 import { useMemo, useState } from "react"
 import { ACCESS_CATALOG, ACCESS_PROFILES, filterLabel, resolveAccess } from "../content/access"
 
@@ -104,8 +105,8 @@ export function AccessSection() {
           {list(profile.allowed_functions)}
           {"\n  expose_functions:"}
           {profile.expose.length === 0 ? <M> []</M> : null}
-          {profile.expose.map((f, i) => (
-            <span key={i}>
+          {keyed(profile.expose, filterLabel).map(({ key, item: f }) => (
+            <span key={key}>
               {"\n    - "}
               <S>{filterLabel(f)}</S>
             </span>

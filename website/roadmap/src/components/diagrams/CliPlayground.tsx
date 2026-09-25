@@ -4,7 +4,7 @@ import { ModeToggle } from "@lib/components/schematic/ModeToggle"
 import { Prompt } from "@lib/components/schematic/Prompt"
 import { useStepper } from "@lib/hooks/useStepper"
 import { cn } from "@lib/lib/utils"
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 
 /**
  * archetype A3 — interactive terminal step-player.
@@ -102,15 +102,17 @@ export function CliPlayground({
   intervalMs = 2600,
   className,
 }: CliPlaygroundProps) {
-  const [trackId, setTrackId] = useState(tracks[0].id)
+  // null = "no explicit choice yet": the first track, derived at render time
+  const [chosenTrackId, setChosenTrackId] = useState<string | null>(null)
+  const trackId = chosenTrackId ?? tracks[0].id
   const track = useMemo(() => tracks.find((t) => t.id === trackId) ?? tracks[0], [tracks, trackId])
   const stepper = useStepper(track.lines.length, intervalMs)
 
-  // reset the transcript whenever the active track changes
-  useEffect(() => {
+  // switching tracks restarts the transcript from its first line
+  const selectTrack = (id: string) => {
+    setChosenTrackId(id)
     stepper.goTo(0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackId])
+  }
 
   const revealed = track.lines.slice(0, stepper.step + 1)
   const multi = tracks.length > 1
@@ -123,7 +125,7 @@ export function CliPlayground({
         {multi ? (
           <ModeToggle
             value={trackId}
-            onChange={setTrackId}
+            onChange={selectTrack}
             options={tracks.map((t) => ({ value: t.id, label: t.label }))}
           />
         ) : null}

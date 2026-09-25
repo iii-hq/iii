@@ -1,8 +1,10 @@
+import { ScrollFadePanel } from "@lib/components/ScrollFadePanel"
 import { FnChip } from "@lib/components/schematic/FnChip"
 import { Prompt } from "@lib/components/schematic/Prompt"
 import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { cn } from "@lib/lib/utils"
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import { WORKERS } from "../content/workers"
 
 type NodeKind = "core" | "consumer" | "sibling"
@@ -209,9 +211,19 @@ const SUBSTRATE_CHIPS: Array<{ id: string; ghost?: boolean }> = [
 
 const SUBSTRATE = { x: 30, y: 462, w: 970, h: 108 }
 
+/** the provider stack's footprint — three offset cards, 800..1000 × 300..372 */
+const PROVIDERS = { x: 800, y: 300, w: 200, h: 72 }
+
 function chipWidth(label: string) {
   return Math.round(label.length * 6.6) + 18
 }
+
+/**
+ * the clickable area of a map node: an invisible html button laid over the
+ * node's box through a foreignObject, so the map's controls are real buttons
+ * (keyboard + screen reader) while the drawing stays plain svg.
+ */
+const HIT_TARGET = "block h-full w-full cursor-pointer border-0 bg-transparent p-0 focus:outline-none"
 
 interface SystemMapProps {
   selected: string
@@ -219,10 +231,7 @@ interface SystemMapProps {
 }
 
 export function SystemMap({ selected, onSelect }: SystemMapProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   const activeEdges = useMemo(
     () => new Set(EDGES.filter((e) => e.from === selected || e.to === selected).map((e) => e.id)),
@@ -259,7 +268,6 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
   return (
     <svg
       viewBox="0 0 1030 600"
-      role="group"
       aria-label="system map of the agentic workers"
       className="w-full h-auto font-mono select-none"
     >
@@ -326,21 +334,7 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
         const isSelected = node.id === selected
         const isConnected = connected.has(node.id)
         return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            aria-pressed={isSelected}
-            aria-label={`select ${node.title}`}
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
-            className="cursor-pointer focus:outline-none group"
-          >
+          <g key={node.id} className="group">
             <rect
               x={node.x}
               y={node.y}
@@ -392,18 +386,21 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
             >
               {node.kind === "core" ? "worker" : node.kind === "sibling" ? "optional" : "consumer"}
             </text>
+            <foreignObject x={node.x} y={node.y} width={node.w} height={node.h}>
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                aria-label={`select ${node.title}`}
+                onClick={() => onSelect(node.id)}
+                className={HIT_TARGET}
+              />
+            </foreignObject>
           </g>
         )
       })}
 
       {/* provider stack (ghost — llm-router's protocol side) */}
-      <g
-        role="button"
-        tabIndex={0}
-        aria-label="select provider workers"
-        onClick={() => onSelect("llm-router")}
-        className="cursor-pointer"
-      >
+      <g>
         {[0, 1, 2].map((i) => (
           <rect
             key={i}
@@ -424,23 +421,18 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
         <text x={905} y={349} textAnchor="middle" fontSize="9" letterSpacing="0.05em" className="fill-ink-ghost">
           anthropic / openai / google / …
         </text>
+        <foreignObject x={PROVIDERS.x} y={PROVIDERS.y} width={PROVIDERS.w} height={PROVIDERS.h}>
+          <button
+            type="button"
+            aria-label="select provider workers"
+            onClick={() => onSelect("llm-router")}
+            className={HIT_TARGET}
+          />
+        </foreignObject>
       </g>
 
       {/* the substrate band */}
-      <g
-        role="button"
-        tabIndex={0}
-        aria-pressed={substrateActive}
-        aria-label="select the substrate"
-        onClick={() => onSelect("substrate")}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault()
-            onSelect("substrate")
-          }
-        }}
-        className="cursor-pointer focus:outline-none group"
-      >
+      <g className="group">
         <rect
           x={SUBSTRATE.x}
           y={SUBSTRATE.y}
@@ -494,86 +486,17 @@ export function SystemMap({ selected, onSelect }: SystemMapProps) {
             </g>
           )),
         )}
+        <foreignObject x={SUBSTRATE.x} y={SUBSTRATE.y} width={SUBSTRATE.w} height={SUBSTRATE.h}>
+          <button
+            type="button"
+            aria-pressed={substrateActive}
+            aria-label="select the substrate"
+            onClick={() => onSelect("substrate")}
+            className={HIT_TARGET}
+          />
+        </foreignObject>
       </g>
     </svg>
-  )
-}
-
-function ScrollFadePanel({
-  children,
-  contentKey,
-  layoutKey,
-}: {
-  children: ReactNode
-  contentKey: string
-  layoutKey?: string | number
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
-
-  const updateScrollState = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const { scrollTop, scrollHeight, clientHeight } = el
-    const overflow = scrollHeight - clientHeight > 8
-    setCanScrollUp(overflow && scrollTop > 4)
-    setCanScrollDown(overflow && scrollTop + clientHeight < scrollHeight - 4)
-  }, [])
-
-  useEffect(() => {
-    const scrollEl = scrollRef.current
-    const contentEl = contentRef.current
-    if (!scrollEl || !contentEl) return
-
-    scrollEl.scrollTop = 0
-
-    const sync = () => {
-      updateScrollState()
-    }
-
-    sync()
-    requestAnimationFrame(sync)
-
-    scrollEl.addEventListener("scroll", sync, { passive: true })
-    const observer = new ResizeObserver(sync)
-    observer.observe(scrollEl)
-    observer.observe(contentEl)
-
-    return () => {
-      scrollEl.removeEventListener("scroll", sync)
-      observer.disconnect()
-    }
-  }, [contentKey, layoutKey, updateScrollState])
-
-  return (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
-      <div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-        <div ref={contentRef}>{children}</div>
-      </div>
-      {canScrollUp ? (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 border-b border-rule bg-gradient-to-b from-bg via-bg/95 to-transparent"
-        />
-      ) : null}
-      {canScrollDown ? (
-        <>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-12 bg-gradient-to-t from-bg via-bg/95 to-transparent"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-center gap-x-1.5 pb-2"
-          >
-            <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-accent">scroll</span>
-            <span className="font-mono text-[10px] leading-none text-accent">↓</span>
-          </div>
-        </>
-      ) : null}
-    </div>
   )
 }
 
@@ -597,7 +520,7 @@ export function MapDatasheet({
         </span>
       </header>
 
-      <ScrollFadePanel contentKey={info.id} layoutKey={layoutKey}>
+      <ScrollFadePanel key={`${info.id}:${layoutKey ?? ""}`}>
         <div className="px-4 py-3.5 font-mono text-[13px] leading-[1.7] text-ink lowercase border-b border-rule-2">
           {info.role}
         </div>

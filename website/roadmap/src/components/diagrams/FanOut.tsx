@@ -1,5 +1,5 @@
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { cn } from "@lib/lib/utils"
-import { useMemo } from "react"
 
 /**
  * archetype A7 — one event fans out to many handlers.
@@ -36,10 +36,7 @@ const ROW_GAP = 26 // vertical gap between handler boxes
 const TOP = 30 // top padding above the first handler
 
 export function FanOut({ source, trigger, handlers, title = "one write, every handler", className }: FanOutProps) {
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   // total drawing height grows with the handler count; the source + trigger
   // nodes center on the vertical midpoint of the stacked handlers.
@@ -64,7 +61,6 @@ export function FanOut({ source, trigger, handlers, title = "one write, every ha
         <svg
           viewBox={`0 0 980 ${height}`}
           className="w-full h-auto min-w-[720px] font-mono select-none"
-          role="group"
           aria-label={`${source.label} emits ${trigger}, fanning out to ${handlers.length} bound handlers`}
         >
           <defs>

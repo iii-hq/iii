@@ -1,5 +1,5 @@
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
 import { cn } from "@lib/lib/utils"
-import { useMemo } from "react"
 
 /**
  * A17 - one write fans out to every bound handler: an ambient, always-on
@@ -52,10 +52,7 @@ export function EventFanOut({
   ariaLabel: string
   className?: string
 }) {
-  const reducedMotion = useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   return (
     <div className={cn("border border-rule bg-bg", className)}>

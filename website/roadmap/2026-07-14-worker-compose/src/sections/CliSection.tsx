@@ -2,6 +2,7 @@ import { Section } from "@lib/components/Section"
 import { Cell } from "@lib/components/schematic/Cell"
 import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
 import { FnChip } from "@lib/components/schematic/FnChip"
+import { keyed } from "@lib/lib/keys"
 import { CLI_NOTES, CLI_STANDARD, CLI_TODAY } from "../content/cli"
 
 /**
@@ -67,8 +68,8 @@ export function CliSection() {
       </div>
 
       <div className="mt-4 grid grid-cols-1 @2xl:grid-cols-2 gap-px bg-rule border border-rule">
-        {CLI_NOTES.map((note, i) => (
-          <Cell key={i} className="border-0" bodyClassName="max-w-none">
+        {keyed(CLI_NOTES, (note) => note).map(({ key, item: note }) => (
+          <Cell key={key} className="border-0" bodyClassName="max-w-none">
             {note}
           </Cell>
         ))}

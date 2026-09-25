@@ -45,11 +45,11 @@ export function SpawnSection() {
           {"\n"}
           <M>{"}"}</M>
           {"\n\n"}
-          <C>// the child's allow-list is intersected with the parent's —</C>
+          <C>{"// the child's allow-list is intersected with the parent's —"}</C>
           {"\n"}
-          <C>// narrow, never escalate. linkage is injected by the harness,</C>
+          <C>{"// narrow, never escalate. linkage is injected by the harness,"}</C>
           {"\n"}
-          <C>// never trusted from model arguments.</C>
+          <C>{"// never trusted from model arguments."}</C>
         </CodeBlock>
 
         <SpecSheet title="the spawn dispatch, step by step" meta="5 moves" defaultOpen>
