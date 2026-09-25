@@ -1,0 +1,148 @@
+/* The hero graph's stage-driven looks. State lives on `data-stage` on the
+   <svg>; CSS owns every transition, so each stage change is one attribute
+   flip and the reverse mirrors the forward automatically. */
+
+.edge {
+  fill: none;
+  stroke: var(--gray-8);
+  stroke-width: 0.9;
+  stroke-linecap: round;
+  /* pathLength="1" on the element: one dash as long as the path, hidden by an equal offset. */
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 640ms cubic-bezier(0.2, 0.8, 0.3, 1) calc(var(--i) * 12ms),
+    opacity 320ms ease calc(var(--i) * 12ms),
+    stroke 300ms ease;
+}
+
+.svg[data-stage="mesh"] .edge {
+  stroke-dashoffset: 0;
+  opacity: 0.55;
+}
+
+.svg[data-stage="actual"] .edge[data-actual] {
+  stroke: var(--gray-10);
+  stroke-dashoffset: 0;
+  opacity: 0.95;
+}
+
+/* Service chips sit on top of the edges (paint order), so every line reads as
+   ending at the chip's border without any intersection maths. */
+.chip {
+  fill: var(--gray-2);
+  stroke: var(--gray-6);
+  stroke-width: 1;
+  transition: stroke 400ms ease;
+}
+
+.svg[data-stage="iii"] .chip {
+  stroke: var(--gray-8);
+}
+
+/* The status dot: idle grey, live in the iii stage. */
+.status {
+  fill: var(--gray-8);
+  transition: fill 400ms ease;
+}
+
+.svg[data-stage="iii"] .status {
+  fill: var(--gray-12);
+}
+
+.label {
+  fill: var(--gray-12);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+
+/* Each service's permanent spoke into the engine (iii stage only). Drawn in
+   by the same dash trick as the chords, 40ms apart, after the chords have
+   started retracting. */
+.spoke {
+  fill: none;
+  stroke: var(--gray-9);
+  stroke-width: 0.9;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 520ms cubic-bezier(0.2, 0.8, 0.3, 1) calc(var(--i) * 40ms),
+    opacity 300ms ease calc(var(--i) * 40ms);
+}
+
+.svg[data-stage="iii"] .spoke {
+  stroke-dashoffset: 0;
+  opacity: 0.4;
+  transition-delay: calc(240ms + var(--i) * 40ms);
+}
+
+/* The engine at the hub: a glow, a disc with a bright ring, the mark inside.
+   Present only in the iii stage. Scales from 0.94, never from 0. */
+.hub {
+  opacity: 0;
+  transform: scale(0.94);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 420ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    transform 420ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.svg[data-stage="iii"] .hub {
+  opacity: 1;
+  transform: none;
+  transition-delay: 160ms;
+}
+
+.hubDisc {
+  fill: var(--gray-2);
+  stroke: var(--gray-12);
+  stroke-width: 1.25;
+}
+
+.hubMark {
+  fill: var(--gray-12);
+}
+
+/* A call arriving: the ring brightens and breathes out once. Keyframed from JS. */
+.flash {
+  fill: none;
+  stroke: var(--gray-12);
+  stroke-width: 1.25;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* A call in flight: the spoke is drawn by the same dash trick, the light rides
+   the same path with offset-path. Both are keyframed from JS at spawn time. */
+.call {
+  fill: none;
+  stroke: var(--gray-12);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.packet {
+  fill: var(--gray-12);
+  offset-rotate: 0deg;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge,
+  .spoke,
+  .chip,
+  .status,
+  .hub {
+    transition-duration: 0s;
+    transition-delay: 0s;
+  }
+}

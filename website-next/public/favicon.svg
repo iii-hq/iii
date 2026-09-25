@@ -1,0 +1,20 @@
+<svg viewBox="0 0 933.61 1050.31" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .bar { fill: #000000; }
+    @media (prefers-color-scheme: dark) {
+      .bar { fill: #FFFFFF; }
+    }
+  </style>
+  <!-- First i - dot -->
+  <rect class="bar" width="233.4" height="233.4"/>
+  <!-- First i - stem -->
+  <rect class="bar" y="350.1" width="233.4" height="700.21"/>
+  <!-- Second i - dot -->
+  <rect class="bar" x="350.1" width="233.4" height="233.4"/>
+  <!-- Second i - stem -->
+  <rect class="bar" x="350.1" y="350.1" width="233.4" height="700.21"/>
+  <!-- Third i - dot -->
+  <rect class="bar" x="700.21" width="233.4" height="233.4"/>
+  <!-- Third i - stem -->
+  <rect class="bar" x="700.21" y="350.1" width="233.4" height="700.21"/>
+</svg>
