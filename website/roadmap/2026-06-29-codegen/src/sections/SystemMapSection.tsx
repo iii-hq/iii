@@ -1,22 +1,22 @@
-import { MapDatasheet, SystemMap } from '@lib/components/diagrams/SystemMap'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { useEffect, useRef, useState } from 'react'
-import { MAP_EDGES, MAP_INFO, MAP_NODES } from '../content/map'
+import { MapDatasheet, SystemMap } from "@lib/components/diagrams/SystemMap"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { useEffect, useRef, useState } from "react"
+import { MAP_EDGES, MAP_INFO, MAP_NODES } from "../content/map"
 
 /** matches tailwind @5xl container width (64rem) */
 const PAIRED_LAYOUT_MIN_WIDTH = 1024
 
 const LEGEND = [
-  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: 'the tool' },
-  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: 'engine + output' },
-  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: 'your side' },
-  { swatch: <StatusDot pulse />, label: 'active flow' },
+  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: "the tool" },
+  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: "engine + output" },
+  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: "your side" },
+  { swatch: <StatusDot pulse />, label: "active flow" },
 ] as const
 
 export function SystemMapSection() {
-  const [selected, setSelected] = useState('codegen')
+  const [selected, setSelected] = useState("codegen")
   const layoutRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<HTMLDivElement>(null)
   const [pairedLayout, setPairedLayout] = useState(false)
@@ -71,8 +71,8 @@ export function SystemMapSection() {
         >
           <MapDatasheet
             info={info}
-            className={pairedLayout ? 'h-full' : undefined}
-            layoutKey={pairedLayout ? mapHeight : 'stack'}
+            className={pairedLayout ? "h-full" : undefined}
+            layoutKey={pairedLayout ? mapHeight : "stack"}
           />
         </div>
       </div>

@@ -1,57 +1,57 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { ModeToggle } from '@lib/components/schematic/ModeToggle'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { useMemo, useState } from 'react'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { ModeToggle } from "@lib/components/schematic/ModeToggle"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { useMemo, useState } from "react"
 
 const REGISTRY = [
-  'shell::exec',
-  'shell::spawn',
-  'todo::create',
-  'todo::list',
-  'email::send',
-  'database::query',
-  'storage::put',
-  'storage::get',
-  'image-resize::convert',
-  'search::web',
-  'coder::apply_patch',
-  'harness::spawn',
-  'session::messages',
-  'session::delete',
-  'router::models::list',
-  'engine::functions::list',
-  'engine::workers::list',
-  'telegram::send',
+  "shell::exec",
+  "shell::spawn",
+  "todo::create",
+  "todo::list",
+  "email::send",
+  "database::query",
+  "storage::put",
+  "storage::get",
+  "image-resize::convert",
+  "search::web",
+  "coder::apply_patch",
+  "harness::spawn",
+  "session::messages",
+  "session::delete",
+  "router::models::list",
+  "engine::functions::list",
+  "engine::workers::list",
+  "telegram::send",
 ] as const
 
-type PolicyId = 'default' | 'narrow' | 'broad'
+type PolicyId = "default" | "narrow" | "broad"
 
 const POLICIES: Record<PolicyId, { allow: string[]; deny: string[]; caption: string }> = {
   default: {
     allow: [],
     deny: [],
     caption:
-      'no allow-list supplied — every call is refused with a result the model can read. a default install is a plain chat loop until you opt functions in.',
+      "no allow-list supplied — every call is refused with a result the model can read. a default install is a plain chat loop until you opt functions in.",
   },
   narrow: {
-    allow: ['todo::*', 'search::web', 'engine::functions::list'],
+    allow: ["todo::*", "search::web", "engine::functions::list"],
     deny: [],
     caption:
-      'a narrow agent: three globs, nothing else reachable. the same registry, a different reach — policy is per turn, not per deployment.',
+      "a narrow agent: three globs, nothing else reachable. the same registry, a different reach — policy is per turn, not per deployment.",
   },
   broad: {
-    allow: ['*'],
-    deny: ['session::delete'],
+    allow: ["*"],
+    deny: ["session::delete"],
     caption:
-      'a broad agent: everything allowed except destructive surfaces — the shape a deployment pairs with approval-gate holds on the risky calls.',
+      "a broad agent: everything allowed except destructive surfaces — the shape a deployment pairs with approval-gate holds on the risky calls.",
   },
 }
 
 function globToRegex(glob: string): RegExp {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
   return new RegExp(`^${escaped}$`)
 }
 
@@ -62,7 +62,7 @@ function isAllowed(fn: string, policy: { allow: string[]; deny: string[] }) {
 }
 
 export function SubstrateSection() {
-  const [policyId, setPolicyId] = useState<PolicyId>('broad')
+  const [policyId, setPolicyId] = useState<PolicyId>("broad")
   const policy = POLICIES[policyId]
   const allowedCount = useMemo(() => REGISTRY.filter((fn) => isAllowed(fn, policy)).length, [policy])
 
@@ -77,16 +77,16 @@ export function SubstrateSection() {
       <div className="grid grid-cols-1 @4xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-6 items-start">
         <div className="flex flex-col gap-4 min-w-0">
           <CodeBlock title="the model sees one surface">
-            <K>agent_trigger</K> <M>{'{'}</M>
-            {'\n'}
-            {'  '}function: <S>"shell::exec"</S>,{'\n'}
-            {'  '}payload: <M>{'{'}</M> command: <S>"ls -la"</S> <M>{'}'}</M>
-            {'\n'}
-            <M>{'}'}</M>
-            {'\n\n'}
+            <K>agent_trigger</K> <M>{"{"}</M>
+            {"\n"}
+            {"  "}function: <S>"shell::exec"</S>,{"\n"}
+            {"  "}payload: <M>{"{"}</M> command: <S>"ls -la"</S> <M>{"}"}</M>
+            {"\n"}
+            <M>{"}"}</M>
+            {"\n\n"}
             <C>// discovery is runtime, not setup:</C>
-            {'\n'}
-            <K>agent_trigger</K> <M>{'{'}</M> function: <S>"engine::functions::list"</S> <M>{'}'}</M>
+            {"\n"}
+            <K>agent_trigger</K> <M>{"{"}</M> function: <S>"engine::functions::list"</S> <M>{"}"}</M>
           </CodeBlock>
           <StatusPanel
             variant="info"
@@ -109,23 +109,23 @@ export function SubstrateSection() {
               value={policyId}
               onChange={setPolicyId}
               options={[
-                { value: 'default', label: 'default' },
-                { value: 'narrow', label: 'narrow' },
-                { value: 'broad', label: 'broad' },
+                { value: "default", label: "default" },
+                { value: "narrow", label: "narrow" },
+                { value: "broad", label: "broad" },
               ]}
             />
           </div>
 
           <div className="px-4 py-3 border-b border-rule-2 font-mono text-[12.5px] leading-[1.6]">
             <span className="text-ink-faint">functions: </span>
-            <span className="text-ink">{'{'}</span> allow:{' '}
-            <span className="text-accent">[{policy.allow.map((g) => `"${g}"`).join(', ')}]</span>
+            <span className="text-ink">{"{"}</span> allow:{" "}
+            <span className="text-accent">[{policy.allow.map((g) => `"${g}"`).join(", ")}]</span>
             {policy.deny.length > 0 ? (
               <>
-                , deny: <span className="text-ink">[{policy.deny.map((g) => `"${g}"`).join(', ')}]</span>
+                , deny: <span className="text-ink">[{policy.deny.map((g) => `"${g}"`).join(", ")}]</span>
               </>
-            ) : null}{' '}
-            <span className="text-ink">{'}'}</span>
+            ) : null}{" "}
+            <span className="text-ink">{"}"}</span>
           </div>
 
           <div className="px-4 py-4">
@@ -135,8 +135,8 @@ export function SubstrateSection() {
                 return (
                   <FnChip
                     key={fn}
-                    tone={ok ? 'ink' : 'ghost'}
-                    className={ok ? '' : 'opacity-55 line-through decoration-rule'}
+                    tone={ok ? "ink" : "ghost"}
+                    className={ok ? "" : "opacity-55 line-through decoration-rule"}
                   >
                     {fn}
                   </FnChip>

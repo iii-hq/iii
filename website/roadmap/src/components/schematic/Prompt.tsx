@@ -1,5 +1,5 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
 
 interface PromptProps {
   symbol?: string
@@ -7,9 +7,9 @@ interface PromptProps {
   children?: React.ReactNode
 }
 
-export function Prompt({ symbol = '$', className, children }: PromptProps) {
+export function Prompt({ symbol = "$", className, children }: PromptProps) {
   return (
-    <span className={cn('font-mono text-accent', className)}>
+    <span className={cn("font-mono text-accent", className)}>
       {symbol}
       {children !== undefined ? <span className="text-ink ml-2">{children}</span> : null}
     </span>

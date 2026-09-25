@@ -1,8 +1,8 @@
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { cn } from '@lib/lib/utils'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { cn } from "@lib/lib/utils"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 /**
  * A1 / A4 — the system map archetype.
@@ -15,7 +15,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
  * space as the node x/y/w/h (default 1030×600 viewBox).
  */
 
-export type MapNodeKind = 'primary' | 'secondary' | 'optional' | 'external'
+export type MapNodeKind = "primary" | "secondary" | "optional" | "external"
 
 export interface MapNode {
   id: string
@@ -40,17 +40,17 @@ export interface MapEdge {
   /** label anchor point */
   lx?: number
   ly?: number
-  anchor?: 'start' | 'middle' | 'end'
+  anchor?: "start" | "middle" | "end"
   dashed?: boolean
   /** seconds for the travelling pulse on the active edge */
   dur?: number
 }
 
 const KIND_TAG: Record<MapNodeKind, string> = {
-  primary: 'core',
-  secondary: 'worker',
-  optional: 'optional',
-  external: 'external',
+  primary: "core",
+  secondary: "worker",
+  optional: "optional",
+  external: "external",
 }
 
 interface SystemMapProps {
@@ -66,7 +66,7 @@ interface SystemMapProps {
 
 export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, height = 600, className }: SystemMapProps) {
   const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   )
 
@@ -88,7 +88,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
       viewBox={`0 0 ${width} ${height}`}
       role="group"
       aria-label="system map"
-      className={cn('w-full h-auto font-mono select-none', className)}
+      className={cn("w-full h-auto font-mono select-none", className)}
     >
       <defs>
         <marker
@@ -124,9 +124,9 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               d={edge.d}
               fill="none"
               strokeWidth={active ? 1.4 : 1}
-              strokeDasharray={edge.dashed ? '5 4' : undefined}
-              markerEnd={`url(#${active ? 'map-arr-accent' : 'map-arr-faint'})`}
-              className={cn('transition-[stroke] duration-200', active ? 'stroke-accent' : 'stroke-rule')}
+              strokeDasharray={edge.dashed ? "5 4" : undefined}
+              markerEnd={`url(#${active ? "map-arr-accent" : "map-arr-faint"})`}
+              className={cn("transition-[stroke] duration-200", active ? "stroke-accent" : "stroke-rule")}
             />
             {active && !reducedMotion ? (
               <circle r="2.6" className="fill-accent">
@@ -137,13 +137,13 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               <text
                 x={edge.lx ?? 0}
                 y={edge.ly ?? 0}
-                textAnchor={edge.anchor ?? 'middle'}
+                textAnchor={edge.anchor ?? "middle"}
                 fontSize="9.5"
                 letterSpacing="0.04em"
-                className={cn(active ? 'fill-ink' : 'fill-ink-ghost', 'transition-[fill] duration-200')}
+                className={cn(active ? "fill-ink" : "fill-ink-ghost", "transition-[fill] duration-200")}
                 style={{
-                  paintOrder: 'stroke',
-                  stroke: 'var(--color-bg)',
+                  paintOrder: "stroke",
+                  stroke: "var(--color-bg)",
                   strokeWidth: 4,
                 }}
               >
@@ -158,7 +158,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
       {nodes.map((node) => {
         const isSelected = node.id === selected
         const isConnected = connected.has(node.id)
-        const strong = node.kind === 'primary'
+        const strong = node.kind === "primary"
         return (
           <g
             key={node.id}
@@ -168,7 +168,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
             aria-label={`select ${node.title}`}
             onClick={() => onSelect(node.id)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
+              if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault()
                 onSelect(node.id)
               }
@@ -181,18 +181,18 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               width={node.w}
               height={node.h}
               strokeWidth={isSelected ? 1.5 : strong ? 1.25 : 1}
-              strokeDasharray={node.kind === 'optional' ? '5 4' : undefined}
+              strokeDasharray={node.kind === "optional" ? "5 4" : undefined}
               className={cn(
-                'transition-all duration-200',
-                isSelected ? 'fill-panel stroke-accent' : 'fill-bg group-hover:fill-panel',
+                "transition-all duration-200",
+                isSelected ? "fill-panel stroke-accent" : "fill-bg group-hover:fill-panel",
                 !isSelected &&
                   (strong
                     ? isConnected
-                      ? 'stroke-ink'
-                      : 'stroke-ink-ghost'
+                      ? "stroke-ink"
+                      : "stroke-ink-ghost"
                     : isConnected
-                      ? 'stroke-ink-faint'
-                      : 'stroke-rule'),
+                      ? "stroke-ink-faint"
+                      : "stroke-rule"),
               )}
             />
             {isSelected ? <rect x={node.x} y={node.y} width={3} height={node.h} className="fill-accent" /> : null}
@@ -202,7 +202,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               textAnchor="middle"
               fontSize="14"
               fontWeight={600}
-              className={cn(isSelected || isConnected || strong ? 'fill-ink' : 'fill-ink-faint')}
+              className={cn(isSelected || isConnected || strong ? "fill-ink" : "fill-ink-faint")}
             >
               {node.title}
             </text>
@@ -224,7 +224,7 @@ export function SystemMap({ nodes, edges, selected, onSelect, width = 1030, heig
               textAnchor="end"
               fontSize="8"
               letterSpacing="0.08em"
-              className={cn('uppercase', isSelected ? 'fill-accent' : 'fill-ink-ghost')}
+              className={cn("uppercase", isSelected ? "fill-accent" : "fill-ink-ghost")}
             >
               {node.tag ?? KIND_TAG[node.kind]}
             </text>
@@ -302,13 +302,13 @@ function ScrollFadePanel({
     sync()
     requestAnimationFrame(sync)
 
-    scrollEl.addEventListener('scroll', sync, { passive: true })
+    scrollEl.addEventListener("scroll", sync, { passive: true })
     const observer = new ResizeObserver(sync)
     observer.observe(scrollEl)
     observer.observe(contentEl)
 
     return () => {
-      scrollEl.removeEventListener('scroll', sync)
+      scrollEl.removeEventListener("scroll", sync)
       observer.disconnect()
     }
   }, [contentKey, layoutKey, updateScrollState])
@@ -354,7 +354,7 @@ export function MapDatasheet({
   layoutKey?: string | number
 }) {
   return (
-    <aside className={cn('border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden', className)}>
+    <aside className={cn("border border-rule bg-bg flex flex-col min-w-0 min-h-0 overflow-hidden", className)}>
       <header className="shrink-0 flex items-center justify-between gap-x-3 bg-panel px-4 py-3 border-b border-rule">
         <span className="font-mono text-[16px] font-semibold text-ink">{info.id}</span>
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint whitespace-nowrap">

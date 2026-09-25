@@ -24,6 +24,6 @@
       "@lib/*": ["./src/*"]
     }
   },
-  "include": ["src", "*/src", "_viewer/src"],
+  "include": ["src", "*/src", "generated"],
   "exclude": ["node_modules"]
 }

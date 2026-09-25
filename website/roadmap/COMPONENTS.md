@@ -4,20 +4,12 @@ every shared file under `src/` has exactly one entry here (heading = file
 basename). before building any visual for a deck, read this file — **reuse
 first**. to add a component, meet the checklist in the presentation skill's
 `reference/component-standards.md`, then append an entry in alphabetical order
-within its kind. `node build.mjs` warns when a src file has no entry (or an
-entry has no file); `--strict-registry` turns the warning into a failure.
+within its kind. `pnpm exec tsx scripts/validate-roadmap.ts` (website/) warns when a src file
+has no entry (or an entry has no file); `--strict` turns the warning into a failure.
 
-kinds, in section order: **layout · primitive · archetype · hook · util · gallery**
+kinds, in section order: **layout · primitive · archetype · hook · util**
 
 ## layout
-
-### Footer
-- kind: layout
-- import: `import { Footer } from '@lib/components/Footer'`
-- purpose: deck footer — eyebrow, big closing line, command chip, attribution bar
-- props: `{ footer: FooterSpec }` (from the deck's `content/deck.ts`)
-- use when: every deck; wired once in App.tsx
-- used by: all decks
 
 ### PageShell
 - kind: layout
@@ -56,8 +48,8 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - import: `import { TopNav } from '@lib/components/TopNav'`
 - purpose: sticky top nav — wordmark, scroll-spy section links, spec link, theme toggle
 - props: `{ route: Route; meta: DeckMeta; nav: NavItem[]; specHref?: string | null }`
-- use when: every deck; wired once in App.tsx (viewer passes `specHref={null}`)
-- used by: all decks, _viewer
+- use when: every deck; wired once in App.tsx
+- used by: all decks
 
 ## primitive
 
@@ -107,7 +99,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: bordered segmented toggle (theme, policy modes, language tracks)
 - props: `{ value: T; onChange: (next: T) => void; options: ModeToggleOption<T>[]; className? }`
 - use when: switching between 2–4 named modes; active = accent border + text
-- used by: all decks, gallery
+- used by: all decks
 
 ### Prompt
 - kind: primitive
@@ -115,7 +107,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: terminal prompt symbol prefix (`$`, `//`)
 - props: `{ symbol?: string; className?: string; children? }`
 - use when: eyebrows and command lines
-- used by: all decks, gallery
+- used by: all decks
 
 ### Sheet
 - kind: primitive
@@ -123,7 +115,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: the centered max-w-[1200px] drafting sheet with left/right rules
 - props: `{ children; className? }`
 - use when: the root shell of every page; use container queries inside, not viewport
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ### StatusDot
 - kind: primitive
@@ -131,7 +123,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: status dot, optional pulse animation
 - props: `{ tone?: DotTone; pulse?: boolean }`
 - use when: live/running/draft indicators
-- used by: all decks, gallery
+- used by: all decks
 
 ### StatusPanel
 - kind: primitive
@@ -155,7 +147,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: the iii brand mark
 - props: `{ className?: string }`
 - use when: nav + footer chrome only
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ### WorkerCard
 - kind: primitive
@@ -250,7 +242,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: hash routing — `#/` home with scroll anchors, `#/<slug>[/rest]` pages
 - props: returns `Route = { kind: 'home' } | { kind: 'page'; slug: string; rest: string[] }`
 - use when: every deck App.tsx; SpecPage reads `rest[0]` for `#/spec/<file>`
-- used by: all decks, _viewer
+- used by: all decks
 
 ### useStepper
 - kind: hook
@@ -266,7 +258,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: light/dark theme state persisted to localStorage, sets `data-theme`
 - props: returns `[theme, setTheme]`
 - use when: chrome with a theme toggle (TopNav/SiteHeader already wire it)
-- used by: all decks, gallery, _viewer
+- used by: all decks
 
 ## util
 
@@ -291,8 +283,8 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - import: `import { Markdown } from '@lib/content/markdown'`
 - purpose: trusted spec markdown → React in the drafting-sheet system; strips leading frontmatter; ```mermaid fences render live
 - props: `{ source: string }`
-- use when: rendering spec md (SpecPage/viewer do this for you)
-- used by: SpecPage, _viewer
+- use when: rendering spec md (SpecPage does this for you)
+- used by: SpecPage
 
 ### mermaid
 - kind: util
@@ -308,7 +300,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A15 — the `#/spec` page: file sidebar + rendered spec markdown
 - props: `{ docs: Record<string, string> }` — pass the deck's `spec-docs.ts` glob
 - use when: every deck (`spec` entry in PAGES); the md-only viewer reuses it
-- used by: all decks, _viewer
+- used by: all decks
 
 ### utils
 - kind: util
@@ -317,38 +309,3 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `cn(...inputs)`
 - use when: any conditional className
 - used by: everything
-
-## gallery
-
-### Gallery
-- kind: gallery
-- import: `import { Gallery } from '@lib/gallery/Gallery'` (gallery app only)
-- purpose: the roadmap timeline — one column, newest first, month markers on a vertical rule, rendered from `virtual:spec-manifest`
-- props: none (reads SPECS)
-- use when: gallery app only
-- used by: gallery
-
-### PresentationCard
-- kind: gallery
-- import: `import { PresentationCard } from '@lib/gallery/PresentationCard'`
-- purpose: one spec card — number, deck/spec badge, title, tagline, tags, open → (the date lives in the timeline gutter)
-- props: `{ spec: SpecEntry; index: number }`
-- use when: gallery app only
-- used by: gallery
-
-### site
-- kind: gallery
-- import: `import { SITE } from '@lib/gallery/site'`
-- purpose: the gallery's repo identity (wordmark label, hero copy, attribution) — set once
-- props: data only
-- use when: gallery chrome; never per-spec data
-- used by: gallery
-
-### SiteFooter
-- kind: gallery
-- import: `import { SiteFooter } from '@lib/gallery/SiteFooter'`
-- purpose: gallery footer bar (attribution + source of truth)
-- props: none
-- use when: gallery app only
-- used by: gallery
-

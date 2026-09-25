@@ -1,5 +1,5 @@
-import { Section } from '@lib/components/Section'
-import { PAYOFF_METRICS, PAYOFF_SOLVES } from '../content/payoff'
+import { Section } from "@lib/components/Section"
+import { PAYOFF_METRICS, PAYOFF_SOLVES } from "../content/payoff"
 
 /**
  * A11 — the payoff. Before/after scorecard measured against the console as it

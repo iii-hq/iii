@@ -1,60 +1,60 @@
-import { type SeqLane, type SeqStep, SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { UseCaseShell } from './UseCaseShell'
+import { type SeqLane, type SeqStep, SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { UseCaseShell } from "./UseCaseShell"
 
 const LANES: SeqLane[] = [
-  { id: 'source', label: 'event source', x: 90 },
-  { id: 'fn', label: 'reports::daily', x: 300 },
-  { id: 'harness', label: 'harness', x: 520 },
-  { id: 'registry', label: 'functions', x: 730 },
-  { id: 'out', label: 'downstream', x: 900 },
+  { id: "source", label: "event source", x: 90 },
+  { id: "fn", label: "reports::daily", x: 300 },
+  { id: "harness", label: "harness", x: 520 },
+  { id: "registry", label: "functions", x: 730 },
+  { id: "out", label: "downstream", x: 900 },
 ]
 
 const STEPS: SeqStep[] = [
   {
-    from: 'source',
-    to: 'fn',
-    label: 'cron 09:00 fires',
-    title: 'any event can carry a goal',
-    desc: 'a schedule here — but the binding works the same for a webhook, a state change, a stream item, or another agent finishing. reactive wiring: trigger type in, function out.',
+    from: "source",
+    to: "fn",
+    label: "cron 09:00 fires",
+    title: "any event can carry a goal",
+    desc: "a schedule here — but the binding works the same for a webhook, a state change, a stream item, or another agent finishing. reactive wiring: trigger type in, function out.",
   },
   {
-    from: 'fn',
-    to: 'harness',
-    label: 'harness::run { output: json + schema }',
-    title: 'call an agent like a function',
+    from: "fn",
+    to: "harness",
+    label: "harness::run { output: json + schema }",
+    title: "call an agent like a function",
     desc: 'run holds the call open until the turn ends and returns a typed result. the output contract turns "parse the transcript yourself" into a schema-validated json value.',
   },
   {
-    from: 'harness',
-    to: 'registry',
-    label: 'agent_trigger → database::query, search::web',
-    title: 'the agent works the ecosystem',
-    desc: 'within its allow-list, the agent reaches whatever the job needs — queries, lookups, file reads. capability is the registry itself, gated by policy per run.',
+    from: "harness",
+    to: "registry",
+    label: "agent_trigger → database::query, search::web",
+    title: "the agent works the ecosystem",
+    desc: "within its allow-list, the agent reaches whatever the job needs — queries, lookups, file reads. capability is the registry itself, gated by policy per run.",
   },
   {
-    from: 'harness',
-    to: 'harness',
-    label: 'harness::spawn × 2',
-    title: 'it delegates on its own',
-    desc: 'the goal is big? the agent fans out sub-agents — an analyst per data source — under the same budgets and a narrowed policy, joins their typed results, and keeps going.',
+    from: "harness",
+    to: "harness",
+    label: "harness::spawn × 2",
+    title: "it delegates on its own",
+    desc: "the goal is big? the agent fans out sub-agents — an analyst per data source — under the same budgets and a narrowed policy, joins their typed results, and keeps going.",
   },
   {
-    from: 'harness',
-    to: 'fn',
-    label: 'result: { metrics, anomalies, summary }',
-    title: 'a typed deliverable comes back',
-    desc: 'validated against the schema before the turn completes — with bounded retry nudges if the model misses it. the calling function gets data, not prose to regex.',
-    event: 'harness::turn_completed',
+    from: "harness",
+    to: "fn",
+    label: "result: { metrics, anomalies, summary }",
+    title: "a typed deliverable comes back",
+    desc: "validated against the schema before the turn completes — with bounded retry nudges if the model misses it. the calling function gets data, not prose to regex.",
+    event: "harness::turn_completed",
   },
   {
-    from: 'fn',
-    to: 'out',
-    label: 'email::send · state::set',
-    title: 'the result fans out — and can chain',
-    desc: 'the handler emails the report and writes state. every one of those writes is itself an event other functions can bind — the next loop starts where this one ends, each chain carrying its own termination condition.',
+    from: "fn",
+    to: "out",
+    label: "email::send · state::set",
+    title: "the result fans out — and can chain",
+    desc: "the handler emails the report and writes state. every one of those writes is itself an event other functions can bind — the next loop starts where this one ends, each chain carrying its own termination condition.",
   },
 ]
 
@@ -75,48 +75,48 @@ export function LoopsPage() {
 
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4 items-start">
         <CodeBlock title="the entire loop — one worker file">
-          iii.<K>registerFunction</K>(<S>"reports::daily"</S>, <K>async</K> () <M>{'=>'}</M> <M>{'{'}</M>
-          {'\n'}
-          {'  '}
-          <K>const</K> run = <K>await</K> iii.<K>trigger</K>(<M>{'{'}</M>
-          {'\n'}
-          {'    '}function_id: <S>"harness::run"</S>,{'\n'}
-          {'    '}payload: <M>{'{'}</M>
-          {'\n'}
-          {'      '}message: <S>"compile yesterday's ops report"</S>,{'\n'}
-          {'      '}model: <S>"claude-sonnet-4"</S>,{'\n'}
-          {'      '}options: <M>{'{'}</M>
-          {'\n'}
-          {'        '}output: <M>{'{'}</M> type: <S>"json"</S>, schema: ReportSchema <M>{'}'}</M>,{'\n'}
-          {'        '}functions: <M>{'{'}</M>
-          {'\n'}
-          {'          '}allow: [<S>"database::*"</S>, <S>"search::web"</S>, <S>"harness::spawn"</S>]{'\n'}
-          {'        '}
-          <M>{'}'}</M>
-          {'\n'}
-          {'      '}
-          <M>{'}'}</M>
-          {'\n'}
-          {'    '}
-          <M>{'}'}</M>
-          {'\n'}
-          {'  '}
-          <M>{'}'}</M>);
-          {'\n\n'}
-          {'  '}
-          <K>await</K> iii.<K>trigger</K>(<M>{'{'}</M> function_id: <S>"email::send"</S>, payload: render(run.result){' '}
-          <M>{'}'}</M>);
-          {'\n'}
-          <M>{'}'}</M>);
-          {'\n\n'}
+          iii.<K>registerFunction</K>(<S>"reports::daily"</S>, <K>async</K> () <M>{"=>"}</M> <M>{"{"}</M>
+          {"\n"}
+          {"  "}
+          <K>const</K> run = <K>await</K> iii.<K>trigger</K>(<M>{"{"}</M>
+          {"\n"}
+          {"    "}function_id: <S>"harness::run"</S>,{"\n"}
+          {"    "}payload: <M>{"{"}</M>
+          {"\n"}
+          {"      "}message: <S>"compile yesterday's ops report"</S>,{"\n"}
+          {"      "}model: <S>"claude-sonnet-4"</S>,{"\n"}
+          {"      "}options: <M>{"{"}</M>
+          {"\n"}
+          {"        "}output: <M>{"{"}</M> type: <S>"json"</S>, schema: ReportSchema <M>{"}"}</M>,{"\n"}
+          {"        "}functions: <M>{"{"}</M>
+          {"\n"}
+          {"          "}allow: [<S>"database::*"</S>, <S>"search::web"</S>, <S>"harness::spawn"</S>]{"\n"}
+          {"        "}
+          <M>{"}"}</M>
+          {"\n"}
+          {"      "}
+          <M>{"}"}</M>
+          {"\n"}
+          {"    "}
+          <M>{"}"}</M>
+          {"\n"}
+          {"  "}
+          <M>{"}"}</M>);
+          {"\n\n"}
+          {"  "}
+          <K>await</K> iii.<K>trigger</K>(<M>{"{"}</M> function_id: <S>"email::send"</S>, payload: render(run.result){" "}
+          <M>{"}"}</M>);
+          {"\n"}
+          <M>{"}"}</M>);
+          {"\n\n"}
           <C>// reactive: the schedule is just a trigger type</C>
-          {'\n'}
-          iii.<K>registerTrigger</K>(<M>{'{'}</M>
-          {'\n'}
-          {'  '}type: <S>"cron"</S>,{'\n'}
-          {'  '}function_id: <S>"reports::daily"</S>,{'\n'}
-          {'  '}config: <M>{'{'}</M> expression: <S>"0 0 9 * * *"</S> <M>{'}'}</M>,{'\n'}
-          <M>{'}'}</M>);
+          {"\n"}
+          iii.<K>registerTrigger</K>(<M>{"{"}</M>
+          {"\n"}
+          {"  "}type: <S>"cron"</S>,{"\n"}
+          {"  "}function_id: <S>"reports::daily"</S>,{"\n"}
+          {"  "}config: <M>{"{"}</M> expression: <S>"0 0 9 * * *"</S> <M>{"}"}</M>,{"\n"}
+          <M>{"}"}</M>);
         </CodeBlock>
 
         <div className="flex flex-col gap-4">

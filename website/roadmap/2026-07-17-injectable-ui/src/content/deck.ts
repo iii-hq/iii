@@ -24,27 +24,27 @@ export interface DeckMeta {
 }
 
 export const DECK_META: DeckMeta = {
-  wordmarkLabel: 'injectable-ui',
+  wordmarkLabel: "injectable-ui",
 }
 
 /** top-nav section links — each id matches the `id` passed to a <Section>. */
 export const NAV: NavItem[] = [
-  { id: 'why', label: 'why' },
-  { id: 'hot-edit', label: 'hot edit' },
-  { id: 'map', label: 'map' },
-  { id: 'wire', label: 'wire' },
-  { id: 'slots', label: 'slots' },
-  { id: 'one-react', label: 'react' },
-  { id: 'styling', label: 'css' },
-  { id: 'lifecycle', label: 'lifecycle' },
-  { id: 'limits', label: 'limits' },
-  { id: 'payoff', label: 'payoff' },
+  { id: "why", label: "why" },
+  { id: "hot-edit", label: "hot edit" },
+  { id: "map", label: "map" },
+  { id: "wire", label: "wire" },
+  { id: "slots", label: "slots" },
+  { id: "one-react", label: "react" },
+  { id: "styling", label: "css" },
+  { id: "lifecycle", label: "lifecycle" },
+  { id: "limits", label: "limits" },
+  { id: "payoff", label: "payoff" },
 ]
 
 export const FOOTER: FooterSpec = {
-  eyebrow: 'where it lives',
-  headline: 'ui ships with the worker. the console just renders it.',
-  command: 'iii worker add console',
-  attribution: 'injectable console ui · runtime slots over iii primitives',
-  source: 'source: iii/tech-specs/2026-07-17-injectable-ui',
+  eyebrow: "where it lives",
+  headline: "ui ships with the worker. the console just renders it.",
+  command: "iii worker add console",
+  attribution: "injectable console ui · runtime slots over iii primitives",
+  source: "source: iii/tech-specs/2026-07-17-injectable-ui",
 }

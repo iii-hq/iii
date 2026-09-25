@@ -1,7 +1,7 @@
-import { StepReveal } from '@lib/components/diagrams/StepReveal'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { SCRIPT_FIELDS, SCRIPT_RULES, SCRIPT_STAGES } from '../content/scripts'
+import { StepReveal } from "@lib/components/diagrams/StepReveal"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { SCRIPT_FIELDS, SCRIPT_RULES, SCRIPT_STAGES } from "../content/scripts"
 
 /**
  * A6 — the container lifecycle: prepare (blocking), supervise (the run),

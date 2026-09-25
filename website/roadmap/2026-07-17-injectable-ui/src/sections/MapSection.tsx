@@ -1,17 +1,17 @@
-import { MapDatasheet, SystemMap } from '@lib/components/diagrams/SystemMap'
-import { Section } from '@lib/components/Section'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { useEffect, useRef, useState } from 'react'
-import { MAP_EDGES, MAP_INFO, MAP_NODES } from '../content/architecture'
+import { MapDatasheet, SystemMap } from "@lib/components/diagrams/SystemMap"
+import { Section } from "@lib/components/Section"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { useEffect, useRef, useState } from "react"
+import { MAP_EDGES, MAP_INFO, MAP_NODES } from "../content/architecture"
 
 /** matches tailwind @5xl container width (64rem) */
 const PAIRED_LAYOUT_MIN_WIDTH = 1024
 
 const LEGEND = [
-  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: 'new in this spec' },
-  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: 'engine, used as-is' },
-  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: 'author side' },
-  { swatch: <StatusDot pulse />, label: 'active flow' },
+  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: "new in this spec" },
+  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: "engine, used as-is" },
+  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: "author side" },
+  { swatch: <StatusDot pulse />, label: "active flow" },
 ] as const
 
 /**
@@ -19,7 +19,7 @@ const LEGEND = [
  * zero engine changes. Click a node for its datasheet.
  */
 export function MapSection() {
-  const [selected, setSelected] = useState('handler')
+  const [selected, setSelected] = useState("handler")
   const layoutRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<HTMLDivElement>(null)
   const [pairedLayout, setPairedLayout] = useState(false)
@@ -74,8 +74,8 @@ export function MapSection() {
         >
           <MapDatasheet
             info={info}
-            className={pairedLayout ? 'h-full' : undefined}
-            layoutKey={pairedLayout ? mapHeight : 'stack'}
+            className={pairedLayout ? "h-full" : undefined}
+            layoutKey={pairedLayout ? mapHeight : "stack"}
           />
         </div>
       </div>

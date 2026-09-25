@@ -1,9 +1,9 @@
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { Highlight, type HlLang } from '@lib/content/highlight'
-import { Mermaid } from '@lib/content/mermaid'
-import { cn } from '@lib/lib/utils'
-import { marked } from 'marked'
-import { Fragment, type MouseEvent, type ReactNode } from 'react'
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { Highlight, type HlLang } from "@lib/content/highlight"
+import { Mermaid } from "@lib/content/mermaid"
+import { cn } from "@lib/lib/utils"
+import { marked } from "marked"
+import { Fragment, type MouseEvent, type ReactNode } from "react"
 
 /**
  * Renders a markdown string as React, styled in the deck's drafting-sheet
@@ -16,19 +16,19 @@ import { Fragment, type MouseEvent, type ReactNode } from 'react'
  */
 
 const LANG_MAP: Record<string, HlLang> = {
-  ts: 'typescript',
-  typescript: 'typescript',
-  tsx: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  javascript: 'javascript',
-  mjs: 'javascript',
-  rs: 'rust',
-  rust: 'rust',
-  py: 'python',
-  python: 'python',
-  yml: 'yaml',
-  yaml: 'yaml',
+  ts: "typescript",
+  typescript: "typescript",
+  tsx: "typescript",
+  js: "javascript",
+  jsx: "javascript",
+  javascript: "javascript",
+  mjs: "javascript",
+  rs: "rust",
+  rust: "rust",
+  py: "python",
+  python: "python",
+  yml: "yaml",
+  yaml: "yaml",
 }
 
 /** GitHub-style heading slug (matches the anchors the specs link to). */
@@ -36,17 +36,17 @@ export function slugify(text: string): string {
   return text
     .trim()
     .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/\s+/g, '-')
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
 }
 
 /** Rewrite a markdown href: sibling `*.md` links point into the spec viewer. */
 function rewriteHref(href: string): string {
-  if (!href) return '#'
-  if (href.startsWith('#')) return href
+  if (!href) return "#"
+  if (href.startsWith("#")) return href
   const m = href.match(/^\.?\/?([\w./-]+?)\.md(?:#.*)?$/)
   if (m) {
-    const base = m[1].split('/').pop() ?? m[1]
+    const base = m[1].split("/").pop() ?? m[1]
     return `#/spec/${base.toLowerCase()}`
   }
   return href
@@ -55,58 +55,58 @@ function rewriteHref(href: string): string {
 // marked's Token union is broad; this renderer reads a known subset of fields.
 type Tok = { type: string; [k: string]: unknown }
 
-function renderInline(tokens: Tok[] = [], keyPrefix = 'i'): ReactNode[] {
+function renderInline(tokens: Tok[] = [], keyPrefix = "i"): ReactNode[] {
   return tokens.map((t, i) => {
     const key = `${keyPrefix}-${i}`
     const sub = (t.tokens as Tok[] | undefined) ?? []
     switch (t.type) {
-      case 'text':
+      case "text":
         return sub.length ? (
           <Fragment key={key}>{renderInline(sub, key)}</Fragment>
         ) : (
           <Fragment key={key}>{t.text as string}</Fragment>
         )
-      case 'strong':
+      case "strong":
         return (
           <strong key={key} className="font-semibold text-ink">
             {renderInline(sub, key)}
           </strong>
         )
-      case 'em':
+      case "em":
         return (
           <em key={key} className="italic">
             {renderInline(sub, key)}
           </em>
         )
-      case 'del':
+      case "del":
         return (
           <del key={key} className="text-ink-ghost line-through">
             {renderInline(sub, key)}
           </del>
         )
-      case 'codespan':
+      case "codespan":
         return (
           <code key={key} className="font-mono text-[0.88em] text-ink bg-panel px-1 py-0.5 border border-rule">
             {t.text as string}
           </code>
         )
-      case 'link': {
+      case "link": {
         const href = rewriteHref(t.href as string)
         const external = /^https?:/.test(href)
         // a same-page anchor (`#section`) must scroll in place, not change the
         // hash to a bare `#…` (which the router would read as "go home")
-        const anchor = href.startsWith('#') && !href.startsWith('#/')
+        const anchor = href.startsWith("#") && !href.startsWith("#/")
         return (
           <a
             key={key}
             href={href}
             className="text-accent hover:underline underline-offset-2"
-            {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+            {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
             {...(anchor
               ? {
                   onClick: (e: MouseEvent) => {
                     e.preventDefault()
-                    document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ behavior: 'smooth' })
+                    document.getElementById(decodeURIComponent(href.slice(1)))?.scrollIntoView({ behavior: "smooth" })
                   },
                 }
               : {})}
@@ -115,22 +115,22 @@ function renderInline(tokens: Tok[] = [], keyPrefix = 'i'): ReactNode[] {
           </a>
         )
       }
-      case 'br':
+      case "br":
         return <br key={key} />
-      case 'escape':
+      case "escape":
         return <Fragment key={key}>{t.text as string}</Fragment>
       default:
-        return <Fragment key={key}>{(t.text as string) ?? ''}</Fragment>
+        return <Fragment key={key}>{(t.text as string) ?? ""}</Fragment>
     }
   })
 }
 
-function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
+function renderTokens(tokens: Tok[] = [], keyPrefix = "b"): ReactNode[] {
   return tokens.map((t, i) => {
     const key = `${keyPrefix}-${i}`
     const sub = (t.tokens as Tok[] | undefined) ?? []
     switch (t.type) {
-      case 'heading': {
+      case "heading": {
         const id = slugify(t.text as string)
         const inner = renderInline(sub, key)
         const depth = t.depth as number
@@ -170,22 +170,22 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
           </h4>
         )
       }
-      case 'paragraph':
+      case "paragraph":
         return (
           <p key={key} className="font-mono text-[13px] @3xl:text-[14px] leading-[1.7] text-ink-faint my-3">
             {renderInline(sub, key)}
           </p>
         )
-      case 'text':
+      case "text":
         return sub.length ? (
           <Fragment key={key}>{renderInline(sub, key)}</Fragment>
         ) : (
           <Fragment key={key}>{t.text as string}</Fragment>
         )
-      case 'code': {
-        const code = (t.text as string) ?? ''
-        const lang = ((t.lang as string) ?? '').trim().toLowerCase().split(/\s+/)[0]
-        if (lang === 'mermaid') return <Mermaid key={key} chart={code} />
+      case "code": {
+        const code = (t.text as string) ?? ""
+        const lang = ((t.lang as string) ?? "").trim().toLowerCase().split(/\s+/)[0]
+        if (lang === "mermaid") return <Mermaid key={key} chart={code} />
         const hl = LANG_MAP[lang]
         return (
           <div key={key} className="my-4">
@@ -193,18 +193,18 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
           </div>
         )
       }
-      case 'blockquote':
+      case "blockquote":
         return (
           <blockquote key={key} className="border-l-2 border-rule pl-4 my-4 [&>p]:text-ink-faint [&>p]:my-2">
             {renderTokens(sub, key)}
           </blockquote>
         )
-      case 'list': {
+      case "list": {
         const ordered = Boolean(t.ordered)
         const items = (t.items as Tok[]) ?? []
         const className = cn(
-          'my-3 pl-5 font-mono text-[13px] @3xl:text-[14px] leading-[1.7] text-ink-faint space-y-1.5 marker:text-ink-ghost',
-          ordered ? 'list-decimal' : 'list-disc',
+          "my-3 pl-5 font-mono text-[13px] @3xl:text-[14px] leading-[1.7] text-ink-faint space-y-1.5 marker:text-ink-ghost",
+          ordered ? "list-decimal" : "list-disc",
         )
         const lis = items.map((it, j) => (
           <li key={`${key}-${j}`} className="pl-1">
@@ -221,7 +221,7 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
           </ul>
         )
       }
-      case 'table': {
+      case "table": {
         const header = (t.header as Tok[]) ?? []
         const rows = (t.rows as Tok[][]) ?? []
         return (
@@ -257,11 +257,11 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
           </div>
         )
       }
-      case 'hr':
+      case "hr":
         return <hr key={key} className="my-8 border-0 border-t border-rule" />
-      case 'space':
+      case "space":
         return null
-      case 'html':
+      case "html":
         return (
           <div
             key={key}
@@ -281,6 +281,6 @@ function renderTokens(tokens: Tok[] = [], keyPrefix = 'b'): ReactNode[] {
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/
 
 export function Markdown({ source }: { source: string }) {
-  const tokens = marked.lexer(source.replace(FRONTMATTER_RE, '')) as unknown as Tok[]
+  const tokens = marked.lexer(source.replace(FRONTMATTER_RE, "")) as unknown as Tok[]
   return <div className="min-w-0">{renderTokens(tokens)}</div>
 }

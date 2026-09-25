@@ -8,4 +8,3 @@ packages:
   - console/packages/*
   - docs
   - website
-  - website-next

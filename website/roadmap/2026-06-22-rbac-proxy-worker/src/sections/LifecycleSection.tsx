@@ -1,7 +1,7 @@
-import { SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { SEQ_LANES, SEQ_STEPS } from '../content/flow'
+import { SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { SEQ_LANES, SEQ_STEPS } from "../content/flow"
 
 /**
  * A5 — the request lifecycle. The interactive proof, early: step one connection

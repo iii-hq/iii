@@ -1,7 +1,7 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
-import { Caret } from './Caret'
-import { Prompt } from './Prompt'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
+import { Caret } from "./Caret"
+import { Prompt } from "./Prompt"
 
 interface TerminalProps {
   title?: React.ReactNode
@@ -11,7 +11,7 @@ interface TerminalProps {
 
 export function Terminal({ title, children, className }: TerminalProps) {
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       {title ? (
         <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
           {title}
@@ -31,7 +31,7 @@ interface TerminalRowProps {
 
 export function TerminalRow({ command, output, showCaret, className }: TerminalRowProps) {
   return (
-    <div className={cn('flex flex-col gap-y-1', className)}>
+    <div className={cn("flex flex-col gap-y-1", className)}>
       <div className="flex items-center gap-x-2">
         <Prompt symbol="$" />
         <span className="text-ink">{command}</span>

@@ -1,12 +1,12 @@
-import { PlayerControls } from '@lib/components/PlayerControls'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { useStepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { PlayerControls } from "@lib/components/PlayerControls"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { useStepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
 
 export interface RevealStage {
   label: string // short stage name, e.g. "crash"
-  tone?: 'ink' | 'accent' | 'alert' | 'warn' // accent for this stage box
+  tone?: "ink" | "accent" | "alert" | "warn" // accent for this stage box
   caption?: string // one-line description shown when active
   rows?: { k: string; v: string }[] // a small record that evolves per stage
   note?: string // optional extra faint line for the active stage
@@ -19,21 +19,21 @@ export interface StepRevealProps {
   className?: string
 }
 
-type StageTone = NonNullable<RevealStage['tone']>
+type StageTone = NonNullable<RevealStage["tone"]>
 
 const toneClasses: Record<StageTone, { box: string; active: string; label: string }> = {
-  ink: { box: 'border-rule', active: 'border-accent bg-panel', label: 'text-ink' },
-  accent: { box: 'border-rule', active: 'border-accent bg-panel', label: 'text-accent' },
-  alert: { box: 'border-alert/50', active: 'border-alert bg-panel', label: 'text-alert' },
-  warn: { box: 'border-warn/50', active: 'border-warn bg-panel', label: 'text-warn' },
+  ink: { box: "border-rule", active: "border-accent bg-panel", label: "text-ink" },
+  accent: { box: "border-rule", active: "border-accent bg-panel", label: "text-accent" },
+  alert: { box: "border-alert/50", active: "border-alert bg-panel", label: "text-alert" },
+  warn: { box: "border-warn/50", active: "border-warn bg-panel", label: "text-warn" },
 }
 
 // a glyph hint per tone, mirroring the reference timeline's stage markers
 const toneGlyph: Record<StageTone, string> = {
-  ink: '',
-  accent: '',
-  alert: '⚡ ',
-  warn: '⏸ ',
+  ink: "",
+  accent: "",
+  alert: "⚡ ",
+  warn: "⏸ ",
 }
 
 /**
@@ -49,17 +49,17 @@ const toneGlyph: Record<StageTone, string> = {
 export function StepReveal({ title, stages, intervalMs = 2400, className }: StepRevealProps) {
   const stepper = useStepper(stages.length, intervalMs)
   const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   )
   const active = stages[stepper.step]
-  const activeTone: StageTone = active.tone ?? 'ink'
+  const activeTone: StageTone = active.tone ?? "ink"
 
   // narrow strips scroll-x; give each box room to breathe past ~7 stages
   const minWidth = Math.max(640, stages.length * 132)
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{title}</span>
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost tabular-nums">
@@ -73,31 +73,31 @@ export function StepReveal({ title, stages, intervalMs = 2400, className }: Step
           {stages.map((stage, i) => {
             const reached = i <= stepper.step
             const isActive = i === stepper.step
-            const tone = toneClasses[stage.tone ?? 'ink']
+            const tone = toneClasses[stage.tone ?? "ink"]
             return (
               <div key={`${stage.label}-${i}`} className="flex items-center flex-1 min-w-0">
                 <button
                   type="button"
                   onClick={() => stepper.goTo(i)}
-                  aria-current={isActive ? 'step' : undefined}
+                  aria-current={isActive ? "step" : undefined}
                   className={cn(
-                    'border bg-bg px-2.5 py-2 w-full min-w-0 text-left transition-all duration-200 cursor-pointer',
-                    reached ? tone.box : 'border-rule-2 opacity-45',
+                    "border bg-bg px-2.5 py-2 w-full min-w-0 text-left transition-all duration-200 cursor-pointer",
+                    reached ? tone.box : "border-rule-2 opacity-45",
                     isActive && tone.active,
-                    isActive && !reducedMotion && 'fade-rise',
+                    isActive && !reducedMotion && "fade-rise",
                   )}
                 >
                   <div className="flex items-baseline gap-1.5">
                     <span className="font-mono text-[9px] tabular-nums shrink-0 text-ink-ghost">
-                      {String(i + 1).padStart(2, '0')}
+                      {String(i + 1).padStart(2, "0")}
                     </span>
                     <span
                       className={cn(
-                        'font-mono text-[10.5px] font-semibold leading-[1.35] truncate',
-                        reached ? tone.label : 'text-ink-ghost',
+                        "font-mono text-[10.5px] font-semibold leading-[1.35] truncate",
+                        reached ? tone.label : "text-ink-ghost",
                       )}
                     >
-                      {toneGlyph[stage.tone ?? 'ink']}
+                      {toneGlyph[stage.tone ?? "ink"]}
                       {stage.label}
                     </span>
                   </div>
@@ -105,7 +105,7 @@ export function StepReveal({ title, stages, intervalMs = 2400, className }: Step
                 {i < stages.length - 1 ? (
                   <span
                     aria-hidden
-                    className={cn('h-px w-4 shrink-0', i < stepper.step ? 'bg-ink-faint' : 'bg-rule')}
+                    className={cn("h-px w-4 shrink-0", i < stepper.step ? "bg-ink-faint" : "bg-rule")}
                   />
                 ) : null}
               </div>
@@ -118,18 +118,18 @@ export function StepReveal({ title, stages, intervalMs = 2400, className }: Step
       <div className="border-t border-rule px-4 py-3.5 min-h-[120px]">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
-            {String(stepper.step + 1).padStart(2, '0')}
+            {String(stepper.step + 1).padStart(2, "0")}
           </span>
           <span
             className={cn(
-              'font-mono text-[14px] font-semibold lowercase',
-              activeTone === 'alert'
-                ? 'text-alert'
-                : activeTone === 'warn'
-                  ? 'text-warn'
-                  : activeTone === 'accent'
-                    ? 'text-accent'
-                    : 'text-ink',
+              "font-mono text-[14px] font-semibold lowercase",
+              activeTone === "alert"
+                ? "text-alert"
+                : activeTone === "warn"
+                  ? "text-warn"
+                  : activeTone === "accent"
+                    ? "text-accent"
+                    : "text-ink",
             )}
           >
             {active.label}

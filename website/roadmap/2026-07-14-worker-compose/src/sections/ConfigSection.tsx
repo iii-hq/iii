@@ -1,7 +1,7 @@
-import { Funnel } from '@lib/components/diagrams/Funnel'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { CONFIG_PATHS, CONFIG_REJECT, CONFIG_RULES, CONFIG_TARGET } from '../content/config'
+import { Funnel } from "@lib/components/diagrams/Funnel"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { CONFIG_PATHS, CONFIG_REJECT, CONFIG_RULES, CONFIG_TARGET } from "../content/config"
 
 /**
  * A8 — three config sources converge on one started process; the fourth path

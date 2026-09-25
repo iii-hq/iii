@@ -1,7 +1,7 @@
-import { Section } from '@lib/components/Section'
-import { Cell } from '@lib/components/schematic/Cell'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { WHY_CARDS } from '../content/why'
+import { Section } from "@lib/components/Section"
+import { Cell } from "@lib/components/schematic/Cell"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { WHY_CARDS } from "../content/why"
 
 /**
  * A2 - the blind spot. Names today's failures as concrete cards so the reader

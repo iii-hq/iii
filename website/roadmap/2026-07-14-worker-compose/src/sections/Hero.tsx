@@ -1,9 +1,9 @@
-import { Caret } from '@lib/components/schematic/Caret'
-import { Cell } from '@lib/components/schematic/Cell'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
-import { HERO_CLAIMS, HERO_STATS } from '../content/hero'
+import { Caret } from "@lib/components/schematic/Caret"
+import { Cell } from "@lib/components/schematic/Cell"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { Terminal, TerminalRow } from "@lib/components/schematic/Terminal"
+import { HERO_CLAIMS, HERO_STATS } from "../content/hero"
 
 /**
  * A1 — the hero. The win in one line, never the mechanism. The terminal shows
@@ -25,9 +25,9 @@ export function Hero() {
             zero zombies.
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[58ch]">
-            a compose daemon per machine supervises the workers one file declares:{' '}
-            <span className="text-ink">namespaced</span> so nothing collides,{' '}
-            <span className="text-ink">config-fed</span> so nothing boots wrong, and{' '}
+            a compose daemon per machine supervises the workers one file declares:{" "}
+            <span className="text-ink">namespaced</span> so nothing collides,{" "}
+            <span className="text-ink">config-fed</span> so nothing boots wrong, and{" "}
             <span className="text-ink">crash-cascading</span> so nothing fails quietly.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">

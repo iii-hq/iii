@@ -1,25 +1,25 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { useEffect, useRef, useState } from 'react'
-import { MapDatasheet, SystemMap } from '../diagrams/SystemMap'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { useEffect, useRef, useState } from "react"
+import { MapDatasheet, SystemMap } from "../diagrams/SystemMap"
 
 /** matches tailwind @5xl container width (64rem) */
 const PAIRED_LAYOUT_MIN_WIDTH = 1024
 
 const LEGEND = [
-  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: 'core worker' },
+  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: "core worker" },
   {
     swatch: <span className="inline-block size-3 border border-dashed border-ink-faint bg-bg" />,
-    label: 'optional sibling',
+    label: "optional sibling",
   },
-  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: 'example consumer' },
-  { swatch: <span className="inline-block size-3 border border-rule bg-paper-2" />, label: 'the substrate' },
-  { swatch: <StatusDot pulse />, label: 'active flow' },
+  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: "example consumer" },
+  { swatch: <span className="inline-block size-3 border border-rule bg-paper-2" />, label: "the substrate" },
+  { swatch: <StatusDot pulse />, label: "active flow" },
 ] as const
 
 export function SystemMapSection() {
-  const [selected, setSelected] = useState('harness')
+  const [selected, setSelected] = useState("harness")
   const layoutRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<HTMLDivElement>(null)
   const [pairedLayout, setPairedLayout] = useState(false)
@@ -72,8 +72,8 @@ export function SystemMapSection() {
         >
           <MapDatasheet
             selected={selected}
-            className={pairedLayout ? 'h-full' : undefined}
-            layoutKey={pairedLayout ? mapHeight : 'stack'}
+            className={pairedLayout ? "h-full" : undefined}
+            layoutKey={pairedLayout ? mapHeight : "stack"}
           />
         </div>
       </div>
@@ -83,7 +83,7 @@ export function SystemMapSection() {
           <div className="flex flex-col">
             <SpecRow name="consumer → harness::send" type="message in">
               a chat, a webhook bridge, or any worker drops a message and gets
-              {' { session_id, turn_id } '} back immediately.
+              {" { session_id, turn_id } "} back immediately.
             </SpecRow>
             <SpecRow name="harness → session::append / update_message" type="persist + stream">
               the loop writes every delta into the session store; each write emits an event consumers already listen to.

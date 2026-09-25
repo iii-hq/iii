@@ -2,18 +2,24 @@
 
 The shared library and content layers behind **iii.dev/roadmap/** — a roadmap
 at `/roadmap/` (a one-column timeline, newest spec first, grouped by month),
-one page per spec at `/roadmap/<slug>/` (an interactive deck when one exists,
-a rendered markdown viewer when only the spec does), the raw `.md` linkable
-beside it, and `/roadmap/index.json` feeding the iii.dev landing timeline.
+one rendered spec page at `/roadmap/<slug>/`, the interactive deck (when one
+exists) at `/roadmap/<slug>/deck/`, the raw `.md` linkable beside it, and
+`/roadmap/index.json` feeding the iii.dev landing timeline.
 
 There is no separate build here: the decks are **routes of the iii-website
-Astro app**. The pages at [`../src/pages/roadmap/`](../src/pages/roadmap/)
-discover specs through [`scripts/manifest.mjs`](./scripts/manifest.mjs) and
-mount each deck's `src/App.tsx` as a code-split React island
-([`src/DeckHost.tsx`](./src/DeckHost.tsx)). This directory holds the shared
-design system (`src/`, imported as `@lib`), the md-only viewer (`_viewer/`),
-and one content-layer dir per deck. No package.json, no vite config, no
-index.html — deps live in [`../package.json`](../package.json).
+Next.js static export**. The spec pages live at
+[`../src/app/(site)/roadmap/`](../src/app/(site)/roadmap/); the deck pages at
+[`../src/app/(deck)/roadmap/`](../src/app/(deck)/roadmap/) are their own root
+layout (so the decks keep their own Tailwind theme, [`src/index.css`](./src/index.css))
+and mount each deck's `src/App.tsx` browser-only, code-split per deck
+([`src/DeckHost.tsx`](./src/DeckHost.tsx)). Spec discovery is
+[`scripts/manifest.mjs`](./scripts/manifest.mjs); before every dev/build,
+[`../scripts/generate-roadmap-manifest.ts`](../scripts/generate-roadmap-manifest.ts)
+writes the gitignored `generated/` dir (the spec list, the deck registry, and
+each spec's markdown for the `#/spec` page). This directory holds the shared
+design system (`src/`, imported as `@lib`) and one content-layer dir per deck.
+No package.json, no vite config, no index.html — deps live in
+[`../package.json`](../package.json).
 
 ## the two trees
 
@@ -31,8 +37,9 @@ rename after publishing.
 
 ```
 SHARED / HOT — never edited when adding a spec or deck:
-  src/**  scripts/manifest.mjs  _viewer/**
-  website/src/pages/roadmap/**  website/scripts/validate-roadmap.ts
+  src/**  scripts/manifest.mjs
+  website/src/app/(site)/roadmap/**  website/src/app/(deck)/**
+  website/scripts/validate-roadmap.ts  website/scripts/generate-roadmap-manifest.ts
   (COMPONENTS.md: append-only, component promotions only)
 
 PER-SPEC — the only things a spec/deck PR touches:
@@ -69,8 +76,8 @@ featured: false                                 # pin in the landing feed
 
 `slug` is never a frontmatter field — the build hard-errors if present.
 
-4. Merge. The site now serves `/roadmap/<slug>/` as a rendered spec viewer,
-   the gallery gets a card, and the landing timeline picks it up. A deck can
+4. Merge. The site now serves `/roadmap/<slug>/` as a rendered spec page,
+   the roadmap timeline gets an entry, and the landing timeline picks it up. A deck can
    come later — or never.
 
 ## b. add a presentation to a spec
@@ -78,16 +85,16 @@ featured: false                                 # pin in the landing feed
 Run `/presentation tech-specs/<slug>` — it proposes a narrative outline (gate 1:
 your approval), scaffolds `website/roadmap/<slug>/` (content layer only:
 `src/{App,sections,pages,content,spec-docs}` — no index.html, no main.tsx,
-no package.json, no config; the `[slug]/index.astro` route provides the
-document shell), reuses the shared library via `@lib`, updates the spec's
+no package.json, no config; the `(deck)/roadmap/[slug]/deck` route provides
+the document shell), reuses the shared library via `@lib`, updates the spec's
 frontmatter, and verifies (gate 2: typecheck + build + browser pass).
 
 It may touch ONLY `website/roadmap/<slug>/**`, the spec README's
 frontmatter block, and (rarely) an additive component promotion per (c).
 
-The one fragile cross-tree coupling: `src/spec-docs.ts` bundles the spec md via
-`import.meta.glob('../../../../tech-specs/<slug>/*.md', …)` — the depth encodes
-the two-tree layout.
+The one cross-tree coupling: `src/spec-docs.ts` re-exports the spec md from
+`generated/spec-docs/<slug>` (keyed by `../../../../tech-specs/<slug>/<file>.md`,
+the path the old deck-side glob produced — the depth encodes the two-tree layout).
 
 ## c. add or promote a shared component
 
@@ -127,9 +134,10 @@ runs the single website build (deck pages emit into `dist/roadmap/`), syncs
 `website/dist/` to S3, and invalidates CloudFront. No Vercel, no manual
 deploy, no per-deck pipeline.
 
-URLs: `iii.dev/roadmap/` (gallery) · `iii.dev/roadmap/<slug>/` (deck or
-viewer) · `…/<slug>/#/spec` (a deck's reading mode) · `…/<slug>/<file>.md`
-(raw markdown) · `iii.dev/roadmap/index.json` (machine-readable list).
+URLs: `iii.dev/roadmap/` (timeline) · `iii.dev/roadmap/<slug>/` (rendered
+spec) · `…/<slug>/deck/` (the interactive deck) · `…/<slug>/deck/#/spec` (a
+deck's reading mode) · `…/<slug>/<file>.md` (raw markdown) ·
+`iii.dev/roadmap/index.json` (machine-readable list).
 
 ## f. troubleshooting
 

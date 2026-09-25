@@ -1,6 +1,6 @@
-import { FanOut } from '@lib/components/diagrams/FanOut'
-import { Section } from '@lib/components/Section'
-import { FAN_HANDLERS, FAN_SOURCE, FAN_TRIGGER } from '../content/harness'
+import { FanOut } from "@lib/components/diagrams/FanOut"
+import { Section } from "@lib/components/Section"
+import { FAN_HANDLERS, FAN_SOURCE, FAN_TRIGGER } from "../content/harness"
 
 /**
  * A7 - fan-out. The harness payoff: it emits an event when a turn finishes, and

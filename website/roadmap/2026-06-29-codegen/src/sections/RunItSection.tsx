@@ -1,6 +1,6 @@
-import { CliPlayground } from '@lib/components/diagrams/CliPlayground'
-import { Section } from '@lib/components/Section'
-import { CLI_TRACKS } from '../content/cli'
+import { CliPlayground } from "@lib/components/diagrams/CliPlayground"
+import { Section } from "@lib/components/Section"
+import { CLI_TRACKS } from "../content/cli"
 
 /**
  * A3 - run it. The interactive proof, early: one command generates a typed

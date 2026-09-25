@@ -1,9 +1,9 @@
-import { StepReveal } from '@lib/components/diagrams/StepReveal'
-import { Section } from '@lib/components/Section'
-import { SpecSheet } from '@lib/components/SpecSheet'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { OVERRIDE_STAGES, OVERRIDE_TABLE } from '../content/flow'
+import { StepReveal } from "@lib/components/diagrams/StepReveal"
+import { Section } from "@lib/components/Section"
+import { SpecSheet } from "@lib/components/SpecSheet"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { OVERRIDE_STAGES, OVERRIDE_TABLE } from "../content/flow"
 
 /**
  * A6 — the engine:: discovery overrides. The addition over the engine's RBAC

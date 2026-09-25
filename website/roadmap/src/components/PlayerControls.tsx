@@ -1,6 +1,6 @@
-import { Button } from '@lib/components/schematic/Button'
-import type { Stepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
+import { Button } from "@lib/components/schematic/Button"
+import type { Stepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
 
 interface PlayerControlsProps {
   stepper: Stepper
@@ -14,12 +14,12 @@ export function PlayerControls({ stepper, total, label, className }: PlayerContr
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-x-2 gap-y-2 border-t border-rule bg-panel px-3.5 py-2.5',
+        "flex flex-wrap items-center gap-x-2 gap-y-2 border-t border-rule bg-panel px-3.5 py-2.5",
         className,
       )}
     >
       <Button variant="pill" size="sm" onClick={stepper.toggle}>
-        {stepper.playing ? 'pause' : stepper.atEnd ? 'replay' : 'play'}
+        {stepper.playing ? "pause" : stepper.atEnd ? "replay" : "play"}
       </Button>
       <Button variant="icon" size="icon" aria-label="previous step" onClick={stepper.prev}>
         ←
@@ -31,7 +31,7 @@ export function PlayerControls({ stepper, total, label, className }: PlayerContr
         reset
       </Button>
       <span className="ml-auto font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint tabular-nums">
-        {label ? `${label} — ` : ''}step {stepper.step + 1}/{total}
+        {label ? `${label} — ` : ""}step {stepper.step + 1}/{total}
       </span>
     </div>
   )

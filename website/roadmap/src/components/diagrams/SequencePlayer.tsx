@@ -1,8 +1,8 @@
-import { PlayerControls } from '@lib/components/PlayerControls'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { useStepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { PlayerControls } from "@lib/components/PlayerControls"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { useStepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
 
 export interface SeqLane {
   id: string
@@ -47,14 +47,14 @@ export function SequencePlayer({
   const height = TOP + steps.length * ROW_H + 18
   const laneById = useMemo(() => Object.fromEntries(lanes.map((l) => [l.id, l])), [lanes])
   const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   )
   const active = steps[stepper.step]
   const activeLanes = new Set([active.from, active.to])
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{title}</span>
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost tabular-nums">
@@ -105,7 +105,7 @@ export function SequencePlayer({
                   x2={lane.x}
                   y2={height - 8}
                   strokeDasharray="2 5"
-                  className={cn('transition-[stroke]', hot ? 'stroke-ink-faint' : 'stroke-rule')}
+                  className={cn("transition-[stroke]", hot ? "stroke-ink-faint" : "stroke-rule")}
                   strokeWidth={1}
                 />
                 <rect
@@ -114,7 +114,7 @@ export function SequencePlayer({
                   width={124}
                   height={26}
                   strokeWidth={hot ? 1.4 : 1}
-                  className={cn('transition-all', hot ? 'fill-panel stroke-accent' : 'fill-bg stroke-rule')}
+                  className={cn("transition-all", hot ? "fill-panel stroke-accent" : "fill-bg stroke-rule")}
                 />
                 <text
                   x={lane.x}
@@ -122,7 +122,7 @@ export function SequencePlayer({
                   textAnchor="middle"
                   fontSize="11"
                   fontWeight={600}
-                  className={cn('transition-[fill]', hot ? 'fill-ink' : 'fill-ink-faint')}
+                  className={cn("transition-[fill]", hot ? "fill-ink" : "fill-ink-faint")}
                 >
                   {lane.label}
                 </text>
@@ -143,13 +143,13 @@ export function SequencePlayer({
               : `M ${from.x} ${y} L ${to.x} ${y}`
             const midX = self ? from.x + 70 : (from.x + to.x) / 2
             return (
-              <g key={`${step.label}-${i}`} className={cn(!isActive && 'opacity-75')}>
+              <g key={`${step.label}-${i}`} className={cn(!isActive && "opacity-75")}>
                 <path
                   d={d}
                   fill="none"
                   strokeWidth={isActive ? 1.4 : 1}
-                  markerEnd={`url(#${isActive ? 'seq-arr-accent' : 'seq-arr-ink'})`}
-                  className={isActive ? 'stroke-accent' : 'stroke-ink-ghost'}
+                  markerEnd={`url(#${isActive ? "seq-arr-accent" : "seq-arr-ink"})`}
+                  className={isActive ? "stroke-accent" : "stroke-ink-ghost"}
                 />
                 {isActive && !reducedMotion && !self ? (
                   <circle r="2.6" className="fill-accent">
@@ -159,10 +159,10 @@ export function SequencePlayer({
                 <text
                   x={self ? from.x + 78 : midX}
                   y={y - 7}
-                  textAnchor={self ? 'start' : 'middle'}
+                  textAnchor={self ? "start" : "middle"}
                   fontSize="10.5"
-                  className={isActive ? 'fill-ink' : 'fill-ink-faint'}
-                  style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 4 }}
+                  className={isActive ? "fill-ink" : "fill-ink-faint"}
+                  style={{ paintOrder: "stroke", stroke: "var(--color-bg)", strokeWidth: 4 }}
                 >
                   {step.label}
                 </text>
@@ -172,16 +172,16 @@ export function SequencePlayer({
                       cx={self ? from.x + 70 : midX - (step.event.length * 5.4) / 2 - 10}
                       cy={y + 12}
                       r={2.4}
-                      className={isActive ? 'fill-accent' : 'fill-ink-ghost'}
+                      className={isActive ? "fill-accent" : "fill-ink-ghost"}
                     />
                     <text
                       x={self ? from.x + 78 : midX}
                       y={y + 16}
-                      textAnchor={self ? 'start' : 'middle'}
+                      textAnchor={self ? "start" : "middle"}
                       fontSize="9"
                       letterSpacing="0.04em"
                       className="fill-ink-ghost"
-                      style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 3.5 }}
+                      style={{ paintOrder: "stroke", stroke: "var(--color-bg)", strokeWidth: 3.5 }}
                     >
                       fires {step.event}
                     </text>
@@ -197,7 +197,7 @@ export function SequencePlayer({
       <div className="border-t border-rule px-4 py-3.5 min-h-[92px]">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
-            {String(stepper.step + 1).padStart(2, '0')}
+            {String(stepper.step + 1).padStart(2, "0")}
           </span>
           <span className="font-mono text-[14px] font-semibold lowercase text-ink">{active.title}</span>
           <FnChip tone="accent">{active.label}</FnChip>

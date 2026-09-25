@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from "react"
 
-export type Route = { kind: 'home' } | { kind: 'page'; slug: string; rest: string[] }
+export type Route = { kind: "home" } | { kind: "page"; slug: string; rest: string[] }
 
 function parse(hash: string): Route {
   // `#/<slug>` (and `#/<slug>/<sub>/...`) are page routes; the slug is the
@@ -8,11 +8,11 @@ function parse(hash: string): Route {
   // further segments are exposed as `rest` (e.g. the spec viewer's file).
   const m = hash.match(/^#\/(.+)$/)
   if (m) {
-    const segments = m[1].split('/').filter(Boolean)
+    const segments = m[1].split("/").filter(Boolean)
     const [slug, ...rest] = segments
-    if (slug) return { kind: 'page', slug, rest }
+    if (slug) return { kind: "page", slug, rest }
   }
-  return { kind: 'home' }
+  return { kind: "home" }
 }
 
 /**
@@ -25,15 +25,15 @@ export function useHashRoute(): Route {
 
   useEffect(() => {
     const onChange = () => setRoute(parse(window.location.hash))
-    window.addEventListener('hashchange', onChange)
-    return () => window.removeEventListener('hashchange', onChange)
+    window.addEventListener("hashchange", onChange)
+    return () => window.removeEventListener("hashchange", onChange)
   }, [])
 
   useEffect(() => {
     // deep-dive pages and the explicit "#/" home link start at the top;
     // bare "#section" hashes keep native anchor behaviour.
-    if (route.kind === 'page' || window.location.hash === '#/') {
-      window.scrollTo({ top: 0, behavior: 'instant' })
+    if (route.kind === "page" || window.location.hash === "#/") {
+      window.scrollTo({ top: 0, behavior: "instant" })
     }
   }, [route])
 

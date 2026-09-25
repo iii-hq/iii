@@ -1,8 +1,8 @@
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { Cell } from '@lib/components/schematic/Cell'
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { CSS_AUTHORED, CSS_SHIPPED, PRESET_CELLS, STYLING_RESIDUE } from '../content/styling'
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { Cell } from "@lib/components/schematic/Cell"
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { CSS_AUTHORED, CSS_SHIPPED, PRESET_CELLS, STYLING_RESIDUE } from "../content/styling"
 
 /**
  * A13 — the styling contract: authored vanilla tailwind vs shipped scoped css,

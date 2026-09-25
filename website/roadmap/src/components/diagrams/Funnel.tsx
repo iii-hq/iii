@@ -1,5 +1,5 @@
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
 
 /**
  * archetype A8 — the "many paths converge to one" funnel.
@@ -44,9 +44,9 @@ const REJECT_W = 210
 const REJECT_H = 64
 const REJECT_Y = 243
 
-export function Funnel({ title = 'many paths converge to one', paths, target, reject, className }: FunnelProps) {
+export function Funnel({ title = "many paths converge to one", paths, target, reject, className }: FunnelProps) {
   const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   )
 
@@ -69,11 +69,11 @@ export function Funnel({ title = 'many paths converge to one', paths, target, re
   const height = 340
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{title}</span>
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost tabular-nums">
-          {n} paths {'→'} 1
+          {n} paths {"→"} 1
         </span>
       </div>
 
@@ -82,7 +82,7 @@ export function Funnel({ title = 'many paths converge to one', paths, target, re
           viewBox={`0 0 ${W} ${height}`}
           className="w-full h-auto min-w-[680px] font-mono select-none"
           role="img"
-          aria-label={`${n} input paths converging into one mechanism: ${target.label}${reject ? `, with the eliminated path ${reject.label}` : ''}`}
+          aria-label={`${n} input paths converging into one mechanism: ${target.label}${reject ? `, with the eliminated path ${reject.label}` : ""}`}
         >
           <defs>
             <marker
@@ -255,7 +255,7 @@ export function Funnel({ title = 'many paths converge to one', paths, target, re
                 letterSpacing="0.06em"
                 className="fill-alert uppercase"
               >
-                {'✗ removed'}
+                {"✗ removed"}
               </text>
             </g>
           ) : null}

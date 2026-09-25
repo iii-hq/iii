@@ -1,8 +1,8 @@
-import { PlayerControls } from '@lib/components/PlayerControls'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { useStepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { PlayerControls } from "@lib/components/PlayerControls"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { useStepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
+import { useMemo } from "react"
 
 /**
  * A18 - a parent spawns N parallel children and joins their results: fan out,
@@ -11,8 +11,8 @@ import { useMemo } from 'react'
  * props — child/state data lives in the deck's content/.
  */
 
-export type SpawnChildState = 'hidden' | 'queued' | 'running' | 'done'
-export type SpawnParentState = 'running' | 'parked' | 'resumed' | 'completed'
+export type SpawnChildState = "hidden" | "queued" | "running" | "done"
+export type SpawnParentState = "running" | "parked" | "resumed" | "completed"
 
 export interface SpawnTreeChild {
   id: string
@@ -71,12 +71,12 @@ export function SpawnTree({
   const stepper = useStepper(states.length, intervalMs)
   const state = states[stepper.step]
   const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   )
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex flex-wrap items-center justify-between gap-2 bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{heading}</span>
         {chips.length > 0 ? (
@@ -130,8 +130,8 @@ export function SpawnTree({
             height={PARENT.h}
             strokeWidth={1.4}
             className={cn(
-              'transition-all duration-300',
-              state.parent === 'parked' ? 'fill-paper-2 stroke-warn' : 'fill-panel stroke-accent',
+              "transition-all duration-300",
+              state.parent === "parked" ? "fill-paper-2 stroke-warn" : "fill-panel stroke-accent",
             )}
           />
           <text
@@ -150,7 +150,7 @@ export function SpawnTree({
             textAnchor="middle"
             fontSize="9.5"
             letterSpacing="0.03em"
-            className={cn(state.parent === 'parked' ? 'fill-warn' : 'fill-ink-faint')}
+            className={cn(state.parent === "parked" ? "fill-warn" : "fill-ink-faint")}
           >
             {parentLabels[state.parent]}
           </text>
@@ -167,7 +167,7 @@ export function SpawnTree({
           {/* spawn + join edges, per child */}
           {nodes.map((child, i) => {
             const cs = state.children[i]
-            if (!cs || cs === 'hidden') return null
+            if (!cs || cs === "hidden") return null
             const cx = child.x + CHILD_W / 2
             const px = PARENT.x + PARENT.w / 2 + (i - (nodes.length - 1) / 2) * 70
             const spawnD = `M ${px} ${PARENT.y + PARENT.h} C ${px} ${PARENT.y + PARENT.h + 40}, ${cx} ${CHILD_Y - 40}, ${cx} ${CHILD_Y}`
@@ -179,7 +179,7 @@ export function SpawnTree({
                   d={spawnD}
                   fill="none"
                   strokeWidth={1}
-                  className={cn('transition-[stroke]', cs === 'queued' ? 'stroke-rule' : 'stroke-ink-ghost')}
+                  className={cn("transition-[stroke]", cs === "queued" ? "stroke-rule" : "stroke-ink-ghost")}
                   markerEnd="url(#tree-arr)"
                 />
                 {joined ? (
@@ -206,7 +206,7 @@ export function SpawnTree({
           {/* children */}
           {nodes.map((child, i) => {
             const cs = state.children[i]
-            if (!cs || cs === 'hidden') return null
+            if (!cs || cs === "hidden") return null
             return (
               <g key={child.id} className="transition-opacity duration-300">
                 <rect
@@ -214,12 +214,12 @@ export function SpawnTree({
                   y={CHILD_Y}
                   width={CHILD_W}
                   height={CHILD_H}
-                  strokeWidth={cs === 'running' ? 1.4 : 1}
+                  strokeWidth={cs === "running" ? 1.4 : 1}
                   className={cn(
-                    'transition-all duration-300',
-                    cs === 'queued' && 'fill-bg stroke-rule',
-                    cs === 'running' && 'fill-bg stroke-ink',
-                    cs === 'done' && 'fill-paper-2 stroke-ink-faint',
+                    "transition-all duration-300",
+                    cs === "queued" && "fill-bg stroke-rule",
+                    cs === "running" && "fill-bg stroke-ink",
+                    cs === "done" && "fill-paper-2 stroke-ink-faint",
                   )}
                 />
                 <circle
@@ -227,12 +227,12 @@ export function SpawnTree({
                   cy={CHILD_Y + 19}
                   r={3}
                   className={cn(
-                    cs === 'queued' && 'fill-ink-ghost',
-                    cs === 'running' && 'fill-accent',
-                    cs === 'done' && 'fill-ink-faint',
+                    cs === "queued" && "fill-ink-ghost",
+                    cs === "running" && "fill-accent",
+                    cs === "done" && "fill-ink-faint",
                   )}
                 >
-                  {cs === 'running' && !reducedMotion ? (
+                  {cs === "running" && !reducedMotion ? (
                     <animate attributeName="opacity" values="1;0.25;1" dur="1.2s" repeatCount="indefinite" />
                   ) : null}
                 </circle>
@@ -252,9 +252,9 @@ export function SpawnTree({
                   y={CHILD_Y + 78}
                   fontSize="9"
                   letterSpacing="0.05em"
-                  className={cn('uppercase', cs === 'running' ? 'fill-accent' : 'fill-ink-ghost')}
+                  className={cn("uppercase", cs === "running" ? "fill-accent" : "fill-ink-ghost")}
                 >
-                  {cs === 'queued' ? 'queued' : cs === 'running' ? 'turn running' : 'completed ✓'}
+                  {cs === "queued" ? "queued" : cs === "running" ? "turn running" : "completed ✓"}
                 </text>
               </g>
             )
@@ -265,7 +265,7 @@ export function SpawnTree({
       <div className="border-t border-rule px-4 py-3.5 min-h-[96px]">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
-            {String(stepper.step + 1).padStart(2, '0')}
+            {String(stepper.step + 1).padStart(2, "0")}
           </span>
           <span className="font-mono text-[14px] font-semibold lowercase text-ink">{state.title}</span>
         </div>

@@ -1,6 +1,6 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import fs from "node:fs/promises"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 export interface BlogPost {
   slug: string
@@ -12,7 +12,7 @@ export interface BlogPost {
   draft: boolean
 }
 
-export const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/content/blog')
+export const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/content/blog")
 
 // Minimal frontmatter reader sized to our schema (title, pubDate, updatedDate,
 // draft). We pull the YAML block between leading `---` fences and parse only
@@ -47,25 +47,25 @@ export async function readBlogPosts(dir = BLOG_CONTENT_DIR): Promise<BlogPost[]>
   try {
     entries = await fs.readdir(dir)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
     throw error
   }
 
   const posts: BlogPost[] = []
   for (const entry of entries) {
     if (!/\.(md|mdx)$/.test(entry)) continue
-    const raw = await fs.readFile(path.join(dir, entry), 'utf8')
+    const raw = await fs.readFile(path.join(dir, entry), "utf8")
     const fm = parseFrontmatter(raw)
     const pubDate = parseDate(fm.pubDate)
     if (!pubDate) continue
     posts.push({
-      slug: entry.replace(/\.(md|mdx)$/, ''),
+      slug: entry.replace(/\.(md|mdx)$/, ""),
       sourceFile: entry,
       title: fm.title ?? entry,
-      description: fm.description ?? '',
+      description: fm.description ?? "",
       pubDate,
       updatedDate: parseDate(fm.updatedDate),
-      draft: fm.draft === 'true',
+      draft: fm.draft === "true",
     })
   }
   posts.sort((a, b) => b.pubDate.valueOf() - a.pubDate.valueOf())
