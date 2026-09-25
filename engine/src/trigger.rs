@@ -4974,3 +4974,799 @@ mod review_final {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Round-3 review tests for 0f99ac8fd. Positive variants of G1 (failover),
+// G2 (rehome Ok arm) and G3 (hand-off of a re-registration). Single-thread,
+// poll!-driven, deterministic. Appended in a throwaway worktree only.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod review_min3 {
+    use super::*;
+    use crate::protocol::DEFAULT_NAMESPACE;
+    use dashmap::try_result::TryResult;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct Gate {
+        live: std::sync::Mutex<HashSet<String>>,
+        events: std::sync::Mutex<Vec<String>>,
+        pause_register: AtomicBool,
+        reject_register: AtomicBool,
+        register_calls: AtomicUsize,
+        entered: Notify,
+        resume: Notify,
+    }
+
+    impl Gate {
+        fn live(&self, id: &str) -> bool {
+            self.live.lock().unwrap().contains(id)
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl TriggerRegistrator for Arc<Gate> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.register_calls.fetch_add(1, SeqCst);
+                if self.pause_register.swap(false, SeqCst) {
+                    self.entered.notify_one();
+                    self.resume.notified().await;
+                }
+                if self.reject_register.load(SeqCst) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("reject+{}", trigger.id));
+                    return Err(anyhow::anyhow!("provider rejected config"));
+                }
+                self.live.lock().unwrap().insert(trigger.id.clone());
+                self.events.lock().unwrap().push(format!("+{}", trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push(format!("-{}", trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    fn gate_type(ns: &str, gate: &Arc<Gate>, owner: Option<Uuid>) -> TriggerType {
+        TriggerType::new_ns(ns, "evt", "gate", Box::new(Arc::clone(gate)), owner)
+    }
+
+    fn base(id: &str) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: "evt".to_string(),
+            function_id: format!("fn_{id}"),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            trigger_namespace: None,
+            home_namespace: DEFAULT_NAMESPACE.to_string(),
+            provider_namespace: DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    fn at_home(id: &str, home: &str) -> Trigger {
+        Trigger {
+            home_namespace: home.to_string(),
+            ..base(id)
+        }
+    }
+
+    fn both_buckets(registry: &TriggerRegistry, id: &str) -> bool {
+        registry.triggers.contains_key(id) && registry.pending_triggers.contains_key(id)
+    }
+
+    fn live_on(registry: &TriggerRegistry, id: &str) -> Option<String> {
+        registry
+            .triggers
+            .get(id)
+            .map(|t| t.provider_namespace.clone())
+    }
+
+    fn writable(registry: &TriggerRegistry, key: &TypeKey) -> bool {
+        matches!(
+            registry.trigger_types.try_get_mut(key),
+            TryResult::Present(_)
+        )
+    }
+
+    /// Home provider at `shop` with `t` live on it, DEFAULT fallback `fb`.
+    async fn homed_binding(registry: &TriggerRegistry, fb: &Arc<Gate>, home: &Arc<Gate>) -> Uuid {
+        let home_worker = Uuid::new_v4();
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, fb, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(gate_type("shop", home, Some(home_worker)))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(at_home("t", "shop"))
+            .await
+            .unwrap();
+        assert!(home.live("t"));
+        home_worker
+    }
+
+    /// P1 — G1 variant: fallback replaced mid-failover AND the replacement
+    /// rejects `t`. Expected: parked (not live, not lost), recovered by the
+    /// next DEFAULT registration.
+    #[tokio::test]
+    async fn p1_failover_handoff_rejected_by_replacement_is_parked_then_recovered() {
+        let registry = TriggerRegistry::new();
+        let fb_a = Arc::new(Gate::default());
+        let home = Arc::new(Gate::default());
+        let home_worker = homed_binding(&registry, &fb_a, &home).await;
+
+        fb_a.pause_register.store(true, SeqCst);
+        let sweep = registry.unregister_worker(&home_worker);
+        tokio::pin!(sweep);
+        assert!(futures::poll!(&mut sweep).is_pending());
+        assert!(writable(&registry, &type_key(DEFAULT_NAMESPACE, "evt")));
+
+        let fb_b = Arc::new(Gate::default());
+        fb_b.reject_register.store(true, SeqCst);
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_b, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        fb_a.resume.notify_one();
+        sweep.await;
+
+        assert!(
+            registry.pending_triggers.contains_key("t") && !registry.triggers.contains_key("t"),
+            "live_on={:?} pending={} A={:?} B={:?}",
+            live_on(&registry, "t"),
+            registry.pending_triggers.contains_key("t"),
+            fb_a.events(),
+            fb_b.events()
+        );
+        assert_eq!(
+            fb_b.register_calls.load(SeqCst),
+            1,
+            "one hand-off attempt to B"
+        );
+
+        let fb_c = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_c, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(fb_c.live("t") && live_on(&registry, "t").as_deref() == Some(DEFAULT_NAMESPACE));
+        assert!(registry.pending_triggers.is_empty());
+    }
+
+    /// P2 — G1 variant: two orphans; the fallback is replaced while the first
+    /// one is in flight. Both must end live on the replacement, one delivery each.
+    #[tokio::test]
+    async fn p2_failover_loop_survives_replacement_between_orphans() {
+        let registry = TriggerRegistry::new();
+        let fb_a = Arc::new(Gate::default());
+        let home = Arc::new(Gate::default());
+        let home_worker = homed_binding(&registry, &fb_a, &home).await;
+        registry
+            .register_trigger(at_home("u", "shop"))
+            .await
+            .unwrap();
+
+        fb_a.pause_register.store(true, SeqCst); // pauses whichever orphan comes first
+        let sweep = registry.unregister_worker(&home_worker);
+        tokio::pin!(sweep);
+        assert!(futures::poll!(&mut sweep).is_pending());
+        assert_eq!(fb_a.register_calls.load(SeqCst), 1);
+
+        let fb_b = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_b, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        fb_a.resume.notify_one();
+        sweep.await;
+
+        assert!(
+            fb_b.live("t") && fb_b.live("u"),
+            "A={:?} B={:?}",
+            fb_a.events(),
+            fb_b.events()
+        );
+        assert_eq!(
+            fb_b.register_calls.load(SeqCst),
+            2,
+            "exactly one delivery per orphan"
+        );
+        assert_eq!(live_on(&registry, "t").as_deref(), Some(DEFAULT_NAMESPACE));
+        assert_eq!(live_on(&registry, "u").as_deref(), Some(DEFAULT_NAMESPACE));
+        assert!(registry.pending_triggers.is_empty() && registry.triggers.len() == 2);
+    }
+
+    /// P3 — G1 variant: the fallback provider vanishes (no replacement) while
+    /// the failover replay is in flight. Expected: parked, then recovered.
+    #[tokio::test]
+    async fn p3_failover_with_vanishing_fallback_parks_then_recovers() {
+        let registry = TriggerRegistry::new();
+        let fb_a = Arc::new(Gate::default());
+        let fb_worker = Uuid::new_v4();
+        let home = Arc::new(Gate::default());
+        let home_worker = Uuid::new_v4();
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_a, Some(fb_worker)))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(gate_type("shop", &home, Some(home_worker)))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(at_home("t", "shop"))
+            .await
+            .unwrap();
+
+        fb_a.pause_register.store(true, SeqCst);
+        let sweep = registry.unregister_worker(&home_worker);
+        tokio::pin!(sweep);
+        assert!(futures::poll!(&mut sweep).is_pending());
+
+        registry.unregister_worker(&fb_worker).await; // fallback gone; `t` is claimed, not orphaned
+        assert!(registry.trigger_types.is_empty());
+        fb_a.resume.notify_one();
+        sweep.await;
+
+        assert!(
+            registry.pending_triggers.contains_key("t") && registry.triggers.is_empty(),
+            "binding lost or published to nobody: live_on={:?}",
+            live_on(&registry, "t")
+        );
+        let fb_b = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_b, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(fb_b.live("t") && registry.pending_triggers.is_empty());
+    }
+
+    /// P4 — G3 positive path: re-registration of a live id handed off to a
+    /// replacement that ACCEPTS. One bucket, live on the replacement.
+    #[tokio::test]
+    async fn p4_handoff_of_reregistration_accepted_ends_in_one_bucket() {
+        let registry = TriggerRegistry::new();
+        let gen1 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        registry.register_trigger(base("t")).await.unwrap();
+
+        gen1.pause_register.store(true, SeqCst);
+        let rereg = registry.register_trigger(base("t"));
+        tokio::pin!(rereg);
+        assert!(futures::poll!(&mut rereg).is_pending());
+
+        let gen2 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(gen2.live("t"), "replay of the previous live entry");
+        gen1.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+
+        assert_eq!(outcome, RegisterTriggerOutcome::Registered);
+        assert!(!both_buckets(&registry, "t") && registry.triggers.contains_key("t"));
+        assert_eq!(gen2.register_calls.load(SeqCst), 2, "replay + hand-off");
+        assert!(gen2.live("t"));
+    }
+
+    /// P5 — G2 positive path: stale generation's re-home replay succeeds after
+    /// the replacement already re-homed `t`. The stale Ok must not publish; the
+    /// binding is live on the replacement, one bucket.
+    #[tokio::test]
+    async fn p5_stale_rehome_success_is_skipped_current_generation_owns_binding() {
+        let registry = TriggerRegistry::new();
+        let fallback = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fallback, None))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(at_home("t", "shop"))
+            .await
+            .unwrap();
+
+        let gen1 = Arc::new(Gate::default());
+        gen1.pause_register.store(true, SeqCst);
+        let home1 = registry.register_trigger_type(gate_type("shop", &gen1, Some(Uuid::new_v4())));
+        tokio::pin!(home1);
+        assert!(futures::poll!(&mut home1).is_pending());
+        assert!(writable(&registry, &type_key("shop", "evt")));
+
+        let gen2 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type("shop", &gen2, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(gen2.live("t") && live_on(&registry, "t").as_deref() == Some("shop"));
+
+        gen1.resume.notify_one();
+        home1.await.unwrap();
+
+        assert!(!both_buckets(&registry, "t"));
+        assert_eq!(live_on(&registry, "t").as_deref(), Some("shop"));
+        assert!(gen2.live("t") && registry.pending_triggers.is_empty());
+        assert_eq!(gen2.register_calls.load(SeqCst), 1);
+        assert_eq!(
+            fallback
+                .events()
+                .iter()
+                .filter(|e| e.as_str() == "-t")
+                .count(),
+            2,
+            "both generations detached from the fallback (idempotent)"
+        );
+    }
+
+    /// P6 — G1 + F5 chain: failover hand-off to a replacement that is itself
+    /// replaced during the hand-off. The binding must follow to the newest
+    /// generation exactly once.
+    #[tokio::test]
+    async fn p6_failover_handoff_follows_second_replacement() {
+        let registry = TriggerRegistry::new();
+        let fb_a = Arc::new(Gate::default());
+        let home = Arc::new(Gate::default());
+        let home_worker = homed_binding(&registry, &fb_a, &home).await;
+
+        fb_a.pause_register.store(true, SeqCst);
+        let sweep = registry.unregister_worker(&home_worker);
+        tokio::pin!(sweep);
+        assert!(futures::poll!(&mut sweep).is_pending());
+
+        let fb_b = Arc::new(Gate::default());
+        fb_b.pause_register.store(true, SeqCst); // arms the hand-off replay
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_b, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        fb_a.resume.notify_one();
+        assert!(
+            futures::poll!(&mut sweep).is_pending(),
+            "hand-off to B in flight"
+        );
+        assert_eq!(fb_b.register_calls.load(SeqCst), 1);
+        assert!(writable(&registry, &type_key(DEFAULT_NAMESPACE, "evt")));
+
+        let fb_c = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_c, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        fb_b.resume.notify_one();
+        sweep.await;
+
+        assert!(fb_c.live("t"), "C={:?}", fb_c.events());
+        assert_eq!(fb_c.register_calls.load(SeqCst), 1);
+        assert_eq!(live_on(&registry, "t").as_deref(), Some(DEFAULT_NAMESPACE));
+        assert!(registry.pending_triggers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod review_final2 {
+    use super::*;
+    use crate::protocol::DEFAULT_NAMESPACE;
+    use dashmap::try_result::TryResult;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    /// Provider double keyed on the bind's `{"v": n}`: binds with `v ==
+    /// pause_v` park once on `resume` (signalling `entered`), `v == reject_v`
+    /// are rejected synchronously (non-Unavailable), `v == unavailable_v`
+    /// fail with `RegistratorUnavailable`; everything else is accepted and
+    /// tracked live by id (last config wins). Unregister always succeeds.
+    #[derive(Default)]
+    struct Gate {
+        live: std::sync::Mutex<std::collections::HashMap<String, i64>>,
+        events: std::sync::Mutex<Vec<String>>,
+        pause_v: std::sync::Mutex<Option<i64>>,
+        reject_v: std::sync::Mutex<Option<i64>>,
+        unavailable_v: std::sync::Mutex<Option<i64>>,
+        entered: Notify,
+        resume: Notify,
+    }
+
+    impl Gate {
+        fn live_v(&self, id: &str) -> Option<i64> {
+            self.live.lock().unwrap().get(id).copied()
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+        fn set(slot: &std::sync::Mutex<Option<i64>>, v: Option<i64>) {
+            *slot.lock().unwrap() = v;
+        }
+    }
+
+    impl TriggerRegistrator for Arc<Gate> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                let v = trigger
+                    .config
+                    .get("v")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let paused = {
+                    let mut p = self.pause_v.lock().unwrap();
+                    if *p == Some(v) {
+                        *p = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if paused {
+                    self.entered.notify_one();
+                    self.resume.notified().await;
+                }
+                if *self.unavailable_v.lock().unwrap() == Some(v) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("unavailable+{}@v{v}", trigger.id));
+                    return Err(anyhow::Error::new(RegistratorUnavailable));
+                }
+                if *self.reject_v.lock().unwrap() == Some(v) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("reject+{}@v{v}", trigger.id));
+                    return Err(anyhow::anyhow!("provider rejected config"));
+                }
+                self.live.lock().unwrap().insert(trigger.id.clone(), v);
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(format!("+{}@v{v}", trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push(format!("-{}", trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    fn gate_type(gate: &Arc<Gate>, owner: Uuid) -> TriggerType {
+        TriggerType::new("evt", "gate", Box::new(Arc::clone(gate)), Some(owner))
+    }
+
+    fn bind(id: &str, v: i64) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: "evt".to_string(),
+            function_id: format!("fn_{id}"),
+            config: serde_json::json!({ "v": v }),
+            worker_id: None,
+            metadata: None,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            trigger_namespace: None,
+            home_namespace: DEFAULT_NAMESPACE.to_string(),
+            provider_namespace: DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    fn live_v(registry: &TriggerRegistry, id: &str) -> Option<i64> {
+        registry
+            .triggers
+            .get(id)
+            .and_then(|t| t.config.get("v").and_then(|v| v.as_i64()))
+    }
+
+    fn spawn_type(
+        registry: &Arc<TriggerRegistry>,
+        gate: &Arc<Gate>,
+    ) -> tokio::task::JoinHandle<()> {
+        let r = Arc::clone(registry);
+        let g = Arc::clone(gate);
+        tokio::spawn(async move {
+            r.register_trigger_type(gate_type(&g, Uuid::new_v4()))
+                .await
+                .unwrap()
+        })
+    }
+
+    async fn settled(handle: &mut tokio::task::JoinHandle<()>) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+    }
+
+    /// Shared prologue: `t@v1` live on gen1; re-registration `t@v2` parked
+    /// inside gen1. Returns (registry, gen1, rereg handle).
+    async fn prologue() -> (
+        Arc<TriggerRegistry>,
+        Arc<Gate>,
+        tokio::task::JoinHandle<Result<RegisterTriggerOutcome, anyhow::Error>>,
+    ) {
+        let registry = Arc::new(TriggerRegistry::new());
+        let gen1 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(&gen1, Uuid::new_v4()))
+            .await
+            .unwrap();
+        registry.register_trigger(bind("t", 1)).await.unwrap();
+        Gate::set(&gen1.pause_v, Some(2));
+        let rereg = {
+            let r = Arc::clone(&registry);
+            tokio::spawn(async move { r.register_trigger(bind("t", 2)).await })
+        };
+        gen1.entered.notified().await;
+        (registry, gen1, rereg)
+    }
+
+    /// G1 — repeated replacements, rejection by the LAST generation: gen1
+    /// accepts `t@v2`; gen2 (current) accepts the repeat but is itself
+    /// replaced by gen3 while that repeat is in flight; gen3 accepted the
+    /// replayed `t@v1` and rejects `t@v2`. Direct-path semantics on the final
+    /// generation: Err, previous live entry `t@v1` kept, one bucket, and an
+    /// explicit unregister reaches gen3.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn g1_repeated_replacements_rejection_by_last_keeps_old_entry_reachable() {
+        let (registry, gen1, rereg) = prologue().await;
+
+        let gen2 = Arc::new(Gate::default());
+        Gate::set(&gen2.pause_v, Some(2));
+        let mut r2 = spawn_type(&registry, &gen2);
+        let gen2_first = settled(&mut r2).await;
+        gen1.resume.notify_one();
+        gen2.entered.notified().await; // repeat against gen2 is in flight
+
+        let gen3 = Arc::new(Gate::default());
+        Gate::set(&gen3.reject_v, Some(2));
+        let mut r3 = spawn_type(&registry, &gen3);
+        let gen3_first = settled(&mut r3).await;
+        gen2.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+
+        let removed = registry.unregister_trigger("t".into(), None).await.unwrap();
+        assert!(
+            gen2_first
+                && gen3_first
+                && outcome.is_err()
+                && removed
+                && gen3.live_v("t").is_none()
+                && !registry.triggers.contains_key("t")
+                && !registry.pending_triggers.contains_key("t"),
+            "gen2_first={gen2_first} gen3_first={gen3_first} outcome={outcome:?} removed={removed} gen3_live={:?} live={} pending={} gen1={:?} gen2={:?} gen3={:?}",
+            gen3.live_v("t"),
+            registry.triggers.contains_key("t"),
+            registry.pending_triggers.contains_key("t"),
+            gen1.events(),
+            gen2.events(),
+            gen3.events()
+        );
+        // Before the unregister the registry must have kept t@v1 live (the entry gen3 runs).
+        assert_eq!(
+            gen3.events(),
+            vec![
+                "+t@v1".to_string(),
+                "reject+t@v2".to_string(),
+                "-t".to_string()
+            ],
+            "gen3 saw the replayed old entry, rejected the repeat, then the unregister"
+        );
+    }
+
+    /// G2 — repeated replacements all accepting: published exactly once, on the
+    /// final generation, with the NEW config; Ok(Registered); one bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn g2_repeated_replacements_all_accept_publish_once_on_final_generation() {
+        let (registry, gen1, rereg) = prologue().await;
+        let gen2 = Arc::new(Gate::default());
+        Gate::set(&gen2.pause_v, Some(2));
+        let mut r2 = spawn_type(&registry, &gen2);
+        assert!(settled(&mut r2).await);
+        gen1.resume.notify_one();
+        gen2.entered.notified().await;
+        let gen3 = Arc::new(Gate::default());
+        let mut r3 = spawn_type(&registry, &gen3);
+        assert!(settled(&mut r3).await);
+        gen2.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+
+        assert!(
+            outcome.as_ref().ok() == Some(&RegisterTriggerOutcome::Registered)
+                && live_v(&registry, "t") == Some(2)
+                && !registry.pending_triggers.contains_key("t")
+                && gen3.live_v("t") == Some(2)
+                && gen3.events() == vec!["+t@v1".to_string(), "+t@v2".to_string()],
+            "outcome={outcome:?} live_v={:?} pending={} gen3={:?} gen2={:?}",
+            live_v(&registry, "t"),
+            registry.pending_triggers.contains_key("t"),
+            gen3.events(),
+            gen2.events()
+        );
+    }
+
+    /// G3 — the repeat against the replacement fails with Unavailable: the
+    /// re-registration supersedes the old live entry (one bucket), is parked
+    /// (Deferred, the stale generation is not retried) and the next generation
+    /// activates it with the NEW config.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn g3_repeat_unavailable_parks_new_config_and_next_generation_activates() {
+        let (registry, gen1, rereg) = prologue().await;
+        let gen2 = Arc::new(Gate::default());
+        Gate::set(&gen2.unavailable_v, Some(2));
+        let mut r2 = spawn_type(&registry, &gen2);
+        assert!(settled(&mut r2).await);
+        gen1.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+        let parked_v = registry
+            .pending_triggers
+            .get("t")
+            .and_then(|t| t.config.get("v").and_then(|v| v.as_i64()));
+        assert!(
+            outcome.as_ref().ok() == Some(&RegisterTriggerOutcome::Deferred)
+                && parked_v == Some(2)
+                && !registry.triggers.contains_key("t")
+                && gen2.events() == vec!["+t@v1".to_string(), "unavailable+t@v2".to_string()],
+            "outcome={outcome:?} parked_v={parked_v:?} live={} gen2={:?}",
+            registry.triggers.contains_key("t"),
+            gen2.events()
+        );
+        let gen3 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(&gen3, Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(
+            live_v(&registry, "t") == Some(2)
+                && registry.pending_triggers.is_empty()
+                && gen3.live_v("t") == Some(2),
+            "live_v={:?} pending={} gen3={:?}",
+            live_v(&registry, "t"),
+            registry.pending_triggers.len(),
+            gen3.events()
+        );
+    }
+
+    /// G4 — type vanished after gen1 accepted (provider worker disconnected
+    /// mid-bind, its own sweep parked the OLD entry): the new config wins the
+    /// pending slot (one bucket), Deferred, and the next generation activates
+    /// `t@v2`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn g4_type_vanished_after_accept_parks_new_config_once() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let gen1 = Arc::new(Gate::default());
+        let owner1 = Uuid::new_v4();
+        registry
+            .register_trigger_type(gate_type(&gen1, owner1))
+            .await
+            .unwrap();
+        registry.register_trigger(bind("t", 1)).await.unwrap();
+        Gate::set(&gen1.pause_v, Some(2));
+        let rereg = {
+            let r = Arc::clone(&registry);
+            tokio::spawn(async move { r.register_trigger(bind("t", 2)).await })
+        };
+        gen1.entered.notified().await;
+
+        registry.unregister_worker(&owner1).await; // type gone, t@v1 parked by the sweep
+        assert!(registry.trigger_types.is_empty());
+        gen1.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+        let parked_v = registry
+            .pending_triggers
+            .get("t")
+            .and_then(|t| t.config.get("v").and_then(|v| v.as_i64()));
+        assert!(
+            outcome.as_ref().ok() == Some(&RegisterTriggerOutcome::Deferred)
+                && parked_v == Some(2)
+                && !registry.triggers.contains_key("t")
+                && registry.pending_triggers.len() == 1,
+            "outcome={outcome:?} parked_v={parked_v:?} live={} pending_len={}",
+            registry.triggers.contains_key("t"),
+            registry.pending_triggers.len()
+        );
+        let gen2 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(&gen2, Uuid::new_v4()))
+            .await
+            .unwrap();
+        assert!(
+            live_v(&registry, "t") == Some(2)
+                && gen2.live_v("t") == Some(2)
+                && registry.pending_triggers.is_empty(),
+            "live_v={:?} gen2={:?}",
+            live_v(&registry, "t"),
+            gen2.events()
+        );
+    }
+
+    /// G5 — #2178 invariant at BOTH awaits of the new loop: while the first
+    /// delivery (gen1) and the repeated delivery (gen2) are each parked, the
+    /// provider shard is writable; the loop ends as soon as the generation
+    /// stops changing (gen2 stays current -> publish, no third delivery).
+    #[tokio::test]
+    async fn g5_loop_releases_provider_shard_at_every_iteration_and_terminates() {
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+        let writable = |registry: &TriggerRegistry| {
+            matches!(
+                registry.trigger_types.try_get_mut(&key),
+                TryResult::Present(_)
+            )
+        };
+        let registry = TriggerRegistry::new();
+        let gen1 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(&gen1, Uuid::new_v4()))
+            .await
+            .unwrap();
+        registry.register_trigger(bind("t", 1)).await.unwrap();
+
+        Gate::set(&gen1.pause_v, Some(2));
+        let rereg = registry.register_trigger(bind("t", 2));
+        tokio::pin!(rereg);
+        assert!(futures::poll!(&mut rereg).is_pending());
+        assert!(
+            writable(&registry),
+            "first delivery holds the provider shard across its await"
+        );
+
+        let gen2 = Arc::new(Gate::default());
+        Gate::set(&gen2.pause_v, Some(2));
+        registry
+            .register_trigger_type(gate_type(&gen2, Uuid::new_v4()))
+            .await
+            .unwrap();
+        gen1.resume.notify_one();
+        assert!(
+            futures::poll!(&mut rereg).is_pending(),
+            "loop must repeat against gen2"
+        );
+        gen2.entered.notified().await;
+        assert!(
+            writable(&registry),
+            "repeated delivery holds the provider shard across its await"
+        );
+
+        gen2.resume.notify_one();
+        let outcome = rereg.await.unwrap();
+        assert_eq!(outcome, RegisterTriggerOutcome::Registered);
+        assert_eq!(live_v(&registry, "t"), Some(2));
+        assert_eq!(
+            gen2.events(),
+            vec!["+t@v1".to_string(), "+t@v2".to_string()]
+        );
+        assert!(registry.pending_triggers.is_empty());
+    }
+}
