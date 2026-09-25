@@ -2928,3 +2928,589 @@ mod tests {
         assert_http_call_response_properties(&schema);
     }
 }
+// Real teardown order (engine/src/engine/mod.rs, handle_worker):
+//     writer.abort();                 // drops the channel Receiver
+//     self.cleanup_worker(&worker)    // -> trigger_registry.unregister_worker
+// so every send to a departed provider fails with "channel closed".
+#[cfg(test)]
+mod review_2198_portable {
+    use super::*;
+    use crate::engine::Outbound;
+    use crate::protocol::{DEFAULT_NAMESPACE, Message};
+    use crate::worker_connections::WorkerConnection;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    pub(super) struct Probe {
+        pub live: std::sync::Mutex<HashSet<String>>,
+        pub events: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl TriggerRegistrator for Arc<Probe> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().insert(trigger.id.clone());
+                self.events.lock().unwrap().push(format!("+{}", trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push(format!("-{}", trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    pub(super) fn base_trigger(id: &str) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: "evt".to_string(),
+            function_id: format!("fn_{id}"),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            trigger_namespace: None,
+            home_namespace: DEFAULT_NAMESPACE.to_string(),
+            provider_namespace: DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    /// A binding sent by a consumer worker (connection-owned, fire-and-forget).
+    pub(super) fn consumer_trigger(id: &str, owner: Uuid) -> Trigger {
+        Trigger {
+            worker_id: Some(owner),
+            ..base_trigger(id)
+        }
+    }
+
+    pub(super) fn worker_provider(
+        capacity: usize,
+    ) -> (WorkerConnection, tokio::sync::mpsc::Receiver<Outbound>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        (WorkerConnection::new(tx), rx)
+    }
+
+    /// Mirrors router_msg's RegisterTriggerType: a fresh Box per message.
+    pub(super) async fn install_worker_provider(
+        registry: &TriggerRegistry,
+        namespace: &str,
+        connection: &WorkerConnection,
+    ) {
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                namespace,
+                "evt",
+                "worker provider",
+                Box::new(connection.clone()),
+                Some(connection.id),
+            ))
+            .await
+            .unwrap();
+    }
+
+    pub(super) fn drain(rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(match msg {
+                Outbound::Protocol(Message::RegisterTrigger { id, .. }) => format!("+{id}"),
+                Outbound::Protocol(Message::UnregisterTrigger { id, .. }) => format!("-{id}"),
+                _ => "?".to_string(),
+            });
+        }
+        out
+    }
+
+    /// Provider P1 dies (writer aborted, then cleanup) and reconnects as P2.
+    /// Returns P2 and its receiver with the replay already drained.
+    pub(super) async fn provider_restart_with_binding(
+        registry: &TriggerRegistry,
+        consumer: Uuid,
+    ) -> (WorkerConnection, tokio::sync::mpsc::Receiver<Outbound>) {
+        let (p1, rx1) = worker_provider(8);
+        install_worker_provider(registry, DEFAULT_NAMESPACE, &p1).await;
+        registry
+            .register_trigger(consumer_trigger("t", consumer))
+            .await
+            .unwrap();
+        drop(rx1);
+        registry.unregister_worker(&p1.id).await;
+        assert!(registry.pending_triggers.contains_key("t"));
+
+        let (p2, mut rx2) = worker_provider(8);
+        install_worker_provider(registry, DEFAULT_NAMESPACE, &p2).await;
+        assert!(registry.triggers.contains_key("t"));
+        assert_eq!(drain(&mut rx2), vec!["+t"]);
+        (p2, rx2)
+    }
+
+    /// R1 — provider restart (the exact #2178 flow), then the consumer
+    /// unregisters. Expected: Ok(true), binding gone, P2 told "-t" only.
+    #[tokio::test]
+    async fn r1_unregister_after_provider_restart_really_removes_binding() {
+        let registry = TriggerRegistry::new();
+        let (_p2, mut rx2) = provider_restart_with_binding(&registry, Uuid::new_v4()).await;
+
+        let result = registry.unregister_trigger("t".into(), None).await;
+        let sent = drain(&mut rx2);
+        assert!(
+            result.is_ok() && !registry.triggers.contains_key("t") && sent == vec!["-t"],
+            "unregister={result:?} still_live={} provider_saw={sent:?}",
+            registry.triggers.contains_key("t")
+        );
+    }
+
+    /// R2 — the provider is down, the binding is parked; the consumer
+    /// unregisters it. Expected: Ok(true) and NOTHING replayed when the
+    /// provider comes back.
+    #[tokio::test]
+    async fn r2_unregister_parked_intent_while_provider_is_down() {
+        let registry = TriggerRegistry::new();
+        let (p1, rx1) = worker_provider(8);
+        install_worker_provider(&registry, DEFAULT_NAMESPACE, &p1).await;
+        registry
+            .register_trigger(consumer_trigger("t", Uuid::new_v4()))
+            .await
+            .unwrap();
+        drop(rx1);
+        registry.unregister_worker(&p1.id).await;
+        assert!(registry.pending_triggers.contains_key("t"));
+
+        let result = registry.unregister_trigger("t".into(), None).await;
+        let still_parked = registry.pending_triggers.contains_key("t");
+
+        let (p2, mut rx2) = worker_provider(8);
+        install_worker_provider(&registry, DEFAULT_NAMESPACE, &p2).await;
+        let replayed = drain(&mut rx2);
+        assert!(
+            result.is_ok()
+                && !still_parked
+                && replayed.is_empty()
+                && !registry.triggers.contains_key("t"),
+            "unregister={result:?} still_parked={still_parked} replayed_on_return={replayed:?} live_again={}",
+            registry.triggers.contains_key("t")
+        );
+    }
+
+    /// R3 — no restart at all: a home provider leaves, the binding falls back
+    /// to the DEFAULT provider, then the consumer unregisters it.
+    #[tokio::test]
+    async fn r3_unregister_after_home_provider_left_for_fallback() {
+        let registry = TriggerRegistry::new();
+        let fallback = Arc::new(Probe::default());
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                DEFAULT_NAMESPACE,
+                "evt",
+                "fallback",
+                Box::new(Arc::clone(&fallback)),
+                None,
+            ))
+            .await
+            .unwrap();
+        let (home, rx_home) = worker_provider(8);
+        install_worker_provider(&registry, "shop", &home).await;
+        let binding = Trigger {
+            home_namespace: "shop".into(),
+            ..consumer_trigger("t", Uuid::new_v4())
+        };
+        registry.register_trigger(binding).await.unwrap();
+        assert_eq!(
+            registry.triggers.get("t").unwrap().provider_namespace,
+            "shop"
+        );
+
+        drop(rx_home);
+        registry.unregister_worker(&home.id).await;
+        assert!(fallback.live.lock().unwrap().contains("t"));
+
+        let result = registry.unregister_trigger("t".into(), None).await;
+        let events = fallback.events.lock().unwrap().clone();
+        assert!(
+            result.is_ok() && fallback.live.lock().unwrap().is_empty(),
+            "unregister={result:?} fallback_still_runs={} fallback_events={events:?}",
+            fallback.live.lock().unwrap().contains("t")
+        );
+    }
+
+    /// R4 — the SAME connection re-announcing its trigger type (router builds
+    /// a fresh Box each time) must not tear bindings down. main replays "+t";
+    /// a detach first opens a window where the provider has no job.
+    #[tokio::test]
+    async fn r4_same_connection_reregistration_does_not_detach() {
+        let registry = TriggerRegistry::new();
+        let (p, mut rx) = worker_provider(8);
+        install_worker_provider(&registry, DEFAULT_NAMESPACE, &p).await;
+        registry
+            .register_trigger(consumer_trigger("t", Uuid::new_v4()))
+            .await
+            .unwrap();
+        drain(&mut rx);
+        install_worker_provider(&registry, DEFAULT_NAMESPACE, &p).await;
+        let sent = drain(&mut rx);
+        assert!(
+            !sent.contains(&"-t".to_string()),
+            "same connection saw {sent:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_2198_round2 {
+    use super::*;
+    use crate::engine::Outbound;
+    use crate::protocol::{DEFAULT_NAMESPACE, Message};
+    use crate::worker_connections::WorkerConnection;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::time::Duration;
+
+    /// In-process provider with knobs for pausing, rejecting and refusing.
+    #[derive(Default)]
+    pub(super) struct Knobs {
+        pub live: std::sync::Mutex<HashSet<String>>,
+        pub events: std::sync::Mutex<Vec<String>>,
+        pub pause_register: AtomicBool,
+        pub reject_register: AtomicBool,
+        pub fail_unregister: AtomicBool,
+        pub resume: tokio::sync::Notify,
+    }
+
+    impl Knobs {
+        pub fn live(&self, id: &str) -> bool {
+            self.live.lock().unwrap().contains(id)
+        }
+        pub fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl TriggerRegistrator for Arc<Knobs> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                if self.pause_register.swap(false, SeqCst) {
+                    self.resume.notified().await;
+                }
+                if self.reject_register.load(SeqCst) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("reject+{}", trigger.id));
+                    return Err(anyhow::anyhow!("provider rejected config"));
+                }
+                self.live.lock().unwrap().insert(trigger.id.clone());
+                self.events.lock().unwrap().push(format!("+{}", trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                if self.fail_unregister.load(SeqCst) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("refuse-{}", trigger.id));
+                    return Err(anyhow::anyhow!("provider refused removal"));
+                }
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push(format!("-{}", trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    pub(super) fn knobs_type(probe: &Arc<Knobs>, owner: Option<Uuid>) -> TriggerType {
+        TriggerType::new_ns(
+            DEFAULT_NAMESPACE,
+            "evt",
+            "knobs",
+            Box::new(Arc::clone(probe)),
+            owner,
+        )
+    }
+
+    pub(super) fn base(id: &str) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: "evt".to_string(),
+            function_id: format!("fn_{id}"),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            trigger_namespace: None,
+            home_namespace: DEFAULT_NAMESPACE.to_string(),
+            provider_namespace: DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    pub(super) fn owned(id: &str, owner: Uuid) -> Trigger {
+        Trigger {
+            worker_id: Some(owner),
+            ..base(id)
+        }
+    }
+
+    pub(super) fn drain(rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(match msg {
+                Outbound::Protocol(Message::RegisterTrigger { id, .. }) => format!("+{id}"),
+                Outbound::Protocol(Message::UnregisterTrigger { id, .. }) => format!("-{id}"),
+                _ => "?".to_string(),
+            });
+        }
+        out
+    }
+
+    /// R11 — consumer reconnect: the OLD connection's cleanup waits for the
+    /// gate held by the NEW connection's re-registration of the same id. When
+    /// the cleanup deadline expires it tombstones the id; the new registration
+    /// then settles into "removed" and the binding silently disappears.
+    #[tokio::test(start_paused = true)]
+    async fn r11_old_owner_cleanup_does_not_destroy_new_connection_registration() {
+        let registry = TriggerRegistry::new();
+        let provider = Arc::new(Knobs::default());
+        registry
+            .register_trigger_type(knobs_type(&provider, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        let old_conn = Uuid::new_v4();
+        let new_conn = Uuid::new_v4();
+        registry
+            .register_trigger(owned("t", old_conn))
+            .await
+            .unwrap();
+
+        // New connection replays its binding; the provider is slow to accept.
+        provider.pause_register.store(true, SeqCst);
+        let replay = registry.register_trigger(owned("t", new_conn));
+        tokio::pin!(replay);
+        assert!(futures::poll!(&mut replay).is_pending());
+
+        // Old connection's cleanup runs concurrently.
+        registry.unregister_worker(&old_conn).await;
+
+        provider.resume.notify_one();
+        let outcome = replay.await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let owner = registry.triggers.get("t").map(|t| t.worker_id);
+        assert!(
+            owner == Some(Some(new_conn)) && provider.live("t"),
+            "new connection's registration lost: outcome={outcome:?} live_owner={owner:?} provider_live={} events={:?}",
+            provider.live("t"),
+            provider.events()
+        );
+    }
+
+    /// R12b — the same explicit unregister against a provider that refuses
+    /// removal returns Err and keeps the binding when the gate is free, but
+    /// returns Ok(true) (binding gone, job left running) when the gate is busy.
+    #[tokio::test(start_paused = true)]
+    async fn r12b_unregister_outcome_does_not_depend_on_gate_contention() {
+        let registry = TriggerRegistry::new();
+        let provider = Arc::new(Knobs::default());
+        registry
+            .register_trigger_type(knobs_type(&provider, None))
+            .await
+            .unwrap();
+        registry.register_trigger(base("t")).await.unwrap();
+        provider.fail_unregister.store(true, SeqCst);
+
+        // A re-registration of the same id happens to be in flight.
+        provider.pause_register.store(true, SeqCst);
+        let rereg = registry.register_trigger(base("t"));
+        tokio::pin!(rereg);
+        assert!(futures::poll!(&mut rereg).is_pending());
+
+        let result = registry.unregister_trigger("t".into(), None).await;
+        provider.resume.notify_one();
+        let _ = rereg.await;
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        assert!(
+            result.is_err() || !provider.live("t"),
+            "unregister={result:?} but the provider still runs t; engine still tracks it: {} events={:?}",
+            registry.triggers.contains_key("t") || registry.pending_triggers.contains_key("t"),
+            provider.events()
+        );
+    }
+
+    /// R13 — a replay skipped on a busy gate relies on the holder to
+    /// re-resolve. The detach-only recovery task never does (and it sleeps
+    /// between retries with the gate held).
+    #[tokio::test(start_paused = true)]
+    async fn r13_replay_skipped_during_detach_only_recovery_is_not_lost() {
+        let registry = TriggerRegistry::new();
+        let stale = Arc::new(Knobs::default()); // accepted t, then refuses removal
+        let rejecting = Arc::new(Knobs::default()); // replacement rejecting t's config
+        let fixed = Arc::new(Knobs::default()); // next replacement, accepts
+        registry
+            .register_trigger_type(knobs_type(&stale, None))
+            .await
+            .unwrap();
+        registry.register_trigger(base("t")).await.unwrap();
+        stale.fail_unregister.store(true, SeqCst);
+        rejecting.reject_register.store(true, SeqCst);
+        registry
+            .register_trigger_type(knobs_type(&rejecting, None))
+            .await
+            .unwrap();
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        registry
+            .register_trigger_type(knobs_type(&fixed, None))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        assert!(
+            fixed.live("t") && registry.triggers.contains_key("t"),
+            "accepting provider never got t: still_pending={} fixed_events={:?} rejecting_events={:?}",
+            registry.pending_triggers.contains_key("t"),
+            fixed.events(),
+            rejecting.events()
+        );
+    }
+
+    /// R14 — provider reconnect while the OLD connection is half-open (writer
+    /// stuck: channel full but not closed, cleanup not run yet).
+    #[tokio::test(start_paused = true)]
+    async fn r14_replacement_does_not_stall_on_half_open_old_provider() {
+        const N: usize = 5;
+        let registry = TriggerRegistry::new();
+        let (old_tx, _old_rx) = tokio::sync::mpsc::channel(N); // rx alive: half-open
+        let old = WorkerConnection::new(old_tx);
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "old",
+                Box::new(old.clone()),
+                Some(old.id),
+            ))
+            .await
+            .unwrap();
+        let consumer = Uuid::new_v4();
+        for i in 0..N {
+            registry
+                .register_trigger(owned(&format!("t{i}"), consumer))
+                .await
+                .unwrap();
+        }
+        // The old channel now holds N undrained RegisterTrigger frames: full.
+        let (new_tx, mut new_rx) = tokio::sync::mpsc::channel(64);
+        let new = WorkerConnection::new(new_tx);
+        let start = tokio::time::Instant::now();
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "new",
+                Box::new(new.clone()),
+                Some(new.id),
+            ))
+            .await
+            .unwrap();
+        let blocked = tokio::time::Instant::now() - start;
+        let delivered = drain(&mut new_rx)
+            .iter()
+            .filter(|m| m.starts_with('+'))
+            .count();
+        assert!(
+            blocked < Duration::from_secs(1) && delivered == N,
+            "new provider's read loop blocked {blocked:?}; {delivered}/{N} bindings delivered when it returned"
+        );
+    }
+
+    /// R15 — the SDK swaps a trigger type's handler by calling
+    /// registerTriggerType again on the SAME connection.
+    #[tokio::test]
+    async fn r15_same_connection_reannounce_still_replays_bindings() {
+        let registry = TriggerRegistry::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let p = WorkerConnection::new(tx);
+        let announce = || TriggerType::new("evt", "worker", Box::new(p.clone()), Some(p.id));
+        registry.register_trigger_type(announce()).await.unwrap();
+        registry
+            .register_trigger(owned("t", Uuid::new_v4()))
+            .await
+            .unwrap();
+        drain(&mut rx);
+        registry.register_trigger_type(announce()).await.unwrap();
+        let sent = drain(&mut rx);
+        assert_eq!(
+            sent,
+            vec!["+t".to_string()],
+            "re-announced handler received {sent:?}"
+        );
+    }
+
+    /// R16 — same head-of-line class as R10, other entry point.
+    #[tokio::test(start_paused = true)]
+    async fn r16_late_rejection_does_not_block_provider_read_loop() {
+        let registry = TriggerRegistry::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let p = WorkerConnection::new(tx);
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "p",
+                Box::new(p.clone()),
+                Some(p.id),
+            ))
+            .await
+            .unwrap();
+        let slow = Arc::new(Knobs::default());
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                "other",
+                "evt",
+                "slow",
+                Box::new(Arc::clone(&slow)),
+                None,
+            ))
+            .await
+            .unwrap();
+        let owner = Uuid::new_v4();
+        registry.register_trigger(owned("t", owner)).await.unwrap();
+
+        slow.pause_register.store(true, SeqCst);
+        let moving = registry.register_trigger(Trigger {
+            trigger_namespace: Some("other".into()),
+            ..owned("t", owner)
+        });
+        tokio::pin!(moving);
+        assert!(futures::poll!(&mut moving).is_pending());
+
+        let park = registry.park_rejected_trigger("t", p.id);
+        tokio::pin!(park);
+        let ready = futures::poll!(&mut park).is_ready();
+        slow.resume.notify_one();
+        let _ = moving.await;
+        if !ready {
+            park.await;
+        }
+        assert!(
+            ready,
+            "provider read loop blocked in park_rejected_trigger behind an unrelated slow provider"
+        );
+    }
+}
+
+// Needs PR-only internals (lifecycles).
