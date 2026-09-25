@@ -467,6 +467,16 @@ impl TriggerRegistry {
                 .await
             {
                 Ok(()) => {
+                    // Publish only if this generation is still current: a
+                    // replacement re-homes the binding itself. The short guard
+                    // is held only through the synchronous insert, so a
+                    // replacement cannot publish between the check and the act.
+                    let current = self.trigger_types.get(&trigger_type.key());
+                    if !current.as_ref().is_some_and(|current| {
+                        Arc::ptr_eq(&current.registrator, &trigger_type.registrator)
+                    }) {
+                        continue;
+                    }
                     tracing::info!(
                         "{} Trigger {} (type {}) moved from {} to its own namespace {}",
                         "[RE-HOMED]".green(),
@@ -480,8 +490,12 @@ impl TriggerRegistry {
                 Err(err) => {
                     // A replacement generation re-homes the binding itself; a
                     // stale generation's failure must not park the binding the
-                    // current provider now runs.
-                    if !self.is_current_provider(trigger_type) {
+                    // current provider now runs. Checked under the same short
+                    // guard as the park so a replacement cannot slip in between.
+                    let current = self.trigger_types.get(&trigger_type.key());
+                    if !current.as_ref().is_some_and(|current| {
+                        Arc::ptr_eq(&current.registrator, &trigger_type.registrator)
+                    }) {
                         continue;
                     }
                     // It is off the old provider and the new one refused it.
@@ -603,29 +617,23 @@ impl TriggerRegistry {
                 match self.resolve_provider_key(&trigger) {
                     Some(next) => {
                         trigger.provider_namespace = next.0.clone();
-                        let replayed = match self.provider_snapshot(&next) {
-                            Some(provider) => {
-                                provider.registrator.replay_trigger(trigger.clone()).await
-                            }
-                            None => Err(anyhow::anyhow!("provider vanished during failover")),
-                        };
-                        match replayed {
-                            Ok(()) => {
+                        if let Some(provider) = self.provider_snapshot(&next) {
+                            // The replay runs without any guard, so re-check the
+                            // generation afterwards: `activate_pending_trigger`
+                            // publishes, hands off to a replacement, or parks
+                            // (with a re-check) when the provider refuses it.
+                            let (id, trigger_type) =
+                                (trigger.id.clone(), trigger.trigger_type.clone());
+                            if self.activate_pending_trigger(&provider, trigger).await {
                                 tracing::info!(
                                     "{} Trigger {} (type {}) fell back to {} after its provider left",
                                     "[RE-HOMED]".green(),
-                                    trigger.id.purple(),
-                                    trigger.trigger_type.purple(),
+                                    id.purple(),
+                                    trigger_type.purple(),
                                     next.0.purple(),
                                 );
-                                self.triggers.insert(trigger.id.clone(), trigger);
-                                continue;
                             }
-                            Err(err) => tracing::error!(
-                                error = %err,
-                                trigger_id = %trigger.id,
-                                "Fallback provider refused the binding; parking it"
-                            ),
+                            continue;
                         }
                     }
                     None => tracing::warn!(
@@ -636,7 +644,7 @@ impl TriggerRegistry {
                         trigger.function_id.purple(),
                     ),
                 }
-                self.pending_triggers.insert(trigger.id.clone(), trigger);
+                self.park_and_recheck(trigger, None).await;
             }
         }
     }
@@ -950,6 +958,10 @@ impl TriggerRegistry {
         match replacement {
             // Replaced while in flight: deliver to the current generation.
             Some(current) => {
+                // Exactly one bucket: if the current generation rejects the
+                // hand-off, the new intent is parked and must not coexist with
+                // the previous live entry of the same id.
+                self.triggers.remove(&trigger.id);
                 if self.activate_pending_trigger(&current, trigger).await {
                     Ok(RegisterTriggerOutcome::Registered)
                 } else {
@@ -4167,5 +4179,534 @@ mod review_min {
             .await
             .unwrap();
         assert!(gen2.live("t") && registry.triggers.contains_key("t"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-2 review tests for 3b85ba478 (re-check provider generation after
+// every provider await). Appended to engine/src/trigger.rs in a throwaway
+// worktree; never committed. Same synchronisation scheme as review_min: the
+// only timing element is a 5 s timeout that elapses ONLY on origin/main.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod review_min2 {
+    use super::*;
+    use crate::protocol::DEFAULT_NAMESPACE;
+    use dashmap::try_result::TryResult;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct Gate {
+        live: std::sync::Mutex<HashSet<String>>,
+        events: std::sync::Mutex<Vec<String>>,
+        pause_register: AtomicBool,
+        pause_unregister: AtomicBool,
+        unavailable_on_register: AtomicBool,
+        reject_register: AtomicBool,
+        register_calls: AtomicUsize,
+        unregister_calls: AtomicUsize,
+        entered: Notify,
+        resume: Notify,
+    }
+
+    impl Gate {
+        fn live(&self, id: &str) -> bool {
+            self.live.lock().unwrap().contains(id)
+        }
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl TriggerRegistrator for Arc<Gate> {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.register_calls.fetch_add(1, SeqCst);
+                if self.pause_register.swap(false, SeqCst) {
+                    self.entered.notify_one();
+                    self.resume.notified().await;
+                }
+                if self.unavailable_on_register.load(SeqCst) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("unavailable+{}", trigger.id));
+                    return Err(anyhow::Error::new(RegistratorUnavailable));
+                }
+                if self.reject_register.load(SeqCst) {
+                    self.events
+                        .lock()
+                        .unwrap()
+                        .push(format!("reject+{}", trigger.id));
+                    return Err(anyhow::anyhow!("provider rejected config"));
+                }
+                self.live.lock().unwrap().insert(trigger.id.clone());
+                self.events.lock().unwrap().push(format!("+{}", trigger.id));
+                Ok(())
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.unregister_calls.fetch_add(1, SeqCst);
+                if self.pause_unregister.swap(false, SeqCst) {
+                    self.entered.notify_one();
+                    self.resume.notified().await;
+                }
+                self.live.lock().unwrap().remove(&trigger.id);
+                self.events.lock().unwrap().push(format!("-{}", trigger.id));
+                Ok(())
+            })
+        }
+    }
+
+    fn gate_type(ns: &str, gate: &Arc<Gate>, owner: Option<Uuid>) -> TriggerType {
+        TriggerType::new_ns(ns, "evt", "gate", Box::new(Arc::clone(gate)), owner)
+    }
+
+    fn base(id: &str) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: "evt".to_string(),
+            function_id: format!("fn_{id}"),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            trigger_namespace: None,
+            home_namespace: DEFAULT_NAMESPACE.to_string(),
+            provider_namespace: DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    fn at_home(id: &str, home: &str) -> Trigger {
+        Trigger {
+            home_namespace: home.to_string(),
+            ..base(id)
+        }
+    }
+
+    fn writable(registry: &TriggerRegistry, key: &TypeKey) -> bool {
+        matches!(
+            registry.trigger_types.try_get_mut(key),
+            TryResult::Present(_)
+        )
+    }
+
+    fn both_buckets(registry: &TriggerRegistry, id: &str) -> bool {
+        registry.triggers.contains_key(id) && registry.pending_triggers.contains_key(id)
+    }
+
+    async fn settles_first(handle: &mut tokio::task::JoinHandle<()>) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+    }
+
+    fn spawn_type(
+        registry: &Arc<TriggerRegistry>,
+        ns: &'static str,
+        gate: &Arc<Gate>,
+        owner: Uuid,
+    ) -> tokio::task::JoinHandle<()> {
+        let r = Arc::clone(registry);
+        let g = Arc::clone(gate);
+        tokio::spawn(async move {
+            r.register_trigger_type(gate_type(ns, &g, Some(owner)))
+                .await
+                .unwrap()
+        })
+    }
+
+    /// N1 — failover path of `unregister_worker` (trigger.rs:597-633): the home
+    /// provider leaves, `t` is replayed to the DEFAULT fallback provider A; while
+    /// that replay is in flight the fallback provider reconnects as B (the #2178
+    /// storm: many providers reconnecting). The failover then publishes `t` live
+    /// on DEFAULT without a generation check; B never received it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn n1_failover_replay_publishes_binding_unknown_to_replaced_fallback() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let fb_a = Arc::new(Gate::default());
+        let fb_b = Arc::new(Gate::default());
+        let home = Arc::new(Gate::default());
+        let home_worker = Uuid::new_v4();
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fb_a, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(gate_type("shop", &home, Some(home_worker)))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(at_home("t", "shop"))
+            .await
+            .unwrap();
+        assert!(home.live("t"));
+
+        fb_a.pause_register.store(true, SeqCst);
+        let sweep = {
+            let r = Arc::clone(&registry);
+            tokio::spawn(async move { r.unregister_worker(&home_worker).await })
+        };
+        fb_a.entered.notified().await;
+
+        let mut replace = spawn_type(&registry, DEFAULT_NAMESPACE, &fb_b, Uuid::new_v4());
+        let replaced_first = settles_first(&mut replace).await;
+        fb_a.resume.notify_one();
+        if !replaced_first {
+            replace.await.unwrap();
+        }
+        sweep.await.unwrap();
+
+        let live_on = registry
+            .triggers
+            .get("t")
+            .map(|t| t.provider_namespace.clone());
+        assert!(
+            live_on.is_none() || fb_b.live("t"),
+            "replacement_first={replaced_first}: `t` published live on {live_on:?} but the current DEFAULT provider never received it; A={:?} B={:?} pending={}",
+            fb_a.events(),
+            fb_b.events(),
+            registry.pending_triggers.contains_key("t")
+        );
+        assert!(fb_b.live("t") && registry.triggers.contains_key("t"));
+    }
+
+    /// N2 — `rehome_fallback_bindings` Ok arm (trigger.rs:469-479) from a STALE
+    /// generation: gen 1 is mid-replay when gen 2 registers at home, gets `t`
+    /// rejected and (being current) parks it. Gen 1's replay then returns Ok and
+    /// inserts `t` live on `shop`: `t` is in both buckets, and the registry says
+    /// live on a provider that refused it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn n2_stale_rehome_success_does_not_publish_over_current_park() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let fallback = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &fallback, None))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(at_home("t", "shop"))
+            .await
+            .unwrap();
+
+        let gen1 = Arc::new(Gate::default());
+        gen1.pause_register.store(true, SeqCst);
+        let home1 = spawn_type(&registry, "shop", &gen1, Uuid::new_v4());
+        gen1.entered.notified().await;
+
+        let gen2 = Arc::new(Gate::default());
+        gen2.reject_register.store(true, SeqCst);
+        let mut home2 = spawn_type(&registry, "shop", &gen2, Uuid::new_v4());
+        let replaced_first = settles_first(&mut home2).await;
+        gen1.resume.notify_one();
+        if !replaced_first {
+            home2.await.unwrap();
+        }
+        home1.await.unwrap();
+
+        assert!(
+            !both_buckets(&registry, "t"),
+            "replacement_first={replaced_first}: `t` is live AND pending; live_on={:?} gen1={:?} gen2={:?}",
+            registry
+                .triggers
+                .get("t")
+                .map(|t| t.provider_namespace.clone()),
+            gen1.events(),
+            gen2.events()
+        );
+    }
+
+    /// N3 — `register_trigger` replaced-Ok hand-off (trigger.rs:950-958) for a
+    /// RE-registration of a live id: gen 1 accepts, gen 2 (current) rejects the
+    /// hand-off. The new intent is parked while the previous live entry of the
+    /// same id stays in `triggers`: two buckets for one id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn n3_replaced_handoff_rejection_leaves_id_in_two_buckets() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let gen1 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        registry.register_trigger(base("t")).await.unwrap();
+
+        gen1.pause_register.store(true, SeqCst);
+        let rereg = {
+            let r = Arc::clone(&registry);
+            tokio::spawn(async move { r.register_trigger(base("t")).await })
+        };
+        gen1.entered.notified().await;
+
+        let gen2 = Arc::new(Gate::default());
+        gen2.reject_register.store(true, SeqCst);
+        let mut replace = spawn_type(&registry, DEFAULT_NAMESPACE, &gen2, Uuid::new_v4());
+        let replaced_first = settles_first(&mut replace).await;
+        gen1.resume.notify_one();
+        if !replaced_first {
+            replace.await.unwrap();
+        }
+        let outcome = rereg.await.unwrap();
+
+        assert!(
+            !both_buckets(&registry, "t"),
+            "replacement_first={replaced_first} outcome={outcome:?}: `t` is live AND pending; gen1={:?} gen2={:?}",
+            gen1.events(),
+            gen2.events()
+        );
+    }
+
+    /// N4 — repeated replacements during the hand-off: gen 1 accepts, gen 2 is
+    /// current at publish time and receives the hand-off, gen 3 replaces gen 2
+    /// while that replay is in flight. The binding must end on gen 3, once.
+    #[tokio::test]
+    async fn n4_handoff_follows_repeated_replacements() {
+        let registry = TriggerRegistry::new();
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+        let gen1 = Arc::new(Gate::default());
+        let gen2 = Arc::new(Gate::default());
+        let gen3 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        gen1.pause_register.store(true, SeqCst);
+        let bind = registry.register_trigger(base("t"));
+        tokio::pin!(bind);
+        assert!(futures::poll!(&mut bind).is_pending());
+
+        gen2.pause_register.store(true, SeqCst); // arms the hand-off replay
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        gen1.resume.notify_one();
+        assert!(
+            futures::poll!(&mut bind).is_pending(),
+            "hand-off to gen2 in flight"
+        );
+        assert_eq!(gen2.register_calls.load(SeqCst), 1);
+        assert!(
+            writable(&registry, &key),
+            "hand-off holds the provider shard across await"
+        );
+
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen3, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        gen2.resume.notify_one();
+        let outcome = bind.await.unwrap();
+
+        assert_eq!(outcome, RegisterTriggerOutcome::Registered);
+        assert!(gen3.live("t"), "gen3={:?}", gen3.events());
+        assert_eq!(
+            gen3.register_calls.load(SeqCst),
+            1,
+            "exactly one delivery to gen3"
+        );
+        assert!(registry.triggers.contains_key("t") && registry.pending_triggers.is_empty());
+    }
+
+    /// N5 — `park_and_recheck` must not retry the stale generation that just
+    /// failed (no spin against a dead connection); the intent stays parked and
+    /// the next registration recovers it.
+    #[tokio::test]
+    async fn n5_unavailable_park_does_not_retry_same_generation() {
+        let registry = TriggerRegistry::new();
+        let gen1 = Arc::new(Gate::default());
+        gen1.unavailable_on_register.store(true, SeqCst);
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        let outcome = registry.register_trigger(base("t")).await.unwrap();
+        assert_eq!(outcome, RegisterTriggerOutcome::Deferred);
+        assert_eq!(
+            gen1.register_calls.load(SeqCst),
+            1,
+            "no retry against the stale generation"
+        );
+        assert!(registry.pending_triggers.contains_key("t") && registry.triggers.is_empty());
+
+        let gen2 = Arc::new(Gate::default());
+        registry
+            .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(
+            gen2.live("t")
+                && registry.triggers.contains_key("t")
+                && registry.pending_triggers.is_empty()
+        );
+    }
+
+    /// N6 — shard-writability probes for the awaits 3b85ba478 adds:
+    /// (a) replaced-Ok hand-off, (b) Unavailable -> park_and_recheck -> activate,
+    /// (c) second iteration of the unregister loop, (d) vanished-type continue
+    /// in activate_pending_trigger.
+    #[tokio::test]
+    async fn n6_new_await_points_release_provider_shards() {
+        let key = type_key(DEFAULT_NAMESPACE, "evt");
+
+        // (a)
+        {
+            let registry = TriggerRegistry::new();
+            let gen1 = Arc::new(Gate::default());
+            let gen2 = Arc::new(Gate::default());
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            gen1.pause_register.store(true, SeqCst);
+            let bind = registry.register_trigger(base("t"));
+            tokio::pin!(bind);
+            assert!(futures::poll!(&mut bind).is_pending());
+            gen2.pause_register.store(true, SeqCst);
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            gen1.resume.notify_one();
+            assert!(futures::poll!(&mut bind).is_pending());
+            assert_eq!(
+                gen2.register_calls.load(SeqCst),
+                1,
+                "(a) parked in hand-off"
+            );
+            assert!(writable(&registry, &key), "(a) hand-off holds the shard");
+            gen2.resume.notify_one();
+            assert_eq!(bind.await.unwrap(), RegisterTriggerOutcome::Registered);
+            assert!(gen2.live("t") && registry.triggers.contains_key("t"));
+        }
+
+        // (b)
+        {
+            let registry = TriggerRegistry::new();
+            let gen1 = Arc::new(Gate::default());
+            let gen2 = Arc::new(Gate::default());
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            gen1.unavailable_on_register.store(true, SeqCst);
+            gen1.pause_register.store(true, SeqCst);
+            let bind = registry.register_trigger(base("t"));
+            tokio::pin!(bind);
+            assert!(futures::poll!(&mut bind).is_pending());
+            gen2.pause_register.store(true, SeqCst);
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            gen1.resume.notify_one();
+            assert!(futures::poll!(&mut bind).is_pending());
+            assert_eq!(
+                gen2.register_calls.load(SeqCst),
+                1,
+                "(b) parked in park_and_recheck activation"
+            );
+            assert!(
+                writable(&registry, &key),
+                "(b) park_and_recheck holds the shard"
+            );
+            gen2.resume.notify_one();
+            assert_eq!(bind.await.unwrap(), RegisterTriggerOutcome::Registered);
+            assert!(
+                gen2.live("t")
+                    && registry.triggers.contains_key("t")
+                    && registry.pending_triggers.is_empty()
+            );
+        }
+
+        // (c)
+        {
+            let registry = TriggerRegistry::new();
+            let gen1 = Arc::new(Gate::default());
+            let gen2 = Arc::new(Gate::default());
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            registry.register_trigger(base("t")).await.unwrap();
+            gen1.pause_unregister.store(true, SeqCst);
+            let unreg = registry.unregister_trigger("t".into(), None);
+            tokio::pin!(unreg);
+            assert!(futures::poll!(&mut unreg).is_pending());
+            gen2.pause_unregister.store(true, SeqCst);
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            assert!(gen2.live("t"));
+            gen1.resume.notify_one();
+            assert!(futures::poll!(&mut unreg).is_pending());
+            assert_eq!(
+                gen2.unregister_calls.load(SeqCst),
+                1,
+                "(c) parked in second unregister"
+            );
+            assert!(
+                writable(&registry, &key),
+                "(c) unregister loop holds the shard"
+            );
+            gen2.resume.notify_one();
+            assert!(unreg.await.unwrap());
+            assert!(!gen1.live("t") && !gen2.live("t") && registry.triggers.is_empty());
+        }
+
+        // (d)
+        {
+            let registry = TriggerRegistry::new();
+            registry.register_trigger(base("t")).await.unwrap();
+            let gen1 = Arc::new(Gate::default());
+            let w1 = Uuid::new_v4();
+            gen1.pause_register.store(true, SeqCst);
+            let announce =
+                registry.register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen1, Some(w1)));
+            tokio::pin!(announce);
+            assert!(futures::poll!(&mut announce).is_pending());
+            registry.unregister_worker(&w1).await;
+            let gen2 = Arc::new(Gate::default());
+            gen2.pause_register.store(true, SeqCst);
+            registry
+                .register_trigger_type(gate_type(DEFAULT_NAMESPACE, &gen2, Some(Uuid::new_v4())))
+                .await
+                .unwrap();
+            assert_eq!(
+                gen2.register_calls.load(SeqCst),
+                0,
+                "(d) t is claimed, gen2 drain sees nothing"
+            );
+            gen1.resume.notify_one();
+            assert!(futures::poll!(&mut announce).is_pending());
+            assert_eq!(
+                gen2.register_calls.load(SeqCst),
+                1,
+                "(d) vanished-type continue replays to gen2"
+            );
+            assert!(
+                writable(&registry, &key),
+                "(d) continue path holds the shard"
+            );
+            gen2.resume.notify_one();
+            announce.await.unwrap();
+            assert!(
+                gen2.live("t")
+                    && registry.triggers.contains_key("t")
+                    && registry.pending_triggers.is_empty()
+            );
+        }
     }
 }
