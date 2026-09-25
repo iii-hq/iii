@@ -392,9 +392,8 @@ pub fn platform_for_product(product_name: &str) -> &'static str {
 ///
 /// `device_id` is optional: when provided, it's written as an additional
 /// line so the engine telemetry pipeline can associate the project with the
-/// host machine (e.g. for `III_HOST_USER_ID` Docker injection in
-/// `iii project generate-docker`). Unset means "no device association",
-/// matching the historical behavior used by the scaffolder TUI.
+/// host machine. Unset means "no device association", matching the
+/// historical behavior used by the scaffolder TUI.
 ///
 /// Values must not contain `\n` or `\r` — the function rejects them with
 /// `InvalidInput` so a hostile project name can't smuggle additional INI

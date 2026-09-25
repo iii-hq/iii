@@ -1,7 +1,6 @@
 # Root template manifest for iii - lists available templates by folder name
 templates:
   - bare
-  - docker
   - quickstart
   # - multi-worker-orchestration
   # - quickstart-ai-agents
