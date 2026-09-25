@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
+    "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -23,15 +19,9 @@
       }
     ],
     "paths": {
-      "@/*": [
-        "./src/*"
-      ],
-      "@lib/*": [
-        "./roadmap/src/*"
-      ],
-      "virtual:spec-manifest": [
-        "./roadmap/generated/spec-manifest.ts"
-      ]
+      "@/*": ["./src/*"],
+      "@lib/*": ["./roadmap/src/*"],
+      "virtual:spec-manifest": ["./roadmap/generated/spec-manifest.ts"]
     }
   },
   "include": [
@@ -44,8 +34,5 @@
     "dist/types/**/*.ts",
     "dist/dev/types/**/*.ts"
   ],
-  "exclude": [
-    "node_modules",
-    "dist"
-  ]
+  "exclude": ["node_modules", "dist"]
 }

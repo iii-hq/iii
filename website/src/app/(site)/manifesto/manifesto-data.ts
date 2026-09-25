@@ -114,7 +114,7 @@ export const statements: Statement[] = [
   },
   {
     id: "npm-moment",
-    accent: "iii worker add",
+    accent: "compose::add",
     code: true,
     heavy: "is the npm moment for systems.",
     body: [

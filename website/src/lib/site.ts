@@ -51,14 +51,18 @@ export const links = {
 /** The command the install.sh buttons copy. */
 export const INSTALL_COMMAND = "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh"
 
-/** The self-routing prompt behind every "copy prompt" button. */
+/**
+ * The onboarding script behind every "copy prompt" button: the reader's AI
+ * installs iii, scaffolds the learn-iii project, learns how providers are
+ * enabled, then hands over the two manual steps (API keys, compose up).
+ */
 export const COPY_PROMPT_TEXT = [
-  "Read https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.",
-  "If you're a chat assistant, use llms.txt to explain iii to me —",
-  "the three primitives (Worker, Trigger, Function) and how it",
-  "compares to my stack. If you're a coding agent, use AGENTS.md to",
-  "install iii and build the Quickstart with me",
-  "(https://iii.dev/docs/quickstart), running it locally.",
+  "Help me get started with iii (https://iii.dev).",
+  "1. Install iii: curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive",
+  "2. Create the onboarding project: iii project init --learn-iii",
+  "3. Read the project's worker-compose.yaml so you understand how to enable different providers.",
+  "4. Show me how to add my API keys to the project's .env file, then verify that at least one key is present before continuing, and start iii with: iii compose --up",
+  'Keep it brief, and you can use https://iii.dev/docs to answer any further questions I have about iii. All pages are available as a markdown file when you add a ".md" suffix to the page.',
 ].join("\n")
 
 /** The question behind the footer's "Ask about iii on" links. Short: it's a URL parameter. */

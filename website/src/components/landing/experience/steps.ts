@@ -229,8 +229,8 @@ const RAW_FLOW: readonly Step[] = [
   {
     id: "terminal-3a",
     type: "terminal-command",
-    command: "iii worker add iii-state",
-    output: "✓ Worker iii-state installed",
+    command: "iii trigger compose::add worker=state",
+    output: "✓ state ready (2.1s)",
     delay: 400,
   },
   {
@@ -296,8 +296,8 @@ const RAW_FLOW: readonly Step[] = [
   {
     id: "terminal-4a",
     type: "terminal-command",
-    command: "iii worker add iii-http",
-    output: "✓ Worker iii-http installed",
+    command: "iii trigger compose::add worker=http",
+    output: "✓ http ready (2.1s)",
     delay: 400,
   },
   {
@@ -424,15 +424,8 @@ const RAW_FLOW: readonly Step[] = [
   {
     id: "terminal-6b",
     type: "terminal-command",
-    command: "iii worker stop content-classifier",
-    output: "✓ Worker content-classifier stopped",
-    delay: 300,
-  },
-  {
-    id: "terminal-6c",
-    type: "terminal-command",
-    command: "iii worker start content-classifier",
-    output: "✓ Worker content-classifier started",
+    command: "iii trigger compose::restart worker=content-classifier",
+    output: "✓ content-classifier ready (1.8s)",
     delay: 300,
   },
   {

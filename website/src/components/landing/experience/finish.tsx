@@ -13,15 +13,13 @@ export function Finish() {
       <p className="text-[15px] font-medium text-gray-12">Try it for yourself</p>
       <p className="mt-1 text-[13px] text-gray-10">A worker, a router, state, HTTP and traces, in one system.</p>
       <a
-        href={links.quickstart}
+        href={links.install}
         target="_blank"
         rel="noopener noreferrer"
         className={cn(buttonVariants(), "mt-4")}
-        onClick={() =>
-          trackCta("quickstart", "experience_finish", { cta_label: "quickstart guide", cta_href: links.quickstart })
-        }
+        onClick={() => trackCta("install", "experience_finish", { cta_label: "install iii", cta_href: links.install })}
       >
-        Read the quickstart guide
+        Install iii
         <ArrowUpRightIcon className="size-3.5 text-gray-1/70" />
       </a>
     </div>

@@ -85,7 +85,7 @@ const MOTIFS: { strokes: Stroke[]; dots?: [number, number][] }[] = [
   {
     strokes: [{ circle: [48, 48, 24] }, { d: "M 48 34 V 62 M 34 48 H 62" }, { d: "M 38 38 L 58 58 M 58 38 L 38 58" }],
   },
-  // 11 iii worker add is the npm moment: a prompt
+  // 11 compose::add is the npm moment: a prompt
   {
     strokes: [{ rect: [12, 24, 72, 48] }, { d: "M 24 40 L 32 48 L 24 56" }, { d: "M 40 56 H 56" }],
   },
