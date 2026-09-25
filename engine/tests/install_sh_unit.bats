@@ -116,6 +116,13 @@ EOF
   fi
 }
 
+@test "iii-init uses Linux guest artifacts for every supported host" {
+  [ "$(init_target_for_host Linux x86_64)" = "x86_64-unknown-linux-musl" ]
+  [ "$(init_target_for_host Linux aarch64)" = "aarch64-unknown-linux-gnu" ]
+  [ "$(init_target_for_host Darwin x86_64)" = "x86_64-unknown-linux-musl" ]
+  [ "$(init_target_for_host Darwin aarch64)" = "aarch64-unknown-linux-gnu" ]
+}
+
 # ─────────────────────────────────────────────────────────────
 # End-to-end: --help flag
 # ─────────────────────────────────────────────────────────────
