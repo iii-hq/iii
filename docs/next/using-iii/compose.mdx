@@ -692,14 +692,17 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
 | `path`   | A path to a worker stored locally on disk.                                      |
 
-A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
-glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable; a
-bundle worker on a machine without `iii-worker` fails saying so, and every other worker kind is
-unaffected.
+A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii`. Native
+`iii-worker` artifacts are published for glibc and musl Linux on both x86_64 and aarch64, so Alpine
+and other musl distributions are supported alongside standard glibc ones. The shell installer and
+`iii update iii-worker` pick the right build automatically by looking for the host's musl loader,
+independent of which engine build target is installed. Compose runs `iii-worker` as a process rather
+than linking it, so the engine stays portable; a bundle worker on a machine without `iii-worker`
+fails saying so, and every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
-anything is downloaded. Run compose under WSL, where the VM has KVM to run on. Every other worker
-kind runs on windows as it always has.
+anything is downloaded. Run compose under WSL, where the VM still needs `/dev/kvm` and a guest
+rootfs to actually boot. Every other worker kind runs on windows as it always has.
 
 Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
 honours.
