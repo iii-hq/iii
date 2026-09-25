@@ -24,9 +24,15 @@ pub mod unix;
 pub mod windows;
 
 #[cfg(unix)]
-pub use unix::{ChildOutput, Supervised, spawn_supervised, spawn_supervised_piped};
+pub use unix::{
+    ChildOutput, Supervised, spawn_supervised, spawn_supervised_piped,
+    spawn_supervised_piped_with_stdin,
+};
 #[cfg(windows)]
-pub use windows::{ChildOutput, Supervised, spawn_supervised, spawn_supervised_piped};
+pub use windows::{
+    ChildOutput, Supervised, spawn_supervised, spawn_supervised_piped,
+    spawn_supervised_piped_with_stdin,
+};
 
 /// Fingerprint that distinguishes a live process from a recycled PID.
 ///

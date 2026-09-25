@@ -101,6 +101,28 @@ To install one exact version, give the version as the last argument:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
 ```
 
+### Install without questions
+
+The installer asks nothing when no terminal is attached. A `docker build` step, a CI job, and a
+plain `curl ... | sh` in a script are already non-interactive, and they do the install and then
+print the setup command.
+
+`--non-interactive` makes that behavior explicit, and keeps it when a terminal is attached. The
+effect is the same as an answer of `n` at the prompt: the installer does the install, does not run
+the setup, and prints the setup command. Use it when a terminal is attached but you want the install
+only, for example `docker run -it`, `docker compose run`, or a wrapper that gives the command a
+terminal:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
+```
+
+A non-empty `III_NON_INTERACTIVE` does the same:
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 sh
+```
+
 ### Start the harness with your workers
 
 `--start-with` takes a comma-separated worker list. The setup offer at the end of the install
@@ -134,14 +156,15 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --start-with w
 
 ### Control the install with environment variables
 
-| Variable        | Effect                                                                              |
-| --------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`       | Engine version to install, for example `0.23.1`.                                    |
-| `BIN_DIR`       | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
-| `PREFIX`        | Install prefix. Defaults to `$HOME/.local`.                                         |
-| `TARGET`        | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
-| `III_USE_GLIBC` | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
-| `GITHUB_TOKEN`  | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
+| Variable              | Effect                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `VERSION`             | Engine version to install, for example `0.23.1`.                                    |
+| `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
+| `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
+| `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
+| `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
+| `GITHUB_TOKEN`        | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
+| `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                           |
 
 ## Next Steps
 

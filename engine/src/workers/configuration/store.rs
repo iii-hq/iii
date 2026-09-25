@@ -25,7 +25,8 @@ use crate::workers::configuration::adapters::{
     RegisterKind, RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::structs::{
-    ConfigurationEntry, ConfigurationSchemaView, EnsureAction,
+    ConfigurationEntry, ConfigurationMigrateResult, ConfigurationSchemaView, EnsureAction,
+    MigrateAction,
 };
 
 /// Regex matching a single `${VAR}` / `${VAR:default}` reference. The class
@@ -184,6 +185,13 @@ pub struct EnsureOutcome {
     pub old_value: Option<Value>,
 }
 
+/// The persistence result stays raw for bridge consumers. Event delivery uses
+/// the active value captured at the same commit, never a later independent GET.
+pub struct MigrateOutcome {
+    pub persisted: ConfigurationMigrateResult,
+    pub active_entry: Option<ConfigurationEntry>,
+}
+
 /// Whether a reconciled [`ExternalChange`] should be fanned out to trigger
 /// subscribers, returned by [`ConfigurationStore::apply_external`].
 ///
@@ -210,13 +218,17 @@ pub struct ConfigurationStore {
     /// Authoritative in-memory cache. Source of truth for `get`/`list`/`schema`.
     /// Populated lazily from the adapter and kept in sync on every mutation.
     entries: Arc<RwLock<HashMap<String, ConfigurationEntry>>>,
+    /// Execution values never enter the adapter-backed cache. Keyed by config id;
+    /// concurrently sharing one id with different overrides is not supported.
+    runtime_values: RwLock<HashMap<String, Value>>,
     /// Serializes every mutating operation (register/ensure/set/delete) and
     /// cache reconciliation (apply_external/prime_from_adapter) so a
     /// read-prior -> adapter-write -> cache-update sequence is linearizable and
     /// cannot be interleaved by a concurrent mutation that would overwrite it
     /// with a stale value. Held across the adapter await; the `entries` lock is
     /// only taken for the short cache reads/writes inside, never across the
-    /// await, so reads (get/list/schema) never block on this lock and no
+    /// await, except migration which holds it across the commit so cancellation
+    /// cannot split storage/cache updates. Other reads do not block and no
     /// lock-order deadlock is possible. Scope: one engine process / store.
     write_lock: TokioMutex<()>,
 }
@@ -227,6 +239,7 @@ impl ConfigurationStore {
         Self {
             adapter,
             entries: Arc::new(RwLock::new(HashMap::new())),
+            runtime_values: RwLock::new(HashMap::new()),
             write_lock: TokioMutex::new(()),
         }
     }
@@ -477,6 +490,63 @@ impl ConfigurationStore {
         })
     }
 
+    /// Replace active memory without writing or scheduling a flush. A worker
+    /// may register later; get validates again once its schema is available.
+    pub async fn set_memory(&self, id: &str, value: Value) -> Result<SetOutcome, StoreError> {
+        Self::validate_id(id)?;
+        let _write = self.write_lock.lock().await;
+        if let Some(entry) = self.entries.read().await.get(id)
+            && !entry.schema.is_null()
+        {
+            let (applied, missing) = expand_value(&value);
+            if missing.is_empty()
+                && let Err(errs) = validate_against_schema(&applied, &entry.schema)
+            {
+                return Err(StoreError::SchemaInvalid(errs.join("; ")));
+            }
+        }
+        let old_value = self.active_entry(id).await.map(|entry| entry.value);
+        self.runtime_values
+            .write()
+            .await
+            .insert(id.to_owned(), value);
+        let entry = self
+            .active_entry(id)
+            .await
+            .expect("value was just installed");
+        Ok(SetOutcome { entry, old_value })
+    }
+
+    /// Whether a boot-time schema refresh must avoid notifying base defaults.
+    pub async fn is_injected(&self, id: &str) -> bool {
+        self.runtime_values.read().await.contains_key(id)
+    }
+
+    /// Read the effective value without ever using it as a persistence seed.
+    pub async fn get_active(&self, id: &str) -> Option<ConfigurationEntry> {
+        let _write = self.write_lock.lock().await;
+        self.active_entry(id).await
+    }
+
+    /// Caller holds write_lock, so a set cannot split the base/runtime read.
+    async fn active_entry(&self, id: &str) -> Option<ConfigurationEntry> {
+        let base = self.entries.read().await.get(id).cloned();
+        match self.runtime_values.read().await.get(id).cloned() {
+            None => base,
+            Some(value) => Some(ConfigurationEntry {
+                value,
+                ..base.unwrap_or_else(|| ConfigurationEntry {
+                    id: id.to_owned(),
+                    name: id.to_owned(),
+                    description: String::new(),
+                    schema: Value::Null,
+                    value: Value::Null,
+                    metadata: None,
+                })
+            }),
+        }
+    }
+
     /// Validate the applied value and persist its raw template without losing a
     /// concurrent registration or leaving the cache ahead of failed storage.
     pub async fn set(&self, id: &str, value: Value) -> Result<SetOutcome, StoreError> {
@@ -503,7 +573,11 @@ impl ConfigurationStore {
             return Err(StoreError::SchemaInvalid(errs.join("; ")));
         }
 
-        let outcome = self.adapter.set(id, value).await?;
+        let mut outcome = self.adapter.set(id, value).await?;
+        // Only a successful explicit save supersedes execution-time injection.
+        if let Some(active) = self.runtime_values.write().await.remove(id) {
+            outcome.old_value = Some(active);
+        }
         self.entries
             .write()
             .await
@@ -511,7 +585,89 @@ impl ConfigurationStore {
         Ok(outcome)
     }
 
+    #[cfg(test)]
+    pub async fn migrate(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<ConfigurationMigrateResult, StoreError> {
+        Ok(self.migrate_with_active(from_id, to_id).await?.persisted)
+    }
+
+    /// Move persistence and active memory under one mutation lock. Source
+    /// priority applies to both, but only the adapter's base reaches disk.
+    /// Failed/partial commits retain runtime values for a safe retry.
+    pub async fn migrate_with_active(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<MigrateOutcome, StoreError> {
+        Self::validate_id(from_id)?;
+        Self::validate_id(to_id)?;
+        let _write = self.write_lock.lock().await;
+        // Acquire both guards BEFORE the adapter commit. No cancellation point
+        // may separate a successful migration from reconciling its two caches.
+        let mut cache = self.entries.write().await;
+        let mut runtime = self.runtime_values.write().await;
+        let result = self.adapter.migrate(from_id, to_id).await;
+        match &result {
+            Ok(outcome) => {
+                if from_id != to_id {
+                    cache.remove(from_id);
+                    let source_runtime = runtime.remove(from_id);
+                    if outcome.action == MigrateAction::Migrated {
+                        // A real move replaces the entire destination identity,
+                        // including an old override when the source has none.
+                        runtime.remove(to_id);
+                        if let Some(value) = source_runtime {
+                            runtime.insert(to_id.to_string(), value);
+                        }
+                    }
+                    // Missing/preserved means no persisted source was moved.
+                    // Retire only orphan source memory; leave the destination
+                    // alone so a retry cannot undo subsequent active updates.
+                }
+                if let Some(entry) = &outcome.entry {
+                    cache.insert(to_id.to_string(), entry.clone());
+                } else {
+                    cache.remove(to_id);
+                }
+            }
+            Err(_) if self.adapter.ensure_support() == EnsureSupport::Local => {
+                // A destination may have committed before source cleanup failed.
+                // Reconcile the bases, but preserve both active values until a
+                // retry confirms success. Never guess absence on a read error.
+                for id in [from_id, to_id] {
+                    if let Ok(entry) = self.adapter.get(id).await {
+                        match entry {
+                            Some(entry) => {
+                                cache.insert(id.to_string(), entry);
+                            }
+                            None => {
+                                cache.remove(id);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        let persisted = result.map_err(StoreError::Adapter)?;
+        let active_entry = persisted.entry.as_ref().map(|entry| {
+            let mut active = entry.clone();
+            if let Some(value) = runtime.get(to_id) {
+                active.value = value.clone();
+            }
+            active
+        });
+        Ok(MigrateOutcome {
+            persisted,
+            active_entry,
+        })
+    }
+
     /// Return the last committed raw entry without holding the mutation lock across caller work.
+    #[cfg(test)]
     pub async fn get(&self, id: &str) -> Option<ConfigurationEntry> {
         self.entries.read().await.get(id).cloned()
     }
@@ -520,6 +676,7 @@ impl ConfigurationStore {
     pub async fn delete(&self, id: &str) -> Result<Option<ConfigurationEntry>, StoreError> {
         let _write = self.write_lock.lock().await;
         let removed = self.adapter.delete(id).await?;
+        self.runtime_values.write().await.remove(id);
         if removed.is_some() {
             self.entries.write().await.remove(id);
         }
@@ -568,10 +725,31 @@ impl ConfigurationStore {
     /// [`ExternalApply::Suppressed`] when it was superseded and must stay silent.
     pub async fn apply_external(&self, change: &ExternalChange) -> ExternalApply {
         let _write = self.write_lock.lock().await;
-        match self.adapter.ensure_support() {
+        let previous = self
+            .entries
+            .read()
+            .await
+            .get(change.id())
+            .map(|entry| entry.value.clone());
+        let applied = match self.adapter.ensure_support() {
             EnsureSupport::Local => self.apply_external_reconciled(change).await,
             EnsureSupport::Delegated => self.apply_external_snapshot(change).await,
+        };
+        if applied == ExternalApply::Fanout {
+            let current = self
+                .entries
+                .read()
+                .await
+                .get(change.id())
+                .map(|entry| entry.value.clone());
+            if previous != current {
+                self.runtime_values.write().await.remove(change.id());
+            } else if self.is_injected(change.id()).await {
+                // Watcher echoes and metadata-only refreshes cannot undo injection.
+                return ExternalApply::Suppressed;
+            }
         }
+        applied
     }
 
     /// Apply a queued snapshot verbatim (the `Delegated` path). The remote
@@ -671,6 +849,60 @@ impl ConfigurationStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn migration_serializes_with_register_set_and_other_migrations() {
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+        for _ in 0..12 {
+            let dir = tempfile::tempdir().unwrap();
+            let adapter = Arc::new(
+                FsAdapter::new(Some(json!({ "directory": dir.path() })))
+                    .await
+                    .unwrap(),
+            );
+            let store = ConfigurationStore::new(adapter.clone());
+            store
+                .register(
+                    "old".into(),
+                    "manual".into(),
+                    "manual".into(),
+                    json!({}),
+                    Some(json!({"count": 0})),
+                    Some(json!({"keep": true})),
+                )
+                .await
+                .unwrap();
+            let (migration, set, target, again) = tokio::join!(
+                store.migrate("old", "new"),
+                store.set("old", json!({"count": 1})),
+                store.register(
+                    "new".into(),
+                    "target".into(),
+                    "target".into(),
+                    json!({}),
+                    Some(json!({"target": true})),
+                    None
+                ),
+                store.migrate("old", "new"),
+            );
+            migration.unwrap();
+            again.unwrap();
+            target.unwrap();
+            if let Err(err) = set {
+                assert!(matches!(err, StoreError::NotRegistered(_)));
+            }
+            assert_eq!(
+                store.get("new").await.unwrap().value,
+                json!({"target": true})
+            );
+            for id in ["old", "new"] {
+                assert_eq!(
+                    serde_json::to_value(store.get(id).await).unwrap(),
+                    serde_json::to_value(adapter.get(id).await.unwrap()).unwrap()
+                );
+            }
+        }
+    }
 
     #[test]
     fn expand_value_replaces_env_var_in_string() {
@@ -1670,6 +1902,42 @@ mod tests {
 
     /// A `Delegated` adapter that does not override `ensure` (the trait default)
     /// must fail closed rather than let the store seed against a stale cache.
+    #[tokio::test]
+    async fn unsupported_migration_fails_closed_and_retains_cached_values() {
+        let store = ConfigurationStore::new(Arc::new(DefaultDelegatedAdapter));
+        store
+            .entries
+            .write()
+            .await
+            .insert("old".into(), mk_entry("old", json!({"manual": true})));
+        store
+            .set_memory("old", json!({"runtime": "source"}))
+            .await
+            .unwrap();
+        store
+            .set_memory("new", json!({"runtime": "target"}))
+            .await
+            .unwrap();
+        let err = store.migrate("old", "new").await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not support configuration::migrate")
+        );
+        assert_eq!(
+            store.get("old").await.unwrap().value,
+            json!({"manual": true})
+        );
+        assert!(store.get("new").await.is_none());
+        assert_eq!(
+            store.get_active("old").await.unwrap().value,
+            json!({"runtime": "source"})
+        );
+        assert_eq!(
+            store.get_active("new").await.unwrap().value,
+            json!({"runtime": "target"})
+        );
+    }
+
     struct DefaultDelegatedAdapter;
 
     #[async_trait::async_trait]

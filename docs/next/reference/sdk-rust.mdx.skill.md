@@ -583,7 +583,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `language` | `Option<String>` | No | Programming language of the worker. |
 | `project_name` | `Option<String>` | No | Name of the project this worker belongs to. |
 | `framework` | `Option<String>` | No | Framework name, if applicable. |
-| `amplitude_api_key` | `Option<String>` | No | Amplitude API key for product analytics. |
 
 ### iii_sdk::builtin_triggers
 

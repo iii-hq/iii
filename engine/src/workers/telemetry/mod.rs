@@ -4,10 +4,12 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-pub mod amplitude;
 pub mod collector;
 pub mod environment;
+pub mod harness;
+pub mod identify;
 pub mod onboarding;
+pub mod posthog;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -19,21 +21,18 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
+use crate::trigger::Trigger;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
-use self::amplitude::{AmplitudeClient, AmplitudeEvent, POSTHOG_PROJECT_API_KEY, PostHogClient};
 use self::environment::EnvironmentInfo;
-
-const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
+use self::posthog::{POSTHOG_PROJECT_API_KEY, PostHogClient, ProductEvent};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    #[serde(default)]
-    pub sdk_api_key: Option<String>,
     #[serde(default)]
     pub posthog_api_key: Option<String>,
     #[serde(default)]
@@ -54,7 +53,6 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            sdk_api_key: None,
             posthog_api_key: None,
             posthog_host: None,
             heartbeat_interval_secs: 6 * 60 * 60,
@@ -720,11 +718,11 @@ impl TelemetryContext {
         event_type: &str,
         properties: serde_json::Value,
         sdk_telemetry: Option<&WorkerConnectionTelemetryMeta>,
-    ) -> AmplitudeEvent {
+    ) -> ProductEvent {
         let language = sdk_telemetry
             .and_then(|t| t.language.clone())
             .or_else(environment::detect_language);
-        AmplitudeEvent {
+        ProductEvent {
             device_id: self.device_id.clone(),
             user_id: None,
             event_type: event_type.to_string(),
@@ -740,6 +738,101 @@ impl TelemetryContext {
             ip: Some("$remote".to_string()),
         }
     }
+}
+
+/// The trigger type the `queue` worker provides, which both reported topics
+/// are consumed through.
+const DURABLE_SUBSCRIBER: &str = "durable:subscriber";
+
+/// How often the worker looks for a `durable:subscriber` provider in a
+/// namespace it has not subscribed in yet.
+///
+/// A worker in a named namespace provides the type there and nowhere else, and
+/// trigger routing is strict: a binding at home in `default` resolves a
+/// provider in `default` or nothing. So a project that runs `queue` under its
+/// own namespace needs its own subscription, and the provider registers after
+/// this worker starts.
+// ponytail: a poll because the registry has no provider-registration hook;
+// replace it with one if the registry ever grows it.
+const TOPIC_WATCH_RESCAN_SECS: u64 = 60;
+
+/// One binding of a reported topic, at home in `default` where this worker's
+/// handler is registered, with the provider named explicitly so the binding
+/// reaches the `queue` worker of exactly that namespace.
+///
+/// The default namespace keeps the plain trigger id, so an engine that has
+/// always subscribed there does not grow a second binding on upgrade.
+fn topic_watch(trigger_id: &str, function_id: &str, topic: &str, namespace: &str) -> Trigger {
+    let id = if namespace == crate::protocol::DEFAULT_NAMESPACE {
+        trigger_id.to_string()
+    } else {
+        format!("{trigger_id}:{namespace}")
+    };
+    Trigger {
+        id,
+        trigger_type: DURABLE_SUBSCRIBER.to_string(),
+        function_id: function_id.to_string(),
+        config: serde_json::json!({ "topic": topic }),
+        worker_id: None,
+        metadata: None,
+        namespace: crate::protocol::default_namespace(),
+        trigger_namespace: Some(namespace.to_string()),
+        home_namespace: crate::protocol::default_namespace(),
+        provider_namespace: namespace.to_string(),
+    }
+}
+
+/// The namespaces that provide `durable:subscriber` right now.
+fn durable_subscriber_namespaces(engine: &Engine) -> Vec<String> {
+    engine
+        .trigger_registry
+        .trigger_types
+        .iter()
+        .filter(|entry| entry.key().1 == DURABLE_SUBSCRIBER)
+        .map(|entry| entry.key().0.clone())
+        .collect()
+}
+
+/// Subscribe both reported topics in every namespace that provides
+/// `durable:subscriber`, as providers appear.
+///
+/// `default` is subscribed by the caller before this loop starts and is never
+/// revisited. Each namespace is subscribed once: the binding survives its
+/// provider restarting, and a re-registration would replace an active binding
+/// with an identical one for nothing.
+fn spawn_topic_watch_rescan(
+    engine: Arc<Engine>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    telemetry_enabled: bool,
+) {
+    tokio::spawn(async move {
+        let mut subscribed: HashSet<String> =
+            HashSet::from([crate::protocol::DEFAULT_NAMESPACE.to_string()]);
+        loop {
+            for namespace in durable_subscriber_namespaces(&engine) {
+                if !subscribed.insert(namespace.clone()) {
+                    continue;
+                }
+                harness::register_trigger_in(&engine, &namespace).await;
+                identify::register_trigger_in(&engine, &namespace).await;
+                if telemetry_enabled {
+                    onboarding::register_trigger_in(&engine, &namespace).await;
+                }
+                tracing::debug!(namespace = %namespace, "subscribed the reported topics");
+            }
+            let delay = tokio::time::sleep(std::time::Duration::from_secs(TOPIC_WATCH_RESCAN_SECS));
+            tokio::pin!(delay);
+            tokio::select! {
+                biased;
+                result = shutdown_rx.changed() => {
+                    if result.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+                _ = &mut delay => {}
+            }
+        }
+    });
 }
 
 /// How long the engine must stay up before it reports a boot heartbeat.
@@ -769,38 +862,23 @@ fn build_template_lifecycle_properties(
 pub struct TelemetryWorker {
     engine: Arc<Engine>,
     config: TelemetryConfig,
-    client: Arc<AmplitudeClient>,
-    sdk_client: Option<Arc<AmplitudeClient>>,
     posthog_client: Option<Arc<PostHogClient>>,
     ctx: TelemetryContext,
     start_time: Instant,
 }
 
-impl TelemetryWorker {
-    fn active_client(&self) -> &Arc<AmplitudeClient> {
-        self.sdk_client.as_ref().unwrap_or(&self.client)
-    }
-}
-
-async fn send_product_event(
-    amplitude_client: &AmplitudeClient,
-    posthog_client: Option<&PostHogClient>,
-    event: AmplitudeEvent,
-) {
-    let posthog_event = event.clone();
+async fn send_product_event(posthog_client: Option<&PostHogClient>, event: ProductEvent) {
     if let Some(client) = posthog_client {
-        let (amplitude_result, posthog_result) = tokio::join!(
-            amplitude_client.send_event(event),
-            client.send_event(posthog_event)
-        );
-        let _ = amplitude_result;
-        let _ = posthog_result;
-    } else {
-        let _ = amplitude_client.send_event(event).await;
+        let _ = client.send_event(event).await;
     }
 }
 
-struct DisabledTelemetryWorker;
+/// Telemetry off: the worker still drains the harness's usage topic, so an
+/// opted-out engine never stores reports it will not send (see
+/// [`harness::register_drain`]).
+struct DisabledTelemetryWorker {
+    engine: Arc<Engine>,
+}
 
 #[async_trait]
 impl Worker for DisabledTelemetryWorker {
@@ -809,10 +887,10 @@ impl Worker for DisabledTelemetryWorker {
     }
 
     async fn create(
-        _engine: Arc<Engine>,
+        engine: Arc<Engine>,
         _config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Worker>> {
-        Ok(Box::new(DisabledTelemetryWorker))
+        Ok(Box::new(DisabledTelemetryWorker { engine }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -824,6 +902,11 @@ impl Worker for DisabledTelemetryWorker {
         _shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
+        harness::register_drain(&self.engine);
+        harness::register_trigger(&self.engine).await;
+        identify::register_drain(&self.engine);
+        identify::register_trigger(&self.engine).await;
+        spawn_topic_watch_rescan(Arc::clone(&self.engine), _shutdown_rx, false);
         Ok(())
     }
 
@@ -859,7 +942,7 @@ impl Worker for TelemetryWorker {
                     tracing::info!("Anonymous telemetry disabled (dev opt-out).");
                 }
             }
-            return Ok(Box::new(DisabledTelemetryWorker));
+            return Ok(Box::new(DisabledTelemetryWorker { engine }));
         }
 
         let device_id = get_or_create_device_id();
@@ -867,13 +950,6 @@ impl Worker for TelemetryWorker {
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
 
-        let client = Arc::new(AmplitudeClient::new(API_KEY.to_string()));
-
-        let sdk_client = telemetry_config
-            .sdk_api_key
-            .as_deref()
-            .filter(|k| !k.is_empty())
-            .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
         let posthog_client = resolve_posthog_api_key(&telemetry_config).map(|key| {
             Arc::new(PostHogClient::new(
                 key,
@@ -889,8 +965,6 @@ impl Worker for TelemetryWorker {
         Ok(Box::new(TelemetryWorker {
             engine,
             config: telemetry_config,
-            client,
-            sdk_client,
             posthog_client,
             ctx,
             start_time: Instant::now(),
@@ -907,23 +981,23 @@ impl Worker for TelemetryWorker {
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         // The onboarding tour reports each completed step on its own topic.
-        onboarding::register_handler(
-            &self.engine,
-            self.ctx.clone(),
-            Arc::clone(self.active_client()),
-            self.posthog_client.clone(),
-        );
+        onboarding::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
         onboarding::register_trigger(&self.engine).await;
+        // The harness reports its own session usage on its own topic.
+        harness::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
+        harness::register_trigger(&self.engine).await;
+        // A worker that captured an email publishes it on its own topic.
+        identify::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
+        identify::register_trigger(&self.engine).await;
+        spawn_topic_watch_rescan(Arc::clone(&self.engine), shutdown_rx.clone(), true);
 
         let interval_secs = self.config.heartbeat_interval_secs;
-        let client = Arc::clone(self.active_client());
         let posthog_client = self.posthog_client.clone();
         let engine = Arc::clone(&self.engine);
         let ctx = self.ctx.clone();
         let start_time = self.start_time;
 
         let engine_for_started = Arc::clone(&self.engine);
-        let client_for_started = Arc::clone(self.active_client());
         let posthog_client_for_started = self.posthog_client.clone();
         let ctx_for_started = self.ctx.clone();
         let mut boot_shutdown_rx = shutdown_rx.clone();
@@ -962,12 +1036,7 @@ impl Worker for TelemetryWorker {
                     }),
                     snap.wd.sdk_telemetry.as_ref(),
                 );
-                send_product_event(
-                    &client_for_started,
-                    posthog_client_for_started.as_deref(),
-                    first_run_event,
-                )
-                .await;
+                send_product_event(posthog_client_for_started.as_deref(), first_run_event).await;
             }
 
             if !environment::claim_heartbeat(interval_secs) {
@@ -1000,12 +1069,7 @@ impl Worker for TelemetryWorker {
                 serde_json::Value::Object(props),
                 snap.wd.sdk_telemetry.as_ref(),
             );
-            send_product_event(
-                &client_for_started,
-                posthog_client_for_started.as_deref(),
-                boot_heartbeat,
-            )
-            .await;
+            send_product_event(posthog_client_for_started.as_deref(), boot_heartbeat).await;
         });
 
         tokio::spawn(async move {
@@ -1035,7 +1099,7 @@ impl Worker for TelemetryWorker {
 
                             let _ = tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
-                                send_product_event(&client, posthog_client.as_deref(), event),
+                                send_product_event(posthog_client.as_deref(), event),
                             )
                             .await;
 
@@ -1066,7 +1130,7 @@ impl Worker for TelemetryWorker {
                             snap.wd.sdk_telemetry.as_ref(),
                         );
 
-                        send_product_event(&client, posthog_client.as_deref(), event).await;
+                        send_product_event(posthog_client.as_deref(), event).await;
                     }
                 }
             }
@@ -1076,7 +1140,6 @@ impl Worker for TelemetryWorker {
         // once each when the first user function succeeds or fails.
         let project_ctx = resolve_project_context(None);
         if let Some(source) = project_ctx.source {
-            let client_for_template = Arc::clone(self.active_client());
             let posthog_client_for_template = self.posthog_client.clone();
             let ctx_for_template = self.ctx.clone();
             let project_for_template = resolve_project_context(None);
@@ -1103,12 +1166,7 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        send_product_event(
-                            &client_for_template,
-                            posthog_client_for_template.as_deref(),
-                            event,
-                        )
-                        .await;
+                        send_product_event(posthog_client_for_template.as_deref(), event).await;
                         success_sent = true;
                     }
 
@@ -1120,12 +1178,7 @@ impl Worker for TelemetryWorker {
                             &project_for_template,
                         );
                         let event = ctx_for_template.build_event(&event_type, props, None);
-                        send_product_event(
-                            &client_for_template,
-                            posthog_client_for_template.as_deref(),
-                            event,
-                        )
-                        .await;
+                        send_product_event(posthog_client_for_template.as_deref(), event).await;
                         failure_sent = true;
                     }
                 }
@@ -1276,22 +1329,15 @@ mod tests {
         }
     }
 
-    fn build_manual_module(
-        engine: Arc<Engine>,
-        sdk_client: bool,
-        heartbeat_interval_secs: u64,
-    ) -> TelemetryWorker {
+    fn build_manual_module(engine: Arc<Engine>, heartbeat_interval_secs: u64) -> TelemetryWorker {
         TelemetryWorker {
             engine,
             config: TelemetryConfig {
                 enabled: true,
-                sdk_api_key: sdk_client.then(|| "sdk-test-key".to_string()),
                 posthog_api_key: None,
                 posthog_host: None,
                 heartbeat_interval_secs,
             },
-            client: Arc::new(AmplitudeClient::new(String::new())),
-            sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
             posthog_client: None,
             ctx: TelemetryContext {
                 device_id: "test-install-id".to_string(),
@@ -1337,7 +1383,6 @@ mod tests {
     fn test_telemetry_config_default() {
         let config = TelemetryConfig::default();
         assert!(config.enabled);
-        assert!(config.sdk_api_key.is_none());
         assert!(config.posthog_api_key.is_none());
         assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
@@ -1348,7 +1393,6 @@ mod tests {
         let json = serde_json::json!({});
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
-        assert!(config.sdk_api_key.is_none());
         assert!(config.posthog_api_key.is_none());
         assert!(config.posthog_host.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
@@ -1358,14 +1402,12 @@ mod tests {
     fn test_telemetry_config_deserialize_overrides() {
         let json = serde_json::json!({
             "enabled": false,
-            "sdk_api_key": "sdk-key",
             "posthog_api_key": "phc-key",
             "posthog_host": "https://eu.i.posthog.com",
             "heartbeat_interval_secs": 3600
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(!config.enabled);
-        assert_eq!(config.sdk_api_key, Some("sdk-key".to_string()));
         assert_eq!(config.posthog_api_key, Some("phc-key".to_string()));
         assert_eq!(
             config.posthog_host,
@@ -1829,7 +1871,7 @@ mod tests {
     }
 
     // =========================================================================
-    // AmplitudeEvent serialization (via TelemetryContext::build_event)
+    // ProductEvent serialization (via TelemetryContext::build_event)
     // =========================================================================
 
     #[test]
@@ -2510,25 +2552,58 @@ mod tests {
     }
 
     // =========================================================================
+    // topic_watch
+    // =========================================================================
+
+    #[test]
+    fn a_default_namespace_watch_keeps_the_plain_trigger_id() {
+        let watch = topic_watch("t::watch", "t::on-event", "some:topic", "default");
+        assert_eq!(watch.id, "t::watch");
+        assert_eq!(watch.trigger_namespace.as_deref(), Some("default"));
+        assert_eq!(watch.home_namespace, "default");
+        assert_eq!(watch.namespace, "default");
+        assert_eq!(watch.config["topic"], "some:topic");
+    }
+
+    #[test]
+    fn each_namespace_gets_its_own_binding_of_the_same_topic() {
+        let project = topic_watch("t::watch", "t::on-event", "some:topic", "my-project");
+        // Its own id, so it never replaces the default one.
+        assert_eq!(project.id, "t::watch:my-project");
+        // Strict: this project's provider or nothing, because a binding at
+        // home in `default` would otherwise never reach it.
+        assert_eq!(project.trigger_namespace.as_deref(), Some("my-project"));
+        // The handler it fires stays where this worker registered it.
+        assert_eq!(project.namespace, "default");
+        assert_eq!(project.home_namespace, "default");
+    }
+
+    // =========================================================================
     // DisabledTelemetryWorker
     // =========================================================================
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_name() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         assert_eq!(module.name(), "Telemetry");
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_initialize() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let result = module.initialize().await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_start_background_tasks() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let (tx, rx) = tokio::sync::watch::channel(false);
         let result = module.start_background_tasks(rx, tx).await;
         assert!(result.is_ok());
@@ -2536,7 +2611,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_destroy() {
-        let module = DisabledTelemetryWorker;
+        let module = DisabledTelemetryWorker {
+            engine: make_test_engine(),
+        };
         let result = module.destroy().await;
         assert!(result.is_ok());
     }
@@ -2641,40 +2718,6 @@ mod tests {
         assert_eq!(module.name(), "Telemetry");
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_telemetry_module_create_with_sdk_api_key() {
-        clear_ci_env_vars();
-        unsafe {
-            env::remove_var("III_TELEMETRY_ENABLED");
-            env::remove_var("III_TELEMETRY_DEV");
-        }
-
-        let engine = make_test_engine();
-        let config = serde_json::json!({
-            "sdk_api_key": "sdk-key-456",
-        });
-        let module = TelemetryWorker::create(engine, Some(config)).await.unwrap();
-        assert_eq!(module.name(), "Telemetry");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_telemetry_module_create_with_empty_sdk_api_key() {
-        clear_ci_env_vars();
-        unsafe {
-            env::remove_var("III_TELEMETRY_ENABLED");
-            env::remove_var("III_TELEMETRY_DEV");
-        }
-
-        let engine = make_test_engine();
-        let config = serde_json::json!({
-            "sdk_api_key": "",
-        });
-        let module = TelemetryWorker::create(engine, Some(config)).await.unwrap();
-        assert_eq!(module.name(), "Telemetry");
-    }
-
     // =========================================================================
     // TelemetryConfig deserialization edge cases
     // =========================================================================
@@ -2686,17 +2729,7 @@ mod tests {
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
-        assert!(config.sdk_api_key.is_none());
         assert_eq!(config.heartbeat_interval_secs, 120);
-    }
-
-    #[test]
-    fn test_telemetry_config_deserialize_null_sdk_api_key() {
-        let json = serde_json::json!({
-            "sdk_api_key": null
-        });
-        let config: TelemetryConfig = serde_json::from_value(json).unwrap();
-        assert!(config.sdk_api_key.is_none());
     }
 
     // =========================================================================
@@ -2726,27 +2759,6 @@ mod tests {
         let _user = DisableReason::UserOptOut;
         let _ci = DisableReason::CiDetected;
         let _dev = DisableReason::DevOptOut;
-    }
-
-    // =========================================================================
-    // TelemetryWorker::active_client
-    // =========================================================================
-
-    #[test]
-    fn test_active_client_prefers_sdk_client_when_available() {
-        let engine = make_test_engine();
-        let without_sdk = build_manual_module(engine.clone(), false, 1);
-        assert!(Arc::ptr_eq(
-            without_sdk.active_client(),
-            &without_sdk.client
-        ));
-
-        let with_sdk = build_manual_module(engine, true, 1);
-        let sdk_client = with_sdk
-            .sdk_client
-            .as_ref()
-            .expect("sdk client should exist");
-        assert!(Arc::ptr_eq(with_sdk.active_client(), sdk_client));
     }
 
     // =========================================================================
@@ -2847,7 +2859,7 @@ mod tests {
         telemetry.function_registrations.store(1, Ordering::Relaxed);
         telemetry.trigger_registrations.store(1, Ordering::Relaxed);
 
-        let module = build_manual_module(engine, true, 1);
+        let module = build_manual_module(engine, 1);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
             .start_background_tasks(shutdown_rx, shutdown_tx.clone())
@@ -2916,7 +2928,7 @@ mod tests {
         collector::take_cli_commands();
         collector::track_cli_command("trigger");
 
-        let module = build_manual_module(make_test_engine(), false, 6 * 60 * 60);
+        let module = build_manual_module(make_test_engine(), 6 * 60 * 60);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
             .start_background_tasks(shutdown_rx, shutdown_tx.clone())
@@ -2955,7 +2967,7 @@ mod tests {
         collector::take_cli_commands();
         collector::track_cli_command("trigger");
 
-        let module = build_manual_module(make_test_engine(), false, 6 * 60 * 60);
+        let module = build_manual_module(make_test_engine(), 6 * 60 * 60);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
             .start_background_tasks(shutdown_rx, shutdown_tx.clone())

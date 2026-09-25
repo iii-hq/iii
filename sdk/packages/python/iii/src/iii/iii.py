@@ -1587,9 +1587,6 @@ class III:
                 or _detect_project_name()
             ),
             "framework": (telemetry_opts.framework if telemetry_opts else None) or "iii-py",
-            "amplitude_api_key": (
-                telemetry_opts.amplitude_api_key if telemetry_opts else None
-            ),
         }
 
         metadata: dict[str, Any] = {

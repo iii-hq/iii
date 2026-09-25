@@ -233,6 +233,59 @@ fn cli_usage_command_path(cli: &Cli) -> String {
     }
 }
 
+fn arm_compose_engine_lifeline() -> anyhow::Result<()> {
+    use std::io::Read;
+
+    const ENV: &str = "III_COMPOSE_ENGINE_LIFELINE_STDIN";
+    if std::env::var_os(ENV).is_none() {
+        return Ok(());
+    }
+    // This runs after the Linux process-title re-exec but before the async
+    // runtime or any worker exists. Descendants must not inherit the marker or
+    // consume or propagate the engine's private stdin lifeline.
+    unsafe { std::env::remove_var(ENV) };
+    make_stdin_non_inheritable()?;
+
+    std::thread::Builder::new()
+        .name("compose-engine-lifeline".to_string())
+        .spawn(|| {
+            let mut stdin = std::io::stdin().lock();
+            let mut byte = [0_u8; 1];
+            loop {
+                match stdin.read(&mut byte) {
+                    Ok(0) => std::process::exit(0),
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => std::process::exit(1),
+                }
+            }
+        })?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_stdin_non_inheritable() -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFD) };
+    if flags == -1
+        || unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn make_stdin_non_inheritable() -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use winapi::um::{handleapi::SetHandleInformation, winbase::HANDLE_FLAG_INHERIT};
+
+    let stdin = std::io::stdin();
+    if unsafe { SetHandleInformation(stdin.as_raw_handle().cast(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Make sure the config file exists before the engine loads it.
 ///
 /// Missing file: on an interactive terminal, ask before writing (running
@@ -289,6 +342,8 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
 
     let config = EngineConfig::config_file(config_path)?;
     logging::init_log_from_config(Some(config_path));
+    #[cfg(unix)]
+    raise_nofile_limit();
 
     let engine = EngineBuilder::new()
         .with_config(config)
@@ -297,6 +352,50 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         .await?;
     engine.serve().await?;
     Ok(())
+}
+
+/// Raises the soft open-file limit toward the hard one. The engine holds a
+/// socket per worker and per attached channel end, and macOS hands processes
+/// started from a terminal a soft limit of 256, which a burst of HTTP traffic
+/// (two channels per request) exhausts: accept then fails with EMFILE.
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let Some(target) = nofile_target(lim.rlim_cur, lim.rlim_max) else {
+        return;
+    };
+    let raised = libc::rlimit {
+        rlim_cur: target,
+        ..lim
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+        tracing::info!(from = lim.rlim_cur, to = target, "Raised open file limit");
+    } else {
+        tracing::warn!(
+            limit = lim.rlim_cur,
+            error = %std::io::Error::last_os_error(),
+            "Could not raise open file limit; the engine may hit EMFILE under load"
+        );
+    }
+}
+
+/// The soft limit to raise to, or `None` when it is already there. macOS
+/// rejects a soft `RLIMIT_NOFILE` above `OPEN_MAX` (10240, see setrlimit(2))
+/// even when the hard limit is unlimited.
+#[cfg(unix)]
+fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t> {
+    let target = if cfg!(target_os = "macos") {
+        hard.min(10_240)
+    } else {
+        hard
+    };
+    (soft < target).then_some(target)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -339,6 +438,8 @@ fn main() -> anyhow::Result<()> {
             process_title::set_current(role, &namespace)?;
         }
     }
+
+    arm_compose_engine_lifeline()?;
 
     run(cli_args)
 }
@@ -407,6 +508,7 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
                      engine: in worker-compose.yaml, or start the external engine separately"
                 );
             }
+            cli::telemetry::install_compose_reporter();
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
@@ -431,6 +533,23 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[cfg(unix)]
+    #[test]
+    fn nofile_target_raises_soft_toward_hard_and_never_lowers() {
+        let cap = if cfg!(target_os = "macos") {
+            10_240
+        } else {
+            65_536
+        };
+        assert_eq!(nofile_target(256, 65_536), Some(cap));
+        assert_eq!(nofile_target(256, 1_024), Some(1_024));
+        assert_eq!(nofile_target(1_024, 1_024), None);
+        if cfg!(target_os = "macos") {
+            assert_eq!(nofile_target(256, libc::RLIM_INFINITY), Some(10_240));
+            assert_eq!(nofile_target(1_048_576, libc::RLIM_INFINITY), None);
+        }
+    }
 
     #[test]
     fn trigger_parses_with_positional_fn_path_only() {

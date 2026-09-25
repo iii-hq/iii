@@ -32,7 +32,7 @@ cargo add iii-sdk
 | SDK | Package | Best for | Important caveat |
 | --- | --- | --- | --- |
 | Node.js | `iii-sdk` | Server-side TypeScript/JavaScript workers | Supports custom headers, Logger, OpenTelemetry, HTTP-invoked functions |
-| Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through an RBAC-protected listener; keep secrets server-side |
+| Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through the `rbac-proxy` worker's public port, never the engine port; keep secrets server-side |
 | Python | `iii-sdk` | Sync or async Python workers | Use `trigger_async` inside async handlers |
 | Rust | `iii-sdk` | High-performance tokio workers | Handler error type should map into `iii_sdk::Error` |
 
@@ -45,7 +45,7 @@ the helpers package — `@iii-dev/helpers` (Node, with submodules like `/observa
 | Capability | Node | Python | Rust |
 | --- | --- | --- | --- |
 | Connect worker | `registerWorker(url, options?)` | `register_worker(address, options?)` | `register_worker(url, InitOptions)` |
-| Register local function | `registerFunction(id, handler, options?)` | `register_function(id, handler, **options)` | `register_function(RegisterFunction::new(...))` |
+| Register local function | `registerFunction(id, handler, options?)` | `register_function(id, handler, **options)` | `register_function("id", RegisterFunction::new(...))` |
 | Register trigger | `registerTrigger({ type, function_id, config })` | `register_trigger({...})` | `register_trigger(RegisterTriggerInput { ... })` |
 | Invoke function | `trigger({ function_id, payload })` | `trigger(request)` / `trigger_async(request)` | `trigger(TriggerRequest)` |
 | Durable enqueue | `TriggerAction.Enqueue({ queue })` | `{"type": "enqueue", "queue": name}` | `TriggerAction::Enqueue { queue }` |
@@ -90,7 +90,7 @@ await iii.trigger({
 });
 ```
 
-Do not expose the private engine worker port to untrusted browsers. Browser workers cannot send
+Do not expose the private engine worker port to untrusted browsers; put the `rbac-proxy` worker in front of it (`iii trigger compose::add worker=rbac-proxy`). Browser workers cannot send
 custom WebSocket headers and must not hold backend secrets.
 
 ## Python
@@ -112,7 +112,7 @@ iii.register_function("users::lookup", lookup_user)
 ```
 
 Python handlers may be sync or async. Use `await iii.trigger_async(request)` inside async handlers,
-and `iii.trigger(request)` in sync contexts. `HttpResponse` (from `iii_helpers.http`) uses camelCase `statusCode`.
+and `iii.trigger(request)` in sync contexts. `HttpResponse` (from `iii_helpers.http`) uses `status_code`, like the other helpers packages.
 
 ## Rust
 
@@ -123,10 +123,11 @@ use serde_json::json;
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunction::new("users::lookup", |input: serde_json::Value| {
+    "users::lookup",
+    RegisterFunction::new(|input: serde_json::Value| -> Result<serde_json::Value, iii_sdk::Error> {
         Ok(json!({ "userId": input["userId"], "name": "Ada" }))
     }).description("Look up a user"),
-)?;
+);
 ```
 
 Rust supports typed handlers and schema extraction when input/output types derive
@@ -137,6 +138,54 @@ Rust supports typed handlers and schema extraction when input/output types deriv
 - Use channels for binary data, large payloads, or streaming transfer between workers.
 - Pass `readerRef` or `writerRef` through a function payload.
 - Reconstruct readers/writers from refs in consumers when the SDK requires it.
+
+## Namespaces
+
+A worker belongs to one namespace: `options.namespace` (`InitOptions.namespace`) → the `III_NAMESPACE`
+environment variable → the engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace
+(`iii compose -n dev ...`) for every worker it starts, so a whole project lands in one namespace
+without any code change. Routing is strict: a function is only reachable in the namespace it
+registered in.
+
+- `iii.trigger({ function_id })` resolves in the calling worker's namespace. Calls to your own
+  functions and to other workers declared in the same `worker-compose.yaml` need no namespace.
+- Engine-owned functions register in `default`: `engine::*`, `configuration::*`, and `stream::*`
+  (from `iii-stream`). `engine::*` resolves there implicitly; for the others pass
+  `namespace: "default"` on the call when your worker runs in a Compose namespace.
+- `registerTrigger` binds in the worker's namespace. Leave `trigger_namespace` unset; the engine
+  looks for the trigger type's provider in your namespace first and the engine's own second, which
+  is what lets a project ship its own `http` provider or fall back to the engine's `cron`.
+- Never prefix a function id with a namespace. The id stays `orders::validate`; the namespace is a
+  separate field.
+- From the CLI, `iii trigger -n dev orders::validate ...` selects the namespace; omitting `-n`
+  resolves in `default`.
+
+```typescript
+// Same-project worker: no namespace
+await iii.trigger({ function_id: "orders::validate", payload: order });
+
+// Engine-owned configuration worker from a namespaced project
+const cfg = await iii.trigger({
+  function_id: "configuration::get",
+  namespace: "default",
+  payload: { id: "orders" },
+});
+```
+
+```python
+cfg = await iii.trigger_async(
+    {"function_id": "configuration::get", "namespace": "default", "payload": {"id": "orders"}}
+)
+```
+
+```rust
+let cfg = iii.trigger(TriggerRequest {
+    function_id: "configuration::get".into(),
+    namespace: Some("default".into()),
+    payload: json!({ "id": "orders" }),
+    ..Default::default()
+}).await?;
+```
 
 ## When to Use
 
@@ -149,6 +198,6 @@ Rust supports typed handlers and schema extraction when input/output types deriv
 
 - For the common Function/Trigger/Worker model, built-in trigger schemas, custom triggers, and
   invocation mode decisions, use `iii-core-primitives`.
-- For deployment config, queue adapter policy, worker manager, RBAC listeners, and ports, use
+- For deployment config, engine-owned workers, RBAC (`rbac-proxy`), and ports, use
   `iii-engine-config`.
 - For retryability and exception classes, use `iii-error-handling`.

@@ -192,6 +192,20 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
     let start_order = file.start_order()?;
     let mut resolved = Vec::new();
     let mut deferred_packages = Vec::new();
+    let mut config_names = std::collections::HashMap::new();
+    for (key, container) in &file.containers {
+        let name = container.resolved_config_name(namespace, key)?;
+        if let Some((prior_key, prior_explicit)) =
+            config_names.insert(name.clone(), (key, container.config_name.is_some()))
+            && (!prior_explicit || container.config_name.is_none())
+        {
+            return Err(ComposeError::ConfigNameCollision {
+                name,
+                first: prior_key.clone(),
+                second: key.clone(),
+            });
+        }
+    }
 
     for key in &start_order {
         let Some(container) = file.containers.get(key) else {
@@ -219,7 +233,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
                 Some(worker_dir),
                 &file.base_dir,
             ),
-            config_name: Some(container.resolved_config_name(namespace, key)),
+            config_name: Some(container.resolved_config_name(namespace, key)?),
             environment: container.environment.keys().cloned().collect(),
             env_file: container.env_file.clone(),
             startup_timeout: container.startup_timeout,
@@ -263,6 +277,12 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
             source,
         })?;
         for (name, _) in crate::config::parse_env_file(&text) {
+            if crate::spawn::is_retired_config_env(&name) {
+                return Err(ComposeError::RetiredConfigEnv {
+                    container: key.to_string(),
+                    name,
+                });
+            }
             if crate::spawn::is_reserved_env(&name) {
                 return Err(ComposeError::ReservedEnvOverride {
                     container: key.to_string(),

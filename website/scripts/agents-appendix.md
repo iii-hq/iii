@@ -22,22 +22,22 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 For **current install paths and prerequisites**, use **[iii.dev/docs/install](https://iii.dev/docs/install)**—the snippets below may lag the docs.
 
-The fastest first build is the **[Quickstart](https://iii.dev/docs/quickstart)**: it scaffolds a cross-language project (a Python worker that adds two numbers and stores the sum in state, a TypeScript worker that exposes an HTTP endpoint and calls it).
-
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii project init quickstart --template quickstart   # scaffold the Quickstart
-cd quickstart
-iii                                                 # start the engine
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh   # answer "y" at the prompt to let the installer scaffold and start the harness
+iii project init my-app          # barebones project; add `-t harness` for the harness template
+cd my-app
+iii compose --up                 # start the engine, the Compose daemon, and the project's workers
 ```
 
-Engine **listeners, adapters, and port bindings** are defined in your project’s **`config.yaml`** (or the path you pass to the engine). Read that file and the docs; do not assume fixed port numbers from a static list.
+Add `--non-interactive` after `sh -s --` to install without the setup prompt. `iii project init --learn-iii` scaffolds the harness template and starts it in one step.
 
-Use **`iii console`** to launch the web observability console against the running engine.
+A project is one **`worker-compose.yaml`**: the `engine:` block declares the engine and its engine-owned workers, and `containers:` declares the project's workers (registry packages or local `path://` workers). Each worker's runtime settings (ports, hosts, adapters) live in the **configuration worker**, one YAML file per worker under `./config/`. Read those files and the docs; do not assume fixed port numbers from a static list. The list-shaped `config.yaml` is only for an engine that another supervisor owns.
 
-Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. The **`iii trigger`** subcommand is handy for **manual** invocations while debugging; it is **not** the primary way applications call functions—use the SDK from your workers for real integration, and **do not** build automation around the CLI trigger.
+The UI comes from the **console worker**. The project templates include it; once the project is up it serves at http://127.0.0.1:3113 by default (the port is set in the console worker's configuration under `./config/`). Add it to another project with `iii trigger compose::add worker=console`.
 
-Other useful subcommands include `iii worker add <name>` (install a worker from the registry) and `iii update` (update iii and managed binaries).
+Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. **`iii trigger <function>`** is how a human or an agent outside iii calls a function on the running engine, including the `compose::*` lifecycle functions. Code that runs inside a worker calls functions through the SDK's `trigger`, not by shelling out to the CLI.
+
+Add a worker from the registry with `iii trigger compose::add worker=<name>`; it writes the worker and its dependencies into `worker-compose.yaml` and restarts the project. `iii update` updates iii and its managed binaries. (`iii worker add` was removed in 0.23.)
 
 Install an SDK:
 
@@ -55,12 +55,12 @@ Agents should follow:
 - Function IDs use `::` (e.g. `orders::validate`)
 - HTTP `api_path` values use a leading slash (e.g. `/orders/validate`)
 - Cron triggers use config field `expression`, not `cron`
-- Call functions via the SDK from workers — use `iii trigger` only for manual debugging, not app automation
-- Engine listeners and ports come from `config.yaml`; use `iii console` for observability
+- Inside a worker, call functions through the SDK's `trigger`; `iii trigger` is for humans and agents outside iii, including the `compose::*` lifecycle functions
+- Project workers are declared in `worker-compose.yaml`; each worker's runtime settings live in `./config/<worker>.yaml`; the console worker provides the UI
 
 ## Agent skills (after onboarding)
 
-Once iii is installed and you have completed the [Quickstart](https://iii.dev/docs/quickstart), install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
+Once iii is installed and your project is running, install the agent skills so your coding agent gets full iii context (primitives, SDKs, engine config, architecture patterns, error handling). Two sources, same commands:
 
 ```bash
 npx skills add iii-hq/iii/skills   # all iii reference skills
@@ -83,13 +83,13 @@ The thin-vs-thick harness debate is a composition choice in iii. A thin harness 
 
 ## Process isolation
 
-iii ships a sandbox worker that runs arbitrary ephemeral code on demand. Compose it with the RBAC worker to let agents run untrusted code without risk to the base system. The CLI uses the same sandbox functions when you run `iii worker add` with a sandbox target. An agent that needs to execute generated or installed code calls those same functions, gated by the same RBAC.
+iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
 
 ## Discovery and extensibility
 
 The engine is the registry. It is always correct because it only reflects what is actually connected. No Consul, no service mesh, no OpenAPI specs drifting, no stale internal docs.
 
-`iii worker add <name>` is the npm moment for connected systems. What gets installed is a running participant, not a library to integrate.
+`compose::add` is the npm moment for connected systems. What it declares is a running participant, not a library to integrate.
 
 ## Observability as protocol
 
@@ -97,7 +97,7 @@ OpenTelemetry traces, metrics, and structured logs come from the engine itself. 
 
 ## Memory and portability
 
-Agent memory, traces, and function catalogs live wherever you run the engine. File-based for dev. Redis or Postgres for prod. Swap with a config change. No vendor has a copy.
+Agent memory, traces, and function catalogs live wherever you run the engine. No vendor has a copy.
 
 ## Licensing
 

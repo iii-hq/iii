@@ -35,7 +35,10 @@ async fn timeout_returns_actionable_error() {
 
     Mock::given(any())
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
-        .expect(1)
+        // The request deadline also covers connection setup. Under coverage
+        // instrumentation it may expire before the server receives the request.
+        // This test checks the timeout error contract, not request delivery.
+        .expect(0..=1)
         .mount(&mock_server)
         .await;
 

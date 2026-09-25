@@ -28,7 +28,8 @@ use crate::workers::configuration::registry::{
 use crate::workers::configuration::structs::{
     ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
     ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput, ConfigurationListInput,
-    ConfigurationListResult, ConfigurationRegisterInput, ConfigurationSetInput,
+    ConfigurationListResult, ConfigurationMigrateInput, ConfigurationMigrateResult,
+    ConfigurationRegisterInput, ConfigurationSetInput,
 };
 
 const DEFAULT_BRIDGE_URL: &str = "ws://localhost:49134";
@@ -143,12 +144,34 @@ impl ConfigurationAdapter for BridgeAdapter {
         })
     }
 
+    /// The remote authority migrates and archives the source; never copy through a local mirror.
+    async fn migrate(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        let capabilities = self.call("configuration::migration-capabilities", serde_json::json!({}))
+            .await.map_err(|e| anyhow::anyhow!("upgrade remote configuration authority: migration capabilities unavailable: {e}"))?;
+        anyhow::ensure!(
+            capabilities
+                .get("source_priority_archive_revision")
+                .and_then(Value::as_u64)
+                == Some(1),
+            "upgrade remote configuration authority: source-priority archival contract is unknown"
+        );
+        let raw = self.call("configuration::migrate", ConfigurationMigrateInput {
+            from_id: from_id.to_string(), to_id: to_id.to_string(),
+        }).await.map_err(|e| anyhow::anyhow!("remote configuration::migrate failed; upgrade the remote engine if unavailable; no copy/delete fallback: {e}"))?;
+        serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("decode migration response: {e}"))
+    }
+
     /// Replace the authoritative remote value through its validated configuration API.
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
         let raw = self
             .call(
                 "configuration::set",
                 ConfigurationSetInput {
+                    flush: true,
                     id: id.to_string(),
                     value,
                 },
@@ -278,6 +301,7 @@ impl ConfigurationAdapter for BridgeAdapter {
             .set(sender)
             .map_err(|_| anyhow::anyhow!("watch already started"))?;
         let sender_lookup = self.sender.clone();
+        let raw_reader = self.bridge.clone();
 
         // Register the relay handler on this bridge worker — when the
         // remote engine fires the `configuration` trigger we registered
@@ -286,16 +310,45 @@ impl ConfigurationAdapter for BridgeAdapter {
             RELAY_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
                 let sender_lookup = sender_lookup.clone();
+                let raw_reader = raw_reader.clone();
                 async move {
                     let event: ConfigurationEventData = serde_json::from_value(payload)
                         .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
+                        // Events carry applied values. Re-read raw before updating
+                        // the local store, or migration's template would become a secret.
+                        let raw_value =
+                            if matches!(event.event_type, ConfigurationEventType::Deleted) {
+                                Value::Null
+                            } else {
+                                match raw_reader
+                                    .trigger(TriggerRequest {
+                                        function_id: "configuration::get".into(),
+                                        payload: serde_json::json!({ "id": event.id, "raw": true }),
+                                        action: None,
+                                        timeout_ms: Some(DEFAULT_TIMEOUT_MS),
+                                    })
+                                    .await
+                                {
+                                    Ok(raw) => raw.get("value").cloned().ok_or_else(|| {
+                                        iii_sdk::Error::Handler(
+                                            "remote raw get omitted value".into(),
+                                        )
+                                    })?,
+                                    Err(iii_sdk::Error::Remote { code, .. })
+                                        if code == "NOT_FOUND" =>
+                                    {
+                                        return Ok(Value::Null);
+                                    }
+                                    Err(err) => return Err(err),
+                                }
+                            };
                         let entry = ConfigurationEntry {
                             id: event.id.clone(),
                             name: event.name.clone(),
                             description: event.description.clone(),
                             schema: event.schema.clone(),
-                            value: event.new_value.clone().unwrap_or(Value::Null),
+                            value: raw_value,
                             metadata: event.metadata.clone(),
                         };
                         let change = match event.event_type {
