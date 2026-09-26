@@ -21,8 +21,24 @@ pub enum ComposeError {
         source: std::io::Error,
     },
 
+    #[error("cannot restore {path} after its lock update failed ({lock_error}): {rollback_error}")]
+    MutationRollbackFailed {
+        path: PathBuf,
+        lock_error: String,
+        rollback_error: String,
+    },
+
     #[error("{path} is not valid compose YAML: {message}")]
     Yaml { path: PathBuf, message: String },
+
+    #[error("{path} is not a valid worker compose lock: {message}")]
+    InvalidLock { path: PathBuf, message: String },
+
+    #[error("{path} does not exist. Run `iii compose build` or `compose::up` once to create it")]
+    FrozenLockMissing { path: PathBuf },
+
+    #[error("{path} does not match its compose file: {message}")]
+    FrozenLockOutOfDate { path: PathBuf, message: String },
 
     #[error("containers must declare at least one worker")]
     EmptyContainers,
@@ -48,6 +64,9 @@ pub enum ComposeError {
 
     #[error("--file requires --up")]
     FileRequiresUp,
+
+    #[error("--frozen requires --up")]
+    FrozenRequiresUp,
 
     #[error("`iii compose build` cannot be combined with daemon options")]
     BuildConflictsWithServeOptions,
@@ -79,6 +98,14 @@ pub enum ComposeError {
 
     #[error("container '{container}' depends on itself")]
     SelfDependency { container: String },
+
+    #[error(
+        "compose::stop stops every project this daemon holds and exits; it takes no container. \
+         '{container}' was ignored by earlier versions and the whole project went down with the \
+         engine. Use compose::down container={container} to stop one container, or \
+         compose::stop with no target to stop the daemon."
+    )]
+    StopTakesNoContainer { container: String },
 
     #[error("dependency cycle: {path}")]
     DependencyCycle { path: String },
@@ -292,6 +319,34 @@ pub enum ComposeError {
     )]
     ReservedEnvOverride { container: String, name: String },
 
+    #[error(
+        "container '{container}': '{name}' is retired and cannot be set by environment or env_file; use config_override and III_CONFIG_NAME with the configuration service instead"
+    )]
+    RetiredConfigEnv { container: String, name: String },
+
+    #[error(
+        "generated configuration id '{name}' must match [a-z0-9_-]{{1,64}}; set an explicit config_name instead of relying on sanitization or truncation"
+    )]
+    InvalidConfigName { name: String },
+
+    #[error(
+        "containers '{first}' and '{second}' resolve to configuration '{name}'; choose distinct config_name values (sharing requires both names to be explicit)"
+    )]
+    ConfigNameCollision {
+        name: String,
+        first: String,
+        second: String,
+    },
+
+    #[error(
+        "configuration migration from '{from_id}' to '{to_id}' failed: {message}; upgrade the configuration authority if configuration::migrate is unavailable; refusing to start with defaults"
+    )]
+    ConfigMigrationFailed {
+        from_id: String,
+        to_id: String,
+        message: String,
+    },
+
     #[error("configuration '{name}' could not be resolved: {message}")]
     ConfigFetchFailed { name: String, message: String },
 
@@ -438,6 +493,15 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    /// `compose::add` plans (graph expansion, artifact acquisition) against a
+    /// snapshot of the file, unlocked, and only edits the file it planned
+    /// against. A file that keeps changing underneath is not edited from a
+    /// stale plan; the caller retries.
+    #[error(
+        "{path} changed {replans} times while compose::add was resolving its graph; nothing was          written. Retry the add."
+    )]
+    AddPlanStale { path: PathBuf, replans: u32 },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -461,7 +525,7 @@ pub enum ComposeError {
     DaemonAlreadyServing { engine_url: String, detail: String },
 
     #[error(
-        "another managed compose invocation already owns namespace '{namespace}'. \
+        "another managed compose invocation already owns namespace '{namespace}' in this project. \
          Stop it, wait for it to finish, or choose a different --namespace"
     )]
     DaemonNamespaceTaken { namespace: String },
@@ -496,13 +560,18 @@ impl ComposeError {
             // Any read or write compose attempted. `RelativeFileMissing` is
             // the one that really is about a compose file.
             Self::Io { .. } => "IO_ERROR",
+            Self::MutationRollbackFailed { .. } => "COMPOSE_MUTATION_ROLLBACK_FAILED",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
+            Self::InvalidLock { .. } => "INVALID_COMPOSE_LOCK",
+            Self::FrozenLockMissing { .. } => "COMPOSE_LOCK_REQUIRED",
+            Self::FrozenLockOutOfDate { .. } => "COMPOSE_LOCK_OUT_OF_DATE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::FileRequiresUp => "FILE_REQUIRES_UP",
+            Self::FrozenRequiresUp => "FROZEN_REQUIRES_UP",
             Self::BuildConflictsWithServeOptions => "BUILD_CONFLICTS_WITH_SERVE_OPTIONS",
             Self::EngineSectionRequiresManagedStart { .. } => {
                 "ENGINE_SECTION_REQUIRES_MANAGED_START"
@@ -511,6 +580,7 @@ impl ComposeError {
             Self::EngineAlreadyOwned { .. } => "ENGINE_ALREADY_OWNED",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
             Self::SelfDependency { .. } => "SELF_DEPENDENCY",
+            Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
@@ -540,6 +610,10 @@ impl ComposeError {
             Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
             Self::PackageArtifactEmpty { .. } => "PACKAGE_ARTIFACT_EMPTY",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
+            Self::RetiredConfigEnv { .. } => "RETIRED_CONFIG_ENV",
+            Self::InvalidConfigName { .. } => "INVALID_CONFIG_NAME",
+            Self::ConfigNameCollision { .. } => "CONFIG_NAME_COLLISION",
+            Self::ConfigMigrationFailed { .. } => "CONFIG_MIGRATION_FAILED",
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
@@ -560,6 +634,7 @@ impl ComposeError {
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",

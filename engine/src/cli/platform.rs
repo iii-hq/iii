@@ -51,6 +51,27 @@ pub fn current_target() -> &'static str {
     compile_error!("unsupported target platform for iii")
 }
 
+/// The worker must match the host libc: unlike the static engine it uses
+/// dlopen for libkrunfw. In particular a musl-built engine can run on glibc.
+pub fn binary_target(binary_name: &str) -> &'static str {
+    if binary_name == "iii-worker" && cfg!(target_os = "linux") {
+        let arch = std::env::consts::ARCH;
+        let has_musl_loader = std::path::Path::new(&format!("/lib/ld-musl-{arch}.so.1")).exists();
+        return linux_worker_target(arch, has_musl_loader).unwrap_or_else(current_target);
+    }
+    current_target()
+}
+
+fn linux_worker_target(arch: &str, has_musl_loader: bool) -> Option<&'static str> {
+    match (arch, has_musl_loader) {
+        ("x86_64", true) => Some("x86_64-unknown-linux-musl"),
+        ("x86_64", false) => Some("x86_64-unknown-linux-gnu"),
+        ("aarch64", true) => Some("aarch64-unknown-linux-musl"),
+        ("aarch64", false) => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
 /// Returns the archive extension for the current platform.
 pub fn archive_extension() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -66,7 +87,7 @@ pub fn asset_name(binary_name: &str) -> String {
     format!(
         "{}-{}.{}",
         binary_name,
-        current_target(),
+        binary_target(binary_name),
         archive_extension()
     )
 }
@@ -134,7 +155,7 @@ pub fn state_file_path() -> PathBuf {
 /// Checks whether the current platform is supported by the given binary.
 /// Returns Ok(()) if supported, or an error with a helpful message if not.
 pub fn check_platform_support(spec: &BinarySpec) -> Result<(), RegistryError> {
-    let target = current_target();
+    let target = binary_target(spec.name);
     if spec.supported_targets.contains(&target) {
         Ok(())
     } else {
@@ -159,7 +180,8 @@ fn format_target_human(target: &str) -> String {
         "x86_64-apple-darwin" => "macOS (Intel)".to_string(),
         "x86_64-unknown-linux-gnu" => "Linux x86_64 (glibc)".to_string(),
         "x86_64-unknown-linux-musl" => "Linux x86_64 (musl)".to_string(),
-        "aarch64-unknown-linux-gnu" => "Linux ARM64".to_string(),
+        "aarch64-unknown-linux-gnu" => "Linux ARM64 (glibc)".to_string(),
+        "aarch64-unknown-linux-musl" => "Linux ARM64 (musl)".to_string(),
         "armv7-unknown-linux-gnueabihf" => "Linux ARMv7".to_string(),
         "x86_64-pc-windows-msvc" => "Windows x86_64".to_string(),
         "i686-pc-windows-msvc" => "Windows x86".to_string(),
@@ -190,7 +212,7 @@ pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
 /// e.g., "iii-console-aarch64-apple-darwin.sha256"
 /// Note: taiki-e produces checksums as separate assets WITHOUT the archive extension.
 pub fn checksum_asset_name(binary_name: &str) -> String {
-    format!("{}-{}.sha256", binary_name, current_target())
+    format!("{}-{}.sha256", binary_name, binary_target(binary_name))
 }
 
 /// Ensures the storage directories exist.
@@ -217,6 +239,48 @@ pub fn ensure_dirs() -> Result<(), super::error::StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_targets_match_host_libc_on_both_linux_architectures() {
+        for (arch, musl, expected) in [
+            ("x86_64", true, "x86_64-unknown-linux-musl"),
+            ("x86_64", false, "x86_64-unknown-linux-gnu"),
+            ("aarch64", true, "aarch64-unknown-linux-musl"),
+            ("aarch64", false, "aarch64-unknown-linux-gnu"),
+        ] {
+            assert_eq!(linux_worker_target(arch, musl), Some(expected));
+        }
+        assert_eq!(linux_worker_target("arm", true), None);
+    }
+
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn worker_asset_and_checksum_use_the_same_supported_target() {
+        let spec = super::super::registry::resolve_binary_for_update("iii-worker").unwrap();
+        let target = binary_target(spec.name);
+        assert!(spec.supported_targets.contains(&target));
+        assert_eq!(
+            asset_name(spec.name),
+            format!("iii-worker-{target}.{}", archive_extension())
+        );
+        assert_eq!(
+            checksum_asset_name(spec.name),
+            format!("iii-worker-{target}.sha256")
+        );
+    }
+
+    #[test]
+    fn other_binaries_keep_the_portable_engine_target() {
+        assert_eq!(binary_target("iii"), current_target());
+        assert_eq!(binary_target("iii-init"), current_target());
+        assert_eq!(binary_target("iii-console"), current_target());
+    }
 
     #[test]
     fn test_current_target_not_empty() {

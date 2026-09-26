@@ -3,9 +3,9 @@
 //! Every rejection asserts the stable error code, not the prose: the codes are
 //! the contract `compose::*` callers match on.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
-use iii_compose::ComposeFile;
+use iii_compose::{ComposeFile, RestartPolicy};
 
 fn parse(text: &str) -> Result<ComposeFile, iii_compose::ComposeError> {
     ComposeFile::parse(text, PathBuf::from("/srv/app/worker-compose.yaml"))
@@ -560,6 +560,292 @@ containers:
         std::time::Duration::from_secs(60),
         "a container inherits the file's readiness budget"
     );
+}
+
+#[test]
+fn required_defaults_to_false() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("required is part of the container schema");
+
+    assert_eq!(
+        (file.required_default, file.containers["api"].required),
+        (false, false)
+    );
+}
+
+#[test]
+fn containers_inherit_required_default_unless_they_override_it() {
+    let file = parse(
+        r#"
+namespace: default
+startup_timeout: 360s
+stop_timeout: 10s
+required_default: true
+
+engine:
+  url: ws://127.0.0.1:49134
+
+containers:
+  queue:
+    worker: package://queue
+    version: "0.21.9"
+    required: false
+
+  state:
+    worker: package://state
+    version: "0.22.5-rc.1"
+
+  session-manager:
+    worker: package://session-manager
+    version: "1.0.14-rc.4"
+"#,
+    )
+    .expect("required_default is part of the compose schema");
+
+    assert_eq!(
+        (
+            file.required_default,
+            file.containers["queue"].required,
+            file.containers["state"].required,
+            file.containers["session-manager"].required,
+        ),
+        (true, false, true, true)
+    );
+}
+
+#[test]
+fn explicit_required_true_overrides_the_false_default() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    required: true
+"#,
+    )
+    .expect("required is part of the container schema");
+
+    assert!(file.containers["api"].required);
+}
+
+#[test]
+fn rejects_a_non_boolean_required() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: "no"
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+#[test]
+fn rejects_a_null_required() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    required: null
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+#[test]
+fn rejects_a_non_boolean_required_default() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+required_default: "yes"
+containers:
+  api:
+    worker: path://./workers/api
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+/// A file written before the field existed keeps the behaviour it was written
+/// against, which is that a ready container that exits stays down.
+///
+/// `no` is spelled unquoted on purpose. YAML 1.1 reads it as `false`, and a
+/// parser that agreed would turn the default spelling into a type error the
+/// first time anyone wrote it out.
+#[test]
+fn restart_defaults_to_no_and_is_declared_per_container() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+  mailer:
+    worker: path://./workers/mailer
+    restart: on-failure
+  clock:
+    worker: path://./workers/clock
+    restart: always
+  batch:
+    worker: path://./workers/batch
+    restart: no
+"#,
+    )
+    .expect("restart is part of the container schema");
+
+    assert_eq!(
+        file.containers["api"].restart.condition,
+        RestartPolicy::No,
+        "a container that says nothing keeps the old behaviour"
+    );
+    assert_eq!(
+        file.containers["mailer"].restart.condition,
+        RestartPolicy::OnFailure
+    );
+    assert_eq!(
+        file.containers["clock"].restart.condition,
+        RestartPolicy::Always
+    );
+    assert_eq!(
+        file.containers["batch"].restart.condition,
+        RestartPolicy::No,
+        "an unquoted `no` is the policy, not the boolean false"
+    );
+}
+
+#[test]
+fn restart_object_configures_backoff_attempts_and_window() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: 750ms
+      max_delay: 20s
+      max_attempts: 8
+      window: 2m
+"#,
+    )
+    .expect("restart accepts the configurable object form");
+
+    let restart = &file.containers["api"].restart;
+    assert_eq!(
+        (
+            restart.condition,
+            restart.delay,
+            restart.max_delay,
+            restart.max_attempts,
+            restart.window,
+        ),
+        (
+            RestartPolicy::OnFailure,
+            Duration::from_millis(750),
+            Duration::from_secs(20),
+            8,
+            Duration::from_secs(120),
+        )
+    );
+}
+
+#[test]
+fn restart_object_uses_existing_defaults_for_omitted_limits() {
+    let file = parse(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: always
+"#,
+    )
+    .expect("restart limits are optional");
+
+    let restart = &file.containers["api"].restart;
+    assert_eq!(
+        (
+            restart.delay,
+            restart.max_delay,
+            restart.max_attempts,
+            restart.window,
+        ),
+        (
+            Duration::from_millis(500),
+            Duration::from_secs(30),
+            5,
+            Duration::from_secs(60),
+        )
+    );
+}
+
+#[test]
+fn rejects_an_invalid_restart_duration() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    restart:
+      condition: on-failure
+      delay: soon
+"#
+        ),
+        "INVALID_DURATION"
+    );
+}
+
+#[test]
+fn rejects_an_unknown_restart_policy() {
+    assert_eq!(
+        code(
+            r#"
+namespace: orders
+containers:
+  mailer:
+    worker: path://./workers/mailer
+    restart: unless-stopped
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+/// The policies differ only on a clean exit. `on-failure` treats exit 0 as the
+/// worker having finished; `always` treats it as an outage either way.
+#[test]
+fn restart_policies_differ_only_on_a_clean_exit() {
+    assert!(!RestartPolicy::No.wants_restart(1));
+    assert!(!RestartPolicy::No.wants_restart(0));
+
+    assert!(RestartPolicy::OnFailure.wants_restart(1));
+    assert!(RestartPolicy::OnFailure.wants_restart(-1));
+    assert!(!RestartPolicy::OnFailure.wants_restart(0));
+
+    assert!(RestartPolicy::Always.wants_restart(1));
+    assert!(RestartPolicy::Always.wants_restart(0));
 }
 
 #[test]

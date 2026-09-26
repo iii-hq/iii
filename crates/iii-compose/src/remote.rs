@@ -21,7 +21,7 @@
 //! fall back to `worker-compose.yaml` in the daemon's own directory, and say
 //! so when there is none.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc};
 
 use iii_sdk::{Error, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 use crate::{
     daemon::{Daemon, MutationOutcome},
+    edit::WorkerInput,
     error::ComposeError,
     logs::{LogCursor, LogStream, LogsOutcome},
     project::ContainerStatus,
@@ -53,20 +54,26 @@ pub struct ComposeRequest {
     pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
+    /// Require a matching existing lock and skip package selector resolution.
+    /// Used by `compose::up`.
+    pub frozen: Option<bool>,
     /// The worker a call is about.
     ///
-    /// `compose::update` reads a spec: `name`, `name@version`, or a path.
+    /// `compose::update` reads a spec: `name` or `name@version`. Omit both
+    /// worker fields to update every declared package worker to latest.
     /// `compose::remove` and `compose::restart` read a container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
-    /// have to know which of the two words this call wanted. `compose::add`
-    /// keeps this field as a compatibility alias for a single list item.
+    /// have to know which of the two words this call wanted. `compose::add`,
+    /// `compose::update`, and `compose::remove` keep this field as a
+    /// compatibility alias for a single list item.
     pub worker: Option<String>,
-    /// Workers to add in one file edit and one project restart.
+    /// Workers to add, update, or remove in one file edit and one reconciliation.
     ///
-    /// This is the canonical `compose::add` JSON field. The singular `worker`
-    /// field remains accepted for clients that used the old contract.
-    pub workers: Option<Vec<String>>,
-    /// Caller-selected operation id used to bind progress before submission.
+    /// This is the canonical JSON field for all three operations. The singular
+    /// `worker` field remains accepted for clients that used the old contract.
+    /// Add also accepts objects with the fields of a compose container.
+    pub workers: Option<Vec<WorkerInput>>,
+    /// Caller-selected operation id used to bind mutation progress before submission.
     pub operation_id: Option<String>,
     /// Last cursor returned for each selected worker.
     pub cursors: Option<BTreeMap<String, LogCursor>>,
@@ -104,6 +111,22 @@ struct LifecycleOptions {
     container: Option<String>,
 }
 
+/// Request fields used by `compose::up`.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct UpOptions {
+    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    namespace: Option<String>,
+    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
+    /// the daemon working directory.
+    file: Option<String>,
+    /// Restrict startup to one container and its dependencies.
+    container: Option<String>,
+    /// Require the compose file and existing lock to match. Package selectors
+    /// are not resolved, but missing cached artifacts are downloaded from the lock.
+    frozen: Option<bool>,
+}
+
 /// Request fields used by project read operations.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
@@ -115,36 +138,25 @@ struct ProjectOptions {
     file: Option<String>,
 }
 
-/// Request fields used by `compose::add`.
+/// Request fields used by batch worker mutations.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
-struct AddOptions {
+struct BatchWorkerOptions<T> {
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
     file: Option<String>,
-    /// Canonical list of worker names, `name@version` references, registry
-    /// references, or local paths to add in one edit and one restart.
-    workers: Option<Vec<String>>,
-    /// Backward-compatible form for adding one worker.
+    /// Canonical list of workers to mutate together. Add accepts worker names,
+    /// `name@version` references, registry references, local paths, or container
+    /// objects with scripts, dependencies, and configuration fields. Update
+    /// accepts package names or `name@version` references. Remove accepts
+    /// declared worker keys.
+    workers: Option<Vec<T>>,
+    /// Backward-compatible form for mutating one worker.
     worker: Option<String>,
     /// Caller-selected operation id for race-free progress subscription.
     operation_id: Option<String>,
-}
-
-/// Request fields used by single-worker compose-file edits.
-#[allow(dead_code)]
-#[derive(JsonSchema)]
-struct WorkerOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
-    namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
-    file: Option<String>,
-    /// Worker name, `name@version`, registry reference, or local path. The
-    /// accepted form depends on the operation.
-    worker: String,
 }
 
 /// `compose::restart` accepts either spelling for one container.
@@ -246,7 +258,7 @@ struct CancelOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-struct AddAcceptedOutcome {
+struct OperationAcceptedOutcome {
     operation_id: String,
     status: String,
     requested: usize,
@@ -299,7 +311,15 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
         let registration = RegisterFunction::new_async(move |request: ComposeRequest| {
             let daemon = Arc::clone(&daemon);
             let guard_name = guard_name.clone();
-            async move { dispatch(daemon, kind, guard_name, request).await }
+            async move {
+                let Some(op) = reported_op(kind) else {
+                    return dispatch(daemon, kind, guard_name, request).await;
+                };
+                let began = std::time::Instant::now();
+                let result = dispatch(daemon, kind, guard_name, request).await;
+                report_op(op, &result, began.elapsed());
+                result
+            }
         });
         client.register_function(function.clone(), describe_op(registration, &function));
     }
@@ -323,6 +343,57 @@ enum Operation {
     Cancel,
 }
 
+/// The name one call reports under, or `None` for a call that reports
+/// nothing.
+///
+/// Only the mutations that answer with their own outcome are here. Add,
+/// remove and update answer as soon as they are accepted and finish in the
+/// background, so they report from [`spawn_mutation`] instead. A read-only
+/// call reports nothing at all.
+fn reported_op(kind: Operation) -> Option<&'static str> {
+    match kind {
+        Operation::Up => Some("up"),
+        Operation::Down => Some("down"),
+        Operation::Restart => Some("restart"),
+        _ => None,
+    }
+}
+
+/// Reports one mutation that answered with its outcome.
+///
+/// The outcome comes out of the answer itself: an `up` whose container failed
+/// still returns `Ok`, carrying `status: failed` and the code of the first
+/// failure. Nothing but the code is taken; the message belongs to the
+/// operator.
+///
+/// The send is spawned: the daemon that answered is still running, so the
+/// caller gets its answer now and the report finishes on its own.
+fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std::time::Duration) {
+    let (outcome, error_kind) = match result {
+        Ok(value) => (
+            value.get("status").and_then(Value::as_str).unwrap_or("ok"),
+            value
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+        ),
+        Err(Error::Remote { code, .. }) => (
+            // A cancellation is the operator's decision, not a fault.
+            if code == "OPERATION_CANCELLED" {
+                "cancelled"
+            } else {
+                "failed"
+            },
+            Some(code.as_str()),
+        ),
+        Err(_) => ("failed", None),
+    };
+    tokio::spawn(crate::telemetry::report(
+        crate::telemetry::OP_FINISHED,
+        crate::telemetry::op_properties(op, outcome, elapsed, error_kind),
+    ));
+}
+
 impl Operation {
     fn is_mutation(self) -> bool {
         matches!(
@@ -330,6 +401,17 @@ impl Operation {
             Self::Up | Self::Down | Self::Add | Self::Remove | Self::Restart | Self::Update
         )
     }
+}
+
+/// The container a `compose::stop` request names, if any. Both fields are
+/// checked in turn: a blank `container` must not hide a `worker`, or
+/// `{"container": " ", "worker": "api"}` would stop the whole daemon.
+fn stop_target(request: &ComposeRequest) -> Option<&str> {
+    [request.container.as_deref(), request.worker.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
 }
 
 /// Canonical list of functions exposed by the compose daemon.
@@ -376,14 +458,23 @@ async fn dispatch(
     let file = request.file.as_ref().map(std::path::PathBuf::from);
 
     match operation {
-        Operation::Up => match daemon
-            .up(
-                file.as_deref(),
-                request.container.as_deref(),
-                operation_id(),
-            )
-            .await
-        {
+        Operation::Up => match if request.frozen.unwrap_or(false) {
+            daemon
+                .up_frozen(
+                    file.as_deref(),
+                    request.container.as_deref(),
+                    operation_id(),
+                )
+                .await
+        } else {
+            daemon
+                .up(
+                    file.as_deref(),
+                    request.container.as_deref(),
+                    operation_id(),
+                )
+                .await
+        } {
             Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
@@ -395,10 +486,7 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Add => {
-            let workers = request
-                .workers
-                .or_else(|| request.worker.map(|worker| vec![worker]))
-                .unwrap_or_default();
+            let workers = requested_workers(request.workers, request.worker);
             if workers.is_empty() {
                 return daemon
                     .add(file.as_deref(), &[], operation_id())
@@ -408,91 +496,60 @@ async fn dispatch(
             }
 
             let requested = workers.len();
-            let operation_id = request
-                .operation_id
-                .unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
-            let operation = daemon
-                .operations
-                .create_with_id(operation_id.clone(), requested)
-                .await
-                .map_err(|_| Error::Remote {
-                    code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
-                    message: format!("compose operation '{operation_id}' already exists"),
-                    stacktrace: None,
-                })?;
-            let operation_id = operation.id().to_string();
-            operation
-                .emit(
-                    None,
-                    "accepted",
-                    format!("adding {requested} requested workers"),
-                )
-                .await;
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("adding {requested} requested workers"),
+            )
+            .await?;
 
             let daemon_task = Arc::clone(&daemon);
-            let task_operation_id = operation_id.clone();
-            tokio::spawn(async move {
-                operation
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
                     .emit(None, "resolving", "resolving dependency trees")
                     .await;
-                if operation.is_cancelled() {
-                    operation
-                        .finish(
-                            crate::operation::OperationStatus::Cancelled,
-                            "operation cancelled",
-                        )
-                        .await;
-                    return;
-                }
-                let result = daemon_task
-                    .add(file.as_deref(), &workers, task_operation_id)
-                    .await;
-                match result {
-                    Ok(outcome) => {
-                        let failed = outcome.is_failed();
-                        operation
-                            .finish(
-                                if failed {
-                                    crate::operation::OperationStatus::Failed
-                                } else {
-                                    crate::operation::OperationStatus::Succeeded
-                                },
-                                if failed {
-                                    "one or more workers failed"
-                                } else {
-                                    "all requested workers are ready"
-                                },
-                            )
-                            .await;
-                    }
-                    Err(ComposeError::OperationCancelled { .. }) => {
-                        operation
-                            .finish(
-                                crate::operation::OperationStatus::Cancelled,
-                                "operation cancelled",
-                            )
-                            .await
-                    }
-                    Err(error) => {
-                        operation
-                            .finish(crate::operation::OperationStatus::Failed, error.to_string())
-                            .await
-                    }
-                }
-            });
-            Ok(json!({
-                "operation_id": operation_id,
-                "status": "accepted",
-                "requested": requested
-            }))
+                daemon_task
+                    .add_configured(file.as_deref(), &workers, task_operation_id)
+                    .await
+            };
+            spawn_mutation(operation, mutation, ADD_DETAILS);
+            Ok(to_value(&accepted))
         }
-        Operation::Remove => match daemon
-            .remove(file.as_deref(), request.worker.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Remove => {
+            let workers = requested_specs(request.workers, request.worker)?;
+            if workers.is_empty() {
+                return daemon
+                    .remove(file.as_deref(), &[], operation_id())
+                    .await
+                    .map(|outcome| to_value(&outcome))
+                    .map_err(|err| compose_error(&err));
+            }
+            let requested = workers.len();
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("removing {requested} requested workers"),
+            )
+            .await?;
+
+            let daemon_task = Arc::clone(&daemon);
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
+                    .emit(None, "removing", format!("removing {requested} workers"))
+                    .await;
+                daemon_task
+                    .remove(file.as_deref(), &workers, task_operation_id)
+                    .await
+            };
+            spawn_mutation(operation, mutation, REMOVE_DETAILS);
+            Ok(to_value(&accepted))
+        }
         Operation::Restart => match daemon
             .restart(
                 file.as_deref(),
@@ -505,13 +562,48 @@ async fn dispatch(
             Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
-        Operation::Update => match daemon
-            .update(file.as_deref(), request.worker.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Update => {
+            if request.workers.as_ref().is_some_and(Vec::is_empty) {
+                return Err(compose_error(&ComposeError::InvalidWorkerSpec {
+                    spec: String::new(),
+                    reason:
+                        "workers cannot be empty. Omit worker and workers to update all packages"
+                            .to_string(),
+                }));
+            }
+            let workers = requested_specs(request.workers, request.worker)?;
+            let requested = workers.len();
+            let selection = if workers.is_empty() {
+                "all declared package workers".to_string()
+            } else {
+                format!("{requested} requested workers")
+            };
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                format!("updating {selection}"),
+            )
+            .await?;
+
+            let daemon_task = Arc::clone(&daemon);
+            let task_operation_id = accepted.operation_id.clone();
+            let task_operation = Arc::clone(&operation);
+            let mutation = async move {
+                task_operation
+                    .emit(
+                        None,
+                        "resolving",
+                        format!("resolving updates for {selection}"),
+                    )
+                    .await;
+                daemon_task
+                    .update(file.as_deref(), &workers, task_operation_id)
+                    .await
+            };
+            spawn_mutation(operation, mutation, UPDATE_DETAILS);
+            Ok(to_value(&accepted))
+        }
         Operation::Down => match daemon
             .down(
                 file.as_deref(),
@@ -570,8 +662,14 @@ async fn dispatch(
             Err(err) => Err(compose_error(&err)),
         },
         // Answers first, exits after: the serve loop picks the request up and
-        // runs the same teardown a signal would.
-        Operation::Stop => Ok(daemon.request_stop().await),
+        // runs the same teardown a signal would. Stop takes the whole daemon
+        // down, so a request that names a container is refused, not ignored.
+        Operation::Stop => match stop_target(&request) {
+            Some(container) => Err(compose_error(&ComposeError::StopTakesNoContainer {
+                container: container.to_string(),
+            })),
+            None => Ok(daemon.request_stop().await),
+        },
         // Validation is a question about a file, so it holds nothing: naming a
         // file here must not leave the daemon owning a project, and must not
         // write the durable state that would bind that id to it.
@@ -608,19 +706,199 @@ async fn dispatch(
     }
 }
 
+async fn admit_mutation(
+    daemon: &Daemon,
+    requested_id: Option<String>,
+    requested: usize,
+    detail: String,
+) -> Result<(Arc<crate::operation::Operation>, OperationAcceptedOutcome), Error> {
+    let operation_id = requested_id.unwrap_or_else(|| format!("compose:{}", uuid::Uuid::new_v4()));
+    let operation = daemon
+        .operations
+        .create_with_id(operation_id.clone(), requested)
+        .await
+        .map_err(|_| Error::Remote {
+            code: "OPERATION_ID_ALREADY_EXISTS".to_string(),
+            message: format!("compose operation '{operation_id}' already exists"),
+            stacktrace: None,
+        })?;
+    operation.emit(None, "accepted", detail).await;
+    let accepted = OperationAcceptedOutcome {
+        operation_id,
+        status: "accepted".to_string(),
+        requested,
+    };
+    Ok((operation, accepted))
+}
+
+/// Compose the terminal detail for a mutation that succeeded.
+///
+/// A non-required container that never reached its target state leaves the
+/// operation succeeding, which is by design — but the blanket success line
+/// then claims every worker is up while one is not, and a caller polling
+/// `compose::operation` has no other place to learn it. Name those containers
+/// instead (MOT-4761).
+///
+/// The list is the project's, not this operation's request: reconciliation
+/// reports every container it touched, so one left broken by an earlier
+/// operation keeps being named until it starts. That is the point — the
+/// alternative is a success line that is false about the project.
+fn succeeded_detail(details: MutationDetails, not_required_failures: &[String]) -> String {
+    if not_required_failures.is_empty() {
+        return details.success.to_string();
+    }
+    format!(
+        "{}: {}. The operation still succeeded because they are not required; \
+         check compose::status and their logs before using them.",
+        details.partial,
+        not_required_failures.join(", ")
+    )
+}
+
+/// The three terminal lines one mutation can finish with. Named fields rather
+/// than three positional `&str`s: they are the same type, so a swap at a call
+/// site would compile and only show up as a wrong sentence in a live run.
+#[derive(Clone, Copy)]
+struct MutationDetails {
+    /// What this mutation is called in telemetry.
+    op: &'static str,
+    /// Every container reached its target state.
+    success: &'static str,
+    /// The operation succeeded, but some non-required container did not.
+    partial: &'static str,
+    /// A required container did not, so the operation failed.
+    failed: &'static str,
+}
+
+const ADD_DETAILS: MutationDetails = MutationDetails {
+    op: "add",
+    success: "all requested workers are ready",
+    partial: "workers that did not start",
+    failed: "one or more workers failed",
+};
+
+const REMOVE_DETAILS: MutationDetails = MutationDetails {
+    op: "remove",
+    success: "all requested workers were removed",
+    partial: "workers that could not be removed",
+    failed: "one or more workers could not be removed",
+};
+
+const UPDATE_DETAILS: MutationDetails = MutationDetails {
+    op: "update",
+    success: "all requested workers were updated",
+    partial: "workers that could not be updated",
+    failed: "one or more workers could not be updated",
+};
+
+fn spawn_mutation<F>(
+    operation: Arc<crate::operation::Operation>,
+    mutation: F,
+    details: MutationDetails,
+) where
+    F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let began = std::time::Instant::now();
+        if operation.is_cancelled() {
+            operation
+                .finish(
+                    crate::operation::OperationStatus::Cancelled,
+                    "operation cancelled",
+                )
+                .await;
+            return;
+        }
+
+        let result = mutation.await;
+        report_mutation(details.op, &result, began.elapsed());
+        match result {
+            Ok(outcome) => {
+                let failed = outcome.is_failed();
+                operation
+                    .finish(
+                        if failed {
+                            crate::operation::OperationStatus::Failed
+                        } else {
+                            crate::operation::OperationStatus::Succeeded
+                        },
+                        if failed {
+                            details.failed.to_string()
+                        } else {
+                            succeeded_detail(details, outcome.not_required_failures())
+                        },
+                    )
+                    .await;
+            }
+            Err(ComposeError::OperationCancelled { .. }) => {
+                operation
+                    .finish(
+                        crate::operation::OperationStatus::Cancelled,
+                        "operation cancelled",
+                    )
+                    .await;
+            }
+            Err(error) => {
+                operation
+                    .finish(crate::operation::OperationStatus::Failed, error.to_string())
+                    .await;
+            }
+        }
+    });
+}
+
+/// Reports one mutation that ran in the background after it was accepted.
+fn report_mutation(
+    op: &'static str,
+    result: &Result<MutationOutcome, ComposeError>,
+    elapsed: std::time::Duration,
+) {
+    let reported = match result {
+        Ok(outcome) => Ok(to_value(outcome)),
+        Err(error) => Err(compose_error(error)),
+    };
+    report_op(op, &reported, elapsed);
+}
+
 /// Serialize the generated root schema into the value carried over the wire.
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
 
-/// `compose::add` accepts its canonical list or the old singular field.
+fn requested_workers(
+    workers: Option<Vec<WorkerInput>>,
+    worker: Option<String>,
+) -> Vec<WorkerInput> {
+    workers
+        .or_else(|| worker.map(|worker| vec![WorkerInput::Spec(worker)]))
+        .unwrap_or_default()
+}
+
+/// Resolve legacy worker inputs and reject container objects for update and remove.
+fn requested_specs(
+    workers: Option<Vec<WorkerInput>>,
+    worker: Option<String>,
+) -> Result<Vec<String>, Error> {
+    requested_workers(workers, worker)
+        .into_iter()
+        .map(|input| match input {
+            WorkerInput::Spec(spec) => Ok(spec),
+            WorkerInput::Definition(_) => Err(compose_error(&ComposeError::InvalidWorkerSpec {
+                spec: "container object".to_string(),
+                reason: "container objects are supported only by compose::add".to_string(),
+            })),
+        })
+        .collect()
+}
+
+/// Batch worker mutations accept their canonical list or the old singular field.
 ///
 /// Both fields are optional in the Rust shape so they can share the common
 /// namespace and file properties. `anyOf` states the runtime rule that at
 /// least one input form must be present. Supplying both is valid; dispatch
 /// gives the canonical `workers` list precedence.
-fn add_options_schema() -> Option<Value> {
-    let mut schema = schema_for_value::<AddOptions>()?;
+fn batch_worker_options_schema() -> Option<Value> {
+    let mut schema = schema_for_value::<BatchWorkerOptions<String>>()?;
     for field in ["workers", "worker"] {
         let types = schema
             .pointer_mut(&format!("/properties/{field}/type"))?
@@ -647,12 +925,37 @@ fn add_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// Update defaults to all packages, but explicit inputs must still be valid.
+fn update_worker_options_schema() -> Option<Value> {
+    let mut schema = batch_worker_options_schema()?;
+    schema.as_object_mut()?.remove("anyOf");
+    schema["description"] = json!(
+        "Omit worker and workers to update all declared package workers to latest. Path workers are skipped."
+    );
+    Some(schema)
+}
+
+/// Extend the batch contract with the container object form accepted by add.
+fn add_worker_options_schema() -> Option<Value> {
+    let mut schema = batch_worker_options_schema()?;
+    let detailed = schema_for_value::<BatchWorkerOptions<WorkerInput>>()?;
+    schema["properties"]["workers"]["items"] = detailed["properties"]["workers"]["items"].clone();
+    schema["definitions"] = detailed["definitions"].clone();
+    schema["definitions"]["WorkerInput"]["anyOf"][0]["pattern"] = json!(r"\S");
+    schema["definitions"]["RawContainer"]["properties"]["worker"]["pattern"] = json!(r"\S");
+    Some(schema)
+}
+
 /// One source of truth for function registration and `compose::schema`.
 fn op_description(function_id: &str) -> &'static str {
     match function_id {
         "compose::up" => {
             "Start a compose project, or one container and its dependencies. \
-             Repeated calls leave ready containers running."
+             Repeated calls leave ready containers running. A container whose \
+             effective required value is false is named in \
+             not_required_failures when it fails, and the operation still \
+             returns ok. Frozen mode requires worker-compose.lock to match and \
+             skips package resolution."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
@@ -661,7 +964,9 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::list" => "List every project loaded by this compose daemon.",
         "compose::status" => {
             "Report the project namespace, state directory, daemon pid, and \
-             current state of every declared container."
+             current state of every declared container. A container declaring \
+             a 'restart' policy reports as 'restarting' while it waits for the \
+             supervisor's next attempt."
         }
         "compose::logs" => {
             "Read bounded worker stdout and stderr. A cursor continues from the last response; \
@@ -676,20 +981,24 @@ fn op_description(function_id: &str) -> &'static str {
              starting its project."
         }
         "compose::add" => {
-            "Declare one or more workers and their registry dependencies in the compose \
-             file, pin resolved versions, then reconcile changed workers once."
+            "Accept an observable operation that declares one or more workers and their registry \
+             dependencies in the compose file, locks resolved packages, then reconciles changed \
+             workers once. Explicit selectors remain in the compose file."
         }
         "compose::remove" => {
-            "Remove one declared worker and dependency references to it, stop \
-             only that worker, then reconcile anything already missing."
+            "Accept an observable operation that removes one or more declared workers and \
+             dependency references to them, stops only those workers, then reconciles anything \
+             already missing."
         }
         "compose::restart" => {
             "Restart the whole project, or restart one named container without \
              changing its dependency graph."
         }
         "compose::update" => {
-            "Move one declared package worker to a requested or latest version, \
-             then restart the project."
+            "Accept an observable operation that refreshes declared package selectors or moves \
+             workers to requested versions, including their dependency graphs. Omit worker and \
+             workers to move all declared packages to latest; path workers are skipped. The \
+             project restarts only when runtime content or topology changes."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -737,7 +1046,7 @@ fn schema_table() -> &'static [SchemaTriple] {
         vec![
             (
                 "compose::up",
-                schema_for_value::<LifecycleOptions>(),
+                schema_for_value::<UpOptions>(),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
@@ -772,13 +1081,13 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                add_options_schema(),
-                schema_for_value::<AddAcceptedOutcome>(),
+                add_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::remove",
-                schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                batch_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::restart",
@@ -787,8 +1096,8 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::update",
-                schema_for_value::<WorkerOptions>(),
-                schema_for_value::<MutationOutcome>(),
+                update_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::schema",
@@ -881,6 +1190,106 @@ fn operation_id() -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn update_without_worker_fields_returns_an_observable_operation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: ./api\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "update-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let accepted = dispatch(
+            Arc::clone(&daemon),
+            Operation::Update,
+            "update".to_string(),
+            ComposeRequest {
+                file: Some(file.to_string_lossy().into_owned()),
+                operation_id: Some("update-all".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(accepted["status"], "accepted");
+        assert_eq!(accepted["operation_id"], "update-all");
+        let operation = daemon.operations.get("update-all").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status == crate::operation::OperationStatus::Succeeded {
+                    break;
+                }
+                assert_ne!(snapshot.status, crate::operation::OperationStatus::Failed);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("update all should complete without starting a path worker");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_an_explicit_empty_list_even_with_a_singular_worker() {
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "update-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        for worker in [None, Some("state".to_string())] {
+            let error = dispatch(
+                Arc::clone(&daemon),
+                Operation::Update,
+                "update".to_string(),
+                ComposeRequest {
+                    workers: Some(Vec::new()),
+                    worker,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, Error::Remote { code, .. } if code == "INVALID_WORKER_SPEC"));
+        }
+    }
+
+    #[test]
+    fn stop_target_checks_both_fields_and_ignores_blanks() {
+        let bare = ComposeRequest::default();
+        assert_eq!(stop_target(&bare), None);
+
+        let blank = ComposeRequest {
+            container: Some("   ".to_string()),
+            worker: Some("".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(stop_target(&blank), None, "blanks are no target");
+
+        let hidden = ComposeRequest {
+            container: Some(" ".to_string()),
+            worker: Some("api".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(
+            stop_target(&hidden),
+            Some("api"),
+            "a blank container must not hide the worker"
+        );
+
+        let container = ComposeRequest {
+            container: Some(" harness ".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(stop_target(&container), Some("harness"));
+    }
+
     fn schema_entry(id: &str) -> &'static SchemaTriple {
         schema_table()
             .iter()
@@ -900,14 +1309,17 @@ mod tests {
     }
 
     #[test]
-    fn add_request_accepts_a_worker_list_and_the_singular_compatibility_field() {
+    fn batch_worker_request_accepts_a_list_and_the_singular_compatibility_field() {
         let listed: ComposeRequest = serde_json::from_value(json!({
             "workers": ["database", "web"],
         }))
         .expect("workers should deserialize");
         assert_eq!(
             listed.workers,
-            Some(vec!["database".to_string(), "web".to_string()])
+            Some(vec![
+                WorkerInput::Spec("database".to_string()),
+                WorkerInput::Spec("web".to_string())
+            ])
         );
         assert_eq!(listed.worker, None);
 
@@ -917,36 +1329,105 @@ mod tests {
         .expect("the old singular field should deserialize");
         assert_eq!(singular.worker.as_deref(), Some("database"));
         assert_eq!(singular.workers, None);
+
+        assert_eq!(
+            requested_specs(None, singular.worker).unwrap(),
+            vec!["database".to_string()]
+        );
+        assert_eq!(
+            requested_specs(listed.workers, Some("ignored".to_string())).unwrap(),
+            vec!["database".to_string(), "web".to_string()]
+        );
     }
 
     #[test]
-    fn add_schema_requires_one_non_null_non_empty_worker_form() {
-        let schema = schema_entry("compose::add").1.as_ref().unwrap();
-        let validator = jsonschema::Validator::new(schema).expect("add schema should compile");
-
-        for valid in [
-            json!({ "workers": ["database", "web"] }),
-            json!({ "worker": "database" }),
-        ] {
-            let errors = validator
-                .iter_errors(&valid)
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>();
-            assert!(errors.is_empty(), "should accept {valid}: {errors:?}");
+    fn only_add_accepts_full_container_objects_in_mixed_batches() {
+        let payload = json!({"workers": ["database", {
+            "worker": "./api",
+            "scripts": {"run": "./api", "pre_run": "echo ready", "pre_run_timeout": "10s", "post_run": "echo stopped"},
+            "start_after": ["database"],
+            "config_name": "api",
+            "config_override": {"port": 3000},
+            "working_dir": ".",
+            "environment": {"MODE": "dev"},
+            "env_file": ["./api.env"],
+            "startup_timeout": "5s"
+        }]});
+        let request: ComposeRequest = serde_json::from_value(payload.clone()).unwrap();
+        assert!(requested_specs(request.workers, request.worker).is_err());
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema).unwrap();
+            assert_eq!(
+                validator.is_valid(&payload),
+                function_id == "compose::add",
+                "{function_id}: {:?}",
+                validator.iter_errors(&payload).collect::<Vec<_>>()
+            );
         }
-
+        let schema = schema_entry("compose::add").1.as_ref().unwrap();
+        let validator = jsonschema::Validator::new(schema).unwrap();
         for invalid in [
-            json!({}),
-            json!({ "workers": [] }),
-            json!({ "workers": null }),
-            json!({ "worker": null }),
-            json!({ "workers": [], "worker": "database" }),
-            json!({ "worker": "" }),
-            json!({ "worker": "  " }),
-            json!({ "workers": [""] }),
-            json!({ "workers": ["  "] }),
+            json!({"workers": [{"worker": " "}]}),
+            json!({"workers": [{"worker": "api", "script": {"run": "./api"}}]}),
+            json!({"workers": [{"worker": "api", "scripts": {"unknown": "./api"}}]}),
+            json!({"workers": [{"scripts": {"run": "./api"}}]}),
         ] {
-            assert!(!validator.is_valid(&invalid), "should reject {invalid}");
+            assert!(!validator.is_valid(&invalid), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn batch_worker_schemas_validate_explicit_worker_forms() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema)
+                .unwrap_or_else(|error| panic!("{function_id} schema should compile: {error}"));
+
+            for valid in [
+                json!({ "workers": ["database", "web"] }),
+                json!({ "worker": "database" }),
+            ] {
+                let errors = validator
+                    .iter_errors(&valid)
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>();
+                assert!(
+                    errors.is_empty(),
+                    "{function_id} should accept {valid}: {errors:?}"
+                );
+            }
+
+            for invalid in [
+                json!({ "workers": [] }),
+                json!({ "workers": null }),
+                json!({ "worker": null }),
+                json!({ "workers": [], "worker": "database" }),
+                json!({ "worker": "" }),
+                json!({ "worker": "  " }),
+                json!({ "workers": [""] }),
+                json!({ "workers": ["  "] }),
+            ] {
+                assert!(
+                    !validator.is_valid(&invalid),
+                    "{function_id} should reject {invalid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_update_allows_omitting_both_worker_fields() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema).unwrap();
+            for payload in [json!({}), json!({"file": "worker-compose.yaml"})] {
+                assert_eq!(
+                    validator.is_valid(&payload),
+                    function_id == "compose::update",
+                    "{function_id}: {payload}"
+                );
+            }
         }
     }
 
@@ -957,25 +1438,34 @@ mod tests {
         assert!(up.contains_key("namespace"));
         assert!(up.contains_key("file"));
         assert!(up.contains_key("container"));
+        assert!(up.contains_key("frozen"));
         assert!(!up.contains_key("worker"));
 
-        let (_, add, _) = schema_entry("compose::add");
-        let add = add.as_ref().unwrap()["properties"].as_object().unwrap();
-        assert!(add.contains_key("namespace"));
-        assert!(add.contains_key("file"));
-        assert!(add.contains_key("workers"));
-        assert!(add.contains_key("worker"));
-        assert!(!add.contains_key("container"));
-        assert_eq!(add["workers"]["minItems"], 1);
-        let alternatives = schema_entry("compose::add").1.as_ref().unwrap()["anyOf"]
-            .as_array()
-            .expect("add should require either request form");
-        for field in ["workers", "worker"] {
-            assert!(alternatives.iter().any(|alternative| {
-                alternative["required"]
-                    .as_array()
-                    .is_some_and(|required| required.iter().any(|item| item == field))
-            }));
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let (_, request, _) = schema_entry(function_id);
+            let properties = request.as_ref().unwrap()["properties"].as_object().unwrap();
+            for field in ["namespace", "file", "workers", "worker", "operation_id"] {
+                assert!(
+                    properties.contains_key(field),
+                    "{function_id} is missing {field}"
+                );
+            }
+            assert!(!properties.contains_key("container"));
+            assert_eq!(properties["workers"]["minItems"], 1);
+            if function_id == "compose::update" {
+                assert!(request.as_ref().unwrap().get("anyOf").is_none());
+                continue;
+            }
+            let alternatives = request.as_ref().unwrap()["anyOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{function_id} should require either request form"));
+            for field in ["workers", "worker"] {
+                assert!(alternatives.iter().any(|alternative| {
+                    alternative["required"]
+                        .as_array()
+                        .is_some_and(|required| required.iter().any(|item| item == field))
+                }));
+            }
         }
 
         let (_, list, _) = schema_entry("compose::list");
@@ -1037,13 +1527,7 @@ mod tests {
 
     #[test]
     fn mutation_schemas_do_not_expose_reconciliation_internals() {
-        for id in [
-            "compose::up",
-            "compose::down",
-            "compose::remove",
-            "compose::restart",
-            "compose::update",
-        ] {
+        for id in ["compose::up", "compose::down", "compose::restart"] {
             let properties = schema_entry(id).2.as_ref().unwrap()["properties"]
                 .as_object()
                 .unwrap();
@@ -1059,13 +1543,148 @@ mod tests {
     }
 
     #[test]
-    fn add_response_is_an_observable_operation_admission() {
-        let properties = schema_entry("compose::add").2.as_ref().unwrap()["properties"]
-            .as_object()
-            .unwrap();
-        assert!(properties.contains_key("operation_id"));
-        assert!(properties.contains_key("status"));
-        assert!(properties.contains_key("requested"));
-        assert!(!properties.contains_key("containers"));
+    fn observable_mutation_responses_are_operation_admissions() {
+        for function_id in ["compose::add", "compose::update", "compose::remove"] {
+            let properties = schema_entry(function_id).2.as_ref().unwrap()["properties"]
+                .as_object()
+                .unwrap();
+            assert!(
+                properties.contains_key("operation_id"),
+                "{function_id} is missing operation_id"
+            );
+            assert!(
+                properties.contains_key("status"),
+                "{function_id} is missing status"
+            );
+            assert!(
+                properties.contains_key("requested"),
+                "{function_id} is missing requested"
+            );
+            assert!(
+                !properties.contains_key("containers"),
+                "{function_id} exposes container internals"
+            );
+        }
+    }
+
+    #[test]
+    fn a_succeeding_mutation_names_the_workers_that_did_not_start() {
+        for details in [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ] {
+            assert_eq!(
+                super::succeeded_detail(details, &[]),
+                details.success,
+                "nothing failed, so the blanket line is true"
+            );
+            let partial = super::succeeded_detail(
+                details,
+                &["bulk-importer".to_string(), "analytics".to_string()],
+            );
+            assert!(
+                partial.starts_with(&format!("{}: bulk-importer, analytics.", details.partial)),
+                "the terminal detail names them: {partial}"
+            );
+            assert!(
+                !partial.contains(details.success),
+                "and never claims they are ready: {partial}"
+            );
+            assert!(
+                partial.contains("compose::status"),
+                "pointing at where to look: {partial}"
+            );
+        }
+    }
+
+    /// The three lines are the same type, so the compiler cannot catch a swap
+    /// at a call site; distinctness is what makes a swap visible in a test.
+    #[test]
+    fn every_mutation_names_its_own_three_outcomes() {
+        let all = [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ];
+        let mut lines: Vec<&str> = all
+            .iter()
+            .flat_map(|d| [d.success, d.partial, d.failed])
+            .collect();
+        let total = lines.len();
+        lines.sort_unstable();
+        lines.dedup();
+        assert_eq!(lines.len(), total, "two mutations share a terminal line");
+        for d in all {
+            assert!(!d.partial.contains("ready") && !d.partial.contains("were "));
+        }
+    }
+
+    /// A duration no other test uses, so the report it stamps can be found.
+    fn unique_elapsed() -> std::time::Duration {
+        std::time::Duration::from_millis(uuid::Uuid::new_v4().as_u128() as u64 % 1_000_000_000)
+    }
+
+    #[tokio::test]
+    async fn an_answered_operation_reports_after_the_answer_not_before() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        let began = std::time::Instant::now();
+        report_op(
+            "up",
+            &Ok(json!({"status": "failed", "error": {"code": "SPAWN_FAILED"}})),
+            elapsed,
+        );
+
+        assert!(
+            began.elapsed() < crate::telemetry::recorder::HOLD,
+            "the report held the answer"
+        );
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, crate::telemetry::OP_FINISHED);
+        assert_eq!(reports[0].1["op"], "up");
+        assert_eq!(reports[0].1["outcome"], "failed");
+        assert_eq!(reports[0].1["error_kind"], "SPAWN_FAILED");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_operation_reports_as_cancelled_with_its_code() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op(
+            "restart",
+            &Err(Error::Remote {
+                code: "OPERATION_CANCELLED".to_string(),
+                message: "a message that must never be reported".to_string(),
+                stacktrace: None,
+            }),
+            elapsed,
+        );
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["op"], "restart");
+        assert_eq!(reports[0].1["outcome"], "cancelled");
+        assert_eq!(reports[0].1["error_kind"], "OPERATION_CANCELLED");
+        assert!(!reports[0].1.to_string().contains("must never"));
+    }
+
+    #[tokio::test]
+    async fn a_plain_success_reports_ok_with_no_error_kind() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op("down", &Ok(json!({"changed": true})), elapsed);
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["outcome"], "ok");
+        assert!(reports[0].1["error_kind"].is_null());
     }
 }

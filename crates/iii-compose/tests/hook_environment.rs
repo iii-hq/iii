@@ -14,8 +14,6 @@ use iii_compose::{hooks::await_pre_run, manifest::StartSpec, spawn::SpawnCtx};
 #[tokio::test]
 async fn a_stale_reserved_variable_never_reaches_a_hook() {
     let tmp = tempfile::tempdir().unwrap();
-    let config = tmp.path().join("resolved.yaml");
-    std::fs::write(&config, "server:\n  port: 3000\n").unwrap();
     let start = StartSpec::Shell(String::new());
     let empty = std::collections::BTreeMap::new();
     let ctx = SpawnCtx {
@@ -25,8 +23,7 @@ async fn a_stale_reserved_variable_never_reaches_a_hook() {
         compose_file: tmp.path(),
         container_key: "api",
         start: &start,
-        config_path: Some(config.as_path()),
-        config_name: None,
+        config_name: Some("orders-api"),
         working_dir: tmp.path() as &Path,
         user_env: &empty,
     };
@@ -36,7 +33,7 @@ async fn a_stale_reserved_variable_never_reaches_a_hook() {
     unsafe { std::env::set_var("III_WORKER_NAME", "stale-name") };
     let result = await_pre_run(
         &ctx,
-        "printf '%s|%s|%s|%s' \"$III_URL\" \"$III_NAMESPACE\" \"$III_WORKER_NAME\" \"$III_CONFIG\" > seen.txt && test \"$PWD\" = \"$(pwd)\"",
+        "printf '%s|%s|%s|%s' \"$III_URL\" \"$III_NAMESPACE\" \"$III_WORKER_NAME\" \"$III_CONFIG_NAME\" > seen.txt && test \"$PWD\" = \"$(pwd)\"",
         Duration::from_secs(5),
     )
     .await;
@@ -45,11 +42,7 @@ async fn a_stale_reserved_variable_never_reaches_a_hook() {
     assert!(result.is_ok(), "{result:?}");
     let seen = std::fs::read_to_string(tmp.path().join("seen.txt")).unwrap();
     assert_eq!(
-        seen,
-        format!(
-            "ws://engine.test:49134|orders-test|api|{}",
-            config.display()
-        ),
+        seen, "ws://engine.test:49134|orders-test|api|orders-api",
         "the container's own name must win over whatever the parent exported"
     );
 }

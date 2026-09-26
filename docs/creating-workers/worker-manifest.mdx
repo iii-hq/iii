@@ -7,9 +7,9 @@ type: "reference"
 
 This page covers `iii.worker.yaml` configuration options. `iii.worker.yaml` exists at a worker's
 root and tells iii how to provision the worker's runtime, install its dependencies, start its
-process, and pass through configuration. The engine reads it when starting a worker from
-[`config.yaml`](../using-iii/engine#configuration-file-structure) and when the
-[`iii worker`](../using-iii/workers) CLI starts, stops, or restarts a managed worker.
+process, and pass through configuration. Compose reads it when preparing a `path://` worker or a
+registry package. Project workers are declared and operated through
+[`worker-compose.yaml`](../using-iii/compose), not the engine's `config.yaml`.
 
 For how to connect a worker into a project once its manifest exists, see
 [Creating Workers / Workers](./workers).
@@ -42,6 +42,20 @@ runtime:
   base_image: oven/bun:1 # From docker.io
   # Or a fully-qualified registry path, e.g. GitHub Container Registry:
   # base_image: ghcr.io/astral-sh/uv:bookworm-slim
+```
+
+The images that ship with iii come in two variants:
+
+| Image                                                              | Contents                                                          | Use it when                                                                                                |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.              |
+| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution. |
+
+Select the builder variant when an install fails because a compiler is absent:
+
+```yaml
+runtime:
+  base_image: docker.io/iiidev/node:builder
 ```
 
 ## `scripts`
@@ -147,6 +161,15 @@ env:
   MY_API_KEY: replace-me
 ```
 
+For managed and reusable workers, configure the namespace in the compose file that deploys the
+worker rather than baking it into the shipped worker. Set `III_NAMESPACE` in the worker service's
+environment; the SDK reads it when no explicit `namespace` option is passed. `config.yaml` does not
+support a per-worker `namespace:` key.
+
+When registering a worker programmatically, you may instead pass `namespace` directly to
+`registerWorker` / `register_worker`. The explicit option takes precedence over `III_NAMESPACE`.
+When neither is set, the worker registers in the `default` namespace.
+
 ## `dependencies`
 
 Map of `<worker-name>: <semver range>` declaring other workers this worker depends on, resolved
@@ -186,11 +209,11 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 
-## Publish metadata: `iii`, `deploy`, `manifest`, `tags`
+## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
 Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
-accepts these keys (so a manifest published from the workers repo also works with local
-`iii worker add`) but never reads them at runtime.
+accepts these keys (so a manifest published from the workers repo also works with a local Compose
+worker) but never reads them at runtime.
 
 ```yaml
 iii: v1 # manifest format marker
@@ -200,8 +223,11 @@ tags: # search aliases sent to the workers registry
   - http
   - rest
   - api
+license: Apache-2.0 # SPDX id the registry publishes the worker under
 ```
 
-`iii`, `deploy`, and `manifest` are strings. `tags` is a list of strings used for agent and user
-discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone would
-search for rather than repeating the worker description.
+`iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of strings used for agent
+and user discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone
+would search for rather than repeating the worker description. `license` is an
+[SPDX license id](https://spdx.org/licenses/), for example `Apache-2.0`. The release pipeline of the
+workers repository requires it.

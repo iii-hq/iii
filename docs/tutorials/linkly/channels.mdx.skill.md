@@ -11,16 +11,18 @@ worker stays focused on single links.
 
 ## Add the worker
 
-Scaffold the importer the same way you scaffolded `link` in Chapter 1:
+Uncomment the Ch. 6 block in `worker-compose.yaml`:
 
-```bash
-iii worker init bulk-importer --language typescript
+```yaml worker-compose.yaml
+bulk-importer:
+  worker: path://./bulk-importer
+  start_after: [link]
 ```
 
 ## Import a CSV over a channel
 
 The `bulk-importer` worker exposes one function that receives the read end of a channel, streams the
-CSV in, and triggers `link::create` from the `link` worker for each row. Replace the generated
+CSV in, and triggers `link::create` from the `link` worker for each row. Create
 `bulk-importer/src/index.ts`:
 
 ```typescript bulk-importer/src/index.ts
@@ -41,26 +43,41 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
   const rows = csv.trim().split("\n").slice(1); // skip the header row
 
   let imported = 0;
+  let skipped = 0;
   for (const row of rows) {
-    const [code, url] = row.split(",");
+    // Split on the first comma only, so commas inside the URL survive.
+    const comma = row.indexOf(",");
+    if (comma === -1) continue;
+    const code = row.slice(0, comma).trim();
+    const url = row.slice(comma + 1).trim();
     if (!url) continue;
-    await worker.trigger({
-      function_id: "link::create",
-      payload: { code: code.trim(), url: url.trim() },
-    });
-    imported += 1;
+    try {
+      await worker.trigger({
+        function_id: "link::create",
+        payload: { code, url },
+      });
+      imported += 1;
+    } catch (err) {
+      // Skip a row the database rejects (a code already taken, refused by the
+      // PRIMARY KEY on links.code). Re-throw anything else (a timeout, a worker
+      // that is down) so a broken import fails loudly instead of counting rows
+      // it never created as "skipped".
+      if (!String(err).includes("UNIQUE constraint failed")) throw err;
+      skipped += 1;
+      logger.warn("bulk import row skipped", { code, error: String(err) });
+    }
   }
-  logger.info("bulk import complete", { imported });
-  return { imported };
+  logger.info("bulk import complete", { imported, skipped });
+  return { imported, skipped };
 });
 
 logger.info("bulk-importer ready");
 ```
 
-Register it with your project:
+Restart Compose so it picks up the change:
 
 ```bash
-iii worker add ./bulk-importer
+iii trigger compose::restart
 ```
 
 ## See it work
@@ -78,18 +95,14 @@ With the engine running, let's bulk-load some links.
 The uploader is a small standalone script that creates the channel, writes the CSV to the writer
 end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` (from
 `iii-sdk/helpers`) returns serializable `readerRef`/`writerRef` handles you can pass through a
-normal trigger payload. It is not a worker, so give it its own throwaway directory outside your
-project:
+normal trigger payload. It is not a worker, so `channel-client/` holds it, outside
+`worker-compose.yaml`:
 
 ```bash
-mkdir test-channels
-cd test-channels
-npm init -y
-npm pkg set type=module
-npm install iii-sdk@0.21.4
+cd channel-client && npm install
 ```
 
-Save this as `test-channels/import-links.js`:
+Write this into `channel-client/import-links.js`:
 
 ```javascript import-links.js
 import { registerWorker } from "iii-sdk";
@@ -119,8 +132,14 @@ node import-links.js
 ```
 
 ```json
-{ "imported": 2 }
+{ "imported": 2, "skipped": 0 }
 ```
+
+The SDK prints a few `[iii]` / `[OTel]` connection lines around that object; the
+`{ imported, skipped }` line is the importer's answer.
+
+Run it again and it reports `{ "imported": 0, "skipped": 2 }`: the codes are already taken, so the
+importer skips those rows instead of aborting the batch.
 
 Both new links resolve immediately:
 

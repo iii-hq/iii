@@ -52,7 +52,7 @@ const SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// function owns the reaping so that `stop` and `exit_watch` observe the same
 /// event.
 pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Supervised> {
-    spawn_supervised_inner(command, false).map(|(child, _)| child)
+    spawn_supervised_inner(command, false, false).map(|(child, _, _)| child)
 }
 
 /// Same, but with the child's stdout and stderr piped back instead of inherited.
@@ -62,7 +62,17 @@ pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Sup
 pub fn spawn_supervised_piped(
     command: tokio::process::Command,
 ) -> std::io::Result<(Supervised, ChildOutput)> {
-    spawn_supervised_inner(command, true)
+    spawn_supervised_inner(command, true, false).map(|(child, output, _)| (child, output))
+}
+
+/// Same, but preserves a caller-configured piped stdin and returns its writer.
+/// Used only by the managed engine; worker spawns retain null stdin.
+pub fn spawn_supervised_piped_with_stdin(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput, tokio::process::ChildStdin)> {
+    let (child, output, stdin) = spawn_supervised_inner(command, true, true)?;
+    let stdin = stdin.ok_or_else(|| std::io::Error::other("managed engine stdin was not piped"))?;
+    Ok((child, output, stdin))
 }
 
 /// The child's output streams, when they were piped.
@@ -75,25 +85,29 @@ pub struct ChildOutput {
 fn spawn_supervised_inner(
     mut command: tokio::process::Command,
     piped: bool,
-) -> std::io::Result<(Supervised, ChildOutput)> {
+    preserve_stdin: bool,
+) -> std::io::Result<(Supervised, ChildOutput, Option<tokio::process::ChildStdin>)> {
     // Group leader: killpg then reaches the worker and everything it spawns.
     command.process_group(0);
     // Workers are background process-group leaders. Inheriting the daemon's
     // terminal stdin lets a read trigger SIGTTIN, leaving the child stopped in
     // `T` state while readiness waits forever. Workers communicate through iii,
     // never through Compose's controlling terminal.
-    command.stdin(std::process::Stdio::null());
+    if !preserve_stdin {
+        command.stdin(std::process::Stdio::null());
+    }
     if piped {
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
     }
 
-    let mut child = command.spawn()?;
+    let mut child = spawn_retrying_text_file_busy(&mut command)?;
     let output = ChildOutput {
         stdout: child.stdout.take(),
         stderr: child.stderr.take(),
     };
+    let stdin = child.stdin.take();
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("child exited before its pid could be read"))?;
@@ -114,7 +128,32 @@ fn spawn_supervised_inner(
             exit: ExitSource::Reaped(exit),
         },
         output,
+        stdin,
     ))
+}
+
+/// `exec` refuses a binary that some process still holds open for writing
+/// (`ETXTBSY`): a worker build that just finished, `iii update` swapping the
+/// engine, or, in tests, a stub written moments ago whose descriptor a
+/// concurrent fork inherited for a few microseconds before its own exec. The
+/// window is short, so retry with a growing pause (about half a second in
+/// total) before reporting the failure.
+fn spawn_retrying_text_file_busy(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    const ATTEMPTS: u64 = 10;
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+            }
+            other => return other,
+        }
+    }
 }
 
 impl Supervised {
@@ -277,4 +316,48 @@ pub fn is_same_process(pid: u32, recorded: &BirthIdentity) -> bool {
 fn exited_unknown() -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     ExitStatus::from_raw(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Write as _,
+        os::unix::fs::OpenOptionsExt,
+        time::{Duration, Instant},
+    };
+
+    use super::spawn_supervised;
+
+    #[tokio::test]
+    async fn spawn_retries_while_the_executable_is_still_open_for_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("busy.sh");
+        let mut writer = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o700)
+            .open(&script)
+            .unwrap();
+        writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        writer.flush().unwrap();
+
+        // Hold the write handle across the first attempts: exec answers
+        // ETXTBSY until it is dropped.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drop(writer);
+        });
+
+        let started = Instant::now();
+        let child = spawn_supervised(tokio::process::Command::new(&script))
+            .expect("spawn should wait out ETXTBSY");
+        release.join().unwrap();
+
+        assert!(child.pid > 0);
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "spawn should have retried instead of succeeding before the writer closed"
+        );
+    }
 }

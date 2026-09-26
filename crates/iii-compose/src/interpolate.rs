@@ -6,14 +6,10 @@
 
 //! `${VAR}` in a compose file, resolved from the environment compose runs in.
 //!
-//! A container gets `env_clear()` and a short whitelist, so nothing an operator
-//! exported reaches a worker by accident. That is the behaviour worth keeping,
-//! and it is also what makes this necessary: without a way to say "this one",
-//! the only route for a host value is an env file written by hand.
-//!
-//! So the file names what it wants. `${RUST_LOG}` is an operator asking for one
-//! value, per key, in writing — the whitelist is not widened, and reading the
-//! file still tells you everything that reaches a worker.
+//! Workers inherit the machine environment visible to the daemon. Interpolation
+//! also lets compose values reference it explicitly, including paths and
+//! defaults. An interpolated `environment` value has the same precedence as a
+//! literal value there, above `env_file` entries.
 //!
 //! ## What is a reference and what is not
 //!

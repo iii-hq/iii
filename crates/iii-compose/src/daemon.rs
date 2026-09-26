@@ -17,7 +17,7 @@
 //! immediately rather than left holding projects nobody can address.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -40,6 +40,18 @@ use crate::{
 /// Fast enough that a crash is reported while the operator is still watching,
 /// slow enough that an idle daemon costs nothing.
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
+/// How many times `add_configured` redoes its unlocked plan because the file
+/// changed before it took the mutation lock. Beyond this it fails with
+/// `AddPlanStale` rather than edit from a plan made against another file.
+const ADD_REPLAN_LIMIT: u32 = 2;
+
+struct AddPlan {
+    snapshot: String,
+    wanted: Vec<crate::edit::NewContainer>,
+    aliases: Vec<crate::dependencies::Alias>,
+    selected_versions: BTreeMap<String, String>,
+    resolved_graphs: BTreeMap<String, BTreeSet<String>>,
+}
 
 #[derive(Debug, Clone)]
 pub enum EnginePolicy {
@@ -122,27 +134,26 @@ impl EnginePolicy {
     }
 }
 
-/// Keeps one declaration for a dependency shared by several requested workers.
+/// Keeps one declaration for each container in a mutation batch.
 ///
-/// Registry graphs are resolved per requested root. Two roots may therefore
-/// return the same container. Identical declarations are one shared
-/// dependency; different declarations mean the roots resolved incompatible
-/// versions, sources, or dependency edges. Reject that batch before the file
-/// is read or edited, so argument order cannot select the winning declaration.
-fn coalesce_expanded(
-    expanded: Vec<crate::edit::NewContainer>,
+/// Registry graphs and direct request lists can contain the same container
+/// more than once. Identical declarations collapse into one edit. Conflicting
+/// declarations reject the batch before the file is edited, so
+/// argument order cannot select the winning declaration.
+fn coalesce_containers(
+    containers: Vec<crate::edit::NewContainer>,
 ) -> Result<Vec<crate::edit::NewContainer>> {
     let mut positions = BTreeMap::new();
-    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(expanded.len());
+    let mut unique: Vec<crate::edit::NewContainer> = Vec::with_capacity(containers.len());
 
-    for container in expanded {
+    for container in containers {
         if let Some(&position) = positions.get(&container.key) {
             if unique[position] != container {
                 return Err(ComposeError::InvalidWorkerSpec {
                     spec: container.key.clone(),
                     reason: format!(
                         "the requested workers resolve container '{}' to conflicting sources, \
-                         versions, or dependencies",
+                         versions, dependencies, or settings",
                         container.key
                     ),
                 });
@@ -155,6 +166,102 @@ fn coalesce_expanded(
     }
 
     Ok(unique)
+}
+
+/// Compares fields that change which workers run or how they depend on each other.
+fn runtime_topology_changed(previous: &ComposeFile, next: &ComposeFile) -> bool {
+    if previous.containers.len() != next.containers.len() {
+        return true;
+    }
+    previous.containers.iter().any(|(key, container)| {
+        next.containers.get(key).is_none_or(|next| {
+            container.worker != next.worker || container.start_after != next.start_after
+        })
+    })
+}
+
+fn update_selector(explicit: Option<&str>, current: &str) -> String {
+    explicit.unwrap_or(current).to_string()
+}
+
+fn graph_members(containers: &[crate::edit::NewContainer]) -> BTreeSet<String> {
+    containers
+        .iter()
+        .flat_map(|container| {
+            std::iter::once(container.key.clone()).chain(container.start_after.iter().cloned())
+        })
+        .collect()
+}
+
+/// Returns one root's reachable declarations after alias and instance reuse.
+fn graph_members_for_root(
+    containers: &[crate::edit::NewContainer],
+    root: &str,
+) -> BTreeSet<String> {
+    let containers = containers
+        .iter()
+        .map(|container| (container.key.as_str(), container))
+        .collect::<BTreeMap<_, _>>();
+    let mut members = BTreeSet::new();
+    let mut visit = vec![root.to_string()];
+    while let Some(key) = visit.pop() {
+        if !members.insert(key.clone()) {
+            continue;
+        }
+        if let Some(container) = containers.get(key.as_str()) {
+            visit.extend(container.start_after.iter().cloned());
+        }
+    }
+    members
+}
+
+fn stale_graph_members(
+    previous: &BTreeMap<String, BTreeSet<String>>,
+    replacements: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut next = previous.clone();
+    for (root, nodes) in replacements {
+        next.insert(root.clone(), nodes.clone());
+    }
+    let retained = next.values().flatten().collect::<BTreeSet<_>>();
+    let roots = next.keys().collect::<BTreeSet<_>>();
+    replacements
+        .keys()
+        .filter_map(|root| previous.get(root))
+        .flatten()
+        .filter(|node| !retained.contains(node) && !roots.contains(node))
+        .cloned()
+        .collect()
+}
+
+/// Select declared packages when no worker specs were supplied.
+fn workers_to_update(
+    compose: &crate::ComposeFile,
+    workers: &[String],
+) -> Result<Vec<crate::edit::NewContainer>> {
+    if !workers.is_empty() {
+        return workers
+            .iter()
+            .map(|worker| crate::edit::parse_worker(worker))
+            .collect();
+    }
+
+    Ok(compose
+        .containers
+        .iter()
+        .filter_map(|(key, container)| match &container.worker {
+            crate::config::WorkerSource::Package { reference } => Some(crate::edit::NewContainer {
+                key: key.clone(),
+                source: crate::edit::Source::Package {
+                    reference: reference.clone(),
+                    version: Some("latest".to_string()),
+                },
+                start_after: container.start_after.clone(),
+                fields: serde_yaml::Mapping::new(),
+            }),
+            crate::config::WorkerSource::Path { .. } => None,
+        })
+        .collect())
 }
 
 pub struct Daemon {
@@ -189,6 +296,9 @@ pub struct Daemon {
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
     stop_requested: std::sync::atomic::AtomicBool,
+    shutdown: crate::shutdown::ShutdownController,
+    /// Joined before project state is cleared; supervision must not write later.
+    supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Daemon {
@@ -201,6 +311,22 @@ impl Daemon {
         daemon_namespace: String,
         project_namespace_override: Option<String>,
         engine_policy: EnginePolicy,
+    ) -> Arc<Self> {
+        Self::start_with_shutdown(
+            requested_engine_url,
+            daemon_namespace,
+            project_namespace_override,
+            engine_policy,
+            crate::shutdown::ShutdownController::default(),
+        )
+    }
+
+    pub(crate) fn start_with_shutdown(
+        requested_engine_url: String,
+        daemon_namespace: String,
+        project_namespace_override: Option<String>,
+        engine_policy: EnginePolicy,
+        shutdown: crate::shutdown::ShutdownController,
     ) -> Arc<Self> {
         // A managed file is the sole engine source. Public callers receive the
         // same guarantee as the CLI: workers and policy checks cannot point at
@@ -229,10 +355,37 @@ impl Daemon {
             mutations: Mutex::new(BTreeMap::new()),
             operations: crate::operation::OperationManager::new(engine.client()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
+            shutdown,
+            supervisor: Mutex::new(None),
         });
 
-        Self::supervise(&daemon);
+        *daemon.supervisor.try_lock().expect("new supervisor slot") =
+            Some(Self::supervise(&daemon));
         daemon
+    }
+
+    fn cancellation(&self, operation_id: &str) -> crate::shutdown::ShutdownSignal {
+        let signal = self.shutdown.signal();
+        match crate::operation::active(operation_id) {
+            Some(operation) => signal.or(crate::shutdown::ShutdownSignal::from_receiver(
+                operation.cancellation(),
+            )),
+            None => signal,
+        }
+    }
+
+    /// Preparation is safe to drop; lifecycle work instead drains and rolls back.
+    async fn prepare<T>(
+        &self,
+        operation_id: &str,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        self.cancellation(operation_id)
+            .run(work)
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            })
     }
 
     pub fn engine(&self) -> &EngineClient {
@@ -249,6 +402,29 @@ impl Daemon {
             self.project_namespace_override.as_deref(),
             file.namespace.as_deref(),
         )
+    }
+
+    /// Resolves and acquires packages, then commits their lock to a loaded project.
+    ///
+    /// The caller holds this compose file's mutation lock through this call.
+    /// Keep the candidate in memory until loading and metadata-lock acquisition
+    /// finish, so cancellation cannot persist a partially prepared startup.
+    async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
+        let mut compose = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&compose)?;
+        let namespace = self.project_namespace(&compose);
+        crate::manifest::validate_offline(&compose, &namespace)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let prepared = if frozen {
+            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?
+        } else {
+            crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?
+        };
+        let project = self.project(file).await?;
+        project
+            .commit_prepared_packages(&compose, &prepared)
+            .await?;
+        Ok(project)
     }
 
     /// The project `file` declares, loading it if this is the first time.
@@ -274,19 +450,22 @@ impl Daemon {
         };
 
         cell.get_or_try_init(|| async {
-            let compose = ComposeFile::load(file)?;
+            let mut compose = ComposeFile::load(file)?;
             self.engine_policy.validate_project(&compose)?;
             // Validate before announcing: a project that cannot start is better
             // refused here than half-started later.
             let namespace = self.project_namespace(&compose);
             crate::manifest::validate_offline(&compose, &namespace)?;
 
-            let project = Project::open(
+            crate::lockfile::attach(&mut compose)?;
+
+            let project = Project::open_with_shutdown(
                 &self.daemon_namespace,
                 namespace.clone(),
                 compose,
                 Arc::clone(&self.engine),
                 self.engine_url.clone(),
+                self.shutdown.clone(),
             )
             .await?;
 
@@ -336,30 +515,58 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
-        let project = self.project(file).await?;
-        Ok(project.up(container, operation_id).await)
+        self.up_until_shutdown(
+            file,
+            container,
+            operation_id.clone(),
+            self.cancellation(&operation_id),
+            false,
+        )
+        .await?
+        .ok_or(ComposeError::OperationCancelled { operation_id })
     }
 
-    /// Brings the initial foreground project up until the process is asked to
-    /// stop. Remote `compose::up` calls use [`Self::up`] and are not tied to a
-    /// signal received by the foreground CLI.
+    /// Brings a project up using only a matching existing lock.
+    pub async fn up_frozen(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        operation_id: String,
+    ) -> Result<OpResult> {
+        self.up_until_shutdown(
+            file,
+            container,
+            operation_id.clone(),
+            self.cancellation(&operation_id),
+            true,
+        )
+        .await?
+        .ok_or(ComposeError::OperationCancelled { operation_id })
+    }
+
+    /// Shared foreground and remote startup, cancelled by the same daemon source.
     pub(crate) async fn up_until_shutdown(
         &self,
         file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
         shutdown: crate::shutdown::ShutdownSignal,
+        frozen: bool,
     ) -> Result<Option<OpResult>> {
+        let shutdown = shutdown.or(self.cancellation(&operation_id));
         let file = self.resolve_file(file)?;
-        let current = ComposeFile::load(file)?;
-        self.engine_policy.validate_project(&current)?;
-        let project = self.project(file).await?;
+        let Some(_mutation) = shutdown.run(self.lock_mutation(file)).await else {
+            return Ok(None);
+        };
+        // Drop only preparation; lifecycle startup must roll back owned children.
+        let Some(project) = shutdown.run(self.prepare_start_project(file, frozen)).await else {
+            return Ok(None);
+        };
+        let project = project?;
         if shutdown.requested() {
             return Ok(None);
         }
+        crate::report::containers_starting();
         Ok(project
             .up_until_shutdown(container, operation_id, shutdown)
             .await)
@@ -368,10 +575,9 @@ impl Daemon {
     /// Adds containers to a project's file, then reconciles the project once.
     ///
     /// The file is the operator's, so it is edited rather than rewritten: see
-    /// [`crate::edit`]. A version the caller did not pin is resolved once and
-    /// written out, because `compose::add` promising "the latest" and a later
-    /// `up` silently getting a different one is the drift a compose file exists
-    /// to prevent.
+    /// [`crate::edit`]. A request without a selector is pinned to the resolved
+    /// version in the compose file. An explicit selector such as `next` stays
+    /// in that file and its concrete result is recorded in the compose lock.
     ///
     /// Reconciliation leaves unchanged containers running, restarts existing
     /// declarations whose resolved version changed, and starts declarations
@@ -382,6 +588,21 @@ impl Daemon {
         &self,
         file: Option<&Path>,
         workers: &[String],
+        operation_id: String,
+    ) -> Result<MutationOutcome> {
+        let workers = workers
+            .iter()
+            .cloned()
+            .map(crate::edit::WorkerInput::Spec)
+            .collect::<Vec<_>>();
+        self.add_configured(file, &workers, operation_id).await
+    }
+
+    /// Adds worker specs or full container declarations in one atomic file edit.
+    pub async fn add_configured(
+        &self,
+        file: Option<&Path>,
+        workers: &[crate::edit::WorkerInput],
         operation_id: String,
     ) -> Result<MutationOutcome> {
         if workers.is_empty() {
@@ -396,92 +617,78 @@ impl Daemon {
         self.validate_engine_policy_file(path)?;
         let asked = workers
             .iter()
-            .map(|worker| crate::edit::parse_worker(worker))
+            .map(crate::edit::WorkerInput::parse)
             .collect::<Result<Vec<_>>>()?;
-        // A worker is not useful alone: its manifest names what it calls, and
-        // the registry answers with that whole graph already pinned to versions
-        // that satisfy each other. They are declared rather than started
-        // behind the file, so what runs is still what the file says.
-        //
-        // Dependencies first and the worker last: with no `start_after`, start
-        // order is declaration order, so this is what makes a worker start
-        // after the things it calls.
-        let mut expanded = futures::stream::iter(asked.clone().into_iter().enumerate().map(
-            |(index, worker)| async move {
-                let graph = self.expand(&worker).await;
-                (index, graph)
-            },
-        ))
-        .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
-        expanded.sort_by_key(|(index, _)| *index);
-        let mut wanted = Vec::new();
-        for (_, graph) in expanded {
-            wanted.extend(graph?);
-        }
-        let wanted = coalesce_expanded(wanted)?;
-
-        // Acquire registry artifacts before taking either the file mutation lock
-        // or the project's runtime lock. `lifecycle::start_one` calls install
-        // again, but that second call is a cheap verified cache hit.
-        let package_cache = crate::state::StateStore::package_cache()?;
+        let declarations = coalesce_containers(asked.clone())?;
+        let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
         let operation = crate::operation::active(&operation_id);
-        let installs: Vec<(String, String, String)> = wanted
-            .iter()
-            .filter_map(|worker| match &worker.source {
-                crate::edit::Source::Package {
-                    reference,
-                    version: Some(version),
-                } => Some((worker.key.clone(), reference.clone(), version.clone())),
-                _ => None,
-            })
-            .collect();
-        let acquired: Vec<Result<()>> =
-            futures::stream::iter(installs.into_iter().map(|(key, reference, version)| {
-                let package_cache = package_cache.clone();
-                let operation = operation.clone();
-                async move {
-                    if let Some(operation) = operation {
-                        operation
-                            .emit(
-                                Some(&key),
-                                "installing",
-                                format!("acquiring {reference}@{version}"),
-                            )
-                            .await;
-                    }
-                    crate::registry::install(&key, &reference, &version, &package_cache)
-                        .await
-                        .map(|_| ())
-                }
-            }))
-            .buffer_unordered(4)
-            .collect()
-            .await;
-        for result in acquired {
-            result?;
-        }
-
-        if operation
-            .as_ref()
-            .is_some_and(|operation| operation.is_cancelled())
-        {
-            return Err(ComposeError::OperationCancelled { operation_id });
-        }
-
-        let _mutation = self.lock_mutation(path).await;
-        if operation
-            .as_ref()
-            .is_some_and(|operation| operation.is_cancelled())
-        {
-            return Err(ComposeError::OperationCancelled { operation_id });
-        }
-        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        // The plan is made against a snapshot, unlocked. Only the file it was
+        // made against is ever edited: a file that moved underneath (another
+        // add declaring one of this graph's dependencies as `path://`, say)
+        // is planned again, and past the limit the add fails for a retry.
+        let mut replans = 0;
+        let (_mutation, text, wanted, aliases, selected_versions, resolved_graphs) = loop {
+            let AddPlan {
+                snapshot,
+                wanted,
+                aliases,
+                selected_versions,
+                resolved_graphs,
+            } = self
+                .prepare(
+                    &operation_id,
+                    self.plan_add(path, &declarations, &asked_keys, &operation_id),
+                )
+                .await??;
+            let mutation = self
+                .prepare(&operation_id, self.lock_mutation(path))
+                .await?;
+            if operation
+                .as_ref()
+                .is_some_and(|operation| operation.is_cancelled())
+            {
+                return Err(ComposeError::OperationCancelled { operation_id });
+            }
+            let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            if text == snapshot {
+                break (
+                    mutation,
+                    text,
+                    wanted,
+                    aliases,
+                    selected_versions,
+                    resolved_graphs,
+                );
+            }
+            if replans == ADD_REPLAN_LIMIT {
+                return Err(ComposeError::AddPlanStale {
+                    path: path.to_path_buf(),
+                    replans,
+                });
+            }
+            replans += 1;
+            crate::report::daemon_line(
+                &format!(
+                    "{}: changed while this add resolved its graph; planning again",
+                    path.display()
+                ),
+                true,
+            );
+        };
         self.validate_engine_policy_text(path, &text)?;
+        let declared = crate::ComposeFile::parse(&text, path)?;
+        for alias in aliases {
+            crate::registry::warn_alias(
+                &alias.container,
+                &alias.reference,
+                Some(&alias.canonical),
+                operation.as_deref(),
+            )
+            .await;
+        }
         let mut edited = text.clone();
         let mut added: Vec<String> = Vec::new();
         let mut replaced: Vec<String> = Vec::new();
@@ -507,30 +714,50 @@ impl Daemon {
             .collect::<Vec<_>>();
         let container = requested[0].clone();
 
-        if added.is_empty() && replaced.is_empty() {
+        let yaml_changed = !added.is_empty() || !replaced.is_empty();
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let force = selected_versions.keys().cloned().collect();
+        let mut prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_with_versions(
+                    &mut current,
+                    &package_cache,
+                    &force,
+                    &selected_versions,
+                ),
+            )
+            .await??;
+        for (root, nodes) in resolved_graphs {
+            prepared.replace_graph(&root, nodes);
+        }
+        restart.retain(|key| {
+            current.containers.get(key).is_some_and(|container| {
+                matches!(container.worker, crate::config::WorkerSource::Path { .. })
+                    || prepared.package_changed(key)
+            })
+        });
+        for key in declared.containers.keys() {
+            if prepared.package_changed(key) && !restart.contains(key) {
+                restart.push(key.clone());
+            }
+        }
+
+        if !yaml_changed && !prepared.changed() {
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 Some(&container),
                 Some(&requested),
-                wanted
-                    .iter()
-                    .find(|worker| worker.key == container)
-                    .and_then(|worker| match &worker.source {
-                        crate::edit::Source::Package { version, .. } => version.clone(),
-                        crate::edit::Source::Path { .. } => None,
-                    }),
+                prepared.resolved_version(&container).map(str::to_string),
                 std::iter::empty::<&OpResult>(),
             ));
         }
-        let edited = &edited;
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(edited, path)?;
-        write_atomically(path, edited)?;
+        self.prepare(&operation_id, std::future::ready(())).await?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
-        let current = ComposeFile::load(path)?;
         let project = self.project(path).await?;
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
@@ -550,13 +777,7 @@ impl Daemon {
         } else {
             OpStatus::Ok
         };
-        let version = wanted
-            .iter()
-            .find(|worker| worker.key == container)
-            .and_then(|worker| match &worker.source {
-                crate::edit::Source::Package { version, .. } => version.clone(),
-                crate::edit::Source::Path { .. } => None,
-            });
+        let version = prepared.resolved_version(&container).map(str::to_string);
         let operations = restarted.iter().chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
             status,
@@ -568,6 +789,63 @@ impl Daemon {
         ))
     }
 
+    /// Everything `add_configured` does before it takes the mutation lock:
+    /// expand the asked workers into their registry graphs against the
+    /// declaration as it stands, keep the pins the operator already wrote, and
+    /// retain the exact registry selections needed to prepare the lock. Registry
+    /// calls run unlocked; artifact acquisition happens only after the plan is
+    /// confirmed against the same file snapshot.
+    /// Returns the text the plan was made against with the plan, so the caller
+    /// can tell whether that declaration is still the one it is editing.
+    async fn plan_add(
+        &self,
+        path: &Path,
+        declarations: &[crate::edit::NewContainer],
+        asked_keys: &BTreeSet<String>,
+        operation_id: &str,
+    ) -> Result<AddPlan> {
+        let snapshot = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
+        crate::lockfile::attach(&mut declared)?;
+        let mut plan = crate::dependencies::plan(&declared, declarations).await?;
+        let mut selected_versions = std::mem::take(&mut plan.selected_versions);
+        plan.containers = keep_declared_dependencies(
+            plan.containers,
+            asked_keys,
+            &declared,
+            &mut selected_versions,
+        );
+        let resolved_graphs = declarations
+            .iter()
+            .filter(|worker| matches!(worker.source, crate::edit::Source::Package { .. }))
+            .map(|worker| {
+                (
+                    worker.key.clone(),
+                    graph_members_for_root(&plan.containers, &worker.key),
+                )
+            })
+            .collect();
+        let operation = crate::operation::active(operation_id);
+        if operation
+            .as_ref()
+            .is_some_and(|operation| operation.is_cancelled())
+        {
+            return Err(ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            });
+        }
+        Ok(AddPlan {
+            snapshot,
+            wanted: plan.containers,
+            aliases: plan.aliases,
+            selected_versions,
+            resolved_graphs,
+        })
+    }
+
     /// The worker asked for, plus everything it needs, in start order.
     ///
     /// A `path://` worker is taken alone: its dependencies are declared in a
@@ -575,185 +853,384 @@ impl Daemon {
     /// rather than reading one answer. That is worth doing, and is not done
     /// here yet.
     ///
+    /// A registry dependency already declared as `path://` is also taken as an
+    /// operator-owned boundary. The package keeps its edge to that container,
+    /// but neither the local worker nor the package dependencies below it are
+    /// added from the registry graph.
+    ///
     /// `engine` workers are skipped. They are compiled into the engine and are
     /// already serving before compose starts anything; declaring one would
     /// produce a container with no artefact to install.
     async fn expand(
         &self,
         asked: &crate::edit::NewContainer,
-    ) -> Result<Vec<crate::edit::NewContainer>> {
+        path_workers: &BTreeSet<String>,
+    ) -> Result<(Vec<crate::edit::NewContainer>, BTreeMap<String, String>)> {
         let crate::edit::Source::Package { reference, version } = &asked.source else {
-            return Ok(vec![asked.clone()]);
+            return Ok((vec![asked.clone()], BTreeMap::new()));
         };
 
         let range = version.clone().unwrap_or_else(|| "*".to_string());
         let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
-        expand_graph(asked, reference, graph)
+        let selected_versions = graph
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), node.version.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let containers = expand_graph(asked, reference, graph, path_workers)?;
+        let selected_versions = containers
+            .iter()
+            .filter(|container| matches!(&container.source, crate::edit::Source::Package { .. }))
+            .filter_map(|container| {
+                selected_versions
+                    .get(&container.key)
+                    .map(|version| (container.key.clone(), version.clone()))
+            })
+            .collect();
+        Ok((containers, selected_versions))
     }
 
-    /// Moves one declared container to another version of the same package.
+    /// Moves declared containers to other versions of the same packages.
     ///
-    /// `worker=state` takes whatever the registry calls latest; `worker=state@1.2.3`
-    /// takes that one, which is how a downgrade is spelled. The container has to
-    /// be declared already — this edits a line, it does not add one, and
-    /// `compose::add` is the call that adds.
+    /// `worker=state` refreshes the selector already declared in the file,
+    /// including an exact version. `worker=state@latest` explicitly moves it
+    /// to the registry's latest channel. The complete dependency graph is
+    /// resolved again and generated dependencies are reconciled with it.
+    /// An empty worker list selects every declared package at its latest
+    /// version, using its existing registry reference. Path workers are skipped.
     ///
-    /// The answer names both versions, because the operator asked for "latest"
-    /// without knowing what that is and the interesting part of the reply is
-    /// what it turned out to be.
+    /// The complete batch is validated and edited in memory before one atomic
+    /// write. A changed batch restarts the project once.
     pub async fn update(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let Some(worker) = worker else {
-            return Err(ComposeError::InvalidWorkerSpec {
-                spec: String::new(),
-                reason: "no worker was named. Pass worker=<name> or worker=<name@version>"
-                    .to_string(),
-            });
-        };
-
         let path = self.resolve_file(file)?;
-        let asked = crate::edit::parse_worker(worker)?;
-        let crate::edit::Source::Package { reference, version } = &asked.source else {
-            return Err(ComposeError::NotAPackageContainer {
-                container: asked.key.clone(),
-                kind: "path".to_string(),
-            });
-        };
-
-        let _mutation = self.lock_mutation(path).await;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
-        let Some(container) = compose.containers.get(&asked.key) else {
-            return Err(ComposeError::UnknownContainer {
-                container: asked.key.clone(),
+        let asked = workers_to_update(&compose, workers)?;
+        let requested = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        let primary = requested.first().map(String::as_str);
+        let asked = coalesce_containers(asked)?;
+        let previous_graphs = crate::lockfile::graphs(path)?;
+        let previous_graph_nodes = previous_graphs
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let path_workers = compose
+            .containers
+            .iter()
+            .filter(|(_, container)| {
+                matches!(container.worker, crate::config::WorkerSource::Path { .. })
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<BTreeSet<_>>();
+        let mut roots = Vec::with_capacity(asked.len());
+        let mut all_explicit_exact_unchanged = true;
+        for worker in &asked {
+            let crate::edit::Source::Package { version, .. } = &worker.source else {
+                return Err(ComposeError::NotAPackageContainer {
+                    container: worker.key.clone(),
+                    kind: "path".to_string(),
+                });
+            };
+            let Some(container) = compose.containers.get(&worker.key) else {
+                return Err(ComposeError::UnknownContainer {
+                    container: worker.key.clone(),
+                });
+            };
+            let crate::config::WorkerSource::Package { reference } = &container.worker else {
+                return Err(ComposeError::NotAPackageContainer {
+                    container: worker.key.clone(),
+                    kind: "path".to_string(),
+                });
+            };
+
+            let current_selector = container.version.as_deref().unwrap_or("*");
+            all_explicit_exact_unchanged &= version.as_deref().is_some_and(|version| {
+                version == current_selector && semver::Version::parse(version).is_ok()
             });
-        };
-        if !matches!(
-            container.worker,
-            crate::config::WorkerSource::Package { .. }
-        ) {
-            return Err(ComposeError::NotAPackageContainer {
-                container: asked.key.clone(),
-                kind: "path".to_string(),
+            roots.push(crate::edit::NewContainer {
+                key: worker.key.clone(),
+                source: crate::edit::Source::Package {
+                    reference: reference.clone(),
+                    version: Some(update_selector(version.as_deref(), current_selector)),
+                },
+                start_after: Vec::new(),
+                fields: serde_yaml::Mapping::new(),
             });
         }
 
-        // Asked for by version, or whatever the registry calls latest today.
-        let wanted = match version {
-            Some(version) => version.clone(),
-            None => crate::registry::latest_version(&asked.key, reference).await?,
-        };
+        if all_explicit_exact_unchanged {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                primary,
+                Some(&requested),
+                primary.and_then(|primary| {
+                    compose
+                        .containers
+                        .get(primary)
+                        .and_then(|container| container.version.clone())
+                }),
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
 
-        // The declared dependencies come along unchanged. An update moves a
-        // version; rewriting the graph on the way is `compose::add`'s job, and
-        // doing it here would edit lines the operator did not ask about.
-        let new = crate::edit::NewContainer {
-            key: asked.key.clone(),
-            source: crate::edit::Source::Package {
-                reference: reference.clone(),
-                version: Some(wanted.clone()),
-            },
-            start_after: container.start_after.clone(),
-        };
+        let path_workers = &path_workers;
+        let mut expanded = self
+            .prepare(
+                &operation_id,
+                futures::stream::iter(
+                    roots
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, worker)| async move {
+                            (index, self.expand(&worker, path_workers).await)
+                        }),
+                )
+                .buffer_unordered(4)
+                .collect::<Vec<_>>(),
+            )
+            .await?;
+        expanded.sort_by_key(|(index, _)| *index);
 
-        let edited = match crate::edit::upsert_container(&text, &new)? {
-            crate::edit::Outcome::Unchanged => {
-                return Ok(MutationOutcome::from_operations(
-                    OpStatus::Ok,
-                    false,
-                    Some(&asked.key),
-                    None,
-                    Some(wanted),
-                    std::iter::empty::<&OpResult>(),
-                ));
+        let mut wanted = Vec::new();
+        let mut selected_versions = BTreeMap::new();
+        let mut resolved_graphs = BTreeMap::new();
+        for (index, expansion) in expanded {
+            let (containers, versions) = expansion?;
+            let nodes = graph_members(&containers);
+            resolved_graphs.insert(asked[index].key.clone(), nodes);
+            for (container, version) in versions {
+                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
+                    && current != version
+                {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: container.clone(),
+                        reason: format!(
+                            "the requested workers resolve container '{container}' to conflicting \
+                             versions {current} and {version}"
+                        ),
+                    });
+                }
             }
-            crate::edit::Outcome::Replaced { text, .. } => text,
-            // `upsert_container` only adds when the key is absent, and the key
-            // was read out of this same file a moment ago.
-            crate::edit::Outcome::Added(text) => text,
-        };
+            wanted.extend(containers);
+        }
+        let mut wanted = coalesce_containers(wanted)?;
+        for container in &mut wanted {
+            if let Some(existing) = compose.containers.get(&container.key) {
+                container.start_after.extend(
+                    existing
+                        .start_after
+                        .iter()
+                        .filter(|dependency| !previous_graph_nodes.contains(*dependency))
+                        .cloned(),
+                );
+                container.start_after.sort();
+                container.start_after.dedup();
+            }
+        }
 
-        // Parsed before it is written, so a splice that would not load leaves
-        // the operator's file exactly as it was.
-        crate::ComposeFile::parse(&edited, path)?;
-        write_atomically(path, &edited)?;
+        let stale = stale_graph_members(&previous_graphs, &resolved_graphs);
+        let mut edited = text.clone();
+        let mut yaml_changed = false;
+        for worker in &wanted {
+            match crate::edit::upsert_container(&edited, worker)? {
+                crate::edit::Outcome::Unchanged => {}
+                crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
+                    edited = text;
+                    yaml_changed = true;
+                }
+            }
+        }
+        for container in stale {
+            let removable = compose.containers.get(&container).is_some_and(|container| {
+                matches!(
+                    container.worker,
+                    crate::config::WorkerSource::Package { .. }
+                )
+            }) && crate::edit::is_generated_container(&edited, &container)?;
+            if removable && let Some(next) = crate::edit::remove_container(&edited, &container)? {
+                edited = next;
+                yaml_changed = true;
+            }
+        }
+
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
+        let topology_changed = runtime_topology_changed(&compose, &current);
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let force = selected_versions.keys().cloned().collect();
+        let mut prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_with_versions(
+                    &mut current,
+                    &package_cache,
+                    &force,
+                    &selected_versions,
+                ),
+            )
+            .await??;
+        for (root, nodes) in resolved_graphs {
+            prepared.replace_graph(&root, nodes);
+        }
+        let package_changed = selected_versions
+            .keys()
+            .any(|container| prepared.package_changed(container));
+        let version = primary
+            .and_then(|primary| prepared.resolved_version(primary))
+            .map(str::to_string);
+
+        if !yaml_changed && !prepared.changed() {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                primary,
+                Some(&requested),
+                version,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
+
+        self.prepare(&operation_id, std::future::ready(())).await?;
+        persist_mutation(path, &text, &edited, &prepared)?;
+
+        if !package_changed && !topology_changed {
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                true,
+                primary,
+                Some(&requested),
+                version,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
 
         // The whole project, not just this container, and deliberately so. A
         // cached project is the file as it was read, so the new version is only
         // picked up once the project is dropped and re-read — and dropping it
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
-            Some(&asked.key),
-            None,
-            Some(wanted),
+            primary,
+            Some(&requested),
+            version,
             [&down, &up].into_iter(),
         ))
     }
 
-    /// Removes one declared worker and reconciles the running project.
+    /// Removes declared workers and reconciles the running project once.
     ///
-    /// Dependency edges pointing at the removed worker are deleted with it.
+    /// Dependency edges pointing at removed workers are deleted with them.
     /// The edited declaration is fully validated before the file or any
-    /// process changes. Only the removed container stops; normal idempotent
+    /// process changes. Only the removed containers stop; normal idempotent
     /// `up` then starts anything else that was already missing.
     pub async fn remove(
         &self,
         file: Option<&Path>,
-        worker: Option<&str>,
+        workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let Some(worker) = worker.map(str::trim).filter(|worker| !worker.is_empty()) else {
+        if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
                 spec: String::new(),
-                reason: "no worker was named. Pass worker=<name>".to_string(),
+                reason: "no worker was named. Pass one or more worker=<name> arguments".to_string(),
             });
-        };
+        }
+        let workers = workers
+            .iter()
+            .map(|worker| {
+                let worker = worker.trim();
+                if worker.is_empty() {
+                    return Err(ComposeError::InvalidWorkerSpec {
+                        spec: worker.to_string(),
+                        reason: "worker names cannot be blank".to_string(),
+                    });
+                }
+                Ok(worker.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let path = self.resolve_file(file)?;
-        let _mutation = self.lock_mutation(path).await;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
         })?;
         self.validate_engine_policy_text(path, &text)?;
-        let Some(edited) = crate::edit::remove_container(&text, worker)? else {
-            return Err(ComposeError::UnknownContainer {
-                container: worker.to_string(),
-            });
-        };
+        let requested = workers.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let removal_order = crate::ComposeFile::parse(&text, path)?
+            .start_order()?
+            .into_iter()
+            .rev()
+            .filter(|worker| requested.contains(worker.as_str()))
+            .collect::<Vec<_>>();
+        let mut edited = text.clone();
+        for worker in &workers {
+            let Some(next) = crate::edit::remove_container(&edited, worker)? else {
+                return Err(ComposeError::UnknownContainer {
+                    container: worker.to_string(),
+                });
+            };
+            edited = next;
+        }
 
-        let current = crate::ComposeFile::parse(&edited, path)?;
+        let mut current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
+        let prepared = self
+            .prepare(
+                &operation_id,
+                crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()),
+            )
+            .await??;
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
-        write_atomically(path, &edited)?;
+        self.prepare(&operation_id, std::future::ready(())).await?;
+        persist_mutation(path, &text, &edited, &prepared)?;
 
-        let (down, up) = project
-            .reconcile_removal(current, worker, operation_id)
+        let (stopped, up) = project
+            .reconcile_removals(current, &removal_order, operation_id)
             .await;
+        let status = if up.status == OpStatus::Failed
+            || stopped
+                .iter()
+                .any(|result| result.status == OpStatus::Failed)
+        {
+            OpStatus::Failed
+        } else {
+            OpStatus::Ok
+        };
+        let operations = stopped.iter().chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
-            up.status,
+            status,
             true,
-            Some(worker),
+            workers.first().map(String::as_str),
+            Some(&workers),
             None,
-            None,
-            [&down, &up].into_iter(),
+            operations,
         ))
     }
 
@@ -777,7 +1254,12 @@ impl Daemon {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
-            let project = self.project(path).await?;
+            let _mutation = self
+                .prepare(&operation_id, self.lock_mutation(path))
+                .await?;
+            let project = self
+                .prepare(&operation_id, self.prepare_start_project(path, false))
+                .await??;
             let result = project.restart_one(key, operation_id).await;
             return Ok(MutationOutcome::from_operations(
                 result.status,
@@ -789,7 +1271,10 @@ impl Daemon {
             ));
         }
 
-        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let _mutation = self
+            .prepare(&operation_id, self.lock_mutation(path))
+            .await?;
+        let (down, up) = self.restart_project(path, None, &operation_id).await?;
         Ok(MutationOutcome::from_operations(
             up.status,
             down.changed || up.changed,
@@ -807,20 +1292,28 @@ impl Daemon {
     /// supervised by nothing. Re-reading is the point — a project is held as
     /// its file was when it was first loaded, so without this a restart would
     /// start exactly what was already running and report success.
+    /// The caller holds the compose file's mutation lock.
     async fn restart_project(
         &self,
-        file: Option<&Path>,
+        path: &Path,
         container: Option<&str>,
         operation_id: &str,
     ) -> Result<(OpResult, OpResult)> {
-        let path = self.resolve_file(file)?.to_path_buf();
         let down = self
-            .down(file, container, format!("{operation_id}-down"))
+            .down(Some(path), container, format!("{operation_id}-down"))
             .await?;
-        self.forget(&path).await;
-        let up = self
-            .up(file, container, format!("{operation_id}-up"))
-            .await?;
+        self.forget(path).await;
+        // Once down has completed, operation cancellation must not strand the
+        // project. Finish its replacement, but still honor process shutdown.
+        let project = self
+            .shutdown
+            .signal()
+            .run(self.prepare_start_project(path, false))
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            })??;
+        let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
 
@@ -938,6 +1431,7 @@ impl Daemon {
     /// down mid-reply would leave them holding a broken socket instead of an
     /// answer.
     pub async fn request_stop(&self) -> serde_json::Value {
+        self.shutdown.cancel();
         self.operations.cancel_all().await;
         self.stop_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -955,8 +1449,22 @@ impl Daemon {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Drain supervision rather than aborting it: an in-flight lifecycle call
+    /// owns processes and must finish reaping them before state is removed.
+    async fn stop_supervisor(&self) {
+        let mut supervisor = self.supervisor.lock().await;
+        if let Some(task) = supervisor.as_mut() {
+            let _ = task.await;
+        }
+        *supervisor = None;
+    }
+
     /// Intentional shutdown: every project goes down, then the connection.
     pub async fn shutdown(&self) {
+        // Publish before waiting for any project lock held by active work.
+        self.shutdown.cancel();
+        self.operations.cancel_all().await;
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.shutdown().await;
@@ -967,6 +1475,8 @@ impl Daemon {
     /// Leaves without touching what was not started here. Used when the engine
     /// refuses this daemon's registration.
     pub async fn abandon(&self) {
+        self.shutdown.cancel();
+        self.stop_supervisor().await;
         let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.abandon().await;
@@ -980,13 +1490,23 @@ impl Daemon {
     /// One loop for every project rather than one per project: it holds each
     /// project's lock for microseconds at a time, and a daemon with ten
     /// projects should not cost ten timers.
-    fn supervise(daemon: &Arc<Self>) {
+    fn supervise(daemon: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let weak = Arc::downgrade(daemon);
+        let shutdown = daemon.shutdown.signal();
         tokio::spawn(async move {
             let mut was_connected = true;
             loop {
-                tokio::time::sleep(SUPERVISION_INTERVAL).await;
+                if shutdown
+                    .run(tokio::time::sleep(SUPERVISION_INTERVAL))
+                    .await
+                    .is_none()
+                {
+                    return;
+                }
                 let Some(daemon) = weak.upgrade() else { return };
+                if daemon.shutdown.signal().requested() {
+                    return;
+                }
 
                 let connected = daemon.engine.is_connected();
                 let reconnected = connected && !was_connected;
@@ -997,10 +1517,20 @@ impl Daemon {
                     if reconnected {
                         project.reconcile_after_reconnect().await;
                     }
+                    if shutdown.requested() {
+                        return;
+                    }
                     project.reap_unexpected_exits().await;
+                    if shutdown.requested() {
+                        return;
+                    }
+                    // After the reap, so a container that has just exited
+                    // spends its first attempt on the tick that noticed rather
+                    // than waiting for the next one.
+                    project.drive_restarts().await;
                 }
             }
-        });
+        })
     }
 }
 
@@ -1026,6 +1556,14 @@ pub struct MutationOutcome {
     /// Concise failure for the first worker that could not reach its target state.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<MutationError>,
+    /// Workers that failed while the operation still succeeded, which is only
+    /// possible for a container whose effective `required` value is `false`.
+    ///
+    /// `status: ok` used to mean every planned container is up. It now means
+    /// every *required* one is, so the return has to name the rest rather than
+    /// leave a caller to compare the plan against a later status call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_required_failures: Option<Vec<String>>,
 }
 
 impl MutationOutcome {
@@ -1045,16 +1583,41 @@ impl MutationOutcome {
             .chain(worker)
             .collect();
         let mut affected_workers = std::collections::BTreeSet::new();
-        let mut error = None;
+        let mut primary_error = None;
+        // Reconciliation can restart and then start the same container. Keep
+        // its first position, but let its last result describe the final state.
+        let mut latest_container_errors = indexmap::IndexMap::new();
 
-        for result in operations.flat_map(|operation| &operation.containers) {
-            if result.changed && !requested.contains(result.container.as_str()) {
-                affected_workers.insert(result.container.clone());
+        for operation in operations {
+            if primary_error.is_none() {
+                primary_error = operation.primary_error.as_ref().map(MutationError::from);
             }
-            if error.is_none() {
-                error = result.error.as_ref().map(MutationError::from);
+            for result in &operation.containers {
+                if result.changed && !requested.contains(result.container.as_str()) {
+                    affected_workers.insert(result.container.clone());
+                }
+                latest_container_errors.insert(
+                    result.container.clone(),
+                    result.error.as_ref().map(MutationError::from),
+                );
             }
         }
+
+        let first_container_error = latest_container_errors.values().find_map(Clone::clone);
+        let failed: Vec<String> = latest_container_errors
+            .iter()
+            .filter_map(|(container, error)| error.as_ref().map(|_| container.clone()))
+            .collect();
+        let error = if status == OpStatus::Failed {
+            primary_error.or(first_container_error)
+        } else {
+            None
+        };
+        // A succeeding operation with a failed container is the non-required
+        // case and nothing else: a required failure is what makes the status
+        // `failed` in the first place.
+        let not_required_failures =
+            (status == OpStatus::Ok && !failed.is_empty()).then_some(failed);
 
         Self {
             status,
@@ -1067,11 +1630,20 @@ impl MutationOutcome {
             affected_workers: (!affected_workers.is_empty())
                 .then(|| affected_workers.into_iter().collect()),
             error,
+            not_required_failures,
         }
     }
 
     pub(crate) fn is_failed(&self) -> bool {
         self.status == OpStatus::Failed
+    }
+
+    /// Requested containers that ended in error while the operation still
+    /// succeeded — only possible for a container whose effective `required`
+    /// is false. A terminal progress event must name these: "every requested
+    /// worker is ready" is false while one of them is not.
+    pub(crate) fn not_required_failures(&self) -> &[String] {
+        self.not_required_failures.as_deref().unwrap_or(&[])
     }
 }
 
@@ -1152,6 +1724,33 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     })
 }
 
+/// Persists one compose mutation while keeping its YAML and lock consistent.
+///
+/// The lock writer is atomic by itself. If it fails after the compose file was
+/// replaced, restore the previous compose text while the mutation lock is held.
+fn persist_mutation(
+    path: &Path,
+    previous: &str,
+    edited: &str,
+    prepared: &crate::lockfile::PreparedLock,
+) -> Result<()> {
+    let compose_changed = previous != edited;
+    if compose_changed {
+        write_atomically(path, edited)?;
+    }
+    if let Err(lock_error) = prepared.write_if_changed() {
+        if compose_changed && let Err(rollback_error) = write_atomically(path, previous) {
+            return Err(ComposeError::MutationRollbackFailed {
+                path: path.to_path_buf(),
+                lock_error: lock_error.to_string(),
+                rollback_error: rollback_error.to_string(),
+            });
+        }
+        return Err(lock_error);
+    }
+    Ok(())
+}
+
 /// Creates an empty, collision-safe staging file, with mode 0600 on Unix.
 fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
@@ -1164,16 +1763,69 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
+/// Drop graph-expanded dependencies the compose file already declares.
+///
+/// `compose::add worker=X` resolves X's whole dependency graph. Only nodes not
+/// yet declared are added, plus what the caller explicitly asked for: a pin the
+/// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
+/// version moves. A declared dependency whose pin differs from what the
+/// registry resolved is logged, never rewritten or forced into the lock.
+fn keep_declared_dependencies(
+    wanted: Vec<crate::edit::NewContainer>,
+    asked: &BTreeSet<String>,
+    declared: &ComposeFile,
+    selected_versions: &mut BTreeMap<String, String>,
+) -> Vec<crate::edit::NewContainer> {
+    let wanted = wanted
+        .into_iter()
+        .filter(|worker| {
+            if asked.contains(&worker.key) {
+                return true;
+            }
+            let Some(existing) = declared.containers.get(&worker.key) else {
+                return true;
+            };
+            if let crate::edit::Source::Package {
+                version: Some(resolved),
+                ..
+            } = &worker.source
+                && existing.version.as_deref() != Some(resolved.as_str())
+            {
+                crate::report::daemon_line(
+                    &format!(
+                        "{}: kept the declared version {} (the registry resolved {resolved} for this \
+                         add); run compose::update worker={} to move it",
+                        worker.key,
+                        existing.version.as_deref().unwrap_or("unpinned"),
+                        worker.key
+                    ),
+                    true,
+                );
+            }
+            false
+        })
+        .collect::<Vec<_>>();
+    let wanted_keys = wanted
+        .iter()
+        .map(|worker| worker.key.as_str())
+        .collect::<BTreeSet<_>>();
+    selected_versions.retain(|key, _| wanted_keys.contains(key.as_str()));
+    wanted
+}
+
 /// Turns one registry answer into the declarations Compose can own.
 ///
 /// Engine-kind dependencies are omitted because the engine already provides
-/// them. An engine-kind root is different: silently omitting the exact worker
-/// the caller requested would make `compose::add` report success without
-/// changing the project, so reject it with migration guidance instead.
-fn expand_graph(
+/// them. Existing local dependencies are kept as opaque boundaries because
+/// their source and dependency tree belong to the operator. An engine-kind
+/// root is different: silently omitting the exact worker the caller requested
+/// would make `compose::add` report success without changing the project, so
+/// reject it with migration guidance instead.
+pub(crate) fn expand_graph(
     asked: &crate::edit::NewContainer,
     reference: &str,
     graph: crate::registry::Graph,
+    path_workers: &BTreeSet<String>,
 ) -> Result<Vec<crate::edit::NewContainer>> {
     if let Some(root) = graph.nodes.iter().find(|node| node.name == asked.key)
         && root.kind == "engine"
@@ -1195,19 +1847,62 @@ fn expand_graph(
         .map(|(host, _)| host)
         .unwrap_or("");
 
-    let mut declarable: std::collections::BTreeSet<String> = graph
+    let nodes: BTreeMap<&str, &crate::registry::Node> = graph
         .nodes
         .iter()
-        .filter(|node| node.kind != "engine")
-        .map(|node| node.name.clone())
+        .map(|node| (node.name.as_str(), node))
         .collect();
+
+    // A local declaration is an operator-owned implementation of that worker.
+    // Keep it as the dependency boundary instead of replacing it with the
+    // registry package or inheriting the published package's dependency tree.
+    let mut reachable = BTreeSet::new();
+    let mut satisfied_by_path = BTreeSet::new();
+    let mut visit = vec![asked.key.clone()];
+    while let Some(name) = visit.pop() {
+        if name != asked.key && path_workers.contains(&name) {
+            satisfied_by_path.insert(name);
+            continue;
+        }
+        if nodes
+            .get(name.as_str())
+            .is_some_and(|node| node.kind == "engine")
+        {
+            continue;
+        }
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        visit.extend(
+            graph
+                .edges
+                .iter()
+                .filter(|(from, to)| from == &name && to != &name)
+                .map(|(_, to)| to.clone()),
+        );
+    }
+
+    let mut declarable = if satisfied_by_path.is_empty() {
+        graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind != "engine")
+            .map(|node| node.name.clone())
+            .collect()
+    } else {
+        reachable
+    };
     declarable.insert(asked.key.clone());
 
     let needs = |name: &str| -> Vec<String> {
         let mut needed: Vec<String> = graph
             .edges
             .iter()
-            .filter(|(from, to)| from == name && to != name && declarable.contains(to))
+            .filter(|(from, to)| {
+                from == name
+                    && to != name
+                    && (declarable.contains(to) || satisfied_by_path.contains(to))
+            })
             .map(|(_, to)| to.clone())
             .collect();
         needed.sort();
@@ -1226,6 +1921,7 @@ fn expand_graph(
             version: Some(node.version.clone()),
         },
         start_after: needs(&node.name),
+        fields: serde_yaml::Mapping::new(),
     };
 
     // Registry nodes are a set, not an ordered plan. Derive a deterministic
@@ -1235,7 +1931,10 @@ fn expand_graph(
     let mut pending: BTreeMap<String, usize> = BTreeMap::new();
     let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for name in &declarable {
-        let dependencies = needs(name);
+        let dependencies: Vec<String> = needs(name)
+            .into_iter()
+            .filter(|dependency| declarable.contains(dependency))
+            .collect();
         pending.insert(name.clone(), dependencies.len());
         for dependency in dependencies {
             dependents.entry(dependency).or_default().push(name.clone());
@@ -1277,12 +1976,6 @@ fn expand_graph(
         });
     }
 
-    let nodes: BTreeMap<&str, &crate::registry::Node> = graph
-        .nodes
-        .iter()
-        .filter(|node| node.kind != "engine")
-        .map(|node| (node.name.as_str(), node))
-        .collect();
     order
         .into_iter()
         .map(|name| {
@@ -1290,9 +1983,16 @@ fn expand_graph(
                 let mut root = asked.clone();
                 root.start_after = needs(&asked.key);
                 if let Some(node) = nodes.get(asked.key.as_str()) {
+                    let version = match &root.source {
+                        crate::edit::Source::Package {
+                            version: Some(version),
+                            ..
+                        } => version.clone(),
+                        _ => node.version.clone(),
+                    };
                     root.source = crate::edit::Source::Package {
                         reference: reference.to_string(),
-                        version: Some(node.version.clone()),
+                        version: Some(version),
                     };
                 }
                 Ok(root)
@@ -1312,6 +2012,492 @@ fn expand_graph(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn whole_project_restart_finishes_replacement_after_operation_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("restart-cancel-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let original = daemon.project(&path).await.unwrap();
+        let operation = daemon.operations.create(1).await;
+        // Call the committed restart phase directly: admission already passed,
+        // and cancellation must not stop the up half once down begins.
+        operation.cancel();
+        let mut restart = Box::pin(daemon.restart_project(&path, None, operation.id()));
+        let polled = futures::poll!(restart.as_mut());
+        assert!(
+            polled.is_pending(),
+            "restart must reach replacement startup: {polled:?}"
+        );
+        let loaded = daemon.loaded().await;
+        assert_eq!(loaded.len(), 1);
+        assert!(
+            !Arc::ptr_eq(&loaded[0], &original),
+            "replacement project was not loaded"
+        );
+        assert!(crate::lockfile::lock_path(&path).exists());
+
+        // Unlike operation cancellation, process shutdown must still interrupt
+        // the replacement while it waits for the disconnected engine.
+        daemon.request_stop().await;
+        let (_down, up) = tokio::time::timeout(Duration::from_secs(1), restart)
+            .await
+            .expect("daemon shutdown must interrupt replacement")
+            .unwrap();
+        assert_eq!(up.primary_error.unwrap().code, "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_supervision_before_clearing_project_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("supervisor-drain-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        daemon.project(&path).await.unwrap();
+        // Replace only the idle test supervisor with a deterministic in-flight
+        // writer. Production shutdown must join it, not abort it or race it.
+        let original = daemon.supervisor.lock().await.take().unwrap();
+        original.abort();
+        let _ = original.await;
+        let store = crate::state::StateStore::for_project(&daemon.daemon_namespace, &path).unwrap();
+        let writer_store = store.clone();
+        let snapshot = crate::state::DaemonState::new(&path, "default");
+        let mut shutdown = daemon.shutdown.signal();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let did_complete = Arc::clone(&completed);
+        *daemon.supervisor.lock().await = Some(tokio::spawn(async move {
+            shutdown.wait().await;
+            tokio::task::yield_now().await;
+            writer_store.save(&snapshot).unwrap();
+            did_complete.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+        tokio::time::timeout(Duration::from_secs(1), daemon.shutdown())
+            .await
+            .unwrap();
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(daemon.supervisor.lock().await.is_none());
+        assert!(
+            !store.path().exists(),
+            "supervision recreated state after cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_cancels_registered_operations_before_project_cleanup() {
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-operations-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let operation = daemon.operations.create(1).await;
+        daemon.shutdown().await;
+        assert!(operation.is_cancelled());
+        assert!(*operation.cancellation().borrow());
+        assert!(daemon.shutdown.signal().requested());
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_unblocks_remote_up() {
+        assert_shutdown_unblocks_project(false).await;
+    }
+
+    #[tokio::test]
+    async fn daemon_shutdown_unblocks_restart() {
+        assert_shutdown_unblocks_project(true).await;
+    }
+
+    async fn assert_shutdown_unblocks_project(restart: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-project-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let project = daemon.project(&path).await.unwrap();
+        let mut work: std::pin::Pin<Box<dyn std::future::Future<Output = OpResult>>> = if restart {
+            Box::pin(project.restart_one("worker", "cancel-restart".into()))
+        } else {
+            Box::pin(project.up(None, "cancel-up".into()))
+        };
+        assert!(futures::poll!(work.as_mut()).is_pending());
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(work, daemon.shutdown())
+        })
+        .await
+        .expect("shutdown must cancel the operation holding the project lock");
+        assert_eq!(result.status, OpStatus::Failed);
+        assert_eq!(result.primary_error.unwrap().code, "OPERATION_CANCELLED");
+    }
+
+    #[tokio::test]
+    async fn remote_stop_cancels_pending_and_future_preparation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("cancel-admission-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let _lock = daemon.lock_mutation(&path).await;
+        let mut up = Box::pin(daemon.up(Some(&path), None, "queued".into()));
+        assert!(futures::poll!(up.as_mut()).is_pending());
+        daemon.request_stop().await;
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        let error = daemon
+            .up_frozen(Some(&path), None, "later".into())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_skips_preparation_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        // A latched shutdown must win even over a missing compose file.
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-before-prepare-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (_sender, receiver) = tokio::sync::watch::channel(true);
+
+        let result = daemon
+            .up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-before-prepare".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_while_waiting_for_the_mutation_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-mutation-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let _mutation = daemon.lock_mutation(&path).await;
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-mutation".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            false,
+        );
+        tokio::pin!(up);
+        assert!(futures::poll!(up.as_mut()).is_pending());
+        sender.send(true).unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+            .await
+            .expect("shutdown must not wait for the mutation lock")
+            .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_missing_lock_when_project_load_is_cancelled() {
+        assert_cancelled_project_load_preserves_lock(None).await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_preserves_existing_lock_when_project_load_is_cancelled() {
+        // Preparation would prune this undeclared package and replace the lock.
+        let previous = serde_yaml::to_string(&serde_json::json!({
+            "version": 1,
+            "containers": {
+                "removed": {
+                    "worker": "package://example.invalid/removed",
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "removed",
+                        "registry": "https://example.invalid",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            "test-target": {
+                                "url": "https://example.invalid/artifact",
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_cancelled_project_load_preserves_lock(Some(&previous)).await;
+    }
+
+    async fn assert_cancelled_project_load_preserves_lock(previous: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let lock_path = crate::lockfile::lock_path(&path);
+        if let Some(text) = previous {
+            std::fs::write(&lock_path, text).unwrap();
+        }
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-project-load-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        {
+            // No packages need resolving: the first pending await is the
+            // project map lock, after a changed lock candidate is prepared.
+            let _projects = daemon.projects.lock().await;
+            let up = daemon.up_until_shutdown(
+                Some(&path),
+                None,
+                "cancel-project-load".to_string(),
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+                false,
+            );
+            tokio::pin!(up);
+            let polled = futures::poll!(up.as_mut());
+            assert!(
+                polled.is_pending(),
+                "startup must wait for the project: {polled:?}"
+            );
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), up)
+                .await
+                .expect("shutdown must not wait for project loading")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        match previous {
+            Some(text) => assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), text),
+            None => assert!(!lock_path.exists()),
+        }
+        assert!(daemon.loaded().await.is_empty());
+
+        // A subsequent attempt must still commit the prepared lock and load
+        // the project once the contended lock is available again.
+        let _mutation = daemon.lock_mutation(&path).await;
+        daemon.prepare_start_project(&path, false).await.unwrap();
+        let lock: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert!(lock["containers"].as_mapping().unwrap().is_empty());
+        assert!(lock.get("graphs").is_none());
+        assert_eq!(daemon.loaded().await.len(), 1);
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(false).await;
+    }
+
+    #[tokio::test]
+    async fn frozen_foreground_startup_cancels_an_in_flight_download() {
+        assert_download_cancelled(true).await;
+    }
+
+    async fn assert_download_cancelled(frozen: bool) {
+        use std::time::Duration;
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let server = MockServer::start().await;
+        let downloading = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&downloading);
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                started.notify_one();
+                ResponseTemplate::new(200).set_delay(Duration::from_secs(30))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        // A unique registry gives this fixture a cold cache without changing
+        // process-wide HOME or depending on the operator's installed packages.
+        let host = format!("cancel-{}.invalid", uuid::Uuid::new_v4());
+        let worker = format!("package://{host}/worker");
+        std::fs::write(
+            &path,
+            format!("containers:\n  worker:\n    worker: {worker}\n    version: '1.0.0'\n"),
+        )
+        .unwrap();
+        let lock = serde_json::json!({
+            "version": 1,
+            "containers": {
+                "worker": {
+                    "worker": worker,
+                    "requested": "1.0.0",
+                    "resolved": {
+                        "name": "worker",
+                        "registry": format!("https://{host}"),
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "artifacts": {
+                            (crate::registry::host_target()): {
+                                "url": format!("{}/artifact", server.uri()),
+                                "sha256": "a".repeat(64)
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let lock_path = crate::lockfile::lock_path(&path);
+        let before = serde_yaml::to_string(&lock).unwrap();
+        std::fs::write(&lock_path, &before).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("cancel-download-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let up = daemon.up_until_shutdown(
+            Some(&path),
+            None,
+            "cancel-download".to_string(),
+            crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            frozen,
+        );
+        {
+            tokio::pin!(up);
+            tokio::select! {
+                result = &mut up => panic!("startup ended before downloading: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(5), downloading.notified()) => {
+                    result.expect("the artifact download should start");
+                }
+            }
+            sender.send(true).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), &mut up)
+                .await
+                .expect("shutdown must not wait for the download response")
+                .unwrap();
+            assert!(result.is_none());
+        }
+        assert_eq!(std::fs::read_to_string(lock_path).unwrap(), before);
+        assert!(daemon.loaded().await.is_empty());
+        let _mutation = tokio::time::timeout(Duration::from_secs(1), daemon.lock_mutation(&path))
+            .await
+            .expect("cancelled preparation must release the mutation lock");
+        daemon.shutdown().await;
+    }
+
+    #[test]
+    fn update_without_workers_selects_packages_with_their_declared_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = crate::ComposeFile::parse(
+            r#"
+containers:
+  database:
+    worker: package://private.example/team/state
+    version: '1.0.0'
+  api:
+    worker: path://.
+    scripts:
+      run: ./api
+  cache:
+    worker: package://api.workers.iii.dev/cache
+    version: '2.0.0'
+    start_after: [database]
+"#,
+            tmp.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+
+        let selected = workers_to_update(&compose, &[]).unwrap();
+
+        assert_eq!(
+            selected,
+            vec![
+                crate::edit::NewContainer {
+                    key: "database".to_string(),
+                    source: crate::edit::Source::Package {
+                        reference: "private.example/team/state".to_string(),
+                        version: Some("latest".to_string()),
+                    },
+                    start_after: Vec::new(),
+                    fields: serde_yaml::Mapping::new(),
+                },
+                crate::edit::NewContainer {
+                    key: "cache".to_string(),
+                    source: crate::edit::Source::Package {
+                        reference: "api.workers.iii.dev/cache".to_string(),
+                        version: Some("latest".to_string()),
+                    },
+                    start_after: vec!["database".to_string()],
+                    fields: serde_yaml::Mapping::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn update_with_a_worker_keeps_the_explicit_selection_and_version() {
+        let compose = crate::ComposeFile::parse(
+            "containers:\n  state:\n    worker: package://state\n    version: '1.0.0'\n  cache:\n    worker: package://cache\n    version: '2.0.0'\n",
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+
+        let selected = workers_to_update(&compose, &["state@1.2.3".to_string()]).unwrap();
+
+        assert_eq!(
+            selected,
+            vec![crate::edit::parse_worker("state@1.2.3").unwrap()]
+        );
+    }
+
     fn package(name: &str) -> crate::edit::NewContainer {
         crate::edit::NewContainer {
             key: name.to_string(),
@@ -1320,7 +2506,85 @@ mod tests {
                 version: None,
             },
             start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
         }
+    }
+
+    #[test]
+    fn update_without_a_selector_keeps_the_declared_tag() {
+        assert_eq!(update_selector(None, "next"), "next");
+    }
+
+    #[test]
+    fn graph_update_removes_only_nodes_no_root_still_owns() {
+        let previous = BTreeMap::from([
+            (
+                "api".to_string(),
+                BTreeSet::from(["api".to_string(), "state".to_string(), "queue".to_string()]),
+            ),
+            (
+                "jobs".to_string(),
+                BTreeSet::from(["jobs".to_string(), "queue".to_string()]),
+            ),
+        ]);
+        let replacements = BTreeMap::from([(
+            "api".to_string(),
+            BTreeSet::from(["api".to_string(), "cache".to_string()]),
+        )]);
+
+        assert_eq!(
+            stale_graph_members(&previous, &replacements),
+            BTreeSet::from(["state".to_string()])
+        );
+    }
+
+    #[test]
+    fn graph_members_include_local_dependency_boundaries() {
+        let mut api = package("api");
+        api.start_after = vec!["local-state".to_string()];
+
+        assert_eq!(
+            graph_members(&[api]),
+            BTreeSet::from(["api".to_string(), "local-state".to_string()])
+        );
+    }
+
+    #[test]
+    fn update_without_a_selector_keeps_an_exact_version() {
+        assert_eq!(update_selector(None, "0.22.8"), "0.22.8");
+    }
+
+    #[test]
+    fn update_changes_the_selector_only_when_it_is_explicit() {
+        assert_eq!(update_selector(Some("latest"), "0.22.8"), "latest");
+    }
+
+    #[test]
+    fn expanded_graph_keeps_an_explicit_root_selector() {
+        let mut asked = package("state");
+        let crate::edit::Source::Package { version, .. } = &mut asked.source else {
+            unreachable!();
+        };
+        *version = Some("next".to_string());
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "state".to_string(),
+                version: "0.22.8".to_string(),
+                kind: "binary".to_string(),
+                ..Default::default()
+            }],
+            edges: Vec::new(),
+        };
+
+        let expanded = expand_graph(&asked, "state", graph, &BTreeSet::new()).unwrap();
+
+        assert_eq!(
+            expanded[0].source,
+            crate::edit::Source::Package {
+                reference: "state".to_string(),
+                version: Some("next".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -1330,12 +2594,18 @@ mod tests {
                 name: "configuration".to_string(),
                 version: "0.23.0".to_string(),
                 kind: "engine".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };
 
-        let error = expand_graph(&package("configuration"), "configuration", graph)
-            .expect_err("engine-owned roots must not become compose containers");
+        let error = expand_graph(
+            &package("configuration"),
+            "configuration",
+            graph,
+            &BTreeSet::new(),
+        )
+        .expect_err("engine-owned roots must not become compose containers");
         assert_eq!(error.code(), "ENGINE_WORKER_IS_BUILTIN");
         let message = error.to_string();
         assert!(message.contains("supplied by the engine"), "{message}");
@@ -1352,6 +2622,7 @@ mod tests {
                 name: "iii-engine-functions".to_string(),
                 version: "0.23.0".to_string(),
                 kind: "engine".to_string(),
+                ..Default::default()
             }],
             edges: Vec::new(),
         };
@@ -1360,6 +2631,7 @@ mod tests {
             &package("iii-engine-functions"),
             "iii-engine-functions",
             graph,
+            &BTreeSet::new(),
         )
         .expect_err("injected engine roots must not become compose containers");
         let message = error.to_string();
@@ -1375,16 +2647,19 @@ mod tests {
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "configuration".to_string(),
                     version: "0.23.0".to_string(),
                     kind: "engine".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -1393,7 +2668,8 @@ mod tests {
             ],
         };
 
-        let expanded = expand_graph(&package("api"), "api", graph).expect("expand graph");
+        let expanded =
+            expand_graph(&package("api"), "api", graph, &BTreeSet::new()).expect("expand graph");
         let names: Vec<&str> = expanded.iter().map(|entry| entry.key.as_str()).collect();
         assert_eq!(names, vec!["state", "api"]);
         assert_eq!(expanded[1].start_after, vec!["state"]);
@@ -1407,16 +2683,19 @@ mod tests {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "db".to_string(),
                     version: "3.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -1425,7 +2704,8 @@ mod tests {
             ],
         };
 
-        let expanded = expand_graph(&package("api"), "api", graph).expect("expand graph");
+        let expanded =
+            expand_graph(&package("api"), "api", graph, &BTreeSet::new()).expect("expand graph");
         let names: Vec<&str> = expanded.iter().map(|entry| entry.key.as_str()).collect();
         assert_eq!(names, vec!["db", "state", "api"]);
     }
@@ -1438,11 +2718,13 @@ mod tests {
                     name: "api".to_string(),
                     version: "1.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
                 crate::registry::Node {
                     name: "state".to_string(),
                     version: "2.0.0".to_string(),
                     kind: "binary".to_string(),
+                    ..Default::default()
                 },
             ],
             edges: vec![
@@ -1451,9 +2733,152 @@ mod tests {
             ],
         };
 
-        let error = expand_graph(&package("api"), "api", graph)
+        let error = expand_graph(&package("api"), "api", graph, &BTreeSet::new())
             .expect_err("registry dependency cycles must be rejected");
         assert_eq!(error.code(), "DEPENDENCY_CYCLE");
+    }
+
+    #[test]
+    fn local_path_worker_satisfies_a_registry_dependency() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "tailscale".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+                crate::registry::Node {
+                    name: "console".to_string(),
+                    version: "1.9.11".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+            ],
+            edges: vec![("tailscale".to_string(), "console".to_string())],
+        };
+        let path_workers = BTreeSet::from(["console".to_string()]);
+
+        let expanded =
+            expand_graph(&package("tailscale"), "tailscale", graph, &path_workers).unwrap();
+
+        assert_eq!(
+            expanded,
+            vec![crate::edit::NewContainer {
+                key: "tailscale".to_string(),
+                source: crate::edit::Source::Package {
+                    reference: "tailscale".to_string(),
+                    version: Some("1.0.0".to_string()),
+                },
+                start_after: vec!["console".to_string()],
+                fields: serde_yaml::Mapping::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn local_path_worker_stops_registry_dependency_expansion() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "tailscale".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+                crate::registry::Node {
+                    name: "console".to_string(),
+                    version: "1.9.11".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+                crate::registry::Node {
+                    name: "state".to_string(),
+                    version: "2.0.0".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+            ],
+            edges: vec![
+                ("tailscale".to_string(), "console".to_string()),
+                ("console".to_string(), "state".to_string()),
+            ],
+        };
+        let path_workers = BTreeSet::from(["console".to_string()]);
+
+        let expanded =
+            expand_graph(&package("tailscale"), "tailscale", graph, &path_workers).unwrap();
+
+        assert_eq!(
+            expanded,
+            vec![crate::edit::NewContainer {
+                key: "tailscale".to_string(),
+                source: crate::edit::Source::Package {
+                    reference: "tailscale".to_string(),
+                    version: Some("1.0.0".to_string()),
+                },
+                start_after: vec!["console".to_string()],
+                fields: serde_yaml::Mapping::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn dependency_reachable_without_the_local_worker_is_still_declared() {
+        let graph = crate::registry::Graph {
+            nodes: vec![
+                crate::registry::Node {
+                    name: "tailscale".to_string(),
+                    version: "1.0.0".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+                crate::registry::Node {
+                    name: "console".to_string(),
+                    version: "1.9.11".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+                crate::registry::Node {
+                    name: "state".to_string(),
+                    version: "2.0.0".to_string(),
+                    kind: "binary".to_string(),
+                    ..Default::default()
+                },
+            ],
+            edges: vec![
+                ("tailscale".to_string(), "console".to_string()),
+                ("tailscale".to_string(), "state".to_string()),
+                ("console".to_string(), "state".to_string()),
+            ],
+        };
+        let path_workers = BTreeSet::from(["console".to_string()]);
+
+        let expanded =
+            expand_graph(&package("tailscale"), "tailscale", graph, &path_workers).unwrap();
+        let names: Vec<&str> = expanded.iter().map(|worker| worker.key.as_str()).collect();
+
+        assert_eq!(names, vec!["state", "tailscale"]);
+    }
+
+    #[test]
+    fn explicitly_requested_path_worker_is_still_a_source_conflict() {
+        let graph = crate::registry::Graph {
+            nodes: vec![crate::registry::Node {
+                name: "console".to_string(),
+                version: "1.9.11".to_string(),
+                kind: "binary".to_string(),
+                ..Default::default()
+            }],
+            edges: Vec::new(),
+        };
+        let path_workers = BTreeSet::from(["console".to_string()]);
+        let expanded = expand_graph(&package("console"), "console", graph, &path_workers).unwrap();
+        let text = "containers:\n  console:\n    worker: path://../console\n";
+
+        let error = crate::edit::upsert_container(text, &expanded[0]).unwrap_err();
+
+        assert_eq!(error.code(), "WORKER_SOURCE_CHANGED");
     }
 
     #[tokio::test]
@@ -1483,7 +2908,8 @@ mod tests {
         let state = crate::edit::parse_worker("state@1.0.0").unwrap();
         let queue = crate::edit::parse_worker("queue@1.0.0").unwrap();
 
-        let merged = coalesce_expanded(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
+        let merged =
+            coalesce_containers(vec![state.clone(), queue.clone(), state.clone()]).unwrap();
 
         assert_eq!(merged, vec![state, queue]);
     }
@@ -1494,7 +2920,7 @@ mod tests {
         let second = crate::edit::parse_worker("state@2.0.0").unwrap();
 
         for expanded in [vec![first.clone(), second.clone()], vec![second, first]] {
-            let error = coalesce_expanded(expanded)
+            let error = coalesce_containers(expanded)
                 .expect_err("two versions of one shared dependency must not be order-dependent");
 
             assert_eq!(error.code(), "INVALID_WORKER_SPEC");
@@ -1517,6 +2943,27 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[tokio::test]
+    async fn failed_lock_write_restores_the_previous_compose_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let previous = "containers:\n  api:\n    worker: path://.\n";
+        let edited = "namespace: changed\ncontainers:\n  api:\n    worker: path://.\n";
+        std::fs::write(&path, previous).unwrap();
+
+        let mut compose = crate::ComposeFile::parse(edited, &path).unwrap();
+        let prepared = crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new())
+            .await
+            .unwrap();
+        std::fs::create_dir(crate::lockfile::lock_path(&path)).unwrap();
+
+        let error = persist_mutation(&path, previous, edited, &prepared)
+            .expect_err("the lock path is a directory");
+
+        assert_eq!(error.code(), "IO_ERROR");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), previous);
     }
 
     #[cfg(unix)]
@@ -1542,8 +2989,45 @@ mod mutation_outcome_tests {
         state::ChildStatus,
     };
 
+    fn optional_mailer_failure(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: false,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Failed,
+                changed: false,
+                error: Some(OpError {
+                    code: "STARTUP_TIMEOUT".into(),
+                    message: "container 'mailer' was not ready after 2s".into(),
+                }),
+            }],
+            primary_error: None,
+        }
+    }
+
+    fn ready_mailer(operation_id: &str) -> OpResult {
+        OpResult {
+            operation_id: operation_id.into(),
+            status: OpStatus::Ok,
+            changed: true,
+            containers: vec![ContainerResult {
+                container: "mailer".into(),
+                state: ChildStatus::Ready,
+                changed: true,
+                error: None,
+            }],
+            primary_error: None,
+        }
+    }
+
     #[test]
     fn concise_outcome_omits_healthy_containers_and_log_tails() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+        };
         let result = OpResult {
             operation_id: "diagnostic-only".into(),
             status: OpStatus::Failed,
@@ -1565,12 +3049,10 @@ mod mutation_outcome_tests {
                     container: "tailscale".into(),
                     state: ChildStatus::Failed,
                     changed: false,
-                    error: Some(OpError {
-                        code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
-                        message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
-                    }),
+                    error: Some(primary_error.clone()),
                 },
             ],
+            primary_error: Some(primary_error),
         };
 
         let outcome = MutationOutcome::from_operations(
@@ -1596,5 +3078,169 @@ mod mutation_outcome_tests {
         for internal in ["operation_id", "containers", "queue", "retry secret output"] {
             assert!(!encoded.contains(internal), "leaked {internal}: {encoded}");
         }
+    }
+
+    #[test]
+    fn failed_outcome_prefers_primary_error_over_earlier_container_error() {
+        let primary_error = OpError {
+            code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
+            message: "container 'api' exited with 9 before it registered".into(),
+        };
+
+        let result = OpResult {
+            operation_id: "mixed-failure".into(),
+            status: OpStatus::Failed,
+            changed: false,
+            containers: vec![
+                ContainerResult {
+                    container: "mailer".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(OpError {
+                        code: "STARTUP_TIMEOUT".into(),
+                        message: "container 'mailer' was not ready after 2s".into(),
+                    }),
+                },
+                ContainerResult {
+                    container: "api".into(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(primary_error.clone()),
+                },
+            ],
+            primary_error: Some(primary_error),
+        };
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Failed,
+            false,
+            None,
+            None,
+            None,
+            std::iter::once(&result),
+        );
+        let encoded = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(
+            encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION",
+            "{encoded}"
+        );
+    }
+
+    #[test]
+    fn successful_outcome_reports_each_not_required_failure_once() {
+        let restart = optional_mailer_failure("restart");
+        let up = optional_mailer_failure("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            false,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!(
+            (outcome.error, outcome.not_required_failures),
+            (None, Some(vec!["mailer".to_string()]))
+        );
+    }
+
+    #[test]
+    fn successful_outcome_omits_a_failure_recovered_by_a_later_operation() {
+        let restart = optional_mailer_failure("restart");
+        let up = ready_mailer("up");
+
+        let outcome = MutationOutcome::from_operations(
+            OpStatus::Ok,
+            true,
+            None,
+            None,
+            None,
+            [&restart, &up].into_iter(),
+        );
+
+        assert_eq!((outcome.error, outcome.not_required_failures), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod declared_dependency_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::keep_declared_dependencies;
+    use crate::edit::{NewContainer, Source};
+
+    fn resolved(name: &str, version: &str) -> NewContainer {
+        NewContainer {
+            key: name.to_string(),
+            source: Source::Package {
+                reference: format!("api.workers.iii.dev/{name}"),
+                version: Some(version.to_string()),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        }
+    }
+
+    #[test]
+    fn an_add_leaves_already_declared_dependencies_alone() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n  http:\n    worker: package://http\n    version: \"0.21.9\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["provider-openai-codex".to_string()].into();
+        let wanted = vec![
+            resolved("state", "0.22.9"),
+            resolved("llm-router", "1.4.19"),
+            resolved("provider-openai-codex", "0.4.9"),
+        ];
+        let mut selected_versions = BTreeMap::from([
+            ("state".to_string(), "0.22.9".to_string()),
+            ("llm-router".to_string(), "1.4.19".to_string()),
+            ("provider-openai-codex".to_string(), "0.4.9".to_string()),
+        ]);
+
+        let kept = keep_declared_dependencies(wanted, &asked, &declared, &mut selected_versions);
+        let keys: Vec<&str> = kept.iter().map(|worker| worker.key.as_str()).collect();
+
+        assert_eq!(keys, vec!["llm-router", "provider-openai-codex"]);
+        assert_eq!(
+            selected_versions
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["llm-router", "provider-openai-codex"],
+            "the lock must not be forced to the dropped dependency version"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_asked_worker_is_always_written_even_when_declared() {
+        let declared = crate::ComposeFile::parse(
+            "namespace: default\ncontainers:\n  state:\n    worker: package://state\n    version: \"0.22.8\"\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked: BTreeSet<String> = ["state".to_string()].into();
+        let mut selected_versions = BTreeMap::from([("state".to_string(), "0.22.9".to_string())]);
+
+        let kept = keep_declared_dependencies(
+            vec![resolved("state", "0.22.9")],
+            &asked,
+            &declared,
+            &mut selected_versions,
+        );
+
+        assert_eq!(
+            kept.len(),
+            1,
+            "compose::add worker=state is the operator moving the pin on purpose"
+        );
+        assert_eq!(
+            selected_versions.get("state").map(String::as_str),
+            Some("0.22.9")
+        );
     }
 }

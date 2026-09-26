@@ -3808,6 +3808,87 @@ mod tests {
         );
     }
 
+    /// A channel made through `engine::channels::create` belongs to the calling
+    /// connection: its teardown releases the channel (ending a reader still
+    /// waiting on it) and leaves other connections' channels alone.
+    #[tokio::test]
+    async fn cleanup_worker_releases_channels_the_worker_created() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        crate::workers::engine_fn::EngineFunctionsWorker::new(engine.clone())
+            .register_functions(engine.clone());
+
+        async fn create_channel(
+            engine: &Engine,
+            worker: &WorkerConnection,
+            rx: &mut mpsc::Receiver<Outbound>,
+        ) -> (String, String) {
+            let invoke = Message::InvokeFunction {
+                invocation_id: Some(uuid::Uuid::new_v4()),
+                function_id: "engine::channels::create".to_string(),
+                data: json!({}),
+                traceparent: None,
+                baggage: None,
+                action: None,
+                metadata: None,
+                namespace: None,
+            };
+            engine.router_msg(worker, &invoke).await.expect("invoke");
+            match tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("timed out waiting for the channel")
+                .expect("channel open")
+            {
+                Outbound::Protocol(Message::InvocationResult {
+                    result: Some(result),
+                    ..
+                }) => (
+                    result["reader"]["channel_id"].as_str().unwrap().to_string(),
+                    result["reader"]["access_key"].as_str().unwrap().to_string(),
+                ),
+                other => panic!("expected InvocationResult, got {other:?}"),
+            }
+        }
+
+        let (tx, mut owner_rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        let (tx, mut other_rx) = mpsc::channel::<Outbound>(8);
+        let other = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(other.clone());
+
+        let (owned_id, owned_key) = create_channel(&engine, &owner, &mut owner_rx).await;
+        let (kept_id, kept_key) = create_channel(&engine, &other, &mut other_rx).await;
+        let mut waiting_reader = engine
+            .channel_manager
+            .take_receiver(&owned_id, &owned_key)
+            .await
+            .expect("reader attaches");
+
+        engine.cleanup_worker(&owner).await;
+
+        assert!(
+            engine
+                .channel_manager
+                .get_channel(&owned_id, &owned_key)
+                .is_none(),
+            "the creator's channel must go with its connection"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), waiting_reader.recv())
+                .await
+                .expect("a reader must not keep waiting for a writer that can no longer attach")
+                .is_none()
+        );
+        assert!(
+            engine
+                .channel_manager
+                .get_channel(&kept_id, &kept_key)
+                .is_some(),
+            "another connection's channel must survive"
+        );
+    }
+
     /// The removal path must find what the registration path wrote. Before the
     /// write path agreed on a namespace, this leaked the function permanently.
     #[tokio::test]
@@ -4455,6 +4536,93 @@ mod tests {
         assert!(
             found_invoke,
             "worker should receive an InvokeFunction message for the deferred invocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_null_result_from_the_executor_reaches_the_caller_as_null() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterFunction {
+                    id: "kv::get".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("register");
+
+        let caller_invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(caller_invocation_id),
+                    function_id: "kv::get".to_string(),
+                    data: json!({ "key": "missing" }),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: None,
+                },
+            )
+            .await
+            .expect("invoke");
+
+        // The executor side of the same worker receives the dispatch.
+        let dispatched = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for the dispatch")
+            .expect("channel open");
+        let executor_invocation_id = match dispatched {
+            Outbound::Protocol(Message::InvokeFunction {
+                invocation_id: Some(id),
+                ..
+            }) => id,
+            other => panic!("expected InvokeFunction, got {other:?}"),
+        };
+
+        // Reply exactly as the wire carries it: the frame says `null`.
+        let frame = format!(
+            r#"{{"type":"invocationresult","invocation_id":"{executor_invocation_id}","function_id":"kv::get","result":null}}"#
+        );
+        let reply: Message = serde_json::from_str(&frame).expect("frame parses");
+        engine.router_msg(&worker, &reply).await.expect("reply");
+
+        let answered = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for the caller's result")
+            .expect("channel open");
+        match &answered {
+            Outbound::Protocol(Message::InvocationResult {
+                invocation_id,
+                result,
+                error,
+                ..
+            }) => {
+                assert_eq!(*invocation_id, caller_invocation_id);
+                assert_eq!(*result, Some(serde_json::Value::Null));
+                assert!(error.is_none());
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
+        let Outbound::Protocol(message) = answered else {
+            unreachable!()
+        };
+        let wire = serde_json::to_string(&message).expect("serializes");
+        assert!(
+            wire.contains(r#""result":null"#),
+            "caller must see null: {wire}"
         );
     }
 

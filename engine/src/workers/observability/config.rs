@@ -222,6 +222,14 @@ pub struct TraceStorageConfig {
     /// Maximum age for in-flight snapshots that never receive a final span.
     #[serde(default = "default_trace_storage_pending_max_age_seconds")]
     pub pending_max_age_seconds: u64,
+
+    /// Cap on one attribute value (span, event or link) at ingest, in bytes.
+    /// Longer values are cut on a char boundary and end in
+    /// `…[truncated N bytes]`; a cut `iii.payload.json` also sets
+    /// `iii.payload.truncated`. Bounds what a single span can cost the hot
+    /// cache and the archive. Zero disables the cap.
+    #[serde(default = "default_trace_storage_max_attribute_bytes")]
+    pub max_attribute_bytes: u64,
 }
 
 const TRACE_STORAGE_DEFAULT_DIRECTORY: &str = "./data/observability/traces";
@@ -230,6 +238,7 @@ const TRACE_STORAGE_DEFAULT_RETENTION_SECONDS: u64 = 2_592_000;
 const TRACE_STORAGE_DEFAULT_MEMORY_MAX_BYTES: u64 = 268_435_456;
 const TRACE_STORAGE_DEFAULT_MEMORY_LOW_WATERMARK: f64 = 0.75;
 const TRACE_STORAGE_DEFAULT_PENDING_MAX_AGE_SECONDS: u64 = 3_600;
+pub(crate) const TRACE_STORAGE_DEFAULT_MAX_ATTRIBUTE_BYTES: u64 = 65_536;
 
 fn default_trace_storage_enabled() -> bool {
     true
@@ -259,6 +268,10 @@ fn default_trace_storage_pending_max_age_seconds() -> u64 {
     TRACE_STORAGE_DEFAULT_PENDING_MAX_AGE_SECONDS
 }
 
+fn default_trace_storage_max_attribute_bytes() -> u64 {
+    TRACE_STORAGE_DEFAULT_MAX_ATTRIBUTE_BYTES
+}
+
 impl Default for TraceStorageConfig {
     fn default() -> Self {
         Self {
@@ -269,6 +282,7 @@ impl Default for TraceStorageConfig {
             memory_max_bytes: default_trace_storage_memory_max_bytes(),
             memory_low_watermark_ratio: default_trace_storage_memory_low_watermark(),
             pending_max_age_seconds: default_trace_storage_pending_max_age_seconds(),
+            max_attribute_bytes: default_trace_storage_max_attribute_bytes(),
         }
     }
 }

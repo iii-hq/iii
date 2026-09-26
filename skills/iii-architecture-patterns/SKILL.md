@@ -37,7 +37,7 @@ const iii = registerWorker("ws://localhost:49134", { workerName: "order-workflow
 async function track(orderId: string, step: string, status: string) {
   await iii.trigger({
     function_id: "state::update",
-    payload: { scope: "orders", key: orderId, ops: [{ op: "set", path: `/steps/${step}`, value: status }] },
+    payload: { scope: "orders", key: orderId, ops: [{ type: "merge", path: ["steps"], value: { [step]: status } }] },
   });
 }
 
@@ -73,7 +73,7 @@ def track(order_id, step, status):
         "payload": {
             "scope": "orders",
             "key": order_id,
-            "ops": [{"op": "set", "path": f"/steps/{step}", "value": status}],
+            "ops": [{"type": "merge", "path": ["steps"], "value": {step: status}}],
         },
     })
 
@@ -101,7 +101,7 @@ async fn enqueue_charge(iii: iii_sdk::IIIClient, order: serde_json::Value) -> Re
         payload: json!({
             "scope": "orders",
             "key": order["id"],
-            "ops": [{ "op": "set", "path": "/steps/validate", "value": "done" }]
+            "ops": [{ "type": "merge", "path": ["steps"], "value": { "validate": "done" } }]
         }),
         action: None,
         timeout_ms: None,
@@ -198,6 +198,7 @@ iii.registerTrigger({
 
 - For exact trigger config, function registration syntax, custom triggers, channels, and
   HTTP-invoked functions, use `iii-core-primitives`.
-- For queue retry, FIFO, adapter, port, and worker-manager config, use `iii-engine-config`.
+- For engine ports, adapters, engine-owned workers, and RBAC (`rbac-proxy`), use `iii-engine-config`;
+  queue retry and FIFO policy live with the queue worker's docs.
 - For package-specific SDK syntax, use `iii-sdk-reference`.
 - Worker-backed capability details live with the worker docs, not as top-level iii skills.

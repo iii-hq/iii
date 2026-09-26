@@ -120,6 +120,11 @@ pub struct WorkerManifest {
     pub tags: Option<Vec<String>>,
 
     #[schemars(
+        description = "Registry publish metadata: SPDX license id the Registry publishes the worker under (e.g. `Apache-2.0`), required by the workers-repo release CI. Accepted and ignored by the engine."
+    )]
+    pub license: Option<String>,
+
+    #[schemars(
         with = "Option<JsonValue>",
         description = "DEPRECATED — set per-worker config directly in your project's config.yaml entry instead. Copied verbatim into config.yaml at add time."
     )]
@@ -265,6 +270,7 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
         "iii",
         "deploy",
         "manifest",
+        "license",
     ] {
         if let Some(v) = present(doc.get(field))
             && v.as_str().is_none()
@@ -733,6 +739,17 @@ mod tests {
     }
 
     #[test]
+    fn report_accepts_the_registry_license() {
+        // The workers-repo release CI requires `license` for Registry
+        // publication, so a worker that publishes AND runs from a local path
+        // needs the engine to accept the key.
+        let r = report("name: onboarding\nlicense: Apache-2.0\nscripts:\n  start: run\n");
+        assert!(r.valid, "registry license must not invalidate: {r:?}");
+        let r = report("name: onboarding\nlicense: [Apache-2.0]\nscripts:\n  start: run\n");
+        assert!(!r.valid, "license must be a string: {r:?}");
+    }
+
+    #[test]
     fn report_accepts_registry_tags() {
         let r = report("name: database\ntags:\n  - sql\n  - postgres\nscripts:\n  start: run\n");
 
@@ -980,7 +997,7 @@ mod tests {
         assert!(runtime_kind_desc.contains("DEPRECATED"));
         // Publish metadata is in the schema (so authored manifests validate)
         // and described as engine-ignored (so LLMs don't cargo-cult it).
-        for field in ["iii", "deploy", "manifest", "tags"] {
+        for field in ["iii", "deploy", "manifest", "tags", "license"] {
             let desc = s["properties"][field]["description"].as_str().unwrap_or("");
             assert!(
                 desc.contains("ignored by the engine"),

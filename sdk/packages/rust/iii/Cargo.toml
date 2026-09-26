@@ -1,6 +1,6 @@
 [package]
 name = "iii-sdk"
-version = "0.23.0-rc.10"
+version = "0.24.3"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -35,8 +35,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 ctor = "0.6.3"
-opentelemetry = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "testing"] }
+opentelemetry = { version = "0.32" }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "trace", "testing"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 serial_test = "3"
 tokio = { version = "1", features = ["test-util"] }

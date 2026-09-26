@@ -136,6 +136,43 @@ def highest_inflight_prerelease_base(
     return best.base if best else None
 
 
+def validate_version_override(
+    version: str,
+    prerelease: str,
+    latest_stable: str | None,
+    existing_tags: list[str],
+    tag_prefix: str,
+) -> str:
+    """Validate an explicit release without deriving its base from the manifest.
+
+    This selects a version, not a source revision. Require canonical numeric
+    components, a matching channel, a newer stable base and an unused tag.
+    Registry versions whose Git tags were deleted cannot be detected here.
+    """
+    number = r"(?:0|[1-9][0-9]*)"
+    pattern = rf"{number}\.{number}\.{number}(?:-(?:{'|'.join(PRERELEASE_LABELS)})\.{number})?"
+    if re.fullmatch(pattern, version) is None:
+        raise ValueError(
+            "version_override must be an exact version such as 0.24.1 or "
+            "0.24.1-rc.1 (no v prefix, whitespace or build metadata)"
+        )
+    selected = parse_version(version)
+    if (selected.prerelease_label or "none") != prerelease:
+        raise ValueError("version_override must match the selected prerelease label")
+    if latest_stable is not None:
+        stable = parse_version(latest_stable)
+        if (selected.major, selected.minor, selected.patch) <= (
+            stable.major, stable.minor, stable.patch
+        ):
+            raise ValueError(
+                f"version_override must be newer than the latest stable {latest_stable}"
+            )
+    tag = f"{tag_prefix}/v{version}"
+    if tag in existing_tags:
+        raise ValueError(f"Tag {tag} already exists")
+    return version
+
+
 def calculate_version(
     current: str,
     bump_type: str,
@@ -143,8 +180,12 @@ def calculate_version(
     latest_stable: str | None,
     existing_tags: list[str],
     tag_prefix: str,
+    version_override: str | None = None,
 ) -> str:
     """Decide the next version, accounting for the current prerelease train.
+
+    A nonempty explicit override takes precedence over bump and promotion,
+    after validation. Omitting it preserves the existing release algorithm.
 
     Rules:
       - `none` never advances the base: it iterates the prerelease
@@ -164,6 +205,14 @@ def calculate_version(
       - Otherwise apply the requested bump to the current base.
     """
     cur = parse_version(current)
+    if version_override not in (None, ""):
+        if bump_type not in (*BUMP_RANK, "none"):
+            raise ValueError(f"unknown bump_type: {bump_type!r}")
+        if prerelease != "none" and prerelease not in PRERELEASE_LABELS:
+            raise ValueError(f"unknown prerelease: {prerelease!r}")
+        return validate_version_override(
+            version_override, prerelease, latest_stable, existing_tags, tag_prefix
+        )
 
     if bump_type == "none":
         # Iterate-only mode: never advances the base, only the prerelease
@@ -282,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
             "official iii/v* tags."
         ),
     )
+    parser.add_argument(
+        "--version-override",
+        default="",
+        help="Exact release version; overrides bump/promotion, but must match --prerelease",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--current-version-file", required=True)
     args = parser.parse_args(argv)
@@ -292,14 +346,18 @@ def main(argv: list[str] | None = None) -> int:
     counter_prefix = args.counter_tag_prefix or args.target
     latest_stable = latest_stable_from_tags(tags, stable_prefix)
 
-    new_ver = calculate_version(
-        current=current,
-        bump_type=args.bump,
-        prerelease=args.prerelease,
-        latest_stable=latest_stable,
-        existing_tags=tags,
-        tag_prefix=counter_prefix,
-    )
+    try:
+        new_ver = calculate_version(
+            current=current,
+            bump_type=args.bump,
+            prerelease=args.prerelease,
+            latest_stable=latest_stable,
+            existing_tags=tags,
+            tag_prefix=counter_prefix,
+            version_override=args.version_override,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     if args.dry_run:
         base_ver = new_ver.split("-", 1)[0]

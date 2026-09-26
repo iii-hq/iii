@@ -19,7 +19,7 @@ use tokio::io::AsyncReadExt;
 use crate::{
     config::{CONFIGURABLE_ENGINE_WORKERS, EngineSpec},
     error::{ComposeError, Result},
-    process::{ChildOutput, DEFAULT_STOP_GRACE, Supervised, spawn_supervised_piped},
+    process::{ChildOutput, DEFAULT_STOP_GRACE, Supervised},
     state::StateStore,
 };
 
@@ -30,6 +30,9 @@ const ENGINE_LOG_ARCHIVES: usize = 3;
 const ENGINE_LOCK_FILE: &str = "engine.lock";
 const ENGINE_CONFIG_FILE: &str = "engine-config.yaml";
 const DEFAULT_WORKER_MANAGER_HOST: &str = "0.0.0.0";
+
+/// Private marker enabling the managed engine's stdin lifeline.
+const ENGINE_LIFELINE_STDIN_ENV: &str = "III_COMPOSE_ENGINE_LIFELINE_STDIN";
 const DEFAULT_WORKER_MANAGER_PORT: u16 = 49134;
 
 /// The engine process owned by one foreground compose invocation.
@@ -39,21 +42,26 @@ pub struct ManagedEngine {
     config_path: PathBuf,
     log_path: PathBuf,
     remove_config_on_stop: bool,
+    _lifeline: EngineLifeline,
     _namespace_lock: Option<NamespaceLock>,
 }
 
 impl ManagedEngine {
     /// Starts the current `iii` executable with output detached from compose's
-    /// terminal and captured below this daemon namespace's state directory.
-    pub async fn start(spec: &EngineSpec, daemon_namespace: &str) -> Result<Self> {
+    /// terminal and captured in the owning project's namespace directory.
+    pub async fn start(
+        spec: &EngineSpec,
+        daemon_namespace: &str,
+        compose_path: &Path,
+    ) -> Result<Self> {
         ensure_listener_available(spec)?;
         let executable =
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
             })?;
-        let state_root = StateStore::root()?;
-        let namespace_dir = state_root.join(daemon_namespace);
-        let lock_dir = namespace_dir.clone();
+        let store = StateStore::for_project(daemon_namespace, compose_path)?;
+        let namespace_dir = store.dir();
+        let lock_dir = namespace_dir.to_path_buf();
         let namespace = daemon_namespace.to_string();
         let namespace_lock =
             tokio::task::spawn_blocking(move || NamespaceLock::acquire(&lock_dir, &namespace))
@@ -61,10 +69,15 @@ impl ManagedEngine {
                 .map_err(|source| ComposeError::EngineSpawnFailed {
                     message: format!("could not claim the managed engine namespace: {source}"),
                 })??;
-        let config_path = materialize_engine_config(spec, &namespace_dir)?;
-        let log_path = engine_log_path(&state_root, daemon_namespace);
-        let mut engine =
-            Self::spawn_with_materialized_config(&executable, &config_path, &log_path).await?;
+        let config_path = materialize_engine_config(spec, namespace_dir)?;
+        let log_path = engine_log_path(namespace_dir);
+        let mut engine = Self::spawn_with_materialized_config(
+            &executable,
+            &config_path,
+            &log_path,
+            daemon_namespace,
+        )
+        .await?;
         engine._namespace_lock = Some(namespace_lock);
         Ok(engine)
     }
@@ -73,9 +86,21 @@ impl ManagedEngine {
         executable: &Path,
         config_path: &Path,
         log_path: &Path,
+        namespace: &str,
     ) -> Result<Self> {
-        match Self::spawn_with_paths(executable, config_path, log_path).await {
+        // Cancellation before spawn must remove the materialized configuration.
+        struct PendingConfig(Option<PathBuf>);
+        impl Drop for PendingConfig {
+            fn drop(&mut self) {
+                if let Some(path) = &self.0 {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        let mut pending = PendingConfig(Some(config_path.to_path_buf()));
+        match Self::spawn_with_paths(executable, config_path, log_path, namespace).await {
             Ok(mut engine) => {
+                pending.0 = None;
                 engine.remove_config_on_stop = true;
                 Ok(engine)
             }
@@ -90,6 +115,7 @@ impl ManagedEngine {
         executable: &Path,
         config_path: &Path,
         log_path: &Path,
+        namespace: &str,
     ) -> Result<Self> {
         let parent = log_path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
@@ -118,10 +144,24 @@ impl ManagedEngine {
         command
             .arg("--config")
             .arg(config_path)
-            .stdin(Stdio::null());
+            .env(ENGINE_LIFELINE_STDIN_ENV, "1")
+            .stdin(Stdio::piped());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
 
-        let (process, output) =
-            spawn_supervised_piped(command).map_err(|err| ComposeError::EngineSpawnFailed {
+            command
+                .as_std_mut()
+                .arg0(crate::process_title::command_name(
+                    crate::process_title::Role::Engine,
+                    namespace,
+                ));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = namespace;
+
+        let (process, output, lifeline) =
+            spawn_managed_engine(command).map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not start {}: {err}", executable.display()),
             })?;
         let logs = capture_output(output, log);
@@ -132,6 +172,7 @@ impl ManagedEngine {
             config_path: config_path.to_path_buf(),
             log_path: log_path.to_path_buf(),
             remove_config_on_stop: false,
+            _lifeline: lifeline,
             _namespace_lock: None,
         })
     }
@@ -184,6 +225,18 @@ impl ManagedEngine {
     pub async fn finish_logging(&self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.logs.wait()).await;
     }
+}
+
+/// The Compose-owned endpoint whose lifetime governs only the managed engine.
+struct EngineLifeline {
+    _stdin: tokio::process::ChildStdin,
+}
+
+fn spawn_managed_engine(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput, EngineLifeline)> {
+    let (process, output, stdin) = crate::process::spawn_supervised_piped_with_stdin(command)?;
+    Ok((process, output, EngineLifeline { _stdin: stdin }))
 }
 
 #[derive(Serialize)]
@@ -399,7 +452,7 @@ fn worker_manager_config_from_url(engine_url: &str) -> Result<serde_yaml::Value>
     Ok(serde_yaml::Value::Mapping(config))
 }
 
-/// Cross-process ownership of one managed engine namespace.
+/// Cross-process ownership of one managed engine in a project and namespace.
 ///
 /// The lock file persists, but the kernel lock is released with this guard or
 /// when the process exits, so a crash cannot strand the namespace.
@@ -771,8 +824,8 @@ fn archive_path(path: &Path, index: usize) -> PathBuf {
     PathBuf::from(archive)
 }
 
-fn engine_log_path(root: &Path, daemon_namespace: &str) -> PathBuf {
-    root.join(daemon_namespace).join("engine.log")
+fn engine_log_path(namespace_dir: &Path) -> PathBuf {
+    namespace_dir.join("engine.log")
 }
 
 #[cfg(unix)]
@@ -1043,15 +1096,15 @@ port: 60123
     }
 
     #[test]
-    fn engine_log_lives_under_the_daemon_namespace() {
+    fn engine_log_lives_in_the_project_namespace_directory() {
         assert_eq!(
-            engine_log_path(Path::new("/state"), "blue-whale"),
-            Path::new("/state/blue-whale/engine.log")
+            engine_log_path(Path::new("/project/.iii/compose/blue-whale")),
+            Path::new("/project/.iii/compose/blue-whale/engine.log")
         );
     }
 
     #[test]
-    fn concurrent_managed_engines_cannot_claim_the_same_namespace() {
+    fn concurrent_managed_engines_cannot_claim_the_same_project_namespace() {
         let dir = tempfile::tempdir().unwrap();
         let namespace_dir = dir.path().join("orders");
         std::fs::create_dir(&namespace_dir).unwrap();
@@ -1225,7 +1278,7 @@ port: 60123
             "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\nprintf '\\033[31mengine stdout\\033[0m\\n'\nprintf '\\033]2;forged title\\007engine stderr\\n' >&2\nexit 7\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let status = tokio::time::timeout(Duration::from_secs(5), engine.wait())
@@ -1264,7 +1317,9 @@ port: 60123
         std::fs::create_dir(&log).unwrap();
 
         let error =
-            match ManagedEngine::spawn_with_materialized_config(&script, &config, &log).await {
+            match ManagedEngine::spawn_with_materialized_config(&script, &config, &log, "test")
+                .await
+            {
                 Ok(_) => panic!("a directory cannot be opened as the engine log"),
                 Err(error) => error,
             };
@@ -1290,7 +1345,7 @@ port: 60123
             "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=11 2>/dev/null | tr '\\000' x\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let status = tokio::time::timeout(Duration::from_secs(10), engine.wait())
@@ -1325,7 +1380,7 @@ port: 60123
             "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
         );
 
-        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
             .await
             .unwrap();
         let pid = engine.pid();

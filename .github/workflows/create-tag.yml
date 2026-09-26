@@ -10,7 +10,7 @@ on:
         options:
           - iii
       bump:
-        description: 'Version bump type (none = iterate current pre-release train; requires a pre-release label)'
+        description: 'Version bump type (ignored when version_override is set; none otherwise requires a pre-release label)'
         required: true
         type: choice
         options:
@@ -27,6 +27,11 @@ on:
           - none
           - rc
         default: none
+      version_override:
+        description: 'Optional exact version, e.g. 0.24.1. Overrides bump; must match prerelease. Publishes current main.'
+        required: false
+        type: string
+        default: ''
       dry_run:
         description: 'Dry run (creates -dry-run.N tag, builds without publishing)'
         required: false
@@ -63,6 +68,7 @@ jobs:
           TARGET: ${{ inputs.target }}
           BUMP: ${{ inputs.bump }}
           PRERELEASE: ${{ inputs.prerelease }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
         run: |
           BRANCH=$(git rev-parse --abbrev-ref HEAD)
           if [[ "$BRANCH" != "main" ]]; then
@@ -73,7 +79,7 @@ jobs:
           # bump=none only iterates an existing pre-release train, so it
           # requires a pre-release label. Use patch/minor/major to START a
           # train (they pick the base); none cannot infer one.
-          if [[ "$BUMP" == "none" && "$PRERELEASE" == "none" ]]; then
+          if [[ -z "$VERSION_OVERRIDE" && "$BUMP" == "none" && "$PRERELEASE" == "none" ]]; then
             echo "::error::bump 'none' requires the rc pre-release label. Use patch/minor/major for a stable release."
             exit 1
           fi
@@ -105,6 +111,10 @@ jobs:
         id: versions
         env:
           TARGET: ${{ inputs.target }}
+          BUMP: ${{ inputs.bump }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [[ "$TARGET" == "iii" ]]; then
             current_version_file="engine/Cargo.toml"
@@ -113,12 +123,34 @@ jobs:
             exit 1
           fi
 
+          extra_args=()
+          if [[ "$DRY_RUN" == "true" ]]; then
+            extra_args+=(--dry-run)
+          fi
           python3 .github/scripts/calculate_release_version.py \
             --target "$TARGET" \
-            --bump "${{ inputs.bump }}" \
-            --prerelease "${{ inputs.prerelease }}" \
-            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            --bump "$BUMP" \
+            --prerelease "$PRERELEASE" \
+            --version-override "$VERSION_OVERRIDE" \
+            "${extra_args[@]}" \
             --current-version-file "$current_version_file"
+
+      - name: Summarize selected release
+        env:
+          CURRENT_VERSION: ${{ steps.versions.outputs.current }}
+          SELECTED_VERSION: ${{ steps.versions.outputs.version }}
+          SELECTED_TAG: ${{ steps.versions.outputs.tag }}
+          VERSION_OVERRIDE: ${{ inputs.version_override }}
+        run: |
+          {
+            printf '## Release selection\n\n'
+            printf -- '- Current manifest: `%s`\n' "$CURRENT_VERSION"
+            printf -- '- Selected version: `%s`\n' "$SELECTED_VERSION"
+            printf -- '- Tag: `%s`\n' "$SELECTED_TAG"
+            if [[ -n "$VERSION_OVERRIDE" ]]; then
+              printf '\nExplicit version selected; bump was ignored. This releases the checked-out main code, not a historical maintenance branch.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Stable releases pull their docs from docs/next/, so it must be prepared.
       # Validate even on dry runs so a release cannot be tagged without docs.
@@ -184,6 +216,10 @@ jobs:
       - name: Sync Cargo.lock
         if: inputs.target == 'iii' && inputs.dry_run != true
         run: cargo update --workspace
+
+      - name: Verify Cargo.lock is consistent
+        if: inputs.target == 'iii' && inputs.dry_run != true
+        run: cargo metadata --locked --format-version 1 > /dev/null
 
       - name: Validate version updates
         if: inputs.dry_run != true

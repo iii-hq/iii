@@ -1,6 +1,6 @@
 # iii
 
-iii is a WebSocket-routed worker mesh. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (events that invoke those functions). There is no direct worker-to-worker traffic — every call routes through the engine.
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, triggers, and functions. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (events that invoke those functions). There is no direct worker-to-worker traffic — every call routes through the engine.
 
 This registry worker documents the in-process **`engine::*`** introspection surface. It is always present in the engine and is not configured in `config.yaml`.
 
@@ -37,7 +37,7 @@ Every call is `caller → engine → handler`. The function id is the only contr
 
 ## Functions — `engine::*`
 
-Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list`, `engine::triggers::list`, and `engine::registered-triggers::list` hide internal `engine::*` rows unless `include_internal: true`.
+Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list`, `engine::triggers::list`, and `engine::registered-triggers::list` hide internal `engine::*` rows unless `include_internal: true`. `engine::registered-triggers::list` also hides registrations with `status: pending` (no provider for their trigger type yet) unless `include_pending: true`; every row carries a `status`.
 
 For exact request/response JSON Schemas, call `engine::functions::info { function_id: "engine::…" }`.
 

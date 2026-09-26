@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
+chrono = "0.4"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
@@ -20,6 +21,7 @@ dirs = { workspace = true }
 # Colour is disabled automatically when the output is not a terminal, so piped
 # output stays parseable.
 colored = { workspace = true }
+console = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
 # Registry resolution and artefact download.
@@ -46,7 +48,8 @@ indexmap = { version = "2", features = ["serde"] }
 # to be stable across machines and rust versions, so DefaultHasher is out.
 sha2 = "0.10"
 hex = "0.4"
-# One managed engine owns a compose namespace at a time. The kernel-backed
+semver = { workspace = true }
+# One managed engine owns a project's compose namespace at a time. The kernel-backed
 # lock is released automatically if the foreground compose process crashes.
 fslock = "0.2"
 
@@ -59,6 +62,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
   "Win32_Security",
   "Win32_System_Console",
@@ -70,3 +74,4 @@ windows-sys = { version = "0.60", features = [
 tempfile = { workspace = true }
 jsonschema = { version = "0.30", default-features = false }
 wiremock = { workspace = true }
+vt100 = "0.16"

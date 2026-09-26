@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/helpers",
-  "version": "0.23.0-rc.10",
+  "version": "0.24.3",
   "private": false,
   "publishConfig": { "access": "public" },
   "type": "module",
@@ -43,25 +43,25 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/api-logs": "^0.57.0",
-    "@opentelemetry/core": "^1.30.0",
-    "@opentelemetry/instrumentation": "^0.57.0",
-    "@opentelemetry/otlp-transformer": "^0.57.0",
-    "@opentelemetry/resources": "^1.30.0",
-    "@opentelemetry/sdk-logs": "^0.57.0",
-    "@opentelemetry/sdk-metrics": "^1.30.0",
-    "@opentelemetry/sdk-trace-base": "^1.30.0",
-    "@opentelemetry/sdk-trace-node": "^1.30.0",
+    "@opentelemetry/api-logs": "^0.222.0",
+    "@opentelemetry/core": "^2.11.0",
+    "@opentelemetry/instrumentation": "^0.222.0",
+    "@opentelemetry/otlp-transformer": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-logs": "^0.222.0",
+    "@opentelemetry/sdk-metrics": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.28.0",
-    "ws": "^8.18.3"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsdown": "^0.21.4",
-    "typedoc": "^0.28.17",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.11"
   }
 }

@@ -1476,6 +1476,7 @@ impl ObservabilityWorker {
         {
             storage.set_low_watermark_ratio(trace_storage.memory_low_watermark_ratio);
             storage.set_max_bytes(trace_storage.memory_max_bytes);
+            storage.set_max_attribute_bytes(trace_storage.max_attribute_bytes);
         }
         // No `enabled` guard: after the swap tier a disabled config leaves no
         // installed archive, so the `get_trace_disk_storage()` gate suffices.
@@ -3484,6 +3485,10 @@ impl ObservabilityWorker {
             let details = serde_json::json!({
                 "stored_spans": storage.len(),
                 "hot_bytes": storage.hot_bytes(),
+                // Finalized spans the archive writer has not acknowledged:
+                // a growing number means ingestion outruns the writer and
+                // the oldest of them are about to be dropped.
+                "dirty_backlog_spans": storage.dirty_len(),
                 "archive": trace_storage_status,
             });
             if trace_storage_status.archive == "degraded" {
@@ -4040,6 +4045,21 @@ impl Worker for ObservabilityWorker {
                             .await;
                             if let Ok((archive, Err(error))) = outcome {
                                 archive.mark_degraded(error);
+                            }
+                        }
+                        // The hot cache is bounded, but glibc keeps the pages
+                        // its churn freed. Hand them back so RSS follows the
+                        // cache instead of the last burst (MOT-4733).
+                        if let Ok(Some((before, after))) =
+                            tokio::task::spawn_blocking(crate::memory::release_freed_memory).await
+                        {
+                            let released = before.saturating_sub(after);
+                            if released >= 64 << 20 {
+                                tracing::info!(
+                                    released_mb = released >> 20,
+                                    rss_mb = after >> 20,
+                                    "returned freed heap to the OS"
+                                );
                             }
                         }
                     }
@@ -5425,9 +5445,8 @@ mod tests {
         assert!(t3_spans.is_empty());
     }
 
-    // Serial: eviction protects dirty spans whenever the GLOBAL archive is
-    // attached (`evict_to_capacity` consults it), so this must not overlap
-    // the `#[serial]` archive tests.
+    // Serial: eviction reports dropped spans to the GLOBAL archive when one
+    // is attached, so this must not overlap the `#[serial]` archive tests.
     #[test]
     #[serial]
     fn test_span_storage_eviction() {
@@ -6435,9 +6454,8 @@ mod tests {
     // Span storage: eviction updates secondary index correctly
     // =========================================================================
 
-    // Serial: eviction protects dirty spans whenever the GLOBAL archive is
-    // attached (`evict_to_capacity` consults it), so this must not overlap
-    // the `#[serial]` archive tests.
+    // Serial: eviction reports dropped spans to the GLOBAL archive when one
+    // is attached, so this must not overlap the `#[serial]` archive tests.
     #[test]
     #[serial]
     fn test_span_storage_eviction_index_integrity() {

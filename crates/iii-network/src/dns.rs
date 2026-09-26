@@ -124,7 +124,7 @@ async fn dns_resolver_task(
     response_tx: mpsc::Sender<DnsResponse>,
     shared: Arc<SharedState>,
 ) {
-    let resolver = match hickory_resolver::Resolver::builder_tokio().map(|b| b.build()) {
+    let resolver = match hickory_resolver::Resolver::builder_tokio().and_then(|b| b.build()) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "failed to create DNS resolver");
@@ -162,9 +162,9 @@ async fn resolve_query(
     use hickory_proto::serialize::binary::BinDecodable;
 
     let query_msg = Message::from_bytes(raw_query).ok()?;
-    let query_id = query_msg.id();
+    let query_id = query_msg.id;
 
-    let question = query_msg.queries().first()?;
+    let question = query_msg.queries.first()?;
     let record_type = question.query_type();
 
     let lookup = resolver
@@ -172,16 +172,13 @@ async fn resolve_query(
         .await
         .ok()?;
 
-    let mut response_msg = Message::new();
-    response_msg.set_id(query_id);
-    response_msg.set_message_type(hickory_proto::op::MessageType::Response);
-    response_msg.set_op_code(query_msg.op_code());
-    response_msg.set_response_code(hickory_proto::op::ResponseCode::NoError);
-    response_msg.set_recursion_desired(query_msg.recursion_desired());
-    response_msg.set_recursion_available(true);
+    let mut response_msg = Message::response(query_id, query_msg.op_code);
+    response_msg.metadata.response_code = hickory_proto::op::ResponseCode::NoError;
+    response_msg.metadata.recursion_desired = query_msg.recursion_desired;
+    response_msg.metadata.recursion_available = true;
     response_msg.add_query(question.clone());
 
-    let answers: Vec<_> = lookup.records().to_vec();
+    let answers: Vec<_> = lookup.answers().to_vec();
     response_msg.insert_answers(answers);
 
     use hickory_proto::serialize::binary::BinEncodable;
@@ -231,7 +228,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let resolver = hickory_resolver::Resolver::builder_tokio()
-                .map(|b| b.build())
+                .and_then(|b| b.build())
                 .unwrap();
             let result = resolve_query(b"not a valid dns message", &resolver).await;
             assert!(result.is_none());
@@ -243,7 +240,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let resolver = hickory_resolver::Resolver::builder_tokio()
-                .map(|b| b.build())
+                .and_then(|b| b.build())
                 .unwrap();
             let result = resolve_query(b"", &resolver).await;
             assert!(result.is_none());

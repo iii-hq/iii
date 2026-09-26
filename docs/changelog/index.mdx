@@ -5,10 +5,348 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.23.0" description="Upcoming">
-  ## Breaking: Compose startup uses `--up`
+<Update label="0.24.3" description="September 2026">
+  ## Configuration overrides reach workers through the configuration service
 
-  `iii compose up` is replaced by `iii compose --up`. The positional `up` form is rejected, and `--file` is valid only with `--up`; bare `iii compose` starts the daemon without starting a project. Migrate explicit files to `iii compose --up --file worker-compose.yaml`.
+  - Workers receive `config_override` values the same way they read any other configuration:
+    through `configuration::get` on the id in `III_CONFIG_NAME`. Compose merges package defaults,
+    the stored entry, and `config_override`, and hands the result to the configuration service
+    before the worker starts. There is no longer a separate snapshot file to read.
+  - Override values live in memory only and do not change `config/<id>.yaml`. Saving the
+    configuration, for example from the Console or with `configuration::set`, persists the whole
+    submitted value, including fields that came from the override.
+  - Removing a field from `config_override` does not bring back the value on disk. The worker keeps
+    the current value, across its own restarts, until it is changed or the configuration service
+    restarts, which discards unsaved values and reloads them from disk.
+  - `configuration::set` accepts `flush: false` to update only the active value without writing to
+    disk. Defaults seeded with `configuration::ensure` never replace an active override. Two
+    containers that share one `config_name` must not declare different overrides.
+  - `III_CONFIG` is retired. Declaring it in `environment` or an `env_file` fails startup with
+    `RETIRED_CONFIG_ENV`.
+
+  <Callout type="warning">
+    If a worker reads the file named by `III_CONFIG`, switch it to `configuration::get` with
+    `III_CONFIG_NAME` before upgrading, and remove `III_CONFIG` from `environment` and `env_file`
+    declarations.
+  </Callout>
+
+  See [Worker Compose](/using-iii/compose) and [Configuration](/using-iii/configuration) for
+  details.
+
+  ## Managed engine lifetime
+
+  - The engine that `iii compose --up` starts now exits with the Compose process that owns it,
+    including when Compose is killed with `SIGKILL` or dies before the engine is ready, so a later
+    start can bind the same port cleanly. The engine watches a private stdin lifeline that workers
+    do not inherit. Workers still survive a crash of the Compose daemon (`iii compose`) and are
+    re-adopted when it restarts.
+  - `SIGHUP`, sent when a terminal window closes or an SSH session drops, now triggers the same
+    graceful shutdown as `SIGTERM`. Previously it ended the daemon before teardown and left the
+    managed engine serving on its port with no owner.
+
+  ## Engine channel sockets
+
+  - When a channel's reader leaves, the engine drops the channel and closes the writer socket
+    immediately, even if the writer never attached. For example, the http worker drops its response
+    reader when a function returns a buffered value. These sockets were previously held until the
+    TTL sweeper removed them minutes later.
+  - Channels created with `engine::channels::create` belong to the calling connection, whose
+    disconnect releases the ends nobody has attached. In-process callers still rely on the sweeper.
+  - Under bursts of HTTP traffic on macOS, the engine no longer stops accepting connections with
+    `EMFILE`. Terminals on macOS start processes with a soft limit of 256 open files, and each HTTP
+    request holds two channels. On Unix, the engine now raises its soft open-file limit toward the
+    hard limit at startup (capped at 10240 on macOS).
+
+  ## Docs and agent skills
+
+  - The website, the `AGENTS.md` sources, and the bundled `skills/` use `compose::add` to add
+    workers and `iii project init` to create projects, and the website includes a new AI
+    onboarding prompt.
+
+  ## Migration
+
+  - Workers: replace reads of `III_CONFIG` with `configuration::get` on `III_CONFIG_NAME`.
+
+  [Compare 0.24.2 to 0.24.3](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.2...iii%2Fv0.24.3).
+</Update>
+
+<Update label="0.24.2" description="September 2026">
+  ## Readable configuration names
+
+  - Without an explicit `config_name`, the generated configuration id is exactly
+    `<namespace>-<container-key>`. For example, `default` plus `harness` uses `default-harness`,
+    stored by the filesystem adapter as `config/default-harness.yaml`, instead of the hashed
+    `default-harness-a14f3656efb8d5ea` form introduced in 0.24.1. Explicit names are unchanged.
+  - Generated ids must match `[a-z0-9_-]{1,64}`. Compose rejects an invalid or long generated name
+    with `INVALID_CONFIG_NAME` and never sanitizes, truncates, or hashes it; set an explicit
+    `config_name` instead.
+  - Within one project, a generated name that collides with another container's explicit name is
+    rejected before startup with `CONFIG_NAME_COLLISION`. Sharing requires both names to be
+    explicit. Across namespaces, `a-b` / `c` and `a` / `b-c` both produce `a-b-c`, so choose
+    unambiguous namespaces or distinct explicit names.
+  - `III_CONFIG_NAME` is always present and carries the explicit id or
+    `<namespace>-<container-key>`.
+
+  ## Automatic configuration migration
+
+  - On the first start after upgrading, Compose renames each worker's stored configuration to the
+    readable id and keeps its values, including `${VAR}` placeholders. The hashed id from 0.24.1
+    (`default-harness-a14f3656efb8d5ea`) becomes `default-harness`. In the `default` namespace, an
+    entry named after the bare container key, as earlier releases stored it (`state`), becomes
+    `default-state`. Workers with an explicit `config_name` are not migrated.
+  - When both the old and the new entry exist, the old entry wins. The filesystem adapter keeps the
+    original file as `<old-id>.yaml.bak`, and backup files are ignored when configuration loads.
+    The one migration rewrite may reformat the YAML and drop comments.
+  - Migration runs in the configuration service through the new `configuration::migrate`. With the
+    bridge adapter, upgrade the remote engine together with Compose; an older remote fails startup
+    with `CONFIG_MIGRATION_FAILED` instead of resetting stored values to defaults.
+
+  ## Runtime-only overrides
+
+  - `config_override` became execution-only: Compose wrote the merged value to the private
+    `III_CONFIG` snapshot and never persisted it to `config/<id>.yaml` or the configuration
+    service. Removing an override restored the stored setting on the next start. 0.24.3 replaces
+    the snapshot file with in-memory delivery through the configuration service.
+  - Configuration read failures stop startup with `CONFIG_FETCH_FAILED` instead of silently
+    falling back to defaults.
+
+  ## Guided tour
+
+  - An image prefetch that finishes while the API key prompt of `iii project init --learn-iii` is
+    on screen no longer cancels the prompt as if the operator had pressed `Ctrl+C`.
+  - The tour's onboarding pane opens again. Project setup adds `config_name: console` to the `ade`
+    container in the scaffolded `worker-compose.yaml`, so the Console reads the layout entry the
+    tour seeds instead of the derived `default-ade`. A container that already sets
+    `config_name` is left alone.
+
+  See [Worker Compose](/using-iii/compose) for configuration names and migration.
+
+  [Compare 0.24.1 to 0.24.2](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.1...iii%2Fv0.24.2).
+</Update>
+
+<Update label="0.24.1" description="September 2026">
+  ## Security
+
+  - Node OpenTelemetry packages move to 2.11 / 0.222 in `@iii-dev/helpers` and `iii-sdk`.
+    Rust moves to `opentelemetry` 0.32, `opentelemetry_sdk` 0.32.1, and
+    `tracing-opentelemetry` 0.33 in `iii-helpers`, `iii-sdk`, and the engine. These updates close
+    GHSA-8988-4f7v-96qf and GHSA-w9wp-h8wv-79jx, which allow unbounded allocation while parsing
+    W3C `baggage` headers. 0.24.0 still shipped the previous versions.
+  - Node SDKs update to `ws` 8.21 to address GHSA-96hv-2xvq-fx4p and GHSA-58qx-3vcg-4xpx.
+  - The engine updates `hickory-resolver` and `hickory-proto` to 0.26 to address
+    GHSA-3v94-mw7p-v465 and GHSA-q2qq-hmj6-3wpp, and refreshes transitive crates including
+    `quinn-proto`, `h2`, `rustls`, `tar`, and `serde_with`.
+  - CI uses the committed Cargo lockfile, tests `iii-helpers` and `@iii-dev/helpers` directly,
+    and gates dependency advisories with `cargo-deny` and `pnpm audit` over the SDK packages.
+    Dependabot adds weekly grouped updates for Cargo, npm, and GitHub Actions.
+
+  ## Compose environment and configuration isolation
+
+  - Workers and lifecycle hooks inherit the machine environment visible to the Compose daemon,
+    even without `env_file` or `environment`. Precedence is machine environment, then env files
+    in declaration order, then the worker's environment map, then daemon-owned reserved values.
+    Empty environment-map values still preserve values loaded from env files.
+  - `III_HOST_USER_ID` comes from the current project's `.iii/project.ini`, not the machine
+    environment. An explicit `env_file` or `environment` value can override it.
+  - Without an explicit `config_name`, Compose assigns a stable configuration ID derived from
+    the effective namespace and container key. Workers receive it through `III_CONFIG_NAME`,
+    even before their first configuration value exists, so projects on a shared engine no longer
+    collide on a worker's default configuration ID.
+  - Compose merges package defaults, the stored configuration, and `config_override` in that
+    order, then publishes the result to both the configuration service and the `III_CONFIG`
+    file before starting the worker. A missing entry permits defaults; a configuration-service
+    failure stops startup instead of silently using stale defaults.
+
+  <Callout type="warning">
+    Inherited machine variables can include credentials. Only start workers you trust with the
+    daemon's environment, and export variables before starting the daemon; changes in another
+    shell do not update an already-running daemon. Workers that use the configuration service
+    must honor `III_CONFIG_NAME`. Set `config_name` explicitly when an existing configuration ID
+    must be retained or intentionally shared.
+  </Callout>
+
+  See [Worker Compose](/using-iii/compose) for environment precedence and configuration delivery.
+
+  ## Atomic configuration defaults
+
+  - `configuration::ensure` creates or refreshes an entry and seeds `initial_value` only when no
+    non-null value is stored. Existing values, including `false`, `0`, and `""`, are preserved.
+    Use it instead of read-then-`configuration::register` when workers initialize defaults.
+    The response includes the stored `entry` and an `action`: `seeded`, `preserved`, or `registered`.
+  - Configuration mutations are serialized within one engine's local store, so concurrent seeds
+    and writes do not overwrite a value based on a stale read. Filesystem watcher events reread
+    authoritative storage before updating the cache, preventing stale events from reverting a
+    newer local write or deleting a recreated entry.
+  - With the bridge adapter, `configuration::ensure` forwards the original seed to the remote
+    engine, which decides whether to preserve or seed the value. An older remote without this
+    function returns `ADAPTER_ERROR`; there is no fallback that could overwrite remote settings.
+
+  ## Installation and release tooling
+
+  - The installer accepts `--non-interactive` or any nonempty `III_NON_INTERACTIVE` value to
+    suppress setup prompts even when a terminal is attached. It installs the binaries and prints
+    the setup command instead of running onboarding. Runs without a terminal already behave this
+    way. See [Installer options](/install#installer-options).
+  - The release workflow accepts a validated `version_override`, allowing a stable patch release
+    after a higher prerelease version has been selected. Overrides must be newer than the latest
+    stable tag and must not reuse an existing tag. They publish the current `main` code, not a
+    historical revision or a backport.
+
+  ## Migration
+
+  - Rust: if your crate depends on `opentelemetry` directly, move to 0.32 and
+    `tracing-opentelemetry` 0.33. Prefer `iii_helpers::observability::opentelemetry` so the version
+    matches the SDK.
+  - Node: no SDK API change. Remove pnpm patches or overrides that forced `@opentelemetry/*`
+    2.x on older `@iii-dev/helpers` releases when upgrading to 0.24.1.
+
+  [Compare 0.24.0 to 0.24.1](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.0...iii%2Fv0.24.1).
+</Update>
+
+<Update label="0.24.0" description="September 2026">
+  ## Compose package locks and configuration
+
+  - Compose writes `worker-compose.lock` with the resolved dependency graph, exact versions,
+    artifact URLs, SHA-256 digests, and package defaults. Starts and restarts reuse the lock rather
+    than resolving moving tags again, and cached package contents are verified before reuse.
+  - `iii compose build --frozen`, `iii compose --up --frozen`, and `compose::up frozen=true` require
+    the compose file and lock to match without resolving selectors or changing the lock. Commit
+    the lock so development, CI, and deployments use the same package content.
+  - `compose::add` accepts container objects alongside worker names, including scripts,
+    dependencies, environment files, configuration overrides, working directories, and timeouts.
+    Changed declarations restart in place; unchanged workers stay running.
+  - `compose::update` without a worker selection updates all declared package workers to the
+    registry's latest version and skips local workers. A targeted update resolves the selector
+    already declared; use `worker=name@latest` to move an exact pin to the latest channel.
+    Failed resolution or download leaves the previous lock and running workers unchanged.
+  - Dependency resolution preserves local workers and declared pins, warns on aliases, and reuses
+    canonical dependencies instead of adding duplicate workers.
+
+  ## Compose lifecycle and upgrade notes
+
+  <Callout type="warning">
+    Workers are now optional by default. Set `required_default: true` at the top of
+    `worker-compose.yaml`, or `required: true` on individual containers, to fail startup and roll
+    back when a required worker cannot start. Optional failures appear in `not_required_failures`
+    even when the operation succeeds; `start_after` controls startup order, not whether a worker
+    requires its dependency to succeed.
+  </Callout>
+
+  - Restart policies support `no` (the default), `on-failure`, and `always`, with configurable
+    backoff, attempt limits, and a stability window. Eligible retries keep dependents running;
+    status reports `restarting` between attempts.
+  - `compose::add`, `compose::update`, and `compose::remove` accept caller-selected `operation_id`
+    values and return an acceptance response before completion. Bind `compose-operation` with
+    `terminal_only: true` before submitting the mutation, then read `compose::operation` once for
+    recovery. Acceptance is not readiness, and completion messages now report optional worker
+    failures rather than claiming every worker is ready.
+  - Runtime state and logs move to `<project-dir>/.iii/compose/<namespace>/`; the package cache
+    remains shared. `III_COMPOSE_STATE_DIR` can redirect state to a writable location.
+  - Startup shows engine, worker, and download progress, plus restart timing. Package metadata
+    resolves concurrently, duplicate progress rows are removed, and `Ctrl+C` cancels startup.
+    Linux process labels include the namespace to distinguish Compose daemons and their engines.
+  - Blank `environment` entries no longer erase values loaded from `env_file`. Switching a
+    `config_override` mapping's `name` replaces the whole variant instead of retaining settings
+    from the previous adapter. Worker edits also handle YAML comments correctly.
+  - Compose retries transient `ETXTBSY` spawn failures, avoids spurious `Gone` errors during
+    restarts, and rejects a container argument to `compose::stop` rather than stopping the daemon
+    when a caller intended to stop one worker.
+
+  <Callout type="warning">
+    Before upgrading, stop existing Compose daemons with the old version and confirm their engines
+    and workers have stopped. Old process records, logs, and VM data are not migrated; preserve
+    anything you need. Add `**/.iii/compose/` to `.gitignore` to exclude generated project state.
+    See [Worker Compose](/using-iii/compose) for the state layout and lifecycle settings.
+  </Callout>
+
+  ## Engine, CLI, and SDK reliability
+
+  - Function-targeted triggers registered through `engine::register_trigger` now belong to the
+    caller's namespace. Provider lookup and `engine::triggers::info` try that namespace before
+    falling back to `default`, instead of leaving valid registrations pending indefinitely.
+  - `engine::registered-triggers::list` accepts `include_pending: true`, and trigger inspection
+    reports `active` or `pending` status to make missing providers easier to diagnose.
+  - A function that returns `null` now reaches its caller as `null`. The engine used to drop the
+    field on the way through, so the Node SDK resolved `undefined` and a strict `=== null` check on
+    a `state::get` miss never fired. The Python SDK keeps a `None` return on the wire the same way.
+  - `iii trigger` gains `--engine` and honors `III_URL` and the working directory's compose file;
+    `--address` and `--port` are deprecated. Compose also honors `III_URL` as an external engine
+    selection and does not start a second engine when it is set.
+
+  ## Observability
+
+  - The in-memory span cache is a hard-bounded FIFO: a burst of traced invocations can no longer
+    grow it without limit or stall the engine's WebSocket accept loop. Finalized spans evicted
+    before the archive wrote them are reported in `known_dropped_spans` (`completeness: partial`),
+    and the health check exposes `dirty_backlog_spans`.
+  - Attribute values are capped at ingest (`trace_storage.max_attribute_bytes`, default 64 KiB);
+    a cut `iii.payload.json` sets `iii.payload.truncated`.
+  - On Linux with glibc the engine returns freed heap to the OS once a minute, so its memory
+    follows the bounded span cache instead of staying at the last burst's peak.
+  - Read-only trace and log functions remain discoverable through `engine::functions::list`
+    without `include_internal`; destructive clear operations remain hidden by default.
+
+  ## Installation and worker compatibility
+
+  - `iii project init --learn-iii` creates a harness project and starts the guided tour. The
+    installer offers the tour after installation and accepts a single keypress at its prompt.
+  - The installer adds `--start-with` to start a harness project with selected workers,
+    `--need-envs` to request their environment variables, and `--skip-bin-download` to run setup
+    against an existing installation. `--need-envs` requires `--start-with`. Each selected worker
+    receives the full project `.env` file, so use these options only with workers you trust.
+    See [Installer options](/install#installer-options).
+  - The bundled `iii-worker` supports Alpine/musl with host-aware GNU or musl artifact selection
+    during install and update. VM execution still requires KVM and an appropriate guest rootfs.
+  - Node and Python worker images separate lean runtime images from builder images, and worker
+    manifests accept the registry's `license` key when `runtime.base_image` is set.
+
+  ## Telemetry and tutorials
+
+  - `III_TELEMETRY_ENABLED` accepts `false`, `0`, `no`, and `off` regardless of case or surrounding
+    whitespace. This controls product-usage telemetry, not OpenTelemetry observability.
+  - Product telemetry reports completed onboarding tour steps and deduplicates repeated step
+    messages within an engine run.
+  - The [Linkly tutorial](/tutorials/linkly/overview) separates Agentic and Exploration paths, and
+    installation docs use the harness template and Compose to add inference providers.
+
+  [Compare 0.23.0 to 0.24.0](https://github.com/iii-hq/iii/compare/iii%2Fv0.23.0...iii%2Fv0.24.0).
+</Update>
+
+<Update label="0.23.0" description="September 2026">
+  ## Worker Compose
+
+  - Project workers now run through Compose and are declared in `worker-compose.yaml`.
+  - Compose manages dependency order, lifecycle, configuration, scripts, status, and logs.
+  - The legacy `iii worker`, `worker::*`, and engine-managed project worker lifecycle are removed.
+  - Workers with `runtime.base_image` run in VMs, with source changes forwarded before restart.
+
+  <Callout type="warning">
+    Existing projects must follow [Move workers from config.yaml to
+    Compose](/upgrading/workers-to-compose) before their first 0.23 start.
+  </Callout>
+
+  ## Namespaces
+
+  - Namespaces isolate projects, workers, functions, and triggers on a shared engine.
+  - Namespace support is available in the CLI, Console, and Node, browser, Python, Rust, and Go SDKs.
+  - Workers without a namespace continue to use `default`.
+  - RabbitMQ durable subscriptions now use namespace-aware queue names.
+
+  See [Upgrade from 0.22.x](/upgrading/from-0-22-x) for the queue and authorization migration
+  checklist.
+
+  ## Observability
+
+  - Traces can persist across engine restarts.
+  - The Console adds observability configuration and live trace updates.
+  - `engine::traces::list` now returns compact trace summaries. Use `engine::traces::spans` for full
+    span details.
+
+  ## Reliability
+
+  - Improved queue routing across namespaces.
+  - Improved trace archive cleanup and summary pagination.
+  - Reduced CLI telemetry traffic.
 </Update>
 
 <Update label="0.22.1" description="August 2026">

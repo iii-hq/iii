@@ -11,20 +11,20 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
-worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
-`analytics` in Chapter 4:
+`iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
+manages the streaming. `iii-stream` is an engine worker, so it runs from the start; you only enable
+the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
 
-```bash
-iii worker add iii-stream
-iii worker init click-streamer --language typescript
+```yaml worker-compose.yaml
+click-streamer:
+  worker: path://./click-streamer
+  start_after: [pubsub]
 ```
 
 ## Broadcast clicks in real time
 
-We'll continue to keep `link` decoupled by having it announce that a click happened, and
-`click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
-dropped event, so a regular `pubsub` event is the right tool here.
+Have `link` announce each click with a `pubsub` event. Then, have `click-streamer` push the event
+onto the live feed.
 
 ### Add a `link.clicked` event to the `link` worker
 
@@ -62,7 +62,7 @@ worker.registerFunction(
 
 Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
 a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
-WebSocket subscribed to that stream and group. Replace the generated `click-streamer/src/index.ts`:
+WebSocket subscribed to that stream and group. Create `click-streamer/src/index.ts`:
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -98,22 +98,24 @@ worker.registerTrigger({
 logger.info("click-streamer ready");
 ```
 
-Register it with your project:
+Restart Compose so it picks up the change:
 
 ```bash
-iii worker add ./click-streamer
+iii trigger compose::restart
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.
 
 ## See it work
 
-With the engine running, create and follow a link a few times:
+With the engine running, create a few links and follow each:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+for n in $(seq 4 6); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
 Then read the live `clicks` stream:

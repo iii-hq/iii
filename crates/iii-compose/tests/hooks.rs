@@ -19,7 +19,7 @@ fn empty_env() -> &'static std::collections::BTreeMap<String, String> {
     EMPTY.get_or_init(std::collections::BTreeMap::new)
 }
 
-fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> SpawnCtx<'a> {
+fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, _config: Option<&'a Path>) -> SpawnCtx<'a> {
     SpawnCtx {
         engine_url: "ws://engine.test:49134",
         namespace: "orders-test",
@@ -27,7 +27,6 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
         compose_file: cwd,
         container_key: "api",
         start,
-        config_path: config,
         config_name: None,
         working_dir: cwd,
         user_env: empty_env(),

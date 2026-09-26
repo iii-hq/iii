@@ -4,12 +4,12 @@
 //! Observable operations for long Compose mutations.
 //!
 //! Compose is a trigger provider. Clients bind `compose-operation` before
-//! submitting an add and receive structured dependency-tree transitions. A
-//! compact snapshot remains available for reconnect/recovery only; normal
-//! progress delivery never polls.
+//! submitting an add, update, or remove and receive structured mutation
+//! transitions. A compact snapshot remains available for reconnect/recovery
+//! only; normal progress delivery never polls.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Instant,
 };
@@ -27,6 +27,9 @@ use tokio::sync::{RwLock, watch};
 pub struct ProgressSubscription {
     /// Operation to follow. Omit to receive every operation from this daemon.
     pub operation_id: Option<String>,
+    /// Deliver only the terminal success/failure event for the operation.
+    #[serde(default)]
+    pub terminal_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -102,8 +105,12 @@ impl ProgressEmitter {
             .filter(|binding| {
                 serde_json::from_value::<ProgressSubscription>(binding.config.clone())
                     .ok()
-                    .and_then(|config| config.operation_id)
-                    .is_none_or(|id| id == event.operation_id)
+                    .is_none_or(|config| {
+                        config
+                            .operation_id
+                            .is_none_or(|id| id == event.operation_id)
+                            && (!config.terminal_only || event.terminal)
+                    })
             })
             .cloned()
             .collect();
@@ -111,18 +118,28 @@ impl ProgressEmitter {
             let client = self.client.clone();
             let event = event.clone();
             async move {
+                let function_id = binding.function_id.clone();
                 let request = TriggerRequest {
-                    function_id: binding.function_id,
+                    function_id: function_id.clone(),
                     payload: serde_json::to_value(event).unwrap_or_default(),
                     action: Some(TriggerAction::Void),
                     timeout_ms: Some(5_000),
                 };
+                let request = match binding.metadata {
+                    Some(metadata) => request.metadata(metadata),
+                    None => request.into(),
+                };
                 let request = if let Some(namespace) = binding.namespace {
                     request.namespace(namespace)
                 } else {
-                    request.into()
+                    request
                 };
-                let _ = client.trigger(request).await;
+                if let Err(error) = client.trigger(request).await {
+                    eprintln!(
+                        "compose-operation delivery failed for trigger {} ({}): {}",
+                        binding.id, function_id, error
+                    );
+                }
             }
         });
         futures::future::join_all(deliveries).await;
@@ -179,6 +196,7 @@ struct State {
     completed: usize,
     sequence: u64,
     last_event: Option<ProgressEvent>,
+    warnings: BTreeSet<String>,
 }
 
 pub struct Operation {
@@ -203,6 +221,7 @@ impl Operation {
                 completed: 0,
                 sequence: 0,
                 last_event: None,
+                warnings: BTreeSet::new(),
             }),
             cancel,
             emitter,
@@ -219,7 +238,7 @@ impl Operation {
         *self.cancel.borrow()
     }
     pub fn cancel(&self) {
-        let _ = self.cancel.send(true);
+        self.cancel.send_replace(true);
     }
     pub async fn emit_tree(&self, container: &str, depth: usize, detail: impl Into<String>) {
         self.emit_progress(
@@ -265,6 +284,14 @@ impl Operation {
     pub async fn emit(&self, container: Option<&str>, phase: &str, detail: impl Into<String>) {
         self.emit_progress(container, phase, detail, None, None, false)
             .await;
+    }
+
+    pub(crate) async fn warn_once(&self, key: String, container: &str, detail: String) {
+        if !self.state.write().await.warnings.insert(key) {
+            return;
+        }
+        crate::report::daemon_line(&format!("warning: {detail}"), true);
+        self.emit(Some(container), "warning", detail).await;
     }
     pub async fn plan(&self, total: usize) {
         self.state.write().await.total = total;
@@ -385,6 +412,45 @@ impl OperationManager {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn cancellation_is_latched_before_a_receiver_subscribes() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let manager = OperationManager::new(&client);
+        let operation = manager.create(1).await;
+        operation.cancel();
+        assert!(operation.is_cancelled());
+        assert!(*operation.cancellation().borrow());
+        client.shutdown_async().await;
+    }
+
+    #[tokio::test]
+    async fn alias_warnings_are_emitted_once_per_operation_even_with_concurrent_installs() {
+        let emitter = ProgressEmitter {
+            client: IIIClient::new("ws://127.0.0.1:1/ws"),
+            bindings: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        let operation = Operation::new("compose:alias-warning".into(), 1, emitter.clone());
+        tokio::join!(
+            crate::registry::warn_alias("shell", "console", Some("shell"), Some(&operation)),
+            crate::registry::warn_alias(
+                "shell",
+                "api.workers.iii.dev/console",
+                Some("shell"),
+                Some(&operation)
+            ),
+        );
+        let snapshot = operation.snapshot().await;
+        assert_eq!(snapshot.last_sequence, 1);
+        let event = snapshot.last_event.unwrap();
+        assert_eq!(event.phase, "warning");
+        assert_eq!(event.container.as_deref(), Some("shell"));
+        assert!(event.detail.contains("'console' is an alias of 'shell'"));
+        assert!(!event.terminal);
+        let next = Operation::new("compose:next-alias-warning".into(), 1, emitter);
+        crate::registry::warn_alias("shell", "console", Some("shell"), Some(&next)).await;
+        assert_eq!(next.snapshot().await.last_sequence, 1);
+    }
+
     #[test]
     fn lifecycle_suffixes_resolve_to_the_root_operation() {
         let client = IIIClient::new("ws://127.0.0.1:1/ws");
@@ -428,5 +494,52 @@ mod tests {
                 .expect("first operation should remain"),
             &first
         ));
+    }
+
+    #[test]
+    fn terminal_only_subscription_filters_progress_events() {
+        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
+            "operation_id": "compose:test",
+            "terminal_only": true,
+        }))
+        .expect("subscription should deserialize");
+
+        let progress = ProgressEvent {
+            sequence: 1,
+            operation_id: "compose:test".into(),
+            container: None,
+            phase: "waiting".into(),
+            detail: "resolving".into(),
+            current: None,
+            total: None,
+            elapsed_ms: 0,
+            terminal: false,
+        };
+        let terminal = ProgressEvent {
+            terminal: true,
+            sequence: 2,
+            phase: "complete".into(),
+            detail: "done".into(),
+            ..progress.clone()
+        };
+
+        let matches = |event: &ProgressEvent| {
+            config
+                .operation_id
+                .as_ref()
+                .is_none_or(|id| id == &event.operation_id)
+                && (!config.terminal_only || event.terminal)
+        };
+        assert!(!matches(&progress));
+        assert!(matches(&terminal));
+    }
+
+    #[test]
+    fn subscription_defaults_to_all_events() {
+        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
+            "operation_id": "compose:test"
+        }))
+        .expect("subscription should deserialize");
+        assert!(!config.terminal_only);
     }
 }

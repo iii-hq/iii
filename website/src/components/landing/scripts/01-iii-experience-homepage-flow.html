@@ -74,8 +74,8 @@
     { id:'reply-3', type:'reply', content:"I'll add state.",
       sendLabel:'Send', delay:250 },
     { id:'terminal-3a', type:'terminal-command',
-      command:'iii worker add iii-state',
-      output:'\u2713 Worker iii-state installed', delay:400 },
+      command:'iii trigger compose::add worker=state',
+      output:'\u2713 state ready (2.1s)', delay:400 },
     { id:'msg-3b', type:'slack-message', sender:ALEX,
       content:"How long to roll that out?",
       autoAdvance:1500, delay:500 },
@@ -110,8 +110,8 @@
     { id:'reply-4', type:'reply', content:"No problem, we can add HTTP.",
       sendLabel:'Send', delay:250 },
     { id:'terminal-4a', type:'terminal-command',
-      command:'iii worker add iii-http',
-      output:'\u2713 Worker iii-http installed', delay:400 },
+      command:'iii trigger compose::add worker=http',
+      output:'\u2713 http ready (2.1s)', delay:400 },
     { id:'code-4', type:'code-editor', filename:'content-router.ts', language:'typescript',
       lines:[
         "iii.registerFunction(",
@@ -147,7 +147,6 @@
       sendLabel:'Send', delay:250 },
     { id:'status-5', type:'status', variant:'success', icon:'check',
       headline:'All services connected',
-      detail:'Every worker shares the same event bus and state',
       autoAdvance:1600, delay:200 },
 
     { id:'msg-6', type:'slack-message', sender:ALEX,
@@ -180,11 +179,8 @@
       detail:'requirements.txt updated',
       autoAdvance:1000, delay:400 },
     { id:'terminal-6b', type:'terminal-command',
-      command:'iii worker stop content-classifier',
-      output:'\u2713 Worker content-classifier stopped', delay:300 },
-    { id:'terminal-6c', type:'terminal-command',
-      command:'iii worker start content-classifier',
-      output:'\u2713 Worker content-classifier started', delay:300 },
+      command:'iii trigger compose::restart worker=content-classifier',
+      output:'\u2713 content-classifier ready (1.8s)', delay:300 },
     { id:'status-6', type:'status', variant:'success', icon:'observe',
       headline:'Issue resolved',
       detail:'Classifier restarted with detoxify==0.5.3',
@@ -716,15 +712,15 @@
     el.innerHTML = ''
       + '<div class="seq-finish">'
       +   '<div class="lead">Try it for yourself</div>'
-      +   '<a href="https://iii.dev/docs/quickstart" class="quick" target="_blank" rel="noopener noreferrer">Quickstart Guide \u2192</a>'
+      +   '<a href="https://iii.dev/docs/install" class="quick" target="_blank" rel="noopener noreferrer">Install iii \u2192</a>'
       + '</div>';
     seqScroll.appendChild(el);
     const quickLink = el.querySelector('.quick');
     if (quickLink) quickLink.addEventListener('click', () => {
       iiiTrack('cta_click', {
-        cta_id: 'quickstart',
+        cta_id: 'install',
         cta_location: 'experience_finish',
-        cta_label: 'quickstart guide',
+        cta_label: 'install iii',
         cta_href: quickLink.getAttribute('href') || ''
       });
     });

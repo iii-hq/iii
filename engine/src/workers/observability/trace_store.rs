@@ -13,7 +13,7 @@
 use super::{config::TraceStorageConfig, otel::InMemorySpanStorage};
 use rusqlite::{Connection, ToSql, params, params_from_iter};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -919,6 +919,7 @@ impl TraceDiskStore {
         self.notify();
     }
 
+    #[cfg(test)]
     pub(crate) fn is_degraded(&self) -> bool {
         self.state
             .lock()
@@ -1010,14 +1011,11 @@ fn persist_dirty_batch(store: &Arc<TraceDiskStore>, connection: &mut Connection)
         return;
     }
 
-    let keys: Vec<(String, String)> = batch
-        .iter()
-        .map(|span| (span.trace_id.clone(), span.span_id.clone()))
-        .collect();
+    let (seqs, spans): (Vec<u64>, Vec<StoredSpan>) = batch.into_iter().unzip();
     for attempt in 0..=RETRY_DELAYS.len() {
-        match write_batch(store, connection, &batch) {
+        match write_batch(store, connection, &spans) {
             Ok(()) => {
-                hot.mark_durable(&keys);
+                hot.mark_durable(&seqs);
                 store.record_success();
                 return;
             }
@@ -1048,12 +1046,9 @@ fn drain_dirty(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> Resu
         if batch.is_empty() {
             return Ok(());
         }
-        let keys: Vec<(String, String)> = batch
-            .iter()
-            .map(|span| (span.trace_id.clone(), span.span_id.clone()))
-            .collect();
-        write_batch(store, connection, &batch)?;
-        hot.mark_durable(&keys);
+        let (seqs, spans): (Vec<u64>, Vec<StoredSpan>) = batch.into_iter().unzip();
+        write_batch(store, connection, &spans)?;
+        hot.mark_durable(&seqs);
         store.record_success();
     }
     Err("shutdown drain reached the bounded batch limit".to_string())
@@ -1064,20 +1059,44 @@ fn write_batch(
     connection: &mut Connection,
     batch: &[StoredSpan],
 ) -> Result<(), String> {
-    let incoming_bytes: u64 = batch.iter().map(approx_span_bytes).sum();
+    // Serialize once: the payload column, the capacity check and the
+    // `approx_bytes` accounting all read the same string.
+    let payloads: Vec<Option<String>> = batch
+        .iter()
+        .map(|span| {
+            if span.pending {
+                return Ok(None);
+            }
+            serde_json::to_string(span)
+                .map(Some)
+                .map_err(|err| format!("cannot serialize trace {}: {err}", span.trace_id))
+        })
+        .collect::<Result<_, String>>()?;
+    let incoming_bytes: u64 = payloads.iter().flatten().map(|p| p.len() as u64).sum();
     ensure_capacity(store, connection, incoming_bytes, batch)?;
     let epoch = store.epoch.load(Ordering::Acquire) as i64;
+    let ingest_time_ns = super::otel::now_unix_nanos() as i64;
     let tx = connection
         .transaction()
         .map_err(|err| database_error(&store.database_path, "write transaction start", err))?;
 
-    for span in batch {
-        if span.pending {
+    // trace_id -> (first_start_ns, last_end_ns) over this batch; the per-trace
+    // aggregate below runs once per trace, not once per span.
+    let mut touched: BTreeMap<&str, (i64, i64)> = BTreeMap::new();
+    for (span, payload) in batch.iter().zip(&payloads) {
+        let Some(payload) = payload else {
             continue;
-        }
-        let payload = serde_json::to_string(span)
-            .map_err(|err| format!("cannot serialize trace {}: {err}", span.trace_id))?;
-        let approx_bytes = approx_span_bytes(span) as i64;
+        };
+        let approx_bytes = payload.len() as i64;
+        let start = span.start_time_unix_nano as i64;
+        let end = span.end_time_unix_nano as i64;
+        touched
+            .entry(span.trace_id.as_str())
+            .and_modify(|(first, last)| {
+                *first = (*first).min(start);
+                *last = (*last).max(end);
+            })
+            .or_insert((start, end));
         tx.execute(
             "INSERT INTO spans (
                 epoch, trace_id, span_id, parent_span_id, name, start_time_ns,
@@ -1108,7 +1127,7 @@ fn write_batch(
                 span.status_description,
                 span.service_name,
                 payload,
-                super::otel::now_unix_nanos() as i64,
+                ingest_time_ns,
                 approx_bytes,
             ],
         )
@@ -1152,29 +1171,31 @@ fn write_batch(
                 )
             })?;
         }
+    }
 
+    // One aggregate per trace touched by the batch. The subqueries walk the
+    // trace's rows once here instead of once per inserted span, which for a
+    // 30k-span trace was the difference between milliseconds and minutes.
+    for (trace_id, (first_start_ns, last_end_ns)) in touched {
         tx.execute(
             "INSERT INTO trace_meta (epoch, trace_id, first_start_ns, last_end_ns, last_ingest_ns, span_count, approx_bytes)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
+             VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                (SELECT COUNT(*) FROM spans WHERE epoch = ?1 AND trace_id = ?2),
+                (SELECT COALESCE(SUM(approx_bytes), 0) FROM spans WHERE epoch = ?1 AND trace_id = ?2)
+             )
              ON CONFLICT(epoch, trace_id) DO UPDATE SET
                 first_start_ns = MIN(trace_meta.first_start_ns, excluded.first_start_ns),
                 last_end_ns = MAX(trace_meta.last_end_ns, excluded.last_end_ns),
                 last_ingest_ns = excluded.last_ingest_ns,
-                span_count = (SELECT COUNT(*) FROM spans WHERE epoch = excluded.epoch AND trace_id = excluded.trace_id),
-                approx_bytes = (SELECT COALESCE(SUM(approx_bytes), 0) FROM spans WHERE epoch = excluded.epoch AND trace_id = excluded.trace_id)",
-            params![
-                epoch,
-                span.trace_id,
-                span.start_time_unix_nano as i64,
-                span.end_time_unix_nano as i64,
-                super::otel::now_unix_nanos() as i64,
-                approx_bytes,
-            ],
+                span_count = excluded.span_count,
+                approx_bytes = excluded.approx_bytes",
+            params![epoch, trace_id, first_start_ns, last_end_ns, ingest_time_ns],
         )
         .map_err(|err| {
             database_error(
                 &store.database_path,
-                &format!("update metadata for trace '{}'", span.trace_id),
+                &format!("update metadata for trace '{trace_id}'"),
                 err,
             )
         })?;
@@ -1619,12 +1640,6 @@ fn directory_size(directory: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
-fn approx_span_bytes(span: &StoredSpan) -> u64 {
-    serde_json::to_vec(span)
-        .map(|payload| payload.len() as u64)
-        .unwrap_or(0)
-}
-
 fn set_private_permissions(path: &Path, directory: bool) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -1717,6 +1732,9 @@ mod tests {
         config.max_disk_bytes = 512 * 1024 * 1024;
         let store = TraceDiskStore::open(&config).expect("open trace store");
         let hot = Arc::new(InMemorySpanStorage::new_with_limits(512, 64 * 1024 * 1024));
+        // These exercise the DISK cap with multi-MiB payloads: keep the
+        // ingest-time attribute cap out of the way.
+        hot.set_max_attribute_bytes(0);
         store.attach_hot_storage(&hot);
 
         // ~24 MiB of history across distinct traces, oldest ingested first.
@@ -2013,6 +2031,55 @@ mod tests {
         store.shutdown();
     }
 
+    /// The per-trace aggregate runs once per trace touched by a batch, not
+    /// once per span; the counts it leaves behind must still be exact.
+    #[test]
+    fn trace_meta_aggregates_once_per_trace_and_stays_correct() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let store = TraceDiskStore::open(&test_config(directory.path())).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(64, 16 * 1024 * 1024));
+        store.attach_hot_storage(&hot);
+
+        hot.add_spans(vec![
+            test_span("trace-a", "span-1", "a1"),
+            test_span("trace-a", "span-2", "a2"),
+            test_span("trace-b", "span-1", "b1"),
+            test_span("trace-a", "span-3", "a3"),
+        ]);
+        store.flush().expect("persist first batch");
+        // A later batch touches trace-a again: the aggregate must see all four rows.
+        hot.add_spans(vec![test_span("trace-a", "span-4", "a4")]);
+        store.flush().expect("persist second batch");
+
+        let probe =
+            Connection::open(directory.path().join("traces.sqlite3")).expect("probe connection");
+        let (count, bytes): (i64, i64) = probe
+            .query_row(
+                "SELECT span_count, approx_bytes FROM trace_meta WHERE trace_id = 'trace-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("trace-a meta");
+        let expected_bytes: i64 = probe
+            .query_row(
+                "SELECT COALESCE(SUM(approx_bytes), 0) FROM spans WHERE trace_id = 'trace-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("trace-a byte sum");
+        assert_eq!(count, 4);
+        assert_eq!(bytes, expected_bytes);
+        let count_b: i64 = probe
+            .query_row(
+                "SELECT span_count FROM trace_meta WHERE trace_id = 'trace-b'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("trace-b meta");
+        assert_eq!(count_b, 1);
+        store.shutdown();
+    }
+
     #[test]
     fn hot_cache_preserves_the_existing_memory_only_eviction_contract() {
         let storage = InMemorySpanStorage::new_with_limits_and_watermark(1, 1_000, 0.75);
@@ -2063,6 +2130,9 @@ mod tests {
         config.max_disk_bytes = 1;
         let store = TraceDiskStore::open(&config).expect("open trace store");
         let hot = Arc::new(InMemorySpanStorage::new_with_limits(16, 20 * 1024 * 1024));
+        // These exercise the DISK cap with multi-MiB payloads: keep the
+        // ingest-time attribute cap out of the way.
+        hot.set_max_attribute_bytes(0);
         store.attach_hot_storage(&hot);
 
         let mut committed = test_span("trace-protected", "span-1", "large");
@@ -2120,6 +2190,9 @@ mod tests {
             );
             let store = TraceDiskStore::open(&test_config(&directory)).expect("open trace store");
             let hot = Arc::new(InMemorySpanStorage::new_with_limits(16, 20 * 1024 * 1024));
+            // These exercise the DISK cap with multi-MiB payloads: keep the
+            // ingest-time attribute cap out of the way.
+            hot.set_max_attribute_bytes(0);
             store.attach_hot_storage(&hot);
 
             let mut span = test_span("trace-file-limit", "span-1", "large");

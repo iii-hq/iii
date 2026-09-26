@@ -114,7 +114,19 @@ own automation:
   </Tab>
 </Tabs>
 
-`configuration::get` reads one entry, `configuration::list` enumerates every entry (schemas only;
+`flush` defaults to `true`: `configuration::set` persists the complete submitted object and
+notifies consumers. To update only the active in-memory value, pass `flush: false`:
+
+```json
+{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}, "flush": false}
+```
+
+This does not schedule a later disk write. It can precede worker registration; validation uses
+the schema when available, and ordinary reads validate again after registration. The worker decides
+how to apply update notifications. `ensure` does not persist or discard this memory-only value.
+Unsaved values remain until replaced, deleted, or the configuration service restarts.
+
+`configuration::get` reads the current active entry, `configuration::list` enumerates every entry (schemas only;
 values are never included in the list), and `configuration::schema` returns the schema for one id.
 See the [configuration worker docs](https://workers.iii.dev/workers/configuration) for the full
 function reference and error codes.

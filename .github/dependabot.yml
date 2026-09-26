@@ -1,55 +1,54 @@
 version: 2
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: cargo
+    directory: /
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
     groups:
-      all-actions:
-        patterns:
-          - "*"
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  - package-ecosystem: "npm"
-    directory: "/"
+  - package-ecosystem: npm
+    directory: /
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
     groups:
-      all-npm-root:
-        patterns:
-          - "*"
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  - package-ecosystem: "npm"
-    directory: "/console"
+  - package-ecosystem: npm
+    directory: /console
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
     groups:
-      all-npm-console:
-        patterns:
-          - "*"
+      npm-console-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  - package-ecosystem: "cargo"
-    directory: "/"
+  - package-ecosystem: gomod
+    directory: /sdk/packages/go/iii
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
     groups:
-      all-cargo:
-        patterns:
-          - "*"
+      gomod-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  - package-ecosystem: "gomod"
-    directory: "/sdk/packages/go/iii"
+  - package-ecosystem: pip
+    directory: /sdk/packages/python/iii
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
     groups:
-      all-gomod:
-        patterns:
-          - "*"
+      pip-minor-and-patch:
+        update-types: ["minor", "patch"]
 
-  - package-ecosystem: "pip"
-    directory: "/sdk/packages/python/iii"
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "weekly"
+      interval: weekly
     groups:
-      all-pip:
-        patterns:
-          - "*"
+      actions:
+        patterns: ["*"]

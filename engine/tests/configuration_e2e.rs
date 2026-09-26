@@ -28,11 +28,14 @@ use iii::workers::configuration::ConfigurationWorker;
 use iii::workers::configuration::adapters::ConfigurationAdapter;
 use iii::workers::configuration::adapters::fs::FsAdapter;
 use iii::workers::configuration::structs::{
-    ConfigurationGetInput, ConfigurationListInput, ConfigurationRegisterInput,
-    ConfigurationSetInput,
+    ConfigurationEnsureInput, ConfigurationGetInput, ConfigurationListInput,
+    ConfigurationRegisterInput, ConfigurationSetInput,
 };
 use iii::workers::traits::Worker;
 
+/// Build a `ConfigurationWorker` backed by a real `FsAdapter` rooted at `dir`
+/// for direct, in-process end-to-end testing (no engine boot, no WebSocket).
+/// `ttl_seconds` sets the per-id cleanup countdown (`0` disables it).
 async fn build_worker(
     dir: &std::path::Path,
     ttl_seconds: u64,
@@ -126,6 +129,7 @@ async fn register_set_get_round_trip_with_env_var_expansion() {
 
     let set = worker
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-stream".into(),
             value: json!({ "host": "${CFG_E2E_HOST:fallback}", "port": 4242 }),
         })
@@ -302,6 +306,7 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
 
     worker
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-stream".into(),
             value: json!({ "host": "set.local" }),
         })
@@ -422,4 +427,231 @@ async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+#[tokio::test]
+/// Verify the routed ensure contract, first-registration event and preservation of later values.
+async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, worker) = build_worker(dir.path(), 0).await;
+
+    let mut events = install_event_capture(&engine, "test::on_ensure");
+    worker
+        .register_trigger(Trigger {
+            id: "trig-ensure".into(),
+            trigger_type: "configuration".into(),
+            function_id: "test::on_ensure".into(),
+            config: json!({ "configuration_id": "iii-stream" }),
+            worker_id: None,
+            metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
+        })
+        .await
+        .unwrap();
+
+    let schema = json!({
+        "type": "object",
+        "required": ["port"],
+        "properties": { "port": { "type": "integer" } }
+    });
+
+    // First ensure: no stored value -> seeds and fires configuration:registered.
+    let seeded = worker
+        .ensure_fn(ConfigurationEnsureInput {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "first".into(),
+            schema: schema.clone(),
+            initial_value: Some(json!({ "port": 3112 })),
+            metadata: None,
+        })
+        .await;
+    match seeded {
+        FunctionResult::Success(out) => assert_eq!(out.entry.value, json!({ "port": 3112 })),
+        _ => panic!("expected ensure seed success"),
+    }
+
+    let evt = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("ensure should fire a trigger")
+        .expect("channel open");
+    assert_eq!(evt["event_type"], "configuration:registered");
+    assert_eq!(evt["new_value"]["port"], 3112);
+
+    // Second ensure with a DIFFERENT seed: the stored value must be preserved.
+    worker
+        .ensure_fn(ConfigurationEnsureInput {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "second".into(),
+            schema: schema.clone(),
+            initial_value: Some(json!({ "port": 9999 })),
+            metadata: None,
+        })
+        .await;
+
+    let read = worker
+        .get_fn(ConfigurationGetInput {
+            id: "iii-stream".into(),
+            raw: false,
+        })
+        .await;
+    match read {
+        FunctionResult::Success(out) => assert_eq!(out.value["port"], 3112),
+        _ => panic!("expected get success"),
+    }
+
+    // An explicit set still overrides after seeding.
+    let set = worker
+        .set_fn(ConfigurationSetInput {
+            flush: true,
+            id: "iii-stream".into(),
+            value: json!({ "port": 4242 }),
+        })
+        .await;
+    assert!(matches!(set, FunctionResult::Success(_)));
+    let read2 = worker
+        .get_fn(ConfigurationGetInput {
+            id: "iii-stream".into(),
+            raw: false,
+        })
+        .await;
+    match read2 {
+        FunctionResult::Success(out) => assert_eq!(out.value["port"], 4242),
+        _ => panic!("expected get success after set"),
+    }
+}
+
+/// Migration changes ids, not values; subscribers and disk reload observe the move.
+#[tokio::test]
+async fn migration_events_and_restart_preserve_the_entry() {
+    use iii::workers::configuration::structs::{ConfigurationMigrateInput, MigrateAction};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, worker) = build_worker(dir.path(), 0).await;
+    worker.initialize().await.unwrap();
+    let original = json!({ "token": "${TOKEN}", "enabled": false, "count": 0, "empty": null });
+    assert!(matches!(
+        worker
+            .register_fn(ConfigurationRegisterInput {
+                id: "default-harness-a14f3656efb8d5ea".into(),
+                name: "Manual name".into(),
+                description: "Manual description".into(),
+                schema: json!({}),
+                initial_value: Some(original.clone()),
+                metadata: Some(json!({"manual": true})),
+            })
+            .await,
+        FunctionResult::Success(_)
+    ));
+    let active = json!({"token": "runtime-only", "enabled": true});
+    for (id, value) in [
+        ("default-harness-a14f3656efb8d5ea", active.clone()),
+        ("default-harness", json!({"stale_destination": true})),
+    ] {
+        assert!(matches!(
+            worker
+                .set_fn(ConfigurationSetInput {
+                    id: id.into(),
+                    value,
+                    flush: false,
+                })
+                .await,
+            FunctionResult::Success(_)
+        ));
+    }
+    let mut events = install_event_capture(&engine, "test::migration_events");
+    worker
+        .register_trigger(Trigger {
+            id: "migration-events".into(),
+            trigger_type: "configuration".into(),
+            function_id: "test::migration_events".into(),
+            config: json!({}),
+            worker_id: None,
+            metadata: None,
+            namespace: "default".into(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
+        })
+        .await
+        .unwrap();
+    let input = ConfigurationMigrateInput {
+        from_id: "default-harness-a14f3656efb8d5ea".into(),
+        to_id: "default-harness".into(),
+    };
+    let FunctionResult::Success(out) = worker.migrate_fn(input.clone()).await else {
+        panic!("migration failed")
+    };
+    assert_eq!(out.action, MigrateAction::Migrated);
+    let entry = out.entry.unwrap();
+    assert_eq!(entry.value, original);
+    assert_eq!(entry.metadata, Some(json!({"manual": true})));
+    match worker
+        .get_fn(ConfigurationGetInput {
+            id: input.from_id.clone(),
+            raw: true,
+        })
+        .await
+    {
+        FunctionResult::Failure(error) => assert_eq!(error.code, "NOT_FOUND"),
+        _ => panic!("the retired id must not remain readable through runtime memory"),
+    }
+    let FunctionResult::Success(current) = worker
+        .get_fn(ConfigurationGetInput {
+            id: input.to_id.clone(),
+            raw: true,
+        })
+        .await
+    else {
+        panic!("the active value must follow the destination")
+    };
+    assert_eq!(current.value, active);
+    let mut observed = Vec::new();
+    for _ in 0..2 {
+        let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if event["event_type"] == "configuration:registered" {
+            assert_eq!(event["new_value"], active, "event must agree with GET");
+        }
+        observed.push((
+            event["id"].as_str().unwrap().to_string(),
+            event["event_type"].as_str().unwrap().to_string(),
+        ));
+    }
+    observed.sort();
+    assert_eq!(
+        observed,
+        vec![
+            ("default-harness".into(), "configuration:registered".into()),
+            (input.from_id.clone(), "configuration:deleted".into())
+        ]
+    );
+    let FunctionResult::Success(out) = worker.migrate_fn(input).await else {
+        panic!("repeat failed")
+    };
+    assert_eq!(out.action, MigrateAction::Preserved);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1100), events.recv())
+            .await
+            .is_err()
+    );
+    worker.destroy().await.unwrap();
+    let (_, restarted) = build_worker(dir.path(), 0).await;
+    restarted.initialize().await.unwrap();
+    let FunctionResult::Success(raw) = restarted
+        .get_fn(ConfigurationGetInput {
+            id: "default-harness".into(),
+            raw: true,
+        })
+        .await
+    else {
+        panic!("reload failed")
+    };
+    assert_eq!(raw.value, original);
+    restarted.destroy().await.unwrap();
 }

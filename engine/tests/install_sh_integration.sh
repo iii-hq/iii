@@ -90,6 +90,68 @@ case "$depr_output" in
 esac
 
 # ─────────────────────────────────────────────────────────────
+# Test 3b: --non-interactive never prompts, even on a terminal
+# ─────────────────────────────────────────────────────────────
+case "$help_output" in
+  *"--non-interactive"*) pass "--help documents --non-interactive" ;;
+  *) fail "--help missing --non-interactive documentation" ;;
+esac
+
+# The prompt only appears when a terminal is attached, so run the installer
+# under a pty. A stub binary that accepts every argument makes the installer
+# believe the installed iii knows `--learn-iii`, which is the only path that
+# reaches the prompt.
+STUBDIR="$TMPROOT/stub"
+mkdir -p "$STUBDIR"
+printf '#!/bin/sh\nexit 0\n' > "$STUBDIR/iii"
+chmod +x "$STUBDIR/iii"
+
+# `script` is the portable way to get a pty. BSD and util-linux take the
+# command differently, and Alpine ships neither (BusyBox has no `script`), so
+# a run that cannot make a pty skips instead of failing.
+run_on_pty() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    script -q /dev/null "$@"
+  else
+    script -q -c "$*" /dev/null
+  fi
+}
+
+pty_works=false
+if command -v script >/dev/null 2>&1; then
+  # No quotes inside the probe command: the Linux branch passes the command as
+  # one string, which drops a level of quoting.
+  case "$(run_on_pty printf pty-probe </dev/null 2>&1 || true)" in
+    *pty-probe*) pty_works=true ;;
+  esac
+fi
+
+if [ "$pty_works" = false ]; then
+  pass "pty tests skipped (no usable script command)"
+else
+  ni_output=$(BIN_DIR="$STUBDIR" run_on_pty sh "$INSTALL_SH" --skip-bin-download --non-interactive </dev/null 2>&1 || true)
+  case "$ni_output" in
+    *"Would you like"*) fail "--non-interactive still prompted — got: $ni_output" ;;
+    *) pass "--non-interactive does not prompt on a terminal" ;;
+  esac
+
+  # The environment variable does the same as the flag.
+  ni_env_output=$(BIN_DIR="$STUBDIR" III_NON_INTERACTIVE=1 run_on_pty sh "$INSTALL_SH" --skip-bin-download </dev/null 2>&1 || true)
+  case "$ni_env_output" in
+    *"Would you like"*) fail "III_NON_INTERACTIVE still prompted — got: $ni_env_output" ;;
+    *) pass "III_NON_INTERACTIVE does not prompt on a terminal" ;;
+  esac
+
+  # Without either, the prompt is still there. This is what the flag turns off,
+  # and it is the regression that would make the flag meaningless.
+  prompt_output=$(BIN_DIR="$STUBDIR" run_on_pty sh "$INSTALL_SH" --skip-bin-download </dev/null 2>&1 || true)
+  case "$prompt_output" in
+    *"Would you like"*) pass "the prompt still appears without the flag" ;;
+    *) fail "no prompt on a terminal without the flag — the flag tests prove nothing" ;;
+  esac
+fi
+
+# ─────────────────────────────────────────────────────────────
 # Test 4: actual install of pinned stable release
 # ─────────────────────────────────────────────────────────────
 echo "--- running install.sh against real GitHub release (VERSION=$PINNED_VERSION) ---"

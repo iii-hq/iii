@@ -6,39 +6,39 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-Observability in iii isn't something you bolt onto each service. Every cross-worker call already
-flows through the engine, so the engine can trace and log the whole system end to end. In this
-chapter you open the console to see that, then, if you want, read the same data directly from the
-engine.
+Every cross-worker call flows through the engine, so the engine traces and logs the whole system end
+to end. In this chapter you open the console to see that, then, if you want, read the same data
+directly from the engine.
 
 ## Open the console
 
-The engine has been running since Chapter 1. Start the console, a browser UI for inspecting it:
+iii has a console worker that provides an easy to use web interface for monitoring and interacting
+with your iii application. Add it to your project with:
 
 ```bash
-iii console
+iii trigger compose::add worker=console
 ```
 
-Open it at [http://127.0.0.1:3113/traces](http://127.0.0.1:3113/traces). Every worker you added is
-listed with the functions and triggers it registered. Navigate to the traces tab and run the below
-command to watch the invocations stream live:
+Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"
+and then take a look at what happens in the Traces window within the console when you run the
+following:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 5); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
-Click any redirect to see a full waterfall of timed spans crossing from `http` into `link` and
-back:
+Click any redirect to see a full waterfall of timed spans crossing from `http` into `link` and back:
 
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
 
-You didn't add a tracing library or thread a request ID between services to get this.
-The engine injects `iii-observability` automatically, so it must not be declared in `config.yaml`
-or `worker-compose.yaml`. Every request gets a trace and every `Logger` line is collected
-automatically across workers. In iii, end-to-end observability is an inherent property of the
-system.
+You didn't add a tracing library or thread a request ID between services to get this. The engine
+injects `iii-observability` automatically. Every request gets a trace and every `Logger` line is
+collected automatically across workers. In iii, end-to-end observability is an inherent property of
+the system.
 
 <Info>
   **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
@@ -61,16 +61,18 @@ For most teams the console (or your own OTel backend) is all you need day to day
 Create some traffic:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
-for n in $(seq 1 5); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+for n in $(seq 6 10); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 curl -s -o /dev/null http://127.0.0.1:3111/s/missing
 ```
 
 Then check the logs:
 
 ```bash
-iii trigger engine::logs::list limit=100 \
+iii trigger engine::logs::list limit=500 \
   | jq '.logs[]
       | select(.body == "link resolved")
       | { body,
@@ -89,7 +91,7 @@ iii trigger engine::logs::list limit=100 \
   "body": "link resolved",
   "data": {
     "log.data": {
-      "code": "iii",
+      "code": "iii-example-6",
       "found": true
     }
   },
@@ -121,14 +123,18 @@ iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
 
 <Info>
   The `jq` pipe walks the nested `roots` tree, indenting each span by depth and printing its
-  `service_name` and duration in milliseconds. You get the full path of one redirect, across two
+  `service_name` and duration in milliseconds. You get the full path of one redirect, across three
   workers:
 </Info>
 
 ```text
-GET /s/:code (iii) 2.044 ms
-  execute http::redirect (iii-node) 1.444 ms
-    execute link::resolve (iii-node) 0.52 ms
+GET /s/:code (http) 6.686 ms
+  call engine::channels::create (iii) 0.062 ms
+  execute http::redirect (iii-node) 3.569 ms
+    execute link::resolve (iii-node) 1.233 ms
+      call state::get (iii) 0.309 ms
+        execute state::get (state) 0.06 ms
+  call engine::channels::create (iii) 0.031 ms
 ```
 
 This shows the redirect arriving through `/s/:code` via the `http` worker's Trigger, calling

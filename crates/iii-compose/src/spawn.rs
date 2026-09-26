@@ -6,13 +6,10 @@
 
 //! The child spawn contract.
 //!
-//! A child's environment is **built**, not inherited. The daemon composes it
-//! from three layers — a host baseline, the container's declared
-//! `env_file`/`environment`, and eight reserved variables the daemon owns — and
-//! the child is spawned with that map and nothing else. A compose project then
-//! starts the same way regardless of which shell launched the daemon, and a
-//! stale `III_URL` in the operator's environment can never point a child at the
-//! wrong engine.
+//! A child's environment starts with the machine environment visible to the
+//! daemon. The container's `env_file`/`environment` values override it, followed
+//! by the reserved variables the daemon owns. The resulting map is the entire
+//! child environment, so a stale `III_URL` cannot point it at another engine.
 //!
 //! The plan is computed as data ([`SpawnPlan`]) and only then turned into a
 //! process, so the contract is assertable without spawning anything.
@@ -27,10 +24,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these eight
+/// would be the wrong way round for most settings. Because each of these seven
 /// is already declared in the compose file, and a second declaration of the
 /// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding a ninth is a decision, not a habit:
+/// separately, so adding an eighth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -47,51 +44,41 @@ use crate::manifest::StartSpec;
 ///   and one daemon may own several compose files, so the namespace and file
 ///   are required for an unambiguous control-plane call. The directory is the
 ///   canonical parent of that file.
-/// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
-///   merged value is written to the file and published to the entry. Pointing
-///   the child at a different file leaves it reading one value while the
-///   configuration worker holds another.
-pub const RESERVED_ENV: [&str; 8] = [
+/// - `III_CONFIG_NAME` identifies the configuration service entry. Compose
+///   injects the merged execution value there without persisting overrides.
+pub const RESERVED_ENV: [&str; 7] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
     "III_COMPOSE_FILE",
     "III_COMPOSE_DIR",
-    "III_CONFIG",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
 ];
 
-/// Host variables a child inherits. Everything else in the daemon's environment
-/// is dropped: a compose project must start the same way whatever shell the
-/// operator happened to launch the daemon from. Anything a worker actually
-/// needs is declared in `environment` or `env_file`.
-#[cfg(unix)]
-pub const BASELINE_ENV: &[&str] = &[
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LC_ALL",
-];
+/// Whether a key claims a daemon-owned variable under the host OS's rules.
+pub(crate) fn is_reserved_env(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        RESERVED_ENV.iter().any(|key| windows_env_key_eq(name, key))
+    }
+    #[cfg(not(windows))]
+    {
+        RESERVED_ENV.contains(&name)
+    }
+}
 
-/// The windows baseline is longer because the platform genuinely fails without
-/// it: no SystemRoot means no ws2_32, no COMSPEC means no `cmd /C`.
-#[cfg(windows)]
-pub const BASELINE_ENV: &[&str] = &[
-    "PATH",
-    "PATHEXT",
-    "COMSPEC",
-    "SystemRoot",
-    "SystemDrive",
-    "windir",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "PROCESSOR_ARCHITECTURE",
-    "NUMBER_OF_PROCESSORS",
-    "OS",
-];
+/// Retired snapshot key, matched using native environment name semantics.
+pub(crate) fn is_retired_config_env(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        windows_env_key_eq(name, "III_CONFIG")
+    }
+    #[cfg(not(windows))]
+    {
+        name == "III_CONFIG"
+    }
+}
 
 /// Cloneable so hooks can reuse a container's context with a different command.
 #[derive(Debug, Clone)]
@@ -102,8 +89,6 @@ pub struct SpawnCtx<'a> {
     pub compose_file: &'a Path,
     pub container_key: &'a str,
     pub start: &'a StartSpec,
-    /// Path of the resolved configuration file, when the container has config.
-    pub config_path: Option<&'a Path>,
     /// Which configuration entry this container's value was written to, and
     /// therefore the one it should read from.
     ///
@@ -122,27 +107,93 @@ pub struct SpawnCtx<'a> {
 pub struct SpawnPlan {
     pub program: String,
     pub args: Vec<String>,
-    /// The child's complete environment. The daemon's own environment is not
-    /// inherited, so this map is the whole story.
+    /// The child's complete environment, including the machine environment
+    /// captured when the plan was built.
     pub env: BTreeMap<String, String>,
     pub working_dir: PathBuf,
 }
 
+/// The device id `iii project init` wrote beside the compose file. The same
+/// value the engine reports telemetry under, so a worker's own events land on
+/// the machine that produced them rather than on an identity of their own.
+///
+/// Its own small parse rather than a shared one: `iii-compose` does not depend
+/// on the engine crate that owns telemetry, and this is four lines of INI.
+const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
+
+/// Identify the project-scoped telemetry key using the host's naming rules.
+fn is_host_user_id(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        windows_env_key_eq(name, HOST_USER_ID_ENV)
+    }
+    #[cfg(not(windows))]
+    {
+        name == HOST_USER_ID_ENV
+    }
+}
+
+fn project_device_id(compose_dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(compose_dir.join(".iii").join("project.ini")).ok()?;
+    contents.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("device_id=")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
 /// Builds the spawn plan for one container.
 ///
-/// Precedence, lowest to highest: host baseline, then the container's
+/// Precedence, lowest to highest: machine environment, then the container's
 /// `env_file`/`environment`, then the reserved contract. A user value can never
-/// win over a reserved key — those are rejected at parse time rather than
-/// silently dropped here.
+/// win over a reserved key: those are rejected before the plan is built.
 pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
-    let mut env: BTreeMap<String, String> = BASELINE_ENV
-        .iter()
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| (name.to_string(), value))
-        })
+    // Plans also carry environment values into VMs, whose protocol uses UTF-8.
+    // Ignore non-Unicode entries instead of panicking as std::env::vars would.
+    let env = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect();
+    spawn_plan_with_env(ctx, env)
+}
+
+/// Match the OS's ordinal case folding, including non-ASCII environment names.
+#[cfg(windows)]
+pub(crate) fn windows_env_key_eq(left: &str, right: &str) -> bool {
+    use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
+
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    // Windows folds individual UTF-16 code units without changing their count.
+    if left.len() != right.len() {
+        return false;
+    }
+    if left.is_empty() {
+        return true;
+    }
+    let len = i32::try_from(left.len()).expect("environment key exceeds Windows API length limit");
+    // SAFETY: Both pointers reference initialized UTF-16 buffers with `len`
+    // elements, and both buffers remain alive for the duration of the call.
+    let result = unsafe { CompareStringOrdinal(left.as_ptr(), len, right.as_ptr(), len, 1) };
+    assert_ne!(
+        result,
+        0,
+        "comparing environment keys failed: {}",
+        std::io::Error::last_os_error()
+    );
+    result == CSTR_EQUAL
+}
+
+fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) -> SpawnPlan {
+    // Telemetry identity belongs to this project, not the daemon's parent.
+    // Explicit container values are applied below and may still override it.
+    env.retain(|name, _| !is_host_user_id(name));
+    // Windows environment names are case-insensitive. Remove host spellings
+    // before overlaying explicit values, rather than relying on map sort order.
+    #[cfg(windows)]
+    env.retain(|name, _| {
+        !is_reserved_env(name) && !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key))
+    });
 
     env.extend(ctx.user_env.clone());
 
@@ -169,19 +220,19 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         "III_COMPOSE_DIR".to_string(),
         compose_dir.to_string_lossy().to_string(),
     );
-    env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
-    match ctx.config_path {
-        Some(config_path) => {
-            env.insert(
-                "III_CONFIG".to_string(),
-                config_path.to_string_lossy().to_string(),
-            );
-        }
-        // No config for this container: the key must be absent, not stale.
-        None => {
-            env.remove("III_CONFIG");
-        }
+    // The project's device id, for workers that report telemetry of their own.
+    // Not reserved: `environment:` still wins, which is what a test or a CI run
+    // wants. A project with no `.iii/project.ini` — one not scaffolded by
+    // `iii project init` — simply has no id to publish, so the variable is
+    // absent and a worker must treat it as optional.
+    if !env.keys().any(|name| is_host_user_id(name))
+        && let Some(device_id) = project_device_id(compose_dir)
+    {
+        env.insert(HOST_USER_ID_ENV.to_string(), device_id);
     }
+    env.insert("III_WORKER_NAME".to_string(), ctx.container_key.to_string());
+    // Retired delivery channel: do not inherit a stale snapshot from the host.
+    env.retain(|name, _| !is_retired_config_env(name));
     match ctx.config_name {
         Some(name) => {
             env.insert("III_CONFIG_NAME".to_string(), name.to_string());
@@ -264,7 +315,7 @@ mod tests {
 
     fn ctx<'a>(
         start: &'a StartSpec,
-        config: Option<&'a Path>,
+        _config: Option<&'a Path>,
         user_env: &'a BTreeMap<String, String>,
     ) -> SpawnCtx<'a> {
         SpawnCtx {
@@ -274,7 +325,6 @@ mod tests {
             compose_file: Path::new("/srv/app/worker-compose.yaml"),
             container_key: "api",
             start,
-            config_path: config,
             config_name: None,
             working_dir: Path::new("/srv/app/workers/api"),
             user_env,
@@ -341,43 +391,217 @@ mod tests {
         assert_eq!(Path::new(&plan.env["III_COMPOSE_DIR"]), expected_dir);
     }
 
+    /// Machine identity is never inherited; only the project or an explicit
+    /// container value may provide it, including native aliases on Windows.
     #[test]
-    fn config_path_becomes_iii_config() {
-        let start = StartSpec::Shell("cargo run".to_string());
-        let config = PathBuf::from("/run/iii/compose/api.yaml");
-        let user_env = BTreeMap::new();
-        let plan = spawn_plan(&ctx(&start, Some(&config), &user_env));
+    fn host_user_id_comes_from_the_project_file_and_yields_to_the_container() {
+        #[cfg(windows)]
+        let names = [HOST_USER_ID_ENV, "iii_host_user_id"];
+        #[cfg(not(windows))]
+        let names = [HOST_USER_ID_ENV];
+        for machine_key in names {
+            let temp = tempfile::tempdir().unwrap();
+            let compose_file = temp.path().join("worker-compose.yaml");
+            std::fs::write(&compose_file, "containers: {}").unwrap();
+            let start = StartSpec::Shell("cargo run".to_string());
+            let user_env = BTreeMap::new();
+            let mut context = ctx(&start, None, &user_env);
+            context.compose_file = &compose_file;
+            let machine = env_of(&[(machine_key, "other-project")]);
 
-        assert_eq!(plan.env["III_CONFIG"], "/run/iii/compose/api.yaml");
+            let plan = spawn_plan_with_env(&context, machine.clone());
+            assert!(!plan.env.keys().any(|name| is_host_user_id(name)));
+
+            std::fs::create_dir_all(temp.path().join(".iii")).unwrap();
+            std::fs::write(
+                temp.path().join(".iii/project.ini"),
+                "[project]\nproject_id=p-1\ndevice_id=device-abc\n",
+            )
+            .unwrap();
+            let plan = spawn_plan_with_env(&context, machine.clone());
+            assert_eq!(plan.env[HOST_USER_ID_ENV], "device-abc");
+            assert_eq!(
+                plan.env.keys().filter(|name| is_host_user_id(name)).count(),
+                1
+            );
+
+            // Explicit overrides, even empty ones, prevent the project fallback.
+            for declared_key in names {
+                for value in ["from-compose", ""] {
+                    let declared = env_of(&[(declared_key, value)]);
+                    let mut context = ctx(&start, None, &declared);
+                    context.compose_file = &compose_file;
+                    let plan = spawn_plan_with_env(&context, machine.clone());
+                    assert_eq!(plan.env[declared_key], value);
+                    assert_eq!(
+                        plan.env.keys().filter(|name| is_host_user_id(name)).count(),
+                        1
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn the_daemon_environment_is_not_inherited_wholesale() {
-        // Only the baseline crosses over; a variable the operator happened to
-        // export must not silently become part of the project's contract.
-        unsafe { std::env::set_var("COMPOSE_TEST_STRAY", "leaked") };
+    fn retired_snapshot_variable_is_not_inherited() {
         let start = StartSpec::Shell("cargo run".to_string());
         let user_env = BTreeMap::new();
-        let plan = spawn_plan(&ctx(&start, None, &user_env));
-        unsafe { std::env::remove_var("COMPOSE_TEST_STRAY") };
-
-        assert!(!plan.env.contains_key("COMPOSE_TEST_STRAY"));
-        // PATH is in the baseline, so a child can still find its interpreter.
-        assert!(plan.env.contains_key("PATH"), "baseline should carry PATH");
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &user_env),
+            env_of(&[("III_CONFIG", "/stale/snapshot.yaml")]),
+        );
+        assert!(!plan.env.contains_key("III_CONFIG"));
     }
 
     #[test]
-    fn user_env_sits_above_the_baseline_and_below_the_contract() {
+    fn retired_config_filter_respects_platform_environment_names() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let explicit = if cfg!(windows) {
+            BTreeMap::new()
+        } else {
+            env_of(&[("iii_config", "explicit")])
+        };
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &explicit),
+            env_of(&[
+                ("III_CONFIG", "stale"),
+                ("iii_config", "lower"),
+                ("Iii_Config", "mixed"),
+            ]),
+        );
+        assert!(!plan.env.contains_key("III_CONFIG"));
+        if cfg!(windows) {
+            assert!(!plan.env.contains_key("iii_config"));
+            assert!(!plan.env.contains_key("Iii_Config"));
+        } else {
+            assert_eq!(plan.env["iii_config"], "explicit");
+            assert_eq!(plan.env["Iii_Config"], "mixed");
+        }
+    }
+
+    #[test]
+    fn machine_environment_is_inherited_without_container_overrides() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = BTreeMap::new();
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &user_env),
+            env_of(&[("COMPOSE_TEST_MACHINE", "from-machine")]),
+        );
+
+        assert_eq!(plan.env["COMPOSE_TEST_MACHINE"], "from-machine");
+    }
+
+    #[test]
+    fn user_env_sits_above_the_machine_environment_and_below_the_contract() {
         let start = StartSpec::Shell("cargo run".to_string());
         let user_env = env_of(&[("PATH", "/only/this"), ("RUST_LOG", "debug")]);
         let plan = spawn_plan(&ctx(&start, None, &user_env));
 
         assert_eq!(
             plan.env["PATH"], "/only/this",
-            "user env overrides baseline"
+            "user env overrides the machine environment"
         );
         assert_eq!(plan.env["RUST_LOG"], "debug");
         assert_eq!(plan.env["III_NAMESPACE"], "orders-1234abcd");
+    }
+
+    #[test]
+    fn machine_environment_is_overridden_by_env_files_then_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("base.env"),
+            "FROM_FILE=file\nOVERRIDE=base\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("last.env"),
+            "OVERRIDE=last\nFROM_COMPOSE=file\n",
+        )
+        .unwrap();
+        let file = crate::ComposeFile::parse(
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n    environment:\n      FROM_COMPOSE: compose\n      OPTIONAL: ''\n",
+            tmp.path().join("worker-compose.yaml"),
+        ).unwrap();
+        let user_env = file.containers["api"].resolve_user_env("api").unwrap();
+        let start = StartSpec::Shell("cargo run".to_string());
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &user_env),
+            env_of(&[
+                ("ONLY_MACHINE", "machine"),
+                ("FROM_FILE", "machine"),
+                ("OVERRIDE", "machine"),
+                ("FROM_COMPOSE", "machine"),
+                ("OPTIONAL", "machine"),
+            ]),
+        );
+
+        assert_eq!(plan.env["ONLY_MACHINE"], "machine");
+        assert_eq!(plan.env["FROM_FILE"], "file");
+        assert_eq!(plan.env["OVERRIDE"], "last");
+        assert_eq!(plan.env["FROM_COMPOSE"], "compose");
+        assert_eq!(plan.env["OPTIONAL"], "");
+    }
+
+    #[test]
+    fn reserved_values_replace_the_machine_environment_and_absent_config_is_removed() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = BTreeMap::new();
+        let context = ctx(&start, None, &user_env);
+        let host = RESERVED_ENV
+            .iter()
+            .map(|name| (name.to_string(), "stale".to_string()))
+            .collect();
+        let plan = spawn_plan_with_env(&context, host);
+        let expected = spawn_plan_with_env(&context, BTreeMap::new());
+
+        assert_eq!(plan.env, expected.env);
+        assert!(!plan.env.contains_key("III_CONFIG"));
+        assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_host_names_do_not_bypass_explicit_or_reserved_values() {
+        let start = StartSpec::Shell("echo ready".to_string());
+        let user_env = env_of(&[("TOKEN", "compose")]);
+        let plan = spawn_plan_with_env(
+            &ctx(&start, None, &user_env),
+            env_of(&[
+                ("token", "machine"),
+                ("iii_url", "stale"),
+                ("iii_config", "stale"),
+            ]),
+        );
+
+        assert_eq!(plan.env["TOKEN"], "compose");
+        assert_eq!(plan.env["III_URL"], "ws://127.0.0.1:49134");
+        assert!(!plan.env.contains_key("token"));
+        assert!(!plan.env.contains_key("iii_url"));
+        assert!(!plan.env.contains_key("iii_config"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unicode_host_names_yield_to_explicit_values() {
+        let start = StartSpec::Shell("echo ready".to_string());
+        for (host_key, explicit_key) in [("föo", "FÖO"), ("FÖO", "föo")] {
+            let user_env = env_of(&[(explicit_key, "compose")]);
+            let plan = spawn_plan_with_env(
+                &ctx(&start, None, &user_env),
+                env_of(&[(host_key, "machine")]),
+            );
+
+            assert_eq!(plan.env[explicit_key], "compose");
+            assert!(!plan.env.contains_key(host_key));
+            let command = plan.command().unwrap();
+            let values: Vec<_> = command
+                .as_std()
+                .get_envs()
+                .filter(|(key, _)| windows_env_key_eq(key.to_str().unwrap(), explicit_key))
+                .map(|(_, value)| value.unwrap().to_str().unwrap())
+                .collect();
+            assert_eq!(values, ["compose"]);
+        }
     }
 
     #[test]

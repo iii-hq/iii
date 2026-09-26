@@ -20,11 +20,12 @@
 //!    projects.
 
 use std::{
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ComposeError, Result};
@@ -47,6 +48,14 @@ const RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Downloads get their own budget: an artefact is megabytes over a link we do
 /// not control.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheIntegrity {
+    archive_sha256: String,
+    tree_sha256: String,
+}
 
 /// What the registry answers to `POST /resolve`.
 #[derive(Debug, Deserialize)]
@@ -68,11 +77,13 @@ struct ResolvedEdge {
 #[derive(Debug, Deserialize)]
 struct ResolvedWorker {
     name: String,
+    #[serde(default)]
+    alias_of: Option<String>,
     version: String,
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
-    binaries: std::collections::HashMap<String, Artifact>,
+    binaries: std::collections::BTreeMap<String, RegistryArtifact>,
     /// A bundle ships one archive for every platform, named here rather than in
     /// `binaries`. The registry sends both fields or neither.
     #[serde(default)]
@@ -84,10 +95,39 @@ struct ResolvedWorker {
     config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Artifact {
-    sha256: String,
-    url: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryArtifact {
+    pub sha256: String,
+    pub url: String,
+}
+
+/// Immutable registry result stored in `worker-compose.lock`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedPackage {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias_of: Option<String>,
+    #[serde(
+        default = "default_registry",
+        skip_serializing_if = "is_default_registry"
+    )]
+    pub registry: String,
+    pub version: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub artifacts: std::collections::BTreeMap<String, RegistryArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_config: Option<serde_yaml::Value>,
+}
+
+fn default_registry() -> String {
+    DEFAULT_REGISTRY.to_string()
+}
+
+fn is_default_registry(registry: &str) -> bool {
+    registry == DEFAULT_REGISTRY
 }
 
 /// What was installed, and therefore how it is started.
@@ -113,12 +153,37 @@ pub enum InstallStatus {
 #[derive(Debug, Clone)]
 pub struct InstalledPackage {
     pub name: String,
+    pub alias_of: Option<String>,
     pub version: String,
     pub payload: Payload,
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
     pub status: InstallStatus,
+}
+
+/// Alias warnings belong to an operation, not the daemon's lifetime: add may
+/// acquire a package and then install it again during reconciliation.
+pub(crate) async fn warn_alias(
+    container: &str,
+    reference: &str,
+    alias_of: Option<&str>,
+    operation: Option<&crate::operation::Operation>,
+) {
+    let Some(canonical) = alias_of else { return };
+    let (registry, name) = split_reference(reference);
+    let detail = format!(
+        "worker '{name}' is an alias of '{canonical}'. Using container '{container}'. \
+         Use 'package://{}/{canonical}' for new references.",
+        registry.trim_start_matches("https://"),
+    );
+    if let Some(operation) = operation {
+        operation
+            .warn_once(format!("{registry}/{name}/{canonical}"), container, detail)
+            .await;
+    } else {
+        crate::report::daemon_line(&format!("warning: {detail}"), true);
+    }
 }
 
 /// The rust target triple this daemon is running on, which is the one its
@@ -151,7 +216,7 @@ pub fn host_target() -> &'static str {
 
 /// Splits `workers.iii.dev/state` into its registry base and worker name. A
 /// reference with no host uses [`DEFAULT_REGISTRY`].
-fn split_reference(reference: &str) -> (String, String) {
+pub(crate) fn split_reference(reference: &str) -> (String, String) {
     match reference.split_once('/') {
         Some((host, name)) => (format!("https://{host}"), name.to_string()),
         None => (DEFAULT_REGISTRY.to_string(), reference.to_string()),
@@ -160,18 +225,18 @@ fn split_reference(reference: &str) -> (String, String) {
 
 /// Resolves a package reference and makes sure its binary is on disk.
 ///
-/// `cache_root` holds installs keyed by artefact identity; an already-installed
-/// version is reused without touching the network.
+/// Resolution is always refreshed; cached artifacts do not need another download.
 pub async fn install(
     container: &str,
     reference: &str,
     version_range: &str,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let (registry, name) = split_reference(reference);
-    install_from_registry(container, &registry, &name, version_range, cache_root).await
+    let resolved = resolve_package(container, reference, version_range).await?;
+    install_resolved(container, &resolved, cache_root).await
 }
 
+#[cfg(test)]
 async fn install_from_registry(
     container: &str,
     registry: &str,
@@ -180,13 +245,104 @@ async fn install_from_registry(
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
     let target = host_target();
+    let worker = resolve(container, registry, name, version_range, target).await?;
+    let resolved = into_resolved_package(container, registry, worker, target)?;
+    install_resolved(container, &resolved, cache_root).await
+}
 
-    let resolved = resolve(container, registry, name, version_range, target).await?;
+/// Resolves a selector such as `next` to the immutable package metadata that
+/// can be stored in a compose lock.
+pub async fn resolve_package(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+) -> Result<ResolvedPackage> {
+    let (registry, name) = split_reference(reference);
+    let target = host_target();
+    let worker = resolve(container, &registry, &name, version_range, target).await?;
+    into_resolved_package(container, &registry, worker, target)
+}
+
+/// Converts and validates one registry response for lock persistence.
+fn into_resolved_package(
+    container: &str,
+    registry: &str,
+    worker: ResolvedWorker,
+    target: &str,
+) -> Result<ResolvedPackage> {
+    let mut artifacts = match worker.kind.as_str() {
+        "binary" => worker.binaries,
+        "bundle" => {
+            let (Some(url), Some(sha256)) = (worker.archive_url, worker.sha256) else {
+                return Err(ComposeError::PackageNotResolved {
+                    container: container.to_string(),
+                    name: worker.name,
+                    range: worker.version,
+                    message: "the registry resolved it as a bundle but sent no archive_url + \
+                              sha256 pair, so the archive could not be verified"
+                        .to_string(),
+                });
+            };
+            std::iter::once((target.to_string(), RegistryArtifact { sha256, url })).collect()
+        }
+        _ => std::collections::BTreeMap::new(),
+    };
+    for (artifact_target, artifact) in &mut artifacts {
+        if artifact.url.trim().is_empty() {
+            return Err(ComposeError::PackageNotResolved {
+                container: container.to_string(),
+                name: worker.name,
+                range: worker.version,
+                message: format!("the registry returned an empty URL for {artifact_target}"),
+            });
+        }
+        if artifact.sha256.len() != 64
+            || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(ComposeError::PackageNotResolved {
+                container: container.to_string(),
+                name: worker.name,
+                range: worker.version,
+                message: format!(
+                    "the registry returned an invalid SHA-256 digest for {artifact_target}"
+                ),
+            });
+        }
+        artifact.sha256.make_ascii_lowercase();
+    }
+    let default_config = match worker.config {
+        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
+        _ => None,
+    };
+    Ok(ResolvedPackage {
+        name: worker.name,
+        alias_of: worker.alias_of,
+        registry: registry.to_string(),
+        version: worker.version,
+        kind: worker.kind,
+        artifacts,
+        default_config,
+    })
+}
+
+/// Installs exactly the package represented by a lock entry, without asking
+/// the registry to resolve its selector again.
+pub async fn install_resolved(
+    container: &str,
+    resolved: &ResolvedPackage,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
+    let target = host_target();
+    let cache_root = if resolved.registry == DEFAULT_REGISTRY {
+        cache_root.to_path_buf()
+    } else {
+        cache_root.join(hex::encode(Sha256::digest(resolved.registry.as_bytes())))
+    };
 
     let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
             let (program, status) =
-                install_binary(container, &resolved, target, cache_root).await?;
+                install_binary(container, resolved, target, &cache_root).await?;
             (Payload::Binary(program), status)
         }
         // Refused before the download on a platform that could not start it:
@@ -196,12 +352,13 @@ async fn install_from_registry(
         "bundle" => {
             return Err(ComposeError::BundleNeedsAVm {
                 container: container.to_string(),
-                name: resolved.name,
+                name: resolved.name.clone(),
             });
         }
         #[cfg(unix)]
         "bundle" => {
-            let (install_dir, status) = install_bundle(container, &resolved, cache_root).await?;
+            let (install_dir, status) =
+                install_bundle(container, resolved, target, &cache_root).await?;
             (Payload::Bundle(install_dir), status)
         }
         // `engine` workers are compiled into the engine itself: there is no
@@ -210,22 +367,18 @@ async fn install_from_registry(
         _ => {
             return Err(ComposeError::UnsupportedPackageKind {
                 container: container.to_string(),
-                name: resolved.name,
-                kind: resolved.kind,
+                name: resolved.name.clone(),
+                kind: resolved.kind.clone(),
             });
         }
     };
 
-    let default_config = match resolved.config {
-        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
-        _ => None,
-    };
-
     Ok(InstalledPackage {
-        name: resolved.name,
-        version: resolved.version,
+        name: resolved.name.clone(),
+        alias_of: resolved.alias_of.clone(),
+        version: resolved.version.clone(),
         payload,
-        default_config,
+        default_config: resolved.default_config.clone(),
         status,
     })
 }
@@ -233,19 +386,83 @@ async fn install_from_registry(
 /// The version the registry hands back for `*`, so `compose::add` can pin what
 /// it just resolved rather than writing a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
-    let (registry, name) = split_reference(reference);
-    let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
+    let resolved = resolve_package(container, reference, "*").await?;
     Ok(resolved.version)
 }
 
 /// One worker in a resolved graph.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Node {
     pub name: String,
+    pub alias_of: Option<String>,
     pub version: String,
     /// `binary`, `bundle`, `engine`, `image` — what it is, and therefore
     /// whether compose can run it at all.
     pub kind: String,
+    /// Digest for this host, or the bundle archive. Used to compare resolutions.
+    pub artifact_digest: Option<String>,
+    pub default_config: Option<serde_json::Value>,
+}
+
+impl Node {
+    pub fn canonical_name(&self) -> &str {
+        self.alias_of.as_deref().unwrap_or(&self.name)
+    }
+
+    pub(crate) fn same_release(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.kind == other.kind
+            && self.artifact_digest == other.artifact_digest
+            && self.default_config == other.default_config
+    }
+}
+
+impl From<ResolvedWorker> for Node {
+    fn from(worker: ResolvedWorker) -> Self {
+        let artifact_digest = if worker.kind == "bundle" {
+            worker.sha256.as_deref()
+        } else {
+            worker
+                .binaries
+                .get(host_target())
+                .map(|artifact| artifact.sha256.as_str())
+        }
+        .map(str::to_ascii_lowercase);
+        Self {
+            name: worker.name,
+            alias_of: worker.alias_of,
+            version: worker.version,
+            kind: worker.kind,
+            artifact_digest,
+            default_config: worker.config.filter(|config| !config.is_null()),
+        }
+    }
+}
+
+impl From<&ResolvedPackage> for Node {
+    fn from(package: &ResolvedPackage) -> Self {
+        Self {
+            name: package.name.clone(),
+            alias_of: package.alias_of.clone(),
+            version: package.version.clone(),
+            kind: package.kind.clone(),
+            artifact_digest: package
+                .artifacts
+                .get(host_target())
+                .map(|artifact| artifact.sha256.to_ascii_lowercase()),
+            default_config: package
+                .default_config
+                .as_ref()
+                .and_then(|config| serde_json::to_value(config).ok()),
+        }
+    }
+}
+
+pub(crate) async fn resolve_node(container: &str, reference: &str, range: &str) -> Result<Node> {
+    let (registry, name) = split_reference(reference);
+    resolve(container, &registry, &name, range, host_target())
+        .await
+        .map(Node::from)
 }
 
 /// A resolved graph: what to declare, and what each one needs.
@@ -267,15 +484,7 @@ pub async fn resolve_graph(container: &str, reference: &str, version_range: &str
     let target = host_target();
     let response = resolve_response(container, &registry, &name, version_range, target).await?;
     Ok(Graph {
-        nodes: response
-            .graph
-            .into_iter()
-            .map(|worker| Node {
-                name: worker.name,
-                version: worker.version,
-                kind: worker.kind,
-            })
-            .collect(),
+        nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
             .edges
             .into_iter()
@@ -287,36 +496,24 @@ pub async fn resolve_graph(container: &str, reference: &str, version_range: &str
 /// Installs a native executable for this host's target.
 async fn install_binary(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
     target: &str,
     cache_root: &Path,
 ) -> Result<(PathBuf, InstallStatus)> {
-    let artifact =
-        resolved
-            .binaries
-            .get(target)
-            .ok_or_else(|| ComposeError::UnsupportedPlatform {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                version: resolved.version.clone(),
-                target: target.to_string(),
-                available: {
-                    let mut targets: Vec<String> = resolved.binaries.keys().cloned().collect();
-                    targets.sort();
-                    targets.join(", ")
-                },
-            })?;
+    let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let install_dir = cache_root.join(format!(
         "{}-{}-{}-{digest}",
-        resolved.name, resolved.version, target
+        resolved.alias_of.as_deref().unwrap_or(&resolved.name),
+        resolved.version,
+        target
     ));
-    if let Some(existing) = installed_binary(&install_dir) {
+    let (lock, cached) = checked_cache(&install_dir, &digest).await?;
+    if cached && let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
     }
-    remove_invalid_install(&install_dir)?;
-    download_and_extract(container, artifact, &install_dir).await?;
+    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
@@ -324,6 +521,29 @@ async fn install_binary(
             path: install_dir.clone(),
         })?;
     Ok((program, InstallStatus::Downloaded))
+}
+
+/// Selects the artifact that can run on this Compose host.
+fn artifact_for_target<'a>(
+    container: &str,
+    resolved: &'a ResolvedPackage,
+    target: &str,
+) -> Result<&'a RegistryArtifact> {
+    resolved
+        .artifacts
+        .get(target)
+        .ok_or_else(|| ComposeError::UnsupportedPlatform {
+            container: container.to_string(),
+            name: resolved.name.clone(),
+            version: resolved.version.clone(),
+            target: target.to_string(),
+            available: resolved
+                .artifacts
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
 }
 
 /// Installs a bundle: one archive, no target in its identity.
@@ -337,43 +557,26 @@ async fn install_binary(
 #[cfg(unix)]
 async fn install_bundle(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
+    target: &str,
     cache_root: &Path,
 ) -> Result<(PathBuf, InstallStatus)> {
-    // The registry sends both or neither. Without the digest the archive cannot
-    // be verified, and an unverifiable artefact is not installed.
-    let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
-        (Some(url), Some(sha256)) => (url, sha256),
-        _ => {
-            return Err(ComposeError::PackageNotResolved {
-                container: container.to_string(),
-                name: resolved.name.clone(),
-                range: resolved.version.clone(),
-                message: "the registry resolved it as a bundle but sent no archive_url + sha256 \
-                          pair, so the archive could not be verified"
-                    .to_string(),
-            });
-        }
-    };
+    let artifact = artifact_for_target(container, resolved, target)?;
 
-    let digest = validated_cache_digest(container, resolved, sha256)?;
+    let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let install_dir = cache_root.join(format!(
         "{}-{}-bundle-{digest}",
-        resolved.name, resolved.version
+        resolved.alias_of.as_deref().unwrap_or(&resolved.name),
+        resolved.version
     ));
+    let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
     // need not have at all.
-    if install_dir.join(BUNDLE_MANIFEST).is_file() {
+    if cached && install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Ok((install_dir, InstallStatus::Cached));
     }
-    remove_invalid_install(&install_dir)?;
-
-    let artifact = Artifact {
-        sha256: sha256.clone(),
-        url: url.clone(),
-    };
-    download_and_extract(container, &artifact, &install_dir).await?;
+    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Err(ComposeError::PackageArtifactEmpty {
@@ -385,10 +588,37 @@ async fn install_bundle(
     Ok((install_dir, InstallStatus::Downloaded))
 }
 
+/// The kernel releases this lock on cancellation or process exit. Keep the lock
+/// file in place so every process continues to lock the same inode.
+async fn lock_artifact(install_dir: &Path) -> Result<fslock::LockFile> {
+    let mut path = install_dir.as_os_str().to_os_string();
+    path.push(".lock");
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let mut lock = fslock::LockFile::open(&path).map_err(|source| ComposeError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    loop {
+        if lock.try_lock().map_err(|source| ComposeError::Io {
+            path: path.clone(),
+            source,
+        })? {
+            return Ok(lock);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Returns the normalized digest used as the immutable part of a cache key.
 fn validated_cache_digest(
     container: &str,
-    resolved: &ResolvedWorker,
+    resolved: &ResolvedPackage,
     sha256: &str,
 ) -> Result<String> {
     if sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -423,6 +653,148 @@ fn remove_invalid_install(path: &Path) -> Result<()> {
     };
     result.map_err(|source| ComposeError::Io {
         path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// The blocking job retains the artifact lock even when its caller is dropped.
+async fn checked_cache(install_dir: &Path, digest: &str) -> Result<(fslock::LockFile, bool)> {
+    let lock = lock_artifact(install_dir).await?;
+    let path = install_dir.to_path_buf();
+    let digest = digest.to_string();
+    crate::shutdown::blocking(path.clone(), move |cancel| {
+        let cached = cache_matches(&path, &digest, &cancel)?;
+        Ok((lock, cached))
+    })
+    .await
+}
+
+/// Verifies both the archive identity and the extracted files in one cache entry.
+fn cache_matches(
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<bool> {
+    cancel.check(install_dir)?;
+    let marker = install_dir.join(INTEGRITY_FILE);
+    let bytes = match std::fs::read(&marker) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(ComposeError::Io {
+                path: marker,
+                source,
+            });
+        }
+    };
+    let integrity: CacheIntegrity = match serde_json::from_slice(&bytes) {
+        Ok(integrity) => integrity,
+        Err(_) => return Ok(false),
+    };
+    if !integrity
+        .archive_sha256
+        .eq_ignore_ascii_case(archive_sha256)
+    {
+        return Ok(false);
+    }
+    Ok(tree_digest(install_dir, cancel)? == integrity.tree_sha256)
+}
+
+/// Hashes the extracted tree in stable path order, excluding its own marker.
+fn tree_digest(root: &Path, cancel: &crate::shutdown::BlockingCancellation) -> Result<String> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        hasher: &mut Sha256,
+        cancel: &crate::shutdown::BlockingCancellation,
+    ) -> Result<()> {
+        cancel.check(directory)?;
+        let mut entries = std::fs::read_dir(directory)
+            .map_err(|source| ComposeError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|source| ComposeError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+
+        for entry in entries {
+            cancel.check(directory)?;
+            let path = entry.path();
+            if path == root.join(INTEGRITY_FILE) {
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let name = relative.to_string_lossy().replace('\\', "/");
+            hasher.update((name.len() as u64).to_be_bytes());
+            hasher.update(name.as_bytes());
+            let metadata = std::fs::symlink_metadata(&path).map_err(|source| ComposeError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                hasher.update(metadata.permissions().mode().to_be_bytes());
+            }
+
+            if metadata.file_type().is_dir() {
+                hasher.update(b"directory");
+                visit(root, &path, hasher, cancel)?;
+            } else if metadata.file_type().is_file() {
+                hasher.update(b"file");
+                let mut file = std::fs::File::open(&path).map_err(|source| ComposeError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    cancel.check(&path)?;
+                    let read = file.read(&mut buffer).map_err(|source| ComposeError::Io {
+                        path: path.clone(),
+                        source,
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..read]);
+                }
+            } else if metadata.file_type().is_symlink() {
+                hasher.update(b"symlink");
+                let target = std::fs::read_link(&path).map_err(|source| ComposeError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                hasher.update(target.to_string_lossy().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    let mut hasher = Sha256::new();
+    visit(root, root, &mut hasher, cancel)?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn write_integrity_marker(
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    let marker = install_dir.join(INTEGRITY_FILE);
+    let integrity = CacheIntegrity {
+        archive_sha256: archive_sha256.to_ascii_lowercase(),
+        tree_sha256: tree_digest(install_dir, cancel)?,
+    };
+    let bytes = serde_json::to_vec(&integrity).map_err(|source| ComposeError::Io {
+        path: marker.clone(),
+        source: std::io::Error::other(source),
+    })?;
+    std::fs::write(&marker, bytes).map_err(|source| ComposeError::Io {
+        path: marker,
         source,
     })
 }
@@ -503,7 +875,7 @@ async fn send_resolve_request(
 /// version holding a separator or `..` would place the download outside the
 /// cache. The registry is whatever `package://<host>/…` names, so this is not a
 /// check on our own service: it is a check on wherever compose was pointed.
-fn is_path_safe(value: &str) -> bool {
+pub(crate) fn is_path_safe(value: &str) -> bool {
     !value.is_empty()
         && value != ".."
         && !value.starts_with('.')
@@ -515,8 +887,8 @@ fn is_path_safe(value: &str) -> bool {
 /// Refuses a resolve answer before anything in it reaches the filesystem.
 ///
 /// The whole graph is checked, not only the worker asked for: `compose::add`
-/// turns every node into a declaration, and each one can later be installed
-/// under its own name.
+/// can turn each node into a declaration. Even a node below a local dependency
+/// boundary remains untrusted registry input and must carry a safe name.
 fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> Result<()> {
     let refuse = |field: &str, value: &str| ComposeError::RegistryNameRefused {
         container: container.to_string(),
@@ -530,6 +902,11 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
         }
         if !is_path_safe(&worker.version) {
             return Err(refuse("version", &worker.version));
+        }
+        if let Some(alias_of) = &worker.alias_of
+            && !is_path_safe(alias_of)
+        {
+            return Err(refuse("alias_of", alias_of));
         }
     }
     Ok(())
@@ -609,26 +986,50 @@ fn registry_message(status: u16, body: &str) -> String {
 /// directory until the digest matches.
 async fn download_and_extract(
     container: &str,
-    artifact: &Artifact,
+    artifact: &RegistryArtifact,
     install_dir: &Path,
+    archive_sha256: &str,
+    lock: fslock::LockFile,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
         .build()
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
 
-    let bytes = client
+    let mut response = client
         .get(&artifact.url)
         .send()
         .await
         .and_then(|response| response.error_for_status())
-        .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?
-        .bytes()
-        .await
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
+    crate::report::download_started(container, response.content_length());
 
-    let digest = hex::encode(Sha256::digest(&bytes));
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(8 * 1024 * 1024);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0_u64;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(err) => {
+                crate::report::download_failed(container);
+                return Err(download_error(container, &artifact.url, &err.to_string()));
+            }
+        };
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        hasher.update(&chunk);
+        bytes.extend_from_slice(&chunk);
+        crate::report::download_progress(container, downloaded);
+    }
+
+    let digest = hex::encode(hasher.finalize());
     if !digest.eq_ignore_ascii_case(&artifact.sha256) {
+        crate::report::download_failed(container);
         return Err(ComposeError::PackageDigestMismatch {
             container: container.to_string(),
             url: artifact.url.clone(),
@@ -636,7 +1037,54 @@ async fn download_and_extract(
             actual: digest,
         });
     }
+    crate::report::download_finished(container, downloaded);
 
+    let install_dir = install_dir.to_path_buf();
+    let archive_sha256 = archive_sha256.to_string();
+    crate::shutdown::blocking(install_dir.clone(), move |cancel| {
+        let _lock = lock;
+        extract_and_publish(bytes, &install_dir, &archive_sha256, &cancel)
+    })
+    .await
+}
+
+/// Checks between chunks of one large tar entry, not only between files.
+/// ErrorKind::Interrupted must not be used: std::io::copy retries it.
+struct ArchiveReader<'a, R> {
+    inner: R,
+    cancel: &'a crate::shutdown::BlockingCancellation,
+    path: &'a Path,
+}
+impl<R: Read> Read for ArchiveReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.cancel
+            .check(self.path)
+            .map_err(std::io::Error::other)?;
+        self.inner.read(buffer)
+    }
+}
+
+fn extract_and_publish(
+    bytes: Vec<u8>,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    unpack_and_publish(
+        flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
+        install_dir,
+        archive_sha256,
+        cancel,
+    )
+}
+
+fn unpack_and_publish(
+    decoder: impl Read,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    cancel.check(install_dir)?;
     // Extract beside the destination and rename: a crash mid-extraction must
     // not leave a half-unpacked directory that the next run treats as a cache
     // hit.
@@ -651,12 +1099,28 @@ async fn download_and_extract(
         });
     }
 
-    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
+    // A successful publish renames this directory away before drop.
+    struct Staging(std::path::PathBuf);
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _staging = Staging(staging.clone());
+    let decoder = ArchiveReader {
+        inner: decoder,
+        cancel,
+        path: &staging,
+    };
     if let Err(source) = tar::Archive::new(decoder).unpack(&staging) {
         let error = ComposeError::Io {
             path: staging.clone(),
             source,
         };
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = write_integrity_marker(&staging, archive_sha256, cancel) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
@@ -671,7 +1135,8 @@ async fn download_and_extract(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    let result = publish(&staging, install_dir);
+    cancel.check(install_dir)?;
+    let result = publish(&staging, install_dir, archive_sha256, cancel);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -689,25 +1154,26 @@ async fn download_and_extract(
 ///
 /// A directory left half-written by an interrupted run is the one case worth
 /// clearing: it is not another writer's, and nothing can start from it.
-fn publish(staging: &Path, install_dir: &Path) -> Result<()> {
+fn publish(
+    staging: &Path,
+    install_dir: &Path,
+    archive_sha256: &str,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
     match std::fs::rename(staging, install_dir) {
         Ok(()) => return Ok(()),
-        Err(_) if is_populated(install_dir) => {
+        Err(_) if cache_matches(install_dir, archive_sha256, cancel)? => {
             let _ = std::fs::remove_dir_all(staging);
             return Ok(());
         }
         Err(_) => {}
     }
 
-    let _ = std::fs::remove_dir_all(install_dir);
+    remove_invalid_install(install_dir)?;
     std::fs::rename(staging, install_dir).map_err(|source| ComposeError::Io {
         path: install_dir.to_path_buf(),
         source,
     })
-}
-
-fn is_populated(dir: &Path) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Finds the executable inside an install directory.
@@ -788,6 +1254,46 @@ mod tests {
     use super::*;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
+    #[test]
+    fn cancellation_during_archive_extraction_removes_staging_without_publishing() {
+        struct CancelAfterRead<R> {
+            inner: R,
+            cancel: crate::shutdown::BlockingCancellation,
+        }
+        impl<R: Read> Read for CancelAfterRead<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.inner.read(buf)?;
+                self.cancel.cancel();
+                Ok(count)
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        let cancel = crate::shutdown::BlockingCancellation::default();
+        let decoder = CancelAfterRead {
+            inner: flate2::read::GzDecoder::new(std::io::Cursor::new(executable_archive(
+                &vec![42; 128 * 1024],
+            ))),
+            cancel: cancel.clone(),
+        };
+        assert!(unpack_and_publish(decoder, &install, "digest", &cancel).is_err());
+        assert!(!install.exists());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cancelled_cache_verification_preserves_the_installed_files() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        let active = crate::shutdown::BlockingCancellation::default();
+        extract_and_publish(executable_archive(b"original"), &install, "digest", &active).unwrap();
+        let cancelled = crate::shutdown::BlockingCancellation::default();
+        cancelled.cancel();
+        assert!(cache_matches(&install, "digest", &cancelled).is_err());
+        assert!(tree_digest(&install, &cancelled).is_err());
+        assert!(cache_matches(&install, "digest", &active).unwrap());
+    }
+
     fn executable_archive(body: &[u8]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
@@ -806,6 +1312,133 @@ mod tests {
         let (registry, name) = split_reference("state");
         assert_eq!(registry, DEFAULT_REGISTRY);
         assert_eq!(name, "state");
+    }
+
+    async fn alias_registry(kind: &str, archive: Vec<u8>, downloads: u64) -> MockServer {
+        let server = MockServer::start().await;
+        let digest = hex::encode(Sha256::digest(&archive));
+        let url = format!("{}/artifact", server.uri());
+        let kind = kind.to_string();
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |request: &wiremock::Request| {
+                let request: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let name = request["worker"].as_str().unwrap();
+                let mut worker = serde_json::json!({
+                    "name": name, "version": "1.0.0", "type": kind,
+                    "binaries": { (host_target()): { "sha256": digest, "url": url } },
+                    "archive_url": url, "sha256": digest,
+                });
+                if name == "console" {
+                    worker["alias_of"] = "shell".into();
+                }
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"graph": [worker]}))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(archive)
+                    .set_delay(Duration::from_millis(100)),
+            )
+            .expect(downloads)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn concurrent_alias_and_canonical_installs_download_one_binary() {
+        let server = alias_registry("binary", executable_archive(b"#!/bin/sh\nexit 0\n"), 1).await;
+        let cache = tempfile::tempdir().unwrap();
+        let registry = server.uri();
+        let (alias, canonical) = tokio::join!(
+            install_from_registry("console", &registry, "console", "1.0.0", cache.path()),
+            install_from_registry("shell", &registry, "shell", "1.0.0", cache.path()),
+        );
+        let alias = alias.unwrap();
+        let canonical = canonical.unwrap();
+        assert_eq!(alias.payload, canonical.payload);
+        assert_ne!(alias.status, canonical.status);
+        assert_eq!(alias.alias_of.as_deref(), Some("shell"));
+        assert_eq!(canonical.alias_of, None);
+        let cached_alias =
+            install_from_registry("console", &registry, "console", "1.0.0", cache.path())
+                .await
+                .unwrap();
+        assert_eq!(cached_alias.status, InstallStatus::Cached);
+        assert_eq!(cached_alias.alias_of.as_deref(), Some("shell"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn concurrent_alias_and_canonical_installs_share_a_bundle() {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let body = b"name: shell\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, BUNDLE_MANIFEST, &body[..])
+            .unwrap();
+        let server =
+            alias_registry("bundle", archive.into_inner().unwrap().finish().unwrap(), 1).await;
+        let registry = server.uri();
+        let cache = tempfile::tempdir().unwrap();
+        let (alias, canonical) = tokio::join!(
+            install_from_registry("console", &registry, "console", "1.0.0", cache.path()),
+            install_from_registry("shell", &registry, "shell", "1.0.0", cache.path()),
+        );
+        let alias = alias.unwrap();
+        let canonical = canonical.unwrap();
+        assert_eq!(alias.payload, canonical.payload);
+        assert_ne!(alias.status, canonical.status);
+        assert!(matches!(alias.payload, Payload::Bundle(_)));
+    }
+
+    #[tokio::test]
+    async fn registries_with_the_same_package_name_keep_separate_cache_entries() {
+        let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let first = alias_registry("binary", archive.clone(), 1).await;
+        let second = alias_registry("binary", archive, 1).await;
+        let cache = tempfile::tempdir().unwrap();
+        let one = install_from_registry("shell", &first.uri(), "shell", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        let two = install_from_registry("shell", &second.uri(), "shell", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        assert_ne!(one.payload, two.payload);
+        assert_eq!(two.status, InstallStatus::Downloaded);
+    }
+
+    #[test]
+    fn aliases_are_preserved_for_root_and_dependency_graph_nodes() {
+        let response: ResolveResponse = serde_json::from_value(serde_json::json!({
+            "graph": [
+                {"name": "console", "alias_of": "shell", "version": "1.0.0", "type": "binary"},
+                {"name": "api", "version": "1.0.0", "type": "binary"}
+            ]
+        }))
+        .unwrap();
+        let nodes: Vec<Node> = response.graph.into_iter().map(Node::from).collect();
+        assert_eq!(nodes[0].name, "console");
+        assert_eq!(nodes[0].canonical_name(), "shell");
+        assert_eq!(nodes[1].alias_of, None);
+    }
+
+    #[test]
+    fn an_unsafe_canonical_name_is_refused_before_installation() {
+        let response: ResolveResponse = serde_json::from_value(serde_json::json!({
+            "graph": [{"name": "console", "alias_of": "../shell", "version": "1.0.0", "type": "binary"}]
+        })).unwrap();
+        let error = check_names("console", DEFAULT_REGISTRY, &response).unwrap_err();
+        assert_eq!(error.code(), "REGISTRY_NAME_REFUSED");
+        assert!(error.to_string().contains("alias_of"));
     }
 
     #[tokio::test]
@@ -872,7 +1505,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_install_reuses_the_downloaded_artefact() {
+    async fn a_cached_install_is_reused_and_corruption_is_repaired() {
         let server = MockServer::start().await;
         let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
         let digest = hex::encode(Sha256::digest(&archive));
@@ -895,13 +1528,13 @@ mod tests {
                     "config": {"prefix": "state"}
                 }]
             })))
-            .expect(2)
+            .expect(3)
             .mount(&server)
             .await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/artifact"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
@@ -912,10 +1545,19 @@ mod tests {
         let second = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
             .await
             .unwrap();
+        let Payload::Binary(program) = &second.payload else {
+            panic!("state should install as a binary");
+        };
+        std::fs::write(program, b"changed after installation").unwrap();
+        let third = install_from_registry("state", &server.uri(), "state", "1.0.0", cache.path())
+            .await
+            .unwrap();
 
         assert_eq!(first.status, InstallStatus::Downloaded);
         assert_eq!(second.status, InstallStatus::Cached);
+        assert_eq!(third.status, InstallStatus::Downloaded);
         assert_eq!(first.default_config, second.default_config);
+        assert_eq!(std::fs::read(program).unwrap(), b"#!/bin/sh\nexit 0\n");
     }
 
     #[tokio::test]

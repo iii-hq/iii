@@ -361,3 +361,95 @@ async fn trigger_registered_before_workers_register_resolves_in_the_real_namespa
     let _ = orders.close(None).await;
     let _ = default.close(None).await;
 }
+
+/// The function path. A namespaced worker that calls `engine::register_trigger`
+/// over the wire (the engine injects `_caller_worker_id`) must get a LIVE
+/// binding at home in its own namespace, and a fire must reach its function
+/// there. Before the fix every namespace field was hardcoded to `default`: the
+/// provider was never looked for at home, so the registration parked in
+/// `pending_triggers` for good while the call still returned success — and a
+/// fire, had one happened, would have resolved the target in `default`.
+#[tokio::test]
+async fn function_path_register_trigger_binds_in_the_callers_namespace() {
+    let (port, engine) = spawn_engine().await;
+
+    let mut orders = connect(port).await;
+    send_register_worker(&mut orders, "orders-worker", Some("orders")).await;
+    send_register_function(&mut orders, "orders::wake", "from-orders").await;
+    orders
+        .send(WsMessage::Text(
+            json!({
+                "type": "invokefunction",
+                "invocation_id": uuid::Uuid::new_v4(),
+                "function_id": "engine::register_trigger",
+                "data": {
+                    "trigger_type": TRIGGER_FUNCTIONS_AVAILABLE,
+                    "function_id": "orders::wake",
+                    "config": {},
+                },
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send engine::register_trigger");
+
+    // A same-named function in `default` must NOT be the one fired.
+    let mut default = connect(port).await;
+    send_register_worker(&mut default, "default-worker", None).await;
+    send_register_function(&mut default, "orders::wake", "from-default").await;
+
+    let live_binding = || {
+        engine
+            .trigger_registry
+            .triggers
+            .iter()
+            .find(|t| t.function_id == "orders::wake")
+            .map(|t| t.value().clone())
+    };
+    assert!(
+        eventually(|| live_binding().is_some()
+            && engine.functions.get("default", "orders::wake").is_some())
+        .await,
+        "the function-path registration must go live, not park in pending_triggers"
+    );
+    assert!(engine.trigger_registry.pending_triggers.is_empty());
+    let trigger = live_binding().expect("live binding");
+    assert_eq!(
+        trigger.namespace, "orders",
+        "target resolves in the caller's namespace"
+    );
+    assert_eq!(
+        trigger.home_namespace, "orders",
+        "provider lookup starts at home"
+    );
+
+    let info = call_engine_fn(
+        &engine,
+        "engine::registered-triggers::info",
+        json!({ "id": trigger.id }),
+    )
+    .await;
+    assert_eq!(info["status"], json!("active"), "got: {info}");
+    assert_eq!(
+        info["function"]["namespace"],
+        json!("orders"),
+        "got: {info}"
+    );
+
+    engine
+        .fire_triggers(TRIGGER_FUNCTIONS_AVAILABLE, json!({ "event": "test" }))
+        .await;
+
+    assert!(
+        received_invoke(&mut orders, "orders::wake").await,
+        "the registering worker's own function must receive the fire"
+    );
+    assert!(
+        !received_invoke(&mut default, "orders::wake").await,
+        "the default worker's same-named function must NOT be fired"
+    );
+
+    let _ = orders.close(None).await;
+    let _ = default.close(None).await;
+}

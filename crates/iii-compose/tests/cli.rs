@@ -63,7 +63,7 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
 #[test]
 fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
     // It is both the namespace the engine routes on and a directory under
-    // ~/.iii/compose, so a separator or an empty string would be a broken
+    // the project's compose state, so a separator or an empty string would be a broken
     // daemon discovered later, at the first write.
     for bad in ["", "   ", "a/b", "a\\b", ".."] {
         let err = parse(&["iii", "compose", "--namespace", bad])
@@ -132,6 +132,7 @@ fn a_programmatic_file_without_up_is_refused() {
         engine: None,
         ns: None,
         up: false,
+        frozen: false,
         file: Some("other.yaml".into()),
         command: None,
     }
@@ -184,15 +185,18 @@ fn logs_rejects_an_unbounded_initial_tail() {
 
 #[test]
 fn build_uses_the_default_compose_file() {
-    let ComposeCommand::Build { file } = parse(&["iii", "compose", "build"]).plan().unwrap() else {
+    let ComposeCommand::Build { file, frozen } =
+        parse(&["iii", "compose", "build"]).plan().unwrap()
+    else {
         panic!("expected build command");
     };
     assert_eq!(file, std::path::Path::new("worker-compose.yaml"));
+    assert!(!frozen);
 }
 
 #[test]
 fn build_accepts_its_own_file() {
-    let ComposeCommand::Build { file } =
+    let ComposeCommand::Build { file, frozen } =
         parse(&["iii", "compose", "build", "--file", "other.yaml"])
             .plan()
             .unwrap()
@@ -200,6 +204,18 @@ fn build_accepts_its_own_file() {
         panic!("expected build command");
     };
     assert_eq!(file, std::path::Path::new("other.yaml"));
+    assert!(!frozen);
+}
+
+#[test]
+fn build_accepts_frozen_mode() {
+    let ComposeCommand::Build { frozen, .. } = parse(&["iii", "compose", "build", "--frozen"])
+        .plan()
+        .unwrap()
+    else {
+        panic!("expected build command");
+    };
+    assert!(frozen);
 }
 
 #[test]
@@ -216,9 +232,11 @@ fn build_conflicts_with_daemon_options() {
         engine: None,
         ns: None,
         up: true,
+        frozen: false,
         file: None,
         command: Some(ComposeSubcommand::Build(BuildCli {
             file: "worker-compose.yaml".into(),
+            frozen: false,
         })),
     }
     .plan()
@@ -281,6 +299,20 @@ fn up_names_the_file_in_the_current_directory() {
 }
 
 #[test]
+fn frozen_is_available_only_for_initial_up() {
+    let ComposeCommand::Serve { start, frozen, .. } =
+        parse(&["iii", "compose", "--up", "--frozen"])
+            .plan()
+            .unwrap()
+    else {
+        panic!("expected serve command");
+    };
+    assert!(start);
+    assert!(frozen);
+    assert!(Wrapper::try_parse_from(["iii", "compose", "--frozen"]).is_err());
+}
+
+#[test]
 fn production_docker_compose_command_matches_the_cli() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -326,7 +358,23 @@ fn up_without_a_cli_namespace_defers_to_the_compose_file() {
 }
 
 #[test]
-fn up_uses_the_file_engine_when_the_cli_does_not_override_it() {
+fn up_uses_the_file_engine_when_nothing_else_names_one() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), true, None, None),
+        EngineMode::Managed {
+            url: "ws://127.0.0.1:49134".to_string()
+        }
+    );
+}
+
+#[test]
+fn up_with_an_environment_engine_connects_without_owning_it() {
     let managed = ComposeFile::parse(
         "engine: { workers: {} }\ncontainers: {}\n",
         "/srv/app/worker-compose.yaml",
@@ -340,10 +388,68 @@ fn up_uses_the_file_engine_when_the_cli_does_not_override_it() {
             None,
             Some("ws://global-environment:49134"),
         ),
-        EngineMode::Managed {
-            url: "ws://127.0.0.1:49134".to_string()
+        EngineMode::External {
+            url: "ws://global-environment:49134".to_string()
         },
-        "a process-wide III_URL must not override a file-owned engine"
+        "III_URL selects an engine the same way --engine does, ownership included"
+    );
+}
+
+#[test]
+fn explicit_engine_beats_the_environment_with_up() {
+    let managed = ComposeFile::parse(
+        "engine: { workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&managed),
+            true,
+            Some("ws://flag:1"),
+            Some("ws://global-environment:49134"),
+        ),
+        EngineMode::External {
+            url: "ws://flag:1".to_string()
+        }
+    );
+}
+
+#[test]
+fn bare_compose_prefers_the_environment_over_the_file_engine() {
+    let managed = ComposeFile::parse(
+        "engine: { url: 'ws://file-engine:49134', workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(
+            Some(&managed),
+            false,
+            None,
+            Some("ws://global-environment:49134"),
+        ),
+        EngineMode::External {
+            url: "ws://global-environment:49134".to_string()
+        }
+    );
+}
+
+#[test]
+fn an_empty_environment_url_falls_through_to_the_file_engine() {
+    let managed = ComposeFile::parse(
+        "engine: { url: 'ws://file-engine:49134', workers: {} }\ncontainers: {}\n",
+        "/srv/app/worker-compose.yaml",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_engine_mode(Some(&managed), false, None, Some("   ")),
+        EngineMode::External {
+            url: "ws://file-engine:49134".to_string()
+        }
     );
 }
 

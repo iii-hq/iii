@@ -2,24 +2,43 @@
 
 This directory contains the Dockerfile for the Python sandbox image used as rootfs for iii managed workers.
 
-## Features
+## Targets
 
-- Latest Python version
-- Common Python development packages pre-installed
-- Non-root user for improved security
+| Target | Contents | Suggested tag |
+| --- | --- | --- |
+| `runtime` (default) | CPython 3.12 with pip and venv, CA certificates and the non-root `python-user` user. No build toolchain or linters. | `iiidev/python:latest` |
+| `builder` | Runtime plus `build-essential` and `libssl-dev` for native sdist builds and the existing development tools. | `iiidev/python:builder` |
 
-## Building the Image
+Use the builder when a dependency requires native compilation instead of a prebuilt binary or wheel. Runtime and builder share the same base image.
 
-To build the image, run the following command from the project root:
+## Building the Images
+
+Run these from the project root:
 
 ```bash
-docker build -t iiidev/python -f Dockerfile .
+docker build --pull -t iiidev/python:latest crates/iii-worker/images/python
+docker build --target builder -t iiidev/python:builder crates/iii-worker/images/python
+```
+
+These commands build local images. Publish both tags to an accessible registry before using them with iii: workers pull their rootfs from the registry, not from the local Docker daemon.
+
+## Publishing
+
+The [image publishing workflow](../../../../.github/workflows/docker-worker-images.yml) validates both targets on pull requests. Changes to these images or the workflow on `main` publish `latest` (runtime) and `builder` to Docker Hub for `linux/amd64` and `linux/arm64`. The workflow can also be run manually on `main`. Builds pull the current upstream base image.
+
+## Using the Builder Image
+
+Set `runtime.base_image` in the worker's existing `iii.worker.yaml`, keeping its install and start scripts:
+
+```yaml
+runtime:
+  base_image: docker.io/iiidev/python:builder
 ```
 
 ## Running the Container
 
 ```bash
-docker run -it --name python iiidev/python
+docker run -it --name python iiidev/python:latest
 ```
 
 ### Options
@@ -37,21 +56,16 @@ docker exec -it python bash
 ## Stopping and Cleaning Up
 
 ```bash
-# Stop the container
-docker stop python
-
-# Remove the container
-docker rm python
-
-# Remove the image (optional)
-docker rmi iiidev/python
+docker stop python                # Stop the container
+docker rm python                  # Remove the container
+docker rmi iiidev/python:latest   # Remove the image (optional)
 ```
 
 ## Customization
 
 ### Adding Additional Python Packages
 
-You can customize the Dockerfile to include additional Python packages:
+Add them to the stage that needs them:
 
 ```dockerfile
 RUN pip install --no-cache-dir \
@@ -65,7 +79,7 @@ RUN pip install --no-cache-dir \
 To access your local files inside the container:
 
 ```bash
-docker run -it -v $(pwd)/your_code:/home/python-user/work --name python iiidev/python
+docker run -it -v $(pwd)/your_code:/home/python-user/work --name python iiidev/python:latest
 ```
 
 ## Troubleshooting

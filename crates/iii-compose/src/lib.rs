@@ -24,12 +24,14 @@ pub mod config;
 pub mod configuration;
 pub mod daemon;
 pub mod dag;
+mod dependencies;
 pub mod edit;
 pub mod engine;
 pub mod error;
 pub mod hooks;
 pub mod interpolate;
 pub mod lifecycle;
+mod lockfile;
 pub mod logs;
 mod managed_engine;
 pub mod manifest;
@@ -37,16 +39,19 @@ pub mod namespace;
 pub mod operation;
 mod parallelism;
 pub mod process;
+pub mod process_title;
 pub mod project;
 pub mod registry;
 pub mod remote;
 pub mod report;
+mod restart;
 mod shutdown;
 pub mod spawn;
 pub mod state;
+pub mod telemetry;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
-pub use config::{ComposeFile, Container, EngineSpec, WorkerSource};
+pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport, VmSpec};
 
@@ -58,11 +63,19 @@ pub enum EngineMode {
 
 /// Resolves the engine URL and ownership after the compose file is parsed.
 ///
-/// An explicit CLI URL always selects an external engine. Without one, an
-/// `engine:` section is managed only when `--up` starts that file; a bare
-/// daemon connects to its URL without taking ownership. File configuration
-/// wins over the process environment, and the local engine address is the
-/// final fallback.
+/// The order is `--engine`, then `III_URL`, then the compose file, then the
+/// local engine address. The environment beats the file: an exported variable
+/// is the caller's live intent, while the file is only what the working
+/// directory happens to hold. `iii trigger` resolves its endpoint the same
+/// way.
+///
+/// `III_URL` selects an engine exactly as `--engine` does, ownership included:
+/// an address that comes from outside the file names an engine that is already
+/// running, so compose connects to it and starts none of its own. Only the
+/// file can hand compose an engine to own, and only `--up` takes it: an
+/// `engine:` section carries the engine's whole configuration, not just an
+/// address, so a bare URL is not a thing compose could spawn from. A bare
+/// daemon connects to the file's engine without taking ownership.
 pub fn resolve_engine_mode(
     file: Option<&ComposeFile>,
     start: bool,
@@ -75,16 +88,25 @@ pub fn resolve_engine_mode(
         };
     }
 
-    if start && let Some(engine) = file.and_then(|file| file.engine.as_ref()) {
+    if let Some(url) = environment_engine_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        return EngineMode::External {
+            url: url.to_string(),
+        };
+    }
+
+    let file_engine = file.and_then(|file| file.engine.as_ref());
+
+    if start && let Some(engine) = file_engine {
         return EngineMode::Managed {
             url: engine.url.clone(),
         };
     }
 
-    let url = file
-        .and_then(|file| file.engine.as_ref())
+    let url = file_engine
         .map(|engine| engine.url.as_str())
-        .or(environment_engine_url)
         .unwrap_or(config::DEFAULT_ENGINE_URL);
     EngineMode::External {
         url: url.to_string(),
@@ -112,7 +134,11 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
-        ComposeCommand::Build { file } => match build::build(&file).await {
+        ComposeCommand::Build { file, frozen } => match if frozen {
+            build::build_frozen(&file).await
+        } else {
+            build::build(&file).await
+        } {
             Ok(_) => 0,
             Err(err) => report_error(&err),
         },
@@ -121,9 +147,31 @@ pub async fn run(cli: ComposeCli) -> i32 {
             explicit_daemon_namespace,
             file,
             start,
-        } => match serve(explicit_engine_url, explicit_daemon_namespace, file, start).await {
+            frozen,
+        } => match serve(
+            explicit_engine_url,
+            explicit_daemon_namespace,
+            file,
+            start,
+            frozen,
+        )
+        .await
+        {
             Ok(()) => 0,
-            Err(err) => report_error(&err),
+            Err(err) => {
+                // A file that does not parse, or a lock that is out of date,
+                // fails here without a daemon to report it. Every failure the
+                // daemon did report stays silent.
+                if start {
+                    telemetry::report_up_never_started(
+                        telemetry::ProjectShape::default(),
+                        frozen,
+                        err.code(),
+                    )
+                    .await;
+                }
+                report_error(&err)
+            }
         },
         ComposeCommand::Logs {
             explicit_engine_url,
@@ -346,6 +394,7 @@ async fn serve(
     explicit_daemon_namespace: Option<String>,
     file: std::path::PathBuf,
     start: bool,
+    frozen: bool,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -353,6 +402,12 @@ async fn serve(
     // project, but an existing default file still supplies its URL and
     // namespace.
     let initial_file = load_invocation_file(&file, start)?;
+    if start
+        && frozen
+        && let Some(initial_file) = &initial_file
+    {
+        lockfile::preflight_frozen(initial_file)?;
+    }
     let daemon_namespace =
         resolve_daemon_namespace(explicit_daemon_namespace.clone(), initial_file.as_ref());
     let environment_engine_url = std::env::var("III_URL")
@@ -379,10 +434,13 @@ async fn serve(
             policy
         }
         EngineMode::External { .. } => {
+            // An address from outside the file overrides the file's engine, so
+            // the file's declared engine is no longer what this daemon must
+            // match. `III_URL` counts here for the same reason `--engine`
+            // does: it named the engine that won.
+            let overridden = explicit_engine_url.is_some() || environment_engine_url.is_some();
             match initial_file.as_ref().filter(|file| file.engine.is_some()) {
-                Some(file) if explicit_engine_url.is_some() => {
-                    daemon::EnginePolicy::external_overriding(file)
-                }
+                Some(file) if overridden => daemon::EnginePolicy::external_overriding(file),
                 Some(file) => daemon::EnginePolicy::external_from_file(file),
                 None => daemon::EnginePolicy::External,
             }
@@ -394,6 +452,15 @@ async fn serve(
     // each child itself.
     let shutdown = shutdown::ShutdownSignal::install()?;
 
+    let mut start_project = start.then(|| InitialProject {
+        file,
+        frozen,
+        progress: report::StartupProgress::start(matches!(engine_mode, EngineMode::Managed { .. })),
+        shape: initial_file
+            .as_ref()
+            .map(telemetry::ProjectShape::of)
+            .unwrap_or_default(),
+    });
     let managed_engine = match engine_mode {
         EngineMode::Managed { .. } => {
             let Some(owner) = initial_file.as_ref() else {
@@ -402,32 +469,57 @@ async fn serve(
             let Some(spec) = owner.engine.as_ref() else {
                 unreachable!("managed mode is selected only from an engine section");
             };
-            let engine = managed_engine::ManagedEngine::start(spec, &daemon_namespace).await?;
-            println!("engine {}", "started".green());
-            println!("  {} {}", "pid:".dimmed(), engine.pid());
-            println!("  {} {}", "owner:".dimmed(), owner.path.display());
-            println!(
+            let Some(engine) = shutdown
+                .run(managed_engine::ManagedEngine::start(
+                    spec,
+                    &daemon_namespace,
+                    &owner.path,
+                ))
+                .await
+            else {
+                if let Some(project) = &mut start_project {
+                    project.progress.finish(false, "Cancelled");
+                }
+                return Ok(());
+            };
+            let engine = engine?;
+            if let Some(project) = &start_project {
+                project.progress.engine_waiting();
+            }
+            report::line(&format!("  {} {}", "pid:".dimmed(), engine.pid()));
+            report::line(&format!("  {} {}", "owner:".dimmed(), owner.path.display()));
+            report::line(&format!(
                 "  {} {}",
                 "config:".dimmed(),
                 engine.config_path().display()
-            );
-            println!("  {} {}", "logs:".dimmed(), engine.log_path().display());
-            println!("  {} {}", "follow logs:".dimmed(), engine.follow_command());
-            println!();
+            ));
+            report::line(&format!(
+                "  {} {}",
+                "logs:".dimmed(),
+                engine.log_path().display()
+            ));
+            report::line(&format!(
+                "  {} {}",
+                "follow logs:".dimmed(),
+                engine.follow_command()
+            ));
+            report::line("");
             Some(engine)
         }
         EngineMode::External { .. } => None,
     };
 
     let result = if shutdown.requested() {
+        if let Some(project) = &mut start_project {
+            project.progress.finish(false, "Cancelled");
+        }
         Ok(())
     } else {
-        let start_file = start.then_some(file);
         serve_daemon(
             engine_url,
             daemon_namespace,
             explicit_daemon_namespace,
-            start_file,
+            start_project,
             managed_engine.as_ref(),
             engine_policy,
             shutdown,
@@ -435,12 +527,62 @@ async fn serve(
         .await
     };
 
+    shutdown::drain_blocking_jobs().await;
     if let Some(engine) = &managed_engine {
-        println!("{}", "stopping engine...".dimmed());
+        report::line(&"stopping engine...".dimmed().to_string());
         engine.stop_with_default_grace().await;
     }
 
     result
+}
+
+/// Reports one foreground `iii compose --up`, and the containers that did not
+/// come up with it.
+///
+/// `exits` says whether the process is about to leave. A process that stays
+/// has somewhere for the send to finish and nothing waits for it; one that
+/// leaves has to wait, or the report never goes out.
+async fn report_up(
+    project: &InitialProject,
+    outcome: telemetry::UpOutcome,
+    daemon: &daemon::Daemon,
+    started: std::time::Instant,
+    result: Option<&lifecycle::OpResult>,
+    error_kind: Option<&str>,
+    exits: bool,
+) {
+    let reports = telemetry::up_reports(
+        telemetry::up_properties(
+            outcome,
+            project.shape,
+            project.frozen,
+            Some(daemon.daemon_namespace.as_str()),
+            started.elapsed(),
+            result,
+            error_kind,
+        ),
+        result,
+    );
+    telemetry::send_waiting(reports, exits).await;
+}
+
+/// Resolves the daemon's process label before the CLI starts its async runtime.
+/// Build and logs commands do not serve a namespace and need no process label.
+pub fn process_namespace(cli: &ComposeCli) -> Result<Option<String>> {
+    let ComposeCommand::Serve {
+        explicit_daemon_namespace,
+        file,
+        start,
+        ..
+    } = cli.plan()?
+    else {
+        return Ok(None);
+    };
+    let initial_file = load_invocation_file(&file, start)?;
+    Ok(Some(resolve_daemon_namespace(
+        explicit_daemon_namespace,
+        initial_file.as_ref(),
+    )))
 }
 
 fn resolve_daemon_namespace(
@@ -465,22 +607,35 @@ fn load_invocation_file(file: &std::path::Path, required: bool) -> Result<Option
     }
 }
 
+struct InitialProject {
+    file: std::path::PathBuf,
+    frozen: bool,
+    progress: report::StartupProgress,
+    /// Counted from the file before anything starts, so a startup that fails
+    /// on its first container still reports what the project declared.
+    shape: telemetry::ProjectShape,
+}
+
 async fn serve_daemon(
     engine_url: String,
     daemon_namespace: String,
     project_namespace_override: Option<String>,
-    start: Option<std::path::PathBuf>,
+    mut start: Option<InitialProject>,
     managed_engine: Option<&managed_engine::ManagedEngine>,
     engine_policy: daemon::EnginePolicy,
     shutdown: shutdown::ShutdownSignal,
 ) -> Result<()> {
     use colored::Colorize;
 
-    let daemon = daemon::Daemon::start(
-        engine_url,
+    // Times the whole foreground startup, connection included: what an
+    // operator waits through is the number worth reporting.
+    let started = std::time::Instant::now();
+    let daemon = daemon::Daemon::start_with_shutdown(
+        engine_url.clone(),
         daemon_namespace,
         project_namespace_override,
         engine_policy,
+        shutdown::ShutdownController::with_parent(shutdown.clone()),
     );
 
     // Announce only once the engine has accepted this daemon. A rejection
@@ -515,6 +670,9 @@ async fn serve_daemon(
         let mut interrupted = shutdown.clone();
         tokio::select! {
             _ = interrupted.wait() => {
+                if let Some(project) = &mut start {
+                    project.progress.finish(false, "Cancelled");
+                }
                 daemon.shutdown().await;
                 return Ok(());
             }
@@ -525,17 +683,42 @@ async fn serve_daemon(
     if let Some(engine) = managed_engine
         && !daemon.engine().is_connected()
     {
-        daemon.shutdown().await;
-        return Err(ComposeError::EngineReadinessTimeout {
+        // Built before the report so the event carries the same code the
+        // operator sees, and cannot drift from it.
+        let error = ComposeError::EngineReadinessTimeout {
             engine_url: daemon.engine_url.clone(),
             seconds: accepted_within.as_secs(),
             tail: engine.log_tail(),
-        });
+        };
+        if let Some(project) = &mut start {
+            project.progress.finish(false, "Connection timed out");
+            report_up(
+                project,
+                telemetry::UpOutcome::Failed,
+                &daemon,
+                started,
+                None,
+                Some(error.code()),
+                true,
+            )
+            .await;
+        }
+        daemon.shutdown().await;
+        return Err(error);
     }
 
-    println!("compose {}", "serving".green());
-    println!("  {} {}", "engine:".dimmed(), daemon.engine_url);
-    println!("  {} {}", "namespace:".dimmed(), daemon.daemon_namespace);
+    if daemon.engine().is_connected()
+        && let Some(project) = &start
+    {
+        project.progress.engine_ready();
+    }
+    report::line(&format!("compose {}", "serving".green()));
+    report::line(&format!("  {} {}", "engine:".dimmed(), daemon.engine_url));
+    report::line(&format!(
+        "  {} {}",
+        "namespace:".dimmed(),
+        daemon.daemon_namespace
+    ));
     // Printed with this daemon's own address already in it. Several daemons
     // can share an engine, and which one a call reaches is a flag an operator
     // should not have to work out.
@@ -543,11 +726,11 @@ async fn serve_daemon(
     // Not printed when a project was named: the operator already started one,
     // and the line would be telling them to do what they just did.
     if start.is_none() {
-        println!(
+        report::line(&format!(
             "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
             "start a project:".dimmed(),
             daemon.daemon_namespace
-        );
+        ));
     }
 
     let startup_operation = if start.is_some() {
@@ -561,24 +744,61 @@ async fn serve_daemon(
 
     // A failed initial project still ends the command. Cancellation rolls its
     // partial startup back but leaves the daemon available for later calls.
-    if let (Some(file), Some(operation)) = (&start, startup_operation) {
-        println!();
+    if let (Some(project), Some(operation)) = (&mut start, startup_operation) {
+        let file = &project.file;
+        report::line("");
+        project.progress.downloads_starting();
         let operation_id = operation.id().to_string();
         let startup_shutdown = shutdown.clone().or(shutdown::ShutdownSignal::from_receiver(
             operation.cancellation(),
         ));
-        let result = daemon
-            .up_until_shutdown(Some(file), None, operation_id, startup_shutdown)
-            .await;
+        let up = daemon.up_until_shutdown(
+            Some(file),
+            None,
+            operation_id,
+            startup_shutdown,
+            project.frozen,
+        );
+        tokio::pin!(up);
+        let mut connected = daemon.engine().is_connected();
+        if connected {
+            project.progress.engine_ready();
+        }
+        let result = loop {
+            tokio::select! {
+                result = &mut up => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if !connected => {
+                    connected = daemon.engine().is_connected();
+                    if connected {
+                        project.progress.engine_ready();
+                    }
+                }
+            }
+        };
+        if daemon.engine().is_connected() {
+            project.progress.engine_ready();
+        }
         match result {
             Ok(None) => {
+                project.progress.finish(false, "Cancelled");
+                let exits = shutdown.requested() || daemon.stop_requested();
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Cancelled,
+                    &daemon,
+                    started,
+                    None,
+                    None,
+                    exits,
+                )
+                .await;
                 operation
                     .finish(
                         operation::OperationStatus::Cancelled,
                         "initial project startup cancelled",
                     )
                     .await;
-                if shutdown.requested() || daemon.stop_requested() {
+                if exits {
                     println!(
                         "{}",
                         "startup interrupted; stopping every project...".dimmed()
@@ -589,14 +809,41 @@ async fn serve_daemon(
                 println!("{}", "startup cancelled; daemon remains available".dimmed());
             }
             Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
+                project.progress.finish(false, "Failed");
                 let error = ComposeError::ProjectDidNotStart { path: file.clone() };
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Failed,
+                    &daemon,
+                    started,
+                    Some(&result),
+                    Some(
+                        result
+                            .primary_error
+                            .as_ref()
+                            .map_or(error.code(), |failure| failure.code.as_str()),
+                    ),
+                    true,
+                )
+                .await;
                 operation
                     .finish(operation::OperationStatus::Failed, error.to_string())
                     .await;
                 daemon.shutdown().await;
                 return Err(error);
             }
-            Ok(Some(_)) => {
+            Ok(Some(result)) => {
+                project.progress.finish(true, "Ready");
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Ready,
+                    &daemon,
+                    started,
+                    Some(&result),
+                    None,
+                    false,
+                )
+                .await;
                 operation
                     .finish(
                         operation::OperationStatus::Succeeded,
@@ -605,6 +852,17 @@ async fn serve_daemon(
                     .await;
             }
             Err(err) => {
+                project.progress.finish(false, "Failed");
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Failed,
+                    &daemon,
+                    started,
+                    None,
+                    Some(err.code()),
+                    true,
+                )
+                .await;
                 operation
                     .finish(operation::OperationStatus::Failed, err.to_string())
                     .await;
@@ -685,7 +943,7 @@ fn report_error(err: &ComposeError) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace};
+    use super::{ComposeFile, load_invocation_file, resolve_daemon_namespace, serve};
 
     fn compose_with_namespace() -> ComposeFile {
         ComposeFile::parse(
@@ -758,5 +1016,26 @@ mod tests {
         let loaded = load_invocation_file(&path, false).unwrap();
 
         assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn frozen_start_checks_the_lock_before_starting_a_managed_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let namespace = format!("frozen-preflight-{}", uuid::Uuid::new_v4());
+        std::fs::write(
+            &path,
+            format!(
+                "namespace: {namespace}\nengine: {{ workers: {{}} }}\ncontainers:\n  state:\n    worker: package://state\n    version: next\n"
+            ),
+        )
+        .unwrap();
+        let compose_path = path.canonicalize().unwrap();
+        let state = crate::state::StateStore::for_project(&namespace, &compose_path).unwrap();
+
+        let error = serve(None, None, path, true, true).await.unwrap_err();
+
+        assert_eq!(error.code(), "COMPOSE_LOCK_REQUIRED");
+        assert!(!state.dir().exists());
     }
 }

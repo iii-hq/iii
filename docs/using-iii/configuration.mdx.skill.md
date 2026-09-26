@@ -82,8 +82,10 @@ verbatim, so a console edit does not overwrite an environment-driven value. Savi
 immediately.
 
 ```bash
-iii worker add console
+iii trigger -n dev compose::add worker=console
 ```
+
+Replace `dev` with the namespace of the running Compose daemon.
 
 ### Call `configuration::set`
 
@@ -108,7 +110,19 @@ own automation:
   </Tab>
 </Tabs>
 
-`configuration::get` reads one entry, `configuration::list` enumerates every entry (schemas only;
+`flush` defaults to `true`: `configuration::set` persists the complete submitted object and
+notifies consumers. To update only the active in-memory value, pass `flush: false`:
+
+```json
+{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}, "flush": false}
+```
+
+This does not schedule a later disk write. It can precede worker registration; validation uses
+the schema when available, and ordinary reads validate again after registration. The worker decides
+how to apply update notifications. `ensure` does not persist or discard this memory-only value.
+Unsaved values remain until replaced, deleted, or the configuration service restarts.
+
+`configuration::get` reads the current active entry, `configuration::list` enumerates every entry (schemas only;
 values are never included in the list), and `configuration::schema` returns the schema for one id.
 See the [configuration worker docs](https://workers.iii.dev/workers/configuration) for the full
 function reference and error codes.
@@ -120,6 +134,26 @@ expanded against the current process environment on every read, so changing an e
 without rewriting the stored value. A field that consists of a single placeholder is coerced to the
 schema's scalar type after expansion: `port: ${HTTP_PORT:3111}` validates as the integer `3111`, not
 a string. Pass `raw: true` to `configuration::get` to read the stored template form.
+
+## Registration namespace timeout
+
+When a WebSocket connection opens, the engine starts a namespace resolution timer. Until
+`engine::workers::register` resolves the connection namespace, the engine holds registration-related
+messages from that connection. If the worker registration arrives before the timeout, the engine
+assigns its `namespace` value, or `default` when the value is absent, and processes the held messages.
+If the timeout expires first, the engine assigns `default`. A later worker registration cannot change
+the assigned namespace.
+
+`registration_namespace_grace_ms` is a global engine setting. Set it at the root of `config.yaml`.
+The engine reads it when it starts:
+
+```yaml config.yaml
+registration_namespace_grace_ms: 10000
+```
+
+The default is `5000 ms`. Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a
+worker environment. It applies to namespace resolution for all new worker connections and overrides
+`registration_namespace_grace_ms`.
 
 ## How changes apply
 

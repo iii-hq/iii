@@ -1,6 +1,6 @@
 [package]
 name = "iii-helpers"
-version = "0.23.0-rc.10"
+version = "0.24.3"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -24,14 +24,14 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-opentelemetry = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs", "metrics", "trace"] }
+opentelemetry = { version = "0.32" }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "logs", "metrics", "trace"] }
 sysinfo = { version = "0.38" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-opentelemetry-http = { version = "0.31", features = ["reqwest"] }
+opentelemetry-http = { version = "0.32" }
 
 [dev-dependencies]
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "testing"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "trace", "testing"] }
 serial_test = "3"
 tokio = { version = "1", features = ["test-util"] }
 tracing-subscriber = { version = "0.3", features = ["registry"] }

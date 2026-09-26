@@ -499,6 +499,23 @@ pub fn is_ci_environment() -> bool {
     CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
 }
 
+/// True when `III_TELEMETRY_ENABLED` is set to a value that reads as off.
+/// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring
+/// surrounding whitespace. A truthy or unrecognized value does not opt out
+/// here; CI detection and dev opt-out still apply.
+pub fn env_opt_out() -> bool {
+    std::env::var("III_TELEMETRY_ENABLED")
+        .map(|val| is_falsey(&val))
+        .unwrap_or(false)
+}
+
+fn is_falsey(val: &str) -> bool {
+    matches!(
+        val.trim().to_ascii_lowercase().as_str(),
+        "false" | "0" | "no" | "off"
+    )
+}
+
 pub fn is_dev_optout() -> bool {
     if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
         return true;
@@ -938,6 +955,72 @@ state:
     }
 
     // =========================================================================
+    // env_opt_out
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_env_opt_out_true_for_falsey_values() {
+        for val in [
+            "false",
+            "False",
+            "FALSE",
+            "0",
+            "no",
+            "No",
+            "NO",
+            "off",
+            "Off",
+            "OFF",
+            "  false  ",
+            "\t0\n",
+            " off ",
+        ] {
+            unsafe {
+                env::set_var("III_TELEMETRY_ENABLED", val);
+            }
+            assert!(env_opt_out(), "{val:?} should opt out");
+        }
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_opt_out_false_for_truthy_and_unrecognized_values() {
+        for val in [
+            "true",
+            "True",
+            "TRUE",
+            "1",
+            "on",
+            "On",
+            "ON",
+            "yes",
+            "Yes",
+            "YES",
+            "enabled",
+            "",
+            "  ",
+            "2",
+            "false-ish",
+            "0.0",
+            "n",
+            "disable",
+        ] {
+            unsafe {
+                env::set_var("III_TELEMETRY_ENABLED", val);
+            }
+            assert!(!env_opt_out(), "{val:?} should not opt out");
+        }
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+        assert!(!env_opt_out(), "unset should not opt out");
+    }
+
+    // =========================================================================
     // is_dev_optout
     // =========================================================================
 
@@ -973,6 +1056,33 @@ state:
         let _ = is_dev_optout();
         unsafe {
             env::remove_var("III_TELEMETRY_DEV");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_is_dev_optout_with_marker_file() {
+        // The user creates ~/.iii/telemetry_dev_optout by hand; iii never
+        // writes it. Point HOME at a tempdir and create the marker there.
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::remove_var("III_TELEMETRY_DEV");
+            env::set_var("HOME", dir.path());
+        }
+
+        let iii_dir = dir.path().join(".iii");
+        std::fs::create_dir_all(&iii_dir).unwrap();
+
+        assert!(!is_dev_optout(), "no opt-out before the marker file exists");
+
+        std::fs::write(iii_dir.join("telemetry_dev_optout"), "").unwrap();
+        assert!(
+            is_dev_optout(),
+            "should detect dev opt-out once the marker file exists"
+        );
+
+        unsafe {
+            env::remove_var("HOME");
         }
     }
 
