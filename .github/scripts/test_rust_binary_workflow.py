@@ -15,7 +15,7 @@ def build_job() -> str:
 
 def test_build_checks_out_release_tag():
     job = build_job()
-    checkout = job.split("- uses: actions/checkout@v4", 1)[1].split("\n\n", 1)[0]
+    checkout = job.split("- uses: actions/checkout@", 1)[1].split("\n\n", 1)[0]
 
     assert "ref: refs/tags/${{ inputs.tag_name }}" in checkout
     assert "persist-credentials: false" in checkout

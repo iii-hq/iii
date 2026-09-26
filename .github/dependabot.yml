@@ -18,6 +18,33 @@ updates:
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
 
+  - package-ecosystem: npm
+    directory: /console
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-console-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: gomod
+    directory: /sdk/packages/go/iii
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      gomod-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: pip
+    directory: /sdk/packages/python/iii
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-and-patch:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
