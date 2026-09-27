@@ -12,7 +12,7 @@ path = "src/lib.rs"
 dashmap = "6"
 libc = "0.2"
 # Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl (breaks the Alpine iii-worker build).
-msb_krun = "=0.1.16"
+msb_krun = "=0.1.39"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
