@@ -49,17 +49,21 @@ class FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.state = SimpleNamespace(name="OPEN")
+        self._closed = asyncio.Event()
 
     async def send(self, payload: str) -> None:
         self.sent.append(json.loads(payload))
 
     async def close(self) -> None:
         self.state = SimpleNamespace(name="CLOSED")
+        self._closed.set()
 
     def __aiter__(self) -> "FakeWebSocket":
         return self
 
     async def __anext__(self) -> Any:
+        # Like a real socket: iteration blocks while open and ends on close.
+        await self._closed.wait()
         raise StopAsyncIteration
 
 
