@@ -1,7 +1,7 @@
-import { StepReveal } from '@lib/components/diagrams/StepReveal'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { WIRE_STAGES } from '../content/wire'
+import { StepReveal } from "@lib/components/diagrams/StepReveal"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { WIRE_STAGES } from "../content/wire"
 
 /**
  * A6 — the wire contract: what one registration does inside the console's
@@ -23,16 +23,16 @@ export function WireSection() {
           <div className="flex flex-col">
             <SpecRow name="the race" type="unserialized">
               the sdk spawns each trigger callback on its own task. two rapid re-registrations of one path can both
-              observe the same old id, both unregister it, and whichever fetch finishes last wins — possibly the
-              older build, plus a stale engine row.
+              observe the same old id, both unregister it, and whichever fetch finishes last wins — possibly the older
+              build, plus a stale engine row.
             </SpecRow>
             <SpecRow name="the fix" type="one consumer">
-              all script/style events — including the engine&apos;s unregister echo — drain through a single mpsc
-              queue in arrival order. the echo lands after the commit it echoes and hits the unknown-id no-op branch.
+              all script/style events — including the engine&apos;s unregister echo — drain through a single mpsc queue
+              in arrival order. the echo lands after the commit it echoes and hits the unknown-id no-op branch.
             </SpecRow>
             <SpecRow name="no deadlock" type="verified">
-              holding the section across engine::unregister_trigger cannot deadlock — the engine only awaits
-              enqueueing the echo into the console&apos;s outbound channel.
+              holding the section across engine::unregister_trigger cannot deadlock — the engine only awaits enqueueing
+              the echo into the console&apos;s outbound channel.
             </SpecRow>
           </div>
         </SpecSheet>
@@ -44,8 +44,8 @@ export function WireSection() {
               TriggerRegistrationResult reaches the registrant.
             </SpecRow>
             <SpecRow name="engine::register_trigger" type="avoid">
-              durable triggers outlive their worker (a page pointing at a dead content function) and vanish on
-              engine restart with no replayer. ack degrades to fail-open past the 10s window.
+              durable triggers outlive their worker (a page pointing at a dead content function) and vanish on engine
+              restart with no replayer. ack degrades to fail-open past the 10s window.
             </SpecRow>
             <SpecRow name="parked intents" type="v1 accepted">
               invisible to registered-triggers::list and produce no deferred ack; the asset appears when the console

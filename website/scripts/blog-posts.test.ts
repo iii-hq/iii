@@ -1,21 +1,21 @@
-import assert from 'node:assert/strict'
-import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import test from 'node:test'
-import { readBlogPosts } from './blog-posts'
+import assert from "node:assert/strict"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+import { readBlogPosts } from "./blog-posts"
 
 async function makeFixture(files: Record<string, string>): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-blog-posts-'))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "iii-blog-posts-"))
   for (const [name, contents] of Object.entries(files)) {
-    await fs.writeFile(path.join(dir, name), contents, 'utf8')
+    await fs.writeFile(path.join(dir, name), contents, "utf8")
   }
   return dir
 }
 
-test('readBlogPosts parses frontmatter from a real post', async () => {
+test("readBlogPosts parses frontmatter from a real post", async () => {
   const dir = await makeFixture({
-    'first.md': `---
+    "first.md": `---
 title: 'First'
 description: 'desc'
 pubDate: 2026-05-06
@@ -26,15 +26,15 @@ body
   })
   const posts = await readBlogPosts(dir)
   assert.equal(posts.length, 1)
-  assert.equal(posts[0].slug, 'first')
-  assert.equal(posts[0].title, 'First')
+  assert.equal(posts[0].slug, "first")
+  assert.equal(posts[0].title, "First")
   assert.equal(posts[0].draft, false)
-  assert.equal(posts[0].pubDate.toISOString().slice(0, 10), '2026-05-06')
+  assert.equal(posts[0].pubDate.toISOString().slice(0, 10), "2026-05-06")
 })
 
-test('readBlogPosts honors draft frontmatter', async () => {
+test("readBlogPosts honors draft frontmatter", async () => {
   const dir = await makeFixture({
-    'wip.md': `---
+    "wip.md": `---
 title: 'WIP'
 description: 'd'
 pubDate: 2026-05-01
@@ -46,37 +46,37 @@ draft: true
   assert.equal(posts[0].draft, true)
 })
 
-test('readBlogPosts sorts newest first and ignores non-markdown files', async () => {
+test("readBlogPosts sorts newest first and ignores non-markdown files", async () => {
   const dir = await makeFixture({
-    'a.md': `---
+    "a.md": `---
 title: 'A'
 description: 'd'
 pubDate: 2026-01-01
 ---
 `,
-    'b.md': `---
+    "b.md": `---
 title: 'B'
 description: 'd'
 pubDate: 2026-06-01
 ---
 `,
-    'README.txt': 'not a post',
+    "README.txt": "not a post",
   })
   const posts = await readBlogPosts(dir)
   assert.deepEqual(
     posts.map((p) => p.slug),
-    ['b', 'a'],
+    ["b", "a"],
   )
 })
 
-test('readBlogPosts returns empty array when dir is missing', async () => {
-  const posts = await readBlogPosts('/nonexistent/path/iii-blog-posts')
+test("readBlogPosts returns empty array when dir is missing", async () => {
+  const posts = await readBlogPosts("/nonexistent/path/iii-blog-posts")
   assert.deepEqual(posts, [])
 })
 
-test('readBlogPosts skips posts without a valid pubDate', async () => {
+test("readBlogPosts skips posts without a valid pubDate", async () => {
   const dir = await makeFixture({
-    'broken.md': `---
+    "broken.md": `---
 title: 'Broken'
 description: 'd'
 ---
@@ -86,13 +86,13 @@ description: 'd'
   assert.deepEqual(posts, [])
 })
 
-test('readBlogPosts reads the real blog content directory', async () => {
+test("readBlogPosts reads the real blog content directory", async () => {
   const posts = await readBlogPosts()
-  assert.ok(posts.length > 0, 'expected at least one post in src/content/blog')
+  assert.ok(posts.length > 0, "expected at least one post in src/content/blog")
   for (const post of posts) {
-    assert.ok(post.slug.length > 0, 'every post derives a slug from its filename')
+    assert.ok(post.slug.length > 0, "every post derives a slug from its filename")
     assert.ok(post.title.length > 0, `${post.slug}: title missing`)
     assert.ok(post.pubDate instanceof Date, `${post.slug}: pubDate missing or invalid`)
-    assert.ok(post.sourceFile.endsWith('.md'), `${post.slug}: sourceFile missing`)
+    assert.ok(post.sourceFile.endsWith(".md"), `${post.slug}: sourceFile missing`)
   }
 })

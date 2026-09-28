@@ -1,54 +1,54 @@
-import { type SeqLane, type SeqStep, SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { Cell } from '@lib/components/schematic/Cell'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { UseCaseShell } from './UseCaseShell'
+import { type SeqLane, type SeqStep, SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { Cell } from "@lib/components/schematic/Cell"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { UseCaseShell } from "./UseCaseShell"
 
 const LANES: SeqLane[] = [
-  { id: 'console', label: 'console', x: 100 },
-  { id: 'harness', label: 'harness', x: 340 },
-  { id: 'session', label: 'session-manager', x: 580 },
-  { id: 'gate', label: 'approval-gate', x: 820 },
+  { id: "console", label: "console", x: 100 },
+  { id: "harness", label: "harness", x: 340 },
+  { id: "session", label: "session-manager", x: 580 },
+  { id: "gate", label: "approval-gate", x: 820 },
 ]
 
 const STEPS: SeqStep[] = [
   {
-    from: 'console',
-    to: 'harness',
-    label: 'harness::send { metadata: { owner } }',
-    title: 'send, with tenancy riding along',
-    desc: 'the composer sends through the harness and stamps the session with owner metadata — the same field the console later filters its event bindings and session lists by. multi-tenant by convention, not by special casing.',
+    from: "console",
+    to: "harness",
+    label: "harness::send { metadata: { owner } }",
+    title: "send, with tenancy riding along",
+    desc: "the composer sends through the harness and stamps the session with owner metadata — the same field the console later filters its event bindings and session lists by. multi-tenant by convention, not by special casing.",
   },
   {
-    from: 'harness',
-    to: 'session',
-    label: 'session::update-message',
-    title: 'the transcript streams',
-    desc: 'deltas persist as they arrive; the console renders snapshots last-write-wins by revision. thinking content renders as a collapsible block, function calls as live cards.',
-    event: 'session::message-updated',
+    from: "harness",
+    to: "session",
+    label: "session::update-message",
+    title: "the transcript streams",
+    desc: "deltas persist as they arrive; the console renders snapshots last-write-wins by revision. thinking content renders as a collapsible block, function calls as live cards.",
+    event: "session::message-updated",
   },
   {
-    from: 'harness',
-    to: 'gate',
-    label: 'pre_trigger → hold',
-    title: 'a risky call pauses',
-    desc: 'the model asked for something the policy routes to a human. the call parks, and the pending record fires an event the console inbox is bound to.',
-    event: 'approval::pending_created',
+    from: "harness",
+    to: "gate",
+    label: "pre_trigger → hold",
+    title: "a risky call pauses",
+    desc: "the model asked for something the policy routes to a human. the call parks, and the pending record fires an event the console inbox is bound to.",
+    event: "approval::pending_created",
   },
   {
-    from: 'console',
-    to: 'gate',
-    label: 'approval::resolve',
-    title: 'approve / deny — inline in the chat',
-    desc: 'the held call renders as a card with the arguments, right where the conversation is. one click resolves it; the released call executes through the normal trigger pipeline.',
+    from: "console",
+    to: "gate",
+    label: "approval::resolve",
+    title: "approve / deny — inline in the chat",
+    desc: "the held call renders as a card with the arguments, right where the conversation is. one click resolves it; the released call executes through the normal trigger pipeline.",
   },
   {
-    from: 'harness',
-    to: 'session',
-    label: 'session::set-status done',
-    title: 'the turn closes, fully traceable',
-    desc: 'the spinner stops on the status event, and the session id deep-links into the trace explorer — every hop of the turn (send, assemble, generate, dispatch) is a span you can open.',
-    event: 'harness::turn_completed',
+    from: "harness",
+    to: "session",
+    label: "session::set-status done",
+    title: "the turn closes, fully traceable",
+    desc: "the spinner stops on the status event, and the session id deep-links into the trace explorer — every hop of the turn (send, assemble, generate, dispatch) is a span you can open.",
+    event: "harness::turn_completed",
   },
 ]
 
