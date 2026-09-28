@@ -23,8 +23,6 @@ use std::{
     time::Duration,
 };
 
-use futures::StreamExt;
-
 use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
@@ -184,15 +182,6 @@ fn update_selector(explicit: Option<&str>, current: &str) -> String {
     explicit.unwrap_or(current).to_string()
 }
 
-fn graph_members(containers: &[crate::edit::NewContainer]) -> BTreeSet<String> {
-    containers
-        .iter()
-        .flat_map(|container| {
-            std::iter::once(container.key.clone()).chain(container.start_after.iter().cloned())
-        })
-        .collect()
-}
-
 /// Returns one root's reachable declarations after alias and instance reuse.
 fn graph_members_for_root(
     containers: &[crate::edit::NewContainer],
@@ -234,10 +223,67 @@ fn stale_graph_members(
         .collect()
 }
 
+/// Containers `compose::add` wrote as dependencies of another request.
+///
+/// `compose::add` marks every container it writes, including the worker that
+/// was asked for. That worker is a graph root in the lock and belongs to the
+/// operator like a hand-written declaration, so only marked containers that
+/// are not graph roots count as generated.
+fn generated_dependencies(
+    text: &str,
+    compose: &crate::ComposeFile,
+    graphs: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<BTreeSet<String>> {
+    let mut generated = BTreeSet::new();
+    for (key, container) in &compose.containers {
+        if matches!(
+            container.worker,
+            crate::config::WorkerSource::Package { .. }
+        ) && !graphs.contains_key(key)
+            && crate::edit::is_generated_container(text, key)?
+        {
+            generated.insert(key.clone());
+        }
+    }
+    Ok(generated)
+}
+
+/// Every container one package brings up: its locked graph plus the
+/// dependencies the declarations name, transitively. The package is excluded.
+fn reached_from(
+    compose: &crate::ComposeFile,
+    graphs: &BTreeMap<String, BTreeSet<String>>,
+    root: &str,
+) -> BTreeSet<String> {
+    let mut visit: Vec<String> = compose
+        .containers
+        .get(root)
+        .map(|container| container.start_after.clone())
+        .unwrap_or_default();
+    visit.extend(graphs.get(root).into_iter().flatten().cloned());
+    let mut reached = BTreeSet::new();
+    while let Some(key) = visit.pop() {
+        if key == root || !reached.insert(key.clone()) {
+            continue;
+        }
+        if let Some(container) = compose.containers.get(&key) {
+            visit.extend(container.start_after.iter().cloned());
+        }
+    }
+    reached
+}
+
 /// Select declared packages when no worker specs were supplied.
+///
+/// Every package moves to its latest release, except a generated dependency
+/// another declared package reaches: it follows that package's graph, so the
+/// update cannot pull it past a release its dependents accept. A generated
+/// container nothing reaches is selected like any other package.
 fn workers_to_update(
     compose: &crate::ComposeFile,
     workers: &[String],
+    generated: &BTreeSet<String>,
+    graphs: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<Vec<crate::edit::NewContainer>> {
     if !workers.is_empty() {
         return workers
@@ -246,9 +292,23 @@ fn workers_to_update(
             .collect();
     }
 
+    let followers = compose
+        .containers
+        .iter()
+        .filter(|(_, container)| {
+            matches!(
+                container.worker,
+                crate::config::WorkerSource::Package { .. }
+            )
+        })
+        .flat_map(|(key, _)| reached_from(compose, graphs, key))
+        .filter(|key| generated.contains(key))
+        .collect::<BTreeSet<_>>();
+
     Ok(compose
         .containers
         .iter()
+        .filter(|(key, _)| !followers.contains(*key))
         .filter_map(|(key, container)| match &container.worker {
             crate::config::WorkerSource::Package { reference } => Some(crate::edit::NewContainer {
                 key: key.clone(),
@@ -262,6 +322,145 @@ fn workers_to_update(
             crate::config::WorkerSource::Path { .. } => None,
         })
         .collect())
+}
+
+/// Builds the registry roots of an update. The flag is true when every root is
+/// an explicit exact version the file already declares, so nothing resolves.
+fn update_roots(
+    compose: &crate::ComposeFile,
+    asked: &[crate::edit::NewContainer],
+) -> Result<(Vec<crate::edit::NewContainer>, bool)> {
+    let mut roots = Vec::with_capacity(asked.len());
+    let mut all_explicit_exact_unchanged = true;
+    for worker in asked {
+        let crate::edit::Source::Package { version, .. } = &worker.source else {
+            return Err(ComposeError::NotAPackageContainer {
+                container: worker.key.clone(),
+                kind: "path".to_string(),
+            });
+        };
+        let Some(container) = compose.containers.get(&worker.key) else {
+            return Err(ComposeError::UnknownContainer {
+                container: worker.key.clone(),
+            });
+        };
+        let crate::config::WorkerSource::Package { reference } = &container.worker else {
+            return Err(ComposeError::NotAPackageContainer {
+                container: worker.key.clone(),
+                kind: "path".to_string(),
+            });
+        };
+
+        let current_selector = container.version.as_deref().unwrap_or("*");
+        all_explicit_exact_unchanged &= version.as_deref().is_some_and(|version| {
+            version == current_selector && semver::Version::parse(version).is_ok()
+        });
+        roots.push(crate::edit::NewContainer {
+            key: worker.key.clone(),
+            source: crate::edit::Source::Package {
+                reference: reference.clone(),
+                version: Some(update_selector(version.as_deref(), current_selector)),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        });
+    }
+    Ok((roots, all_explicit_exact_unchanged))
+}
+
+/// What an update writes: the edited compose text and the lock inputs.
+struct UpdateEdit {
+    edited: String,
+    yaml_changed: bool,
+    selected_versions: BTreeMap<String, String>,
+    resolved_graphs: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// Applies an update plan to the compose text without touching the disk.
+///
+/// Each root's graph is read from the plan, which declares every dependency
+/// an update reaches (declared ones included), so a generated container is
+/// only removed once no root's new graph contains it.
+fn apply_update_plan(
+    text: &str,
+    compose: &crate::ComposeFile,
+    previous_graphs: &BTreeMap<String, BTreeSet<String>>,
+    roots: &[crate::edit::NewContainer],
+    plan: crate::dependencies::Plan,
+) -> Result<UpdateEdit> {
+    let resolved_graphs = roots
+        .iter()
+        .map(|root| {
+            (
+                root.key.clone(),
+                graph_members_for_root(&plan.containers, &root.key),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let stale = stale_graph_members(previous_graphs, &resolved_graphs);
+    let mut edited = text.to_string();
+    let mut yaml_changed = false;
+    for worker in &plan.containers {
+        match crate::edit::upsert_container(&edited, worker)? {
+            crate::edit::Outcome::Unchanged => {}
+            crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
+                edited = text;
+                yaml_changed = true;
+            }
+        }
+    }
+    let mut removable = BTreeSet::new();
+    for container in stale {
+        let generated_package = compose.containers.get(&container).is_some_and(|container| {
+            matches!(
+                container.worker,
+                crate::config::WorkerSource::Package { .. }
+            )
+        }) && crate::edit::is_generated_container(&edited, &container)?;
+        if generated_package {
+            removable.insert(container);
+        }
+    }
+    // A container that something staying in the file starts after is still
+    // needed, even when no graph names it any more. A container the plan
+    // declares counts only with the edges of its new graph: its old edges to
+    // dropped dependencies go away with them (remove_container drops edges).
+    let planned = plan
+        .containers
+        .iter()
+        .map(|container| container.key.as_str())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let needed = compose
+            .containers
+            .iter()
+            .filter(|(key, _)| !removable.contains(*key) && !planned.contains(key.as_str()))
+            .flat_map(|(_, container)| container.start_after.iter())
+            .chain(
+                plan.containers
+                    .iter()
+                    .flat_map(|container| container.start_after.iter()),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let before = removable.len();
+        removable.retain(|key| !needed.contains(key));
+        if removable.len() == before {
+            break;
+        }
+    }
+    for container in removable {
+        if let Some(next) = crate::edit::remove_container(&edited, &container)? {
+            edited = next;
+            yaml_changed = true;
+        }
+    }
+    Ok(UpdateEdit {
+        edited,
+        yaml_changed,
+        selected_versions: plan.selected_versions,
+        resolved_graphs,
+    })
 }
 
 pub struct Daemon {
@@ -810,7 +1009,9 @@ impl Daemon {
         })?;
         let mut declared = ComposeFile::parse(&snapshot, path.to_path_buf())?;
         crate::lockfile::attach(&mut declared)?;
-        let mut plan = crate::dependencies::plan(&declared, declarations).await?;
+        let mut plan =
+            crate::dependencies::plan(&declared, declarations, &crate::dependencies::Policy::Add)
+                .await?;
         let mut selected_versions = std::mem::take(&mut plan.selected_versions);
         plan.containers = keep_declared_dependencies(
             plan.containers,
@@ -846,58 +1047,17 @@ impl Daemon {
         })
     }
 
-    /// The worker asked for, plus everything it needs, in start order.
-    ///
-    /// A `path://` worker is taken alone: its dependencies are declared in a
-    /// manifest on disk, and resolving those means asking the registry per name
-    /// rather than reading one answer. That is worth doing, and is not done
-    /// here yet.
-    ///
-    /// A registry dependency already declared as `path://` is also taken as an
-    /// operator-owned boundary. The package keeps its edge to that container,
-    /// but neither the local worker nor the package dependencies below it are
-    /// added from the registry graph.
-    ///
-    /// `engine` workers are skipped. They are compiled into the engine and are
-    /// already serving before compose starts anything; declaring one would
-    /// produce a container with no artefact to install.
-    async fn expand(
-        &self,
-        asked: &crate::edit::NewContainer,
-        path_workers: &BTreeSet<String>,
-    ) -> Result<(Vec<crate::edit::NewContainer>, BTreeMap<String, String>)> {
-        let crate::edit::Source::Package { reference, version } = &asked.source else {
-            return Ok((vec![asked.clone()], BTreeMap::new()));
-        };
-
-        let range = version.clone().unwrap_or_else(|| "*".to_string());
-        let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
-        let selected_versions = graph
-            .nodes
-            .iter()
-            .map(|node| (node.name.clone(), node.version.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let containers = expand_graph(asked, reference, graph, path_workers)?;
-        let selected_versions = containers
-            .iter()
-            .filter(|container| matches!(&container.source, crate::edit::Source::Package { .. }))
-            .filter_map(|container| {
-                selected_versions
-                    .get(&container.key)
-                    .map(|version| (container.key.clone(), version.clone()))
-            })
-            .collect();
-        Ok((containers, selected_versions))
-    }
-
     /// Moves declared containers to other versions of the same packages.
     ///
     /// `worker=state` refreshes the selector already declared in the file,
     /// including an exact version. `worker=state@latest` explicitly moves it
     /// to the registry's latest channel. The complete dependency graph is
-    /// resolved again and generated dependencies are reconciled with it.
+    /// resolved again by the planner `compose::add` uses, so a worker that is
+    /// both requested and needed by another request is declared once, and
+    /// declared dependencies follow the graph (see [`crate::dependencies::Policy`]).
     /// An empty worker list selects every declared package at its latest
-    /// version, using its existing registry reference. Path workers are skipped.
+    /// version, using its existing registry reference, except generated
+    /// dependencies another package reaches. Path workers are skipped.
     ///
     /// The complete batch is validated and edited in memory before one atomic
     /// write. A changed batch restarts the project once.
@@ -917,62 +1077,16 @@ impl Daemon {
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
-        let asked = workers_to_update(&compose, workers)?;
+        let previous_graphs = crate::lockfile::graphs(path)?;
+        let generated = generated_dependencies(&text, &compose, &previous_graphs)?;
+        let asked = workers_to_update(&compose, workers, &generated, &previous_graphs)?;
         let requested = asked
             .iter()
             .map(|worker| worker.key.clone())
             .collect::<Vec<_>>();
         let primary = requested.first().map(String::as_str);
         let asked = coalesce_containers(asked)?;
-        let previous_graphs = crate::lockfile::graphs(path)?;
-        let previous_graph_nodes = previous_graphs
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let path_workers = compose
-            .containers
-            .iter()
-            .filter(|(_, container)| {
-                matches!(container.worker, crate::config::WorkerSource::Path { .. })
-            })
-            .map(|(key, _)| key.clone())
-            .collect::<BTreeSet<_>>();
-        let mut roots = Vec::with_capacity(asked.len());
-        let mut all_explicit_exact_unchanged = true;
-        for worker in &asked {
-            let crate::edit::Source::Package { version, .. } = &worker.source else {
-                return Err(ComposeError::NotAPackageContainer {
-                    container: worker.key.clone(),
-                    kind: "path".to_string(),
-                });
-            };
-            let Some(container) = compose.containers.get(&worker.key) else {
-                return Err(ComposeError::UnknownContainer {
-                    container: worker.key.clone(),
-                });
-            };
-            let crate::config::WorkerSource::Package { reference } = &container.worker else {
-                return Err(ComposeError::NotAPackageContainer {
-                    container: worker.key.clone(),
-                    kind: "path".to_string(),
-                });
-            };
-
-            let current_selector = container.version.as_deref().unwrap_or("*");
-            all_explicit_exact_unchanged &= version.as_deref().is_some_and(|version| {
-                version == current_selector && semver::Version::parse(version).is_ok()
-            });
-            roots.push(crate::edit::NewContainer {
-                key: worker.key.clone(),
-                source: crate::edit::Source::Package {
-                    reference: reference.clone(),
-                    version: Some(update_selector(version.as_deref(), current_selector)),
-                },
-                start_after: Vec::new(),
-                fields: serde_yaml::Mapping::new(),
-            });
-        }
+        let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
         if all_explicit_exact_unchanged {
             return Ok(MutationOutcome::from_operations(
@@ -990,83 +1104,55 @@ impl Daemon {
             ));
         }
 
-        let path_workers = &path_workers;
-        let mut expanded = self
+        let mut declared = compose.clone();
+        crate::lockfile::attach(&mut declared)?;
+        let plan = self
             .prepare(
                 &operation_id,
-                futures::stream::iter(
-                    roots
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, worker)| async move {
-                            (index, self.expand(&worker, path_workers).await)
-                        }),
-                )
-                .buffer_unordered(4)
-                .collect::<Vec<_>>(),
+                crate::dependencies::plan(
+                    &declared,
+                    &roots,
+                    &crate::dependencies::Policy::Update {
+                        generated: generated.clone(),
+                    },
+                ),
             )
-            .await?;
-        expanded.sort_by_key(|(index, _)| *index);
-
-        let mut wanted = Vec::new();
-        let mut selected_versions = BTreeMap::new();
-        let mut resolved_graphs = BTreeMap::new();
-        for (index, expansion) in expanded {
-            let (containers, versions) = expansion?;
-            let nodes = graph_members(&containers);
-            resolved_graphs.insert(asked[index].key.clone(), nodes);
-            for (container, version) in versions {
-                if let Some(current) = selected_versions.insert(container.clone(), version.clone())
-                    && current != version
-                {
-                    return Err(ComposeError::InvalidWorkerSpec {
-                        spec: container.clone(),
-                        reason: format!(
-                            "the requested workers resolve container '{container}' to conflicting \
-                             versions {current} and {version}"
+            .await??;
+        let operation = crate::operation::active(&operation_id);
+        for alias in &plan.aliases {
+            crate::registry::warn_alias(
+                &alias.container,
+                &alias.reference,
+                Some(&alias.canonical),
+                operation.as_deref(),
+            )
+            .await;
+        }
+        let planned = plan
+            .containers
+            .iter()
+            .map(|container| container.key.clone())
+            .collect::<BTreeSet<_>>();
+        let UpdateEdit {
+            edited,
+            yaml_changed,
+            selected_versions,
+            resolved_graphs,
+        } = apply_update_plan(&text, &compose, &previous_graphs, &roots, plan)?;
+        // A generated dependency no updated graph includes any more, but that
+        // something else still starts after, is left as it is. Say so rather
+        // than let it silently stop moving.
+        if workers.is_empty() {
+            for key in generated.iter().filter(|key| !planned.contains(*key)) {
+                if crate::edit::is_generated_container(&edited, key)? {
+                    crate::report::daemon_line(
+                        &format!(
+                            "{key}: not updated, because no updated dependency graph includes it any more; \
+                             update it with compose::update worker={key} or remove it"
                         ),
-                    });
+                        true,
+                    );
                 }
-            }
-            wanted.extend(containers);
-        }
-        let mut wanted = coalesce_containers(wanted)?;
-        for container in &mut wanted {
-            if let Some(existing) = compose.containers.get(&container.key) {
-                container.start_after.extend(
-                    existing
-                        .start_after
-                        .iter()
-                        .filter(|dependency| !previous_graph_nodes.contains(*dependency))
-                        .cloned(),
-                );
-                container.start_after.sort();
-                container.start_after.dedup();
-            }
-        }
-
-        let stale = stale_graph_members(&previous_graphs, &resolved_graphs);
-        let mut edited = text.clone();
-        let mut yaml_changed = false;
-        for worker in &wanted {
-            match crate::edit::upsert_container(&edited, worker)? {
-                crate::edit::Outcome::Unchanged => {}
-                crate::edit::Outcome::Replaced { text, .. } | crate::edit::Outcome::Added(text) => {
-                    edited = text;
-                    yaml_changed = true;
-                }
-            }
-        }
-        for container in stale {
-            let removable = compose.containers.get(&container).is_some_and(|container| {
-                matches!(
-                    container.worker,
-                    crate::config::WorkerSource::Package { .. }
-                )
-            }) && crate::edit::is_generated_container(&edited, &container)?;
-            if removable && let Some(next) = crate::edit::remove_container(&edited, &container)? {
-                edited = next;
-                yaml_changed = true;
             }
         }
 
@@ -2455,7 +2541,8 @@ containers:
         )
         .unwrap();
 
-        let selected = workers_to_update(&compose, &[]).unwrap();
+        let selected =
+            workers_to_update(&compose, &[], &BTreeSet::new(), &BTreeMap::new()).unwrap();
 
         assert_eq!(
             selected,
@@ -2490,7 +2577,13 @@ containers:
         )
         .unwrap();
 
-        let selected = workers_to_update(&compose, &["state@1.2.3".to_string()]).unwrap();
+        let selected = workers_to_update(
+            &compose,
+            &["state@1.2.3".to_string()],
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(
             selected,
@@ -2544,8 +2637,206 @@ containers:
         api.start_after = vec!["local-state".to_string()];
 
         assert_eq!(
-            graph_members(&[api]),
+            graph_members_for_root(&[api], "api"),
             BTreeSet::from(["api".to_string(), "local-state".to_string()])
+        );
+    }
+
+    const MARKED: &str = "  # added by compose::add\n";
+
+    #[test]
+    fn update_without_workers_lets_generated_dependencies_follow_their_dependents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let text = format!(
+            "containers:\n{MARKED}  api:\n    worker: package://api\n    version: '1.0.0'\n\
+             {MARKED}  state:\n    worker: package://state\n    version: '0.22.0'\n\
+             {MARKED}  orphan:\n    worker: package://orphan\n    version: '1.0.0'\n\
+             \x20 cache:\n    worker: package://cache\n    version: latest\n    start_after: [queue]\n\
+             {MARKED}  queue:\n    worker: package://queue\n    version: '2.0.0'\n"
+        );
+        let compose =
+            crate::ComposeFile::parse(&text, tmp.path().join("worker-compose.yaml")).unwrap();
+        let graphs = BTreeMap::from([(
+            "api".to_string(),
+            BTreeSet::from(["api".to_string(), "state".to_string()]),
+        )]);
+
+        let generated = generated_dependencies(&text, &compose, &graphs).unwrap();
+        let selected = workers_to_update(&compose, &[], &generated, &graphs).unwrap();
+
+        assert_eq!(
+            generated,
+            BTreeSet::from([
+                "orphan".to_string(),
+                "queue".to_string(),
+                "state".to_string()
+            ])
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|worker| worker.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["api", "orphan", "cache"]
+        );
+    }
+
+    #[test]
+    fn update_removes_only_generated_containers_nothing_still_needs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The edges compose::add writes: the root lists its dependencies.
+        let text = format!(
+            "containers:\n{MARKED}  api:\n    worker: package://api\n    version: latest\n    start_after: [old-dep, kept-dep]\n\
+             {MARKED}  old-dep:\n    worker: package://old-dep\n    version: '1.0.0'\n    start_after: [old-sub]\n\
+             {MARKED}  old-sub:\n    worker: package://old-sub\n    version: '1.0.0'\n\
+             {MARKED}  kept-dep:\n    worker: package://kept-dep\n    version: '1.0.0'\n\
+             \x20 cache:\n    worker: package://cache\n    version: latest\n    start_after: [kept-dep]\n"
+        );
+        let compose =
+            crate::ComposeFile::parse(&text, tmp.path().join("worker-compose.yaml")).unwrap();
+        let previous = BTreeMap::from([(
+            "api".to_string(),
+            BTreeSet::from([
+                "api".to_string(),
+                "old-dep".to_string(),
+                "old-sub".to_string(),
+                "kept-dep".to_string(),
+            ]),
+        )]);
+        // The new release of api needs none of them.
+        let api = crate::edit::NewContainer {
+            key: "api".to_string(),
+            source: crate::edit::Source::Package {
+                reference: "api".to_string(),
+                version: Some("latest".to_string()),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        };
+        let plan = crate::dependencies::Plan {
+            containers: vec![api.clone()],
+            aliases: Vec::new(),
+            selected_versions: BTreeMap::from([("api".to_string(), "2.0.0".to_string())]),
+        };
+
+        let edit = apply_update_plan(&text, &compose, &previous, &[api], plan).unwrap();
+        let edited =
+            crate::ComposeFile::parse(&edit.edited, tmp.path().join("worker-compose.yaml"))
+                .unwrap();
+
+        assert!(edit.yaml_changed);
+        assert_eq!(
+            edited
+                .containers
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["api", "kept-dep", "cache"],
+            "{}",
+            edit.edited
+        );
+        assert_eq!(edited.containers["api"].start_after, vec!["kept-dep"]);
+        assert_eq!(edited.containers["cache"].start_after, vec!["kept-dep"]);
+        assert_eq!(
+            edit.resolved_graphs["api"],
+            BTreeSet::from(["api".to_string()])
+        );
+    }
+
+    fn registry_node(name: &str, version: &str) -> crate::registry::Node {
+        crate::registry::Node {
+            name: name.to_string(),
+            version: version.to_string(),
+            kind: "binary".to_string(),
+            artifact_digest: Some("a".repeat(64)),
+            ..Default::default()
+        }
+    }
+
+    /// Registry graphs for the provider chain of the harness template.
+    fn provider_chain_graph(root: &str) -> crate::registry::Graph {
+        let edges = [
+            ("provider-anthropic", "state"),
+            ("provider-anthropic", "llm-router"),
+            ("llm-router", "state"),
+        ];
+        let members: &[&str] = match root {
+            "state" => &["state"],
+            "llm-router" => &["llm-router", "state"],
+            _ => &["provider-anthropic", "llm-router", "state"],
+        };
+        let version = |name: &str| match name {
+            "state" => "0.23.0",
+            "llm-router" => "1.5.0",
+            _ => "1.3.0",
+        };
+        crate::registry::Graph {
+            nodes: members
+                .iter()
+                .map(|name| registry_node(name, version(name)))
+                .collect(),
+            edges: edges
+                .iter()
+                .filter(|(from, _)| members.contains(from))
+                .map(|(from, to)| (from.to_string(), to.to_string()))
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_without_workers_declares_a_requested_shared_dependency_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let text = concat!(
+            "containers:\n",
+            "  state:\n    worker: package://state\n    version: \"latest\"\n",
+            "    working_dir: .\n    config_name: state\n",
+            "  llm-router:\n    worker: package://llm-router\n    version: \"latest\"\n",
+            "    start_after: [state]\n    env_file: ['./.env']\n",
+            "  provider-anthropic:\n    worker: package://provider-anthropic\n",
+            "    version: \"latest\"\n    start_after: [state, llm-router]\n    env_file: ['./.env']\n",
+        );
+        let compose =
+            crate::ComposeFile::parse(text, tmp.path().join("worker-compose.yaml")).unwrap();
+        let graphs = BTreeMap::new();
+        let generated = generated_dependencies(text, &compose, &graphs).unwrap();
+        let asked = workers_to_update(&compose, &[], &generated, &graphs).unwrap();
+        let (roots, unchanged) = update_roots(&compose, &asked).unwrap();
+        assert!(!unchanged);
+        assert_eq!(roots.len(), 3);
+
+        let plan = crate::dependencies::plan_with(
+            &compose,
+            &roots,
+            &crate::dependencies::Policy::Update { generated },
+            |key, _, _| async move { Ok::<_, ComposeError>(provider_chain_graph(&key)) },
+            |key, _, _| async move {
+                Err::<crate::registry::Node, _>(ComposeError::InvalidWorkerSpec {
+                    spec: key,
+                    reason: "this test has no registry".to_string(),
+                })
+            },
+        )
+        .await
+        .expect("a worker both requested and needed by another request is declared once");
+        let edit = apply_update_plan(text, &compose, &graphs, &roots, plan).unwrap();
+
+        assert!(!edit.yaml_changed, "{}", edit.edited);
+        assert_eq!(edit.edited, text);
+        assert_eq!(
+            edit.selected_versions,
+            BTreeMap::from([
+                ("llm-router".to_string(), "1.5.0".to_string()),
+                ("provider-anthropic".to_string(), "1.3.0".to_string()),
+                ("state".to_string(), "0.23.0".to_string()),
+            ])
+        );
+        assert_eq!(
+            edit.resolved_graphs["provider-anthropic"],
+            BTreeSet::from([
+                "llm-router".to_string(),
+                "provider-anthropic".to_string(),
+                "state".to_string()
+            ])
         );
     }
 

@@ -402,6 +402,10 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 `compose::update` without `worker` or `workers` updates every declared `package://` worker to its
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
+A dependency that Compose generated for another declared package does not move to `latest` on its
+own. It follows the version that package's dependency graph selects. If no updated graph includes it
+any more but another worker still lists it in `start_after`, Compose leaves it unchanged and prints a
+warning.
 
 ```bash
 iii trigger compose::update
@@ -413,9 +417,24 @@ iii trigger compose::update file=worker-compose.yaml
 `worker=state@<selector>` to change the selector. For example, use `worker=state@latest` to move an
 exact version to the registry's latest channel.
 
-Update resolves the complete dependency graph. It adds new dependencies, updates changed
-dependencies, and removes stale dependencies that Compose generated and no remaining package root
-uses. Manually declared workers are not removed.
+Update resolves the dependency graphs of all selected workers together, with the same planner as
+`compose::add`. A selected worker that another selected worker also needs is declared once, with the
+selector of its own update, and both graphs must agree on its release. Update adds new dependencies,
+updates changed dependencies, and removes stale dependencies that Compose generated when no updated
+graph includes them and no worker outside the updated graphs lists them in `start_after`. Removing a
+dependency also removes the `start_after` entries that point to it. Manually declared workers are not
+removed.
+
+A declared dependency of a selected worker that is not selected itself follows the resolved graph:
+
+- A dependency that Compose generated with an exact version moves to the version the graph selects.
+- A dependency with a tag such as `latest`, or without a version, keeps its selector. The lock
+  records the version the graph selects.
+- A dependency with a range keeps it when the selected version satisfies the range. Otherwise the
+  update fails and names the version the graph needs.
+- A dependency that you pinned to an exact version stays pinned. If the graph needs another
+  version, the update fails and names the `compose::update worker=<name>@<version>` call that
+  moves it.
 
 Compose downloads and verifies the new artifact before it changes the lock or stops a worker. A
 failed resolve or download leaves the prior lock and running workers unchanged. If the resolved
