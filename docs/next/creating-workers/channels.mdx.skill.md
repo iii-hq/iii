@@ -220,6 +220,12 @@ objects before the handler runs, so the ref arrives ready to iterate or write to
 ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader::new(...)` or
 `ChannelWriter::new(...)`.
 
+<Tip>
+  The channel belongs to the worker that created it. Keep that worker connected until the receiving
+  function has attached to the ref. If the creator disconnects first, unattached ends are dropped.
+  See [Channel ownership](../understanding-iii/channels#channel-ownership).
+</Tip>
+
 ### Read from a channel ref
 
 <Tabs>

@@ -20,6 +20,11 @@ the workers specified in `worker-compose.yaml`. It is approximately the equivale
 `iii compose --up` combines engine and project startup for development. Independent `iii` and
 `iii compose` daemons provide separate lifecycle control for production deployments.
 
+The engine that `--up` starts is tied to the Compose process. If Compose exits for any reason,
+including an abrupt kill such as `SIGKILL` during startup, the managed engine is terminated too, and
+the next `iii compose --up` starts a fresh engine. Run `iii` and `iii compose` separately when the
+engine needs its own lifecycle.
+
 ### Starting a project with the daemon
 
 ```text
@@ -34,10 +39,15 @@ iii compose [OPTIONS]
 | `--frozen`             | With `--up`, require the compose file and existing lock to match and skip package resolution                                                              |
 | `-f, --file <PATH>`    | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file            |
 
-`Ctrl^C`, `SIGINT` and `SIGTERM` all gracefully stop the daemon, every worker run by the daemon, and
-the iii engine if compose was started with `--up`. When `--up` has started the engine, every project
-and worker stops before the engine process is stopped. `compose::stop` is the function equivalent of
-this operation.
+`Ctrl^C`, `SIGINT`, `SIGTERM` and `SIGHUP` all gracefully stop the daemon, every worker run by the
+daemon, and the iii engine if compose was started with `--up`. When `--up` has started the engine,
+every project and worker stops before the engine process is stopped. `compose::stop` is the function
+equivalent of this operation.
+
+Compose only stops an engine it started itself. An external engine, selected with `--engine`,
+`III_URL`, or an external engine in the compose file, keeps running when Compose exits. If the
+engine's listener port is already in use, `--up` fails. Compose never adopts or kills an unrelated
+engine.
 
 `compose::*` functions as documented below are the intended way to manage a running compose daemon.
 
