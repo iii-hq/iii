@@ -42,7 +42,9 @@ mkdir -p "$OUT_DIR"
 
 ## Telemetry
 
-The engine sends anonymous usage data by default. This data helps to improve iii and contains no personal information.
+The engine sends anonymous usage data by default. This data helps to improve iii. It contains no personal information unless you choose to enter your email address when you sign up. In that case, the engine attaches that email address to your usage profile.
+
+`iii compose` also reports its own usage data, such as whether a run succeeded, how long it took, how many containers it managed, and a fixed error code if it failed. These reports never include file paths, container names, worker references, or error messages.
 
 To turn the usage data off, do one of these:
 
@@ -51,6 +53,8 @@ To turn the usage data off, do one of these:
 - Set `telemetry.enabled: false` in the engine configuration.
 
 The engine also turns the usage data off automatically if it detects that it is in a CICD environment.
+
+The `III_TELEMETRY_ENABLED` variable, the `~/.iii/telemetry_dev_optout` file, and CICD detection also turn off the usage data that `iii compose` sends. The `telemetry.enabled` engine setting applies only to the engine. When the engine's usage data is off, the engine discards usage reports from workers instead of storing them.
 
 This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
 TELEMETRY_MDX

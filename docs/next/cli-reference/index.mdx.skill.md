@@ -209,10 +209,11 @@ The engine sends anonymous usage data by default. This data helps to improve iii
 To turn the usage data off, do one of these:
 
 - Set `III_TELEMETRY_ENABLED` to `false`, `0`, `no`, or `off` before you start `iii`. Letter case does not matter, and leading or trailing spaces are ignored. Any other value, or no value, keeps the usage data on.
+- Create the file `~/.iii/telemetry_dev_optout`. The engine reads this file whenever the process starts.
 - Set `telemetry.enabled: false` in the engine configuration.
 
 The engine also turns the usage data off automatically if it detects that it is in a CICD environment.
 
-The `III_TELEMETRY_ENABLED` variable and CICD detection also turn off the usage data that `iii compose` sends. The `telemetry.enabled` engine setting applies only to the engine. When the engine's usage data is off, the engine discards usage reports from workers instead of storing them.
+The `III_TELEMETRY_ENABLED` variable, the `~/.iii/telemetry_dev_optout` file, and CICD detection also turn off the usage data that `iii compose` sends. The `telemetry.enabled` engine setting applies only to the engine. When the engine's usage data is off, the engine discards usage reports from workers instead of storing them.
 
 This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
