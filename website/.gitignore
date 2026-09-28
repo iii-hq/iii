@@ -1,9 +1,13 @@
 node_modules/
 dist/
-.astro/
-.vite/
+.next/
 *.tsbuildinfo
+next-env.d.ts
 .DS_Store
-.env
-.env.local
-ds-bundle/
+.env*
+!.env.example
+.vercel
+# generated before every build/dev by scripts/generate-roadmap-manifest.ts
+roadmap/generated/
+# playwright-cli scratch (screenshots, console logs)
+.playwright-cli/

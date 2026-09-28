@@ -82,7 +82,24 @@ async fn handle_channel_socket(
                 tracing::info!(channel_id = %channel_id, "Read: receiver acquired, streaming channel → WS");
                 let mut total_bytes: u64 = 0;
                 let mut msg_count: u64 = 0;
-                while let Some(item) = rx.recv().await {
+                let mut peer_left = false;
+                loop {
+                    let item = tokio::select! {
+                        item = rx.recv() => item,
+                        // The reader can leave before the writer ever attaches
+                        // (the http worker drops its response reader when the
+                        // function returns a buffered value). Without watching
+                        // the socket, its fd stays held until the sweeper
+                        // drops the sender, minutes later.
+                        msg = socket.recv() => match msg {
+                            Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => {
+                                peer_left = true;
+                                break;
+                            }
+                            Some(Ok(_)) => continue,
+                        },
+                    };
+                    let Some(item) = item else { break };
                     let ws_msg = match item {
                         ChannelItem::Text(s) => {
                             msg_count += 1;
@@ -102,8 +119,16 @@ async fn handle_channel_socket(
                         break;
                     }
                 }
-                tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Read: stream complete, sending WS close");
-                let _ = socket.send(WsMessage::Close(None)).await;
+                if peer_left {
+                    tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Read: peer left, releasing channel");
+                } else {
+                    tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Read: stream complete, sending WS close");
+                    let _ = socket.send(WsMessage::Close(None)).await;
+                }
+                // Once the reader is done nothing can consume the channel:
+                // drop the entry so an unattached sender goes with it and an
+                // attached writer sees its receiver close.
+                channel_mgr.remove_channel(&channel_id);
             } else {
                 tracing::warn!(channel_id = %channel_id, "Read: channel receiver already taken or missing");
                 let _ = socket.send(WsMessage::Close(None)).await;
@@ -116,7 +141,17 @@ async fn handle_channel_socket(
                 let mut total_bytes: u64 = 0;
                 let mut msg_count: u64 = 0;
                 loop {
-                    let msg = match socket.recv().await {
+                    let msg = tokio::select! {
+                        msg = socket.recv() => msg,
+                        // The reader is gone, so nothing will consume what this
+                        // writer sends: close now rather than on its next frame.
+                        _ = tx.closed() => {
+                            tracing::info!(channel_id = %channel_id, "Write: reader gone, closing");
+                            let _ = socket.send(WsMessage::Close(None)).await;
+                            break;
+                        }
+                    };
+                    let msg = match msg {
                         Some(Ok(msg)) => msg,
                         Some(Err(err)) => {
                             tracing::warn!(channel_id = %channel_id, error = ?err, "Write: WS receive error");
@@ -225,6 +260,88 @@ mod tests {
         (engine, format!("ws://{addr}"), shutdown_tx)
     }
 
+    async fn wait_until_removed(engine: &Engine, channel_id: &str, key: &str) -> bool {
+        for _ in 0..40 {
+            if engine
+                .channel_manager
+                .get_channel(channel_id, key)
+                .is_none()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    async fn wait_until_attached(engine: &Engine, channel_id: &str, key: &str) {
+        let channel = engine
+            .channel_manager
+            .get_channel(channel_id, key)
+            .expect("channel exists");
+        for _ in 0..40 {
+            if channel.tx.lock().await.is_none() && channel.rx.lock().await.is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("both channel ends should attach");
+    }
+
+    // The http worker's response channel for a buffered-return function: the
+    // reader attaches, the writer never does, and the reader is dropped
+    // without a close frame. The engine must notice and release the socket
+    // and the channel now, not when the sweeper's TTL expires.
+    #[tokio::test]
+    async fn read_socket_released_when_reader_leaves_before_writer_attaches() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (_writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+
+        let url = format!(
+            "{base_url}/channels/{}?key={}&dir=read",
+            reader_ref.channel_id, reader_ref.access_key
+        );
+        let (socket, _) = connect_async(url).await.expect("connect read socket");
+        drop(socket);
+
+        assert!(
+            wait_until_removed(&engine, &reader_ref.channel_id, &reader_ref.access_key).await,
+            "channel should be released once its reader leaves"
+        );
+    }
+
+    // Fully connected channels are never swept. When the reader leaves while
+    // the writer is idle, the engine must close the writer socket too.
+    #[tokio::test]
+    async fn idle_writer_closed_when_reader_leaves() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+
+        let (mut writer, _) = connect_async(format!(
+            "{base_url}/channels/{}?key={}&dir=write",
+            writer_ref.channel_id, writer_ref.access_key
+        ))
+        .await
+        .expect("connect write socket");
+        let (reader, _) = connect_async(format!(
+            "{base_url}/channels/{}?key={}&dir=read",
+            reader_ref.channel_id, reader_ref.access_key
+        ))
+        .await
+        .expect("connect read socket");
+        wait_until_attached(&engine, &writer_ref.channel_id, &writer_ref.access_key).await;
+
+        drop(reader);
+
+        let next = tokio::time::timeout(Duration::from_secs(2), writer.next())
+            .await
+            .expect("engine should close the idle writer once the reader leaves");
+        assert!(matches!(
+            next,
+            None | Some(Ok(Message::Close(_))) | Some(Err(_))
+        ));
+    }
+
     #[tokio::test]
     async fn channel_ws_upgrade_returns_404_for_missing_channel() {
         let (_engine, base_url, _shutdown_tx) = spawn_app().await;
@@ -283,6 +400,9 @@ mod tests {
                 .expect("close message"),
             Message::Close(_)
         ));
+        // A drained channel must not linger in the manager (the sweeper
+        // skips fully connected channels, so nothing else would remove it).
+        assert!(wait_until_removed(&engine, &reader_ref.channel_id, &reader_ref.access_key).await);
     }
 
     #[tokio::test]

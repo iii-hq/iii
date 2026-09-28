@@ -6,7 +6,7 @@ engine:
       adapter:
         name: fs
         config:
-          directory: ./data/config-bridge-configuration
+          directory: ${III_SDK_CONFIGURATION_DIR}
     iii-worker-manager:
       port: 49197
     iii-stream:
@@ -21,6 +21,3 @@ containers:
     worker: package://api.workers.iii.dev/pubsub
     version: "0.21.2"
     config_name: pubsub
-    config_override:
-      adapter:
-        name: local

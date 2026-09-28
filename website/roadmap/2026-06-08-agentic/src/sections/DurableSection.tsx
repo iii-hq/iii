@@ -1,7 +1,7 @@
-import { DurabilityTimeline } from '@lib/components/diagrams/DurabilityTimeline'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { DURABILITY_STAGES } from '../content/durability'
+import { DurabilityTimeline } from "@lib/components/diagrams/DurabilityTimeline"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { DURABILITY_STAGES } from "../content/durability"
 
 export function DurableSection() {
   return (

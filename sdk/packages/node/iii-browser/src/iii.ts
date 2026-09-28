@@ -39,7 +39,6 @@ export type TelemetryOptions = {
   language?: string
   project_name?: string
   framework?: string
-  amplitude_api_key?: string
 }
 
 /**

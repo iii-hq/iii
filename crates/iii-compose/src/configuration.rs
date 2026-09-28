@@ -6,27 +6,31 @@
 
 //! Configuration merge and delivery.
 //!
-//! Config is resolved by the daemon *before* the child starts and handed over as
-//! a file path in `III_CONFIG`, so a worker never needs credentials to fetch its
-//! own configuration and the daemon can fail a container before spawning it.
-//!
-//! The same value is published under `III_CONFIG_NAME` for workers that read
-//! the configuration service instead of the file.
-
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+//! Compose resolves defaults, the current configuration and overrides before spawn,
+//! then injects the execution value into the configuration service in memory.
+//! `III_CONFIG_NAME` identifies the entry workers read; only explicit saves
+//! persist the active value. No execution snapshot file is created.
 
 use sha2::{Digest, Sha256};
 
 use crate::error::{ComposeError, Result};
 
-/// Stable configuration identity for a container in its effective namespace.
-/// The digest includes the component boundary: `a-b` / `c` must not alias
-/// `a` / `b-c`. Keep a readable prefix, but fit the store's 64-byte id limit
-/// even when container keys need sanitizing or names need truncating.
-pub(crate) fn default_config_name(namespace: &str, key: &str) -> String {
+/// Readable configuration identity, without sanitization, truncation, or a hash.
+/// Ambiguous namespace/key boundaries require an explicit `config_name`.
+pub(crate) fn default_config_name(namespace: &str, key: &str) -> Result<String> {
+    let name = format!("{namespace}-{key}");
+    if name.len() > 64
+        || !name
+            .bytes()
+            .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        return Err(ComposeError::InvalidConfigName { name });
+    }
+    Ok(name)
+}
+
+/// Exact previous algorithm, used only to locate this container's legacy entry.
+pub(crate) fn legacy_config_name(namespace: &str, key: &str) -> String {
     let mut digest = Sha256::new();
     digest.update((namespace.len() as u64).to_be_bytes());
     digest.update(namespace.as_bytes());
@@ -62,7 +66,7 @@ pub fn merge(base: serde_yaml::Value, override_value: serde_yaml::Value) -> serd
         (serde_yaml::Value::Mapping(mut base), serde_yaml::Value::Mapping(overrides)) => {
             for (key, value) in overrides {
                 // Merged in place so an override never reshuffles the document:
-                // the delivered file stays diffable against the base.
+                // the delivered value stays diffable against the base.
                 match base.get_mut(&key) {
                     Some(slot) => {
                         let existing = std::mem::replace(slot, serde_yaml::Value::Null);
@@ -94,119 +98,55 @@ fn picks_another_variant(base: &serde_yaml::Mapping, overrides: &serde_yaml::Map
     )
 }
 
-/// A resolved configuration file owned by the daemon.
-///
-/// Created `0600` because resolved configuration routinely contains secrets:
-/// the child reads it, nothing else on the host should.
-#[derive(Debug)]
-pub struct ConfigFile {
-    path: PathBuf,
-}
-
-impl ConfigFile {
-    pub fn write(dir: &Path, container_key: &str, value: &serde_yaml::Value) -> Result<Self> {
-        std::fs::create_dir_all(dir).map_err(|source| ComposeError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        // `create_dir_all` takes the process umask, which is usually 0755. The
-        // files inside are 0600, but a directory anyone can list and enter is
-        // half a boundary — and compose publishes this directory into a bundle
-        // VM, so its mode travels with it.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(
-                |source| ComposeError::Io {
-                    path: dir.to_path_buf(),
-                    source,
-                },
-            )?;
-        }
-
-        let path = dir.join(format!("{container_key}.yaml"));
-        let text = serde_yaml::to_string(value).map_err(|err| ComposeError::Yaml {
-            path: path.clone(),
-            message: err.to_string(),
-        })?;
-
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path).map_err(|source| ComposeError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        // `mode` above applies to a file this call creates. One already there
-        // keeps whatever it had, so a run that wrote it under a looser umask
-        // would leave resolved secrets readable. Set it on the handle every
-        // time, before anything is written into it.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                .map_err(|source| ComposeError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-        }
-        file.write_all(text.as_bytes())
-            .map_err(|source| ComposeError::Io {
-                path: path.clone(),
-                source,
-            })?;
-
-        Ok(Self { path })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Pins the persisted identity so generator changes require an explicit migration decision.
     #[test]
     fn default_config_names_are_stable_and_readable() {
-        let name = default_config_name("orders", "console");
-        assert_eq!(name, "orders-console-946b336ce90783a6");
-        assert!(name.starts_with("orders-console-"), "{name}");
-        assert_eq!(name, default_config_name("orders", "console"));
-        assert_ne!(name, default_config_name("billing", "console"));
-        assert_ne!(name, default_config_name("orders", "http"));
-    }
-
-    /// Distinguishes namespace/key pairs that share the same readable prefix.
-    #[test]
-    fn default_config_names_preserve_component_boundaries() {
-        assert_ne!(
-            default_config_name("a-b", "c"),
-            default_config_name("a", "b-c")
+        assert_eq!(
+            default_config_name("default", "harness").unwrap(),
+            "default-harness"
+        );
+        assert_eq!(
+            default_config_name("orders", "console").unwrap(),
+            "orders-console"
+        );
+        assert_eq!(
+            legacy_config_name("default", "harness"),
+            "default-harness-a14f3656efb8d5ea"
+        );
+        assert_eq!(
+            legacy_config_name("orders", "console"),
+            "orders-console-946b336ce90783a6"
         );
     }
 
-    /// Checks storage limits without losing identity through sanitization or truncation.
     #[test]
-    fn default_config_names_fit_the_store_without_lossy_collisions() {
-        let namespace = "n".repeat(80);
-        let name = default_config_name(&namespace, "Console.日本語");
-        assert_eq!(name.len(), 64);
-        assert!(
-            name.bytes()
-                .all(|ch| matches!(ch, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
+    fn readable_names_require_operator_chosen_disambiguation_across_namespaces() {
+        assert_eq!(
+            default_config_name("a-b", "c").unwrap(),
+            default_config_name("a", "b-c").unwrap()
         );
-        assert_ne!(name, default_config_name(&namespace, "Console.other"));
         assert_ne!(
-            default_config_name("app", "API"),
-            default_config_name("app", "---")
+            legacy_config_name("a-b", "c"),
+            legacy_config_name("a", "b-c")
         );
+    }
+
+    #[test]
+    fn generated_names_reject_invalid_or_long_inputs_without_lossy_conversion() {
+        assert_eq!(default_config_name(&"n".repeat(62), "x").unwrap().len(), 64);
+        for (namespace, key) in [
+            ("n".repeat(63), "x"),
+            ("app".into(), "API"),
+            ("app".into(), "api.v2"),
+            ("app".into(), "日本語"),
+        ] {
+            let error = default_config_name(&namespace, key).unwrap_err();
+            assert_eq!(error.code(), "INVALID_CONFIG_NAME");
+            assert!(error.to_string().contains("config_name"));
+        }
     }
 
     fn yaml(text: &str) -> serde_yaml::Value {
@@ -295,54 +235,5 @@ mod tests {
 
         assert_eq!(keys, vec!["a", "b", "c"]);
         assert_eq!(merged, yaml("a: 1\nb: 20\nc: 3\n"));
-    }
-
-    #[test]
-    fn the_written_file_is_owner_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = ConfigFile::write(
-            &tmp.path().join("state"),
-            "api",
-            &yaml("server:\n  port: 3000\n"),
-        )
-        .unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(file.path()).unwrap(),
-            "server:\n  port: 3000\n"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(file.path()).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "resolved config must be owner-only");
-        }
-    }
-    #[cfg(unix)]
-    #[test]
-    fn resolved_configuration_is_owner_only_even_when_it_was_already_there() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("config");
-
-        // A file left by an earlier run under a looser umask. `OpenOptions`
-        // only applies its mode when it creates the file, so this is the case
-        // that used to keep the wide mode and the resolved secrets with it.
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("api.yaml");
-        std::fs::write(&path, "stale: true\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        ConfigFile::write(&dir, "api", &yaml("server:\n  port: 3000\n")).unwrap();
-
-        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&path), 0o600, "the file must not stay group readable");
-        assert_eq!(
-            mode(&dir),
-            0o700,
-            "nor may the directory holding it be listable"
-        );
     }
 }

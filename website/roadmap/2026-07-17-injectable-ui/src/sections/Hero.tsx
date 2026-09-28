@@ -1,9 +1,9 @@
-import { Caret } from '@lib/components/schematic/Caret'
-import { Cell } from '@lib/components/schematic/Cell'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
-import { HERO_CLAIMS, HERO_STATS } from '../content/hero'
+import { Caret } from "@lib/components/schematic/Caret"
+import { Cell } from "@lib/components/schematic/Cell"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { Terminal, TerminalRow } from "@lib/components/schematic/Terminal"
+import { HERO_CLAIMS, HERO_STATS } from "../content/hero"
 
 /**
  * A1 — the hero, technical voice: states the mechanism in one line, proves it
@@ -24,9 +24,9 @@ export function Hero() {
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[58ch]">
             a worker registers a <span className="text-ink">script or style trigger</span>; the console fetches the
-            source <span className="text-ink">over the bus</span>, serves it from :3113, and every open tab disposes
-            the old module and re-imports the new one. <span className="text-ink">no console rebuild</span>, no
-            iframe, no second react.
+            source <span className="text-ink">over the bus</span>, serves it from :3113, and every open tab disposes the
+            old module and re-imports the new one. <span className="text-ink">no console rebuild</span>, no iframe, no
+            second react.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <a
@@ -51,7 +51,7 @@ export function Hero() {
                 command="npx @iii-dev/console-build --worker state"
                 output={
                   <span>
-                    ✓ page.js <span className="text-ink-ghost">·</span> styles.css{' '}
+                    ✓ page.js <span className="text-ink-ghost">·</span> styles.css{" "}
                     <span className="text-ink-ghost">(scoped)</span>
                   </span>
                 }
@@ -59,8 +59,8 @@ export function Hero() {
               <TerminalRow
                 command={
                   <>
-                    registerTrigger({'{'} type: <span className="text-ink-faint">&apos;console:script&apos;</span>, path:{' '}
-                    <span className="text-ink-faint">&apos;state/page.js&apos;</span> {'}'})
+                    registerTrigger({"{"} type: <span className="text-ink-faint">&apos;console:script&apos;</span>,
+                    path: <span className="text-ink-faint">&apos;state/page.js&apos;</span> {"}"})
                   </>
                 }
                 output={

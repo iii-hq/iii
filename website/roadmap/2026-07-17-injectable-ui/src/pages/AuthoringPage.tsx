@@ -1,9 +1,9 @@
-import { CliPlayground } from '@lib/components/diagrams/CliPlayground'
-import { PageShell } from '@lib/components/PageShell'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { CLI_TRACKS, CONTENT_FN_ROWS, DEV_LOOP_NOTE, REGISTRATION_CODE } from '../content/authoring'
+import { CliPlayground } from "@lib/components/diagrams/CliPlayground"
+import { PageShell } from "@lib/components/PageShell"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { CLI_TRACKS, CONTENT_FN_ROWS, DEV_LOOP_NOTE, REGISTRATION_CODE } from "../content/authoring"
 
 /**
  * A14 — the author's chair: what a worker author actually writes (one content

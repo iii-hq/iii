@@ -48,6 +48,7 @@ mod restart;
 mod shutdown;
 pub mod spawn;
 pub mod state;
+pub mod telemetry;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
@@ -157,7 +158,20 @@ pub async fn run(cli: ComposeCli) -> i32 {
         .await
         {
             Ok(()) => 0,
-            Err(err) => report_error(&err),
+            Err(err) => {
+                // A file that does not parse, or a lock that is out of date,
+                // fails here without a daemon to report it. Every failure the
+                // daemon did report stays silent.
+                if start {
+                    telemetry::report_up_never_started(
+                        telemetry::ProjectShape::default(),
+                        frozen,
+                        err.code(),
+                    )
+                    .await;
+                }
+                report_error(&err)
+            }
         },
         ComposeCommand::Logs {
             explicit_engine_url,
@@ -442,6 +456,10 @@ async fn serve(
         file,
         frozen,
         progress: report::StartupProgress::start(matches!(engine_mode, EngineMode::Managed { .. })),
+        shape: initial_file
+            .as_ref()
+            .map(telemetry::ProjectShape::of)
+            .unwrap_or_default(),
     });
     let managed_engine = match engine_mode {
         EngineMode::Managed { .. } => {
@@ -518,6 +536,36 @@ async fn serve(
     result
 }
 
+/// Reports one foreground `iii compose --up`, and the containers that did not
+/// come up with it.
+///
+/// `exits` says whether the process is about to leave. A process that stays
+/// has somewhere for the send to finish and nothing waits for it; one that
+/// leaves has to wait, or the report never goes out.
+async fn report_up(
+    project: &InitialProject,
+    outcome: telemetry::UpOutcome,
+    daemon: &daemon::Daemon,
+    started: std::time::Instant,
+    result: Option<&lifecycle::OpResult>,
+    error_kind: Option<&str>,
+    exits: bool,
+) {
+    let reports = telemetry::up_reports(
+        telemetry::up_properties(
+            outcome,
+            project.shape,
+            project.frozen,
+            Some(daemon.daemon_namespace.as_str()),
+            started.elapsed(),
+            result,
+            error_kind,
+        ),
+        result,
+    );
+    telemetry::send_waiting(reports, exits).await;
+}
+
 /// Resolves the daemon's process label before the CLI starts its async runtime.
 /// Build and logs commands do not serve a namespace and need no process label.
 pub fn process_namespace(cli: &ComposeCli) -> Result<Option<String>> {
@@ -563,6 +611,9 @@ struct InitialProject {
     file: std::path::PathBuf,
     frozen: bool,
     progress: report::StartupProgress,
+    /// Counted from the file before anything starts, so a startup that fails
+    /// on its first container still reports what the project declared.
+    shape: telemetry::ProjectShape,
 }
 
 async fn serve_daemon(
@@ -576,6 +627,9 @@ async fn serve_daemon(
 ) -> Result<()> {
     use colored::Colorize;
 
+    // Times the whole foreground startup, connection included: what an
+    // operator waits through is the number worth reporting.
+    let started = std::time::Instant::now();
     let daemon = daemon::Daemon::start_with_shutdown(
         engine_url.clone(),
         daemon_namespace,
@@ -629,15 +683,28 @@ async fn serve_daemon(
     if let Some(engine) = managed_engine
         && !daemon.engine().is_connected()
     {
-        if let Some(project) = &mut start {
-            project.progress.finish(false, "Connection timed out");
-        }
-        daemon.shutdown().await;
-        return Err(ComposeError::EngineReadinessTimeout {
+        // Built before the report so the event carries the same code the
+        // operator sees, and cannot drift from it.
+        let error = ComposeError::EngineReadinessTimeout {
             engine_url: daemon.engine_url.clone(),
             seconds: accepted_within.as_secs(),
             tail: engine.log_tail(),
-        });
+        };
+        if let Some(project) = &mut start {
+            project.progress.finish(false, "Connection timed out");
+            report_up(
+                project,
+                telemetry::UpOutcome::Failed,
+                &daemon,
+                started,
+                None,
+                Some(error.code()),
+                true,
+            )
+            .await;
+        }
+        daemon.shutdown().await;
+        return Err(error);
     }
 
     if daemon.engine().is_connected()
@@ -714,13 +781,24 @@ async fn serve_daemon(
         match result {
             Ok(None) => {
                 project.progress.finish(false, "Cancelled");
+                let exits = shutdown.requested() || daemon.stop_requested();
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Cancelled,
+                    &daemon,
+                    started,
+                    None,
+                    None,
+                    exits,
+                )
+                .await;
                 operation
                     .finish(
                         operation::OperationStatus::Cancelled,
                         "initial project startup cancelled",
                     )
                     .await;
-                if shutdown.requested() || daemon.stop_requested() {
+                if exits {
                     println!(
                         "{}",
                         "startup interrupted; stopping every project...".dimmed()
@@ -733,14 +811,39 @@ async fn serve_daemon(
             Ok(Some(result)) if result.status == lifecycle::OpStatus::Failed => {
                 project.progress.finish(false, "Failed");
                 let error = ComposeError::ProjectDidNotStart { path: file.clone() };
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Failed,
+                    &daemon,
+                    started,
+                    Some(&result),
+                    Some(
+                        result
+                            .primary_error
+                            .as_ref()
+                            .map_or(error.code(), |failure| failure.code.as_str()),
+                    ),
+                    true,
+                )
+                .await;
                 operation
                     .finish(operation::OperationStatus::Failed, error.to_string())
                     .await;
                 daemon.shutdown().await;
                 return Err(error);
             }
-            Ok(Some(_)) => {
+            Ok(Some(result)) => {
                 project.progress.finish(true, "Ready");
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Ready,
+                    &daemon,
+                    started,
+                    Some(&result),
+                    None,
+                    false,
+                )
+                .await;
                 operation
                     .finish(
                         operation::OperationStatus::Succeeded,
@@ -750,6 +853,16 @@ async fn serve_daemon(
             }
             Err(err) => {
                 project.progress.finish(false, "Failed");
+                report_up(
+                    project,
+                    telemetry::UpOutcome::Failed,
+                    &daemon,
+                    started,
+                    None,
+                    Some(err.code()),
+                    true,
+                )
+                .await;
                 operation
                     .finish(operation::OperationStatus::Failed, err.to_string())
                     .await;

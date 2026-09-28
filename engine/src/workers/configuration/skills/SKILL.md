@@ -28,16 +28,51 @@ A per-id TTL (off by default) cleans up entries whose last subscriber trigger ha
 - Over the `bridge` adapter, `configuration::ensure` is decided by the remote engine (the original candidate is forwarded there), so it requires a remote engine that exposes `configuration::ensure`; against an older remote it fails closed with `ADAPTER_ERROR` rather than falling back to an unsafe `register`.
 - Schemas are not version-checked across re-registrations — re-registering with an incompatible schema simply replaces it. Coordinate schema migrations out-of-band.
 
+## Migration and runtime overrides
+
+Compose defaults to `<namespace>-<container-key>` without a hash (for example,
+`default-harness`). Invalid or over-64-character generated names require explicit `config_name`.
+Compose migrates only the exact previous namespace/key hash before starting a stopped worker.
+After hashed migration, only the `default` namespace adopts the exact bare container key,
+unless another container explicitly owns it. The bare source wins over an existing destination;
+`configuration::migrate` is the single operation, delegated through bridges to the authority.
+It returns `{ action, entry }` with `migrated`, `preserved` (existing destination with absent
+source, or matching IDs with an existing entry), or `missing` (both source and destination absent).
+Before migration, Compose and every bridge hop query the read-only
+`configuration::migration-capabilities` and require `source_priority_archive_revision: 1`.
+Unknown or unavailable capabilities fail closed before invoking migration; upgrade the authority.
+It replaces the destination with the raw source entry, then archives the original source as
+`<source>.yaml.bak`. The previous destination is not backed up. `.yaml.bak`, `.bak.yaml`, and
+`.bkup.yaml` files are ignored during loading, watching and legacy directory migration.
+An existing identical backup permits cleanup recovery; a conflicting backup is never overwritten.
+Missing source is a no-write no-op. Unsupported adapters fail closed.
+Stop source consumers before migrating; do not share an fs directory between engine processes.
+
+`config_override` is delivered through the existing service API. Compose reads the
+current configuration with `configuration::get` (`raw: true`), merges defaults and
+overrides, then calls `configuration::set` with `flush: false` before starting the
+worker. No snapshot file is delivered. `III_CONFIG_NAME` identifies the entry.
+Memory-only updates never write persistent `config/<id>.yaml`, and no delayed flush
+is scheduled. `ensure` and metadata registration preserve the active value without
+persisting it or notifying base defaults. An explicit `set` with default `flush: true`
+persists the complete submitted object, including override values if submitted.
+Both forms of `set` notify consumers; applying changes is the worker's responsibility.
+A new worker start merges the current GET value. Removing an override keeps the
+current value, not the old disk value. Stopping a worker does not clear active memory;
+restarting the configuration service loses unsaved values and reloads its adapter.
+Distinct concurrent overrides sharing one configuration id are not supported.
+
 ## Functions
 
 - `configuration::register` — declare an id with name, description, JSON Schema, and an optional `initial_value`; idempotent re-registration replaces the schema and metadata.
-- `configuration::ensure` — atomically seed a default: create or refresh the id but write `initial_value` **only when no non-null value is stored yet**; an existing value (including `false`/`0`/`""`) is preserved verbatim and the seed is ignored. The race-free replacement for read-then-`register` when seeding from one or many workers. Fires `configuration:registered` on creation or `configuration:updated` on refresh.
-- `configuration::set` — replace the value for a registered id; validates against the registered schema and emits `configuration:updated`.
-- `configuration::get` — read one entry by id; expands `${VAR:default}` against live env unless `raw: true`.
+- `configuration::ensure` — atomically seed a default: create or refresh the id but write `initial_value` **only when no non-null value is stored yet**; an existing value (including `false`/`0`/`""`) is preserved verbatim and the seed is ignored. The race-free replacement for read-then-`register` when seeding from one or many workers. Fires `configuration:registered` on creation or `configuration:updated` on refresh, except while an execution injection is active: boot metadata must not deliver the base in place of the active value.
+- `configuration::migrate` — move an exact source id with source priority, preserving raw persisted values and metadata and archiving the source. On a successful move, source active memory follows the new id without being saved and replaces any destination override; the old id is no longer readable. With no persisted source, destination memory is preserved and orphan source memory is retired. Same-id migration preserves memory; failures retain it for retry. The response contains the persisted entry, while source `:deleted` and destination `:registered` events carry the active snapshot captured at commit. No-ops emit nothing.
+- `configuration::set` — replace the complete active value and emit `configuration:updated`. `flush` defaults to true, validating and persisting through the adapter for an already-registered id. `flush: false` changes memory only and may precede registration; validation uses the schema when available and normal GET validates again after registration. Explicit null is a value, not a request to clear memory.
+- `configuration::get` — read the current active entry by id; expands `${VAR:default}` against live env unless `raw: true`.
 - `configuration::list` — enumerate every registered id with name, description, and schema; never returns the value.
 - `configuration::schema` — read schema/name/description for one id without exposing the value.
 
-`register`, `ensure`, and `set` are the mutators; the read-side functions are cache-backed and cheap. Every mutator (plus `delete`) is linearized per store (the local `fs` store, one engine process), so a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner. Over the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `ensure` is decided remotely, never against the local cache. Reads expand `${VAR:default}` placeholders against the live process env on every call, so env changes propagate without restarts — pass `raw: true` to `configuration::get` when you need the stored template form.
+`register`, `ensure`, `migrate`, and `set` are the mutators; the read-side functions are cache-backed and cheap. Every mutator (plus `delete`) is linearized per store (the local `fs` store, one engine process), so a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner. Over the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `ensure` is decided remotely, never against the local cache. Reads expand `${VAR:default}` placeholders against the live process env on every call, so env changes propagate without restarts — pass `raw: true` to `configuration::get` when you need the stored template form.
 
 ## Reactive triggers
 

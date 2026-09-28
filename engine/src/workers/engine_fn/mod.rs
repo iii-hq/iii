@@ -68,6 +68,11 @@ pub struct EmptyInput {}
 pub struct CreateChannelInput {
     #[serde(default)]
     pub buffer_size: Option<usize>,
+    /// Injected by the engine from the calling worker, which owns the channel:
+    /// its disconnect releases the ends nobody has attached yet. Absent for
+    /// in-process callers, whose channels are left to the TTL sweeper.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
@@ -1621,7 +1626,11 @@ impl EngineFunctionsWorker {
     ) -> FunctionResult<CreateChannelOutput, ErrorBody> {
         let channel_mgr = self.engine.channel_manager.clone();
         let buffer_size = input.buffer_size.unwrap_or(64).min(1024);
-        let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size, None);
+        let owner = input
+            .caller_worker_id
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok());
+        let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size, owner);
 
         FunctionResult::Success(CreateChannelOutput {
             writer: writer_ref,
@@ -3251,6 +3260,7 @@ mod tests {
         let result = module
             .create_channel(CreateChannelInput {
                 buffer_size: Some(2048),
+                ..Default::default()
             })
             .await;
 

@@ -554,6 +554,12 @@ fn validate_container(
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
     for (name, value) in &raw.environment {
+        if crate::spawn::is_retired_config_env(name) {
+            return Err(ComposeError::RetiredConfigEnv {
+                container: key.to_string(),
+                name: name.clone(),
+            });
+        }
         if is_reserved_env(name.as_str()) {
             return Err(ComposeError::ReservedEnvOverride {
                 container: key.to_string(),
@@ -625,10 +631,11 @@ fn restart_duration(key: &str, raw: &Option<String>, default: Duration) -> Resul
 impl Container {
     /// Resolve at runtime so a namespace selected by the caller takes precedence
     /// over the compose file, without writing generated names back into YAML.
-    pub fn resolved_config_name(&self, namespace: &str, key: &str) -> String {
-        self.config_name
-            .clone()
-            .unwrap_or_else(|| crate::configuration::default_config_name(namespace, key))
+    pub fn resolved_config_name(&self, namespace: &str, key: &str) -> Result<String> {
+        match &self.config_name {
+            Some(name) => Ok(name.clone()),
+            None => crate::configuration::default_config_name(namespace, key),
+        }
     }
 
     /// Directory of a `path://` worker. `None` for packages, which have no
@@ -655,6 +662,12 @@ impl Container {
                 source,
             })?;
             for (name, value) in parse_env_file(&text) {
+                if crate::spawn::is_retired_config_env(&name) {
+                    return Err(ComposeError::RetiredConfigEnv {
+                        container: container_key.to_string(),
+                        name,
+                    });
+                }
                 if is_reserved_env(name.as_str()) {
                     return Err(ComposeError::ReservedEnvOverride {
                         container: container_key.to_string(),

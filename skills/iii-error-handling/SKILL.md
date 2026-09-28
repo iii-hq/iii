@@ -17,10 +17,10 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 | Code | Emitted by | Meaning | Typical handling |
 | --- | --- | --- | --- |
 | `function_not_found` | Engine and SDK local dispatch | No registered function is available under that ID | Check function ID, worker install/startup, discovery, and trigger type hints |
-| `invocation_error` | Engine invocation/router path | Engine failed to route, remember, or complete the invocation | Inspect engine logs, protocol state, and worker connectivity |
+| `invocation_error` | Engine invocation/router path | Engine failed to route, record, or complete the invocation | Inspect engine logs, protocol state, and worker connectivity |
 | `invocation_stopped` | Engine invocation handler | Invocation was cancelled or stopped by the engine/runtime | Treat as failed work; decide whether caller should retry |
 | `FORBIDDEN` | RBAC / worker-gated engine functions | RBAC denied the action | Do not retry blindly; inspect policy, auth context, and allowed functions |
-| `timeout` | Engine/worker wire error when a worker reports lowercase timeout | Invocation exceeded a timeout reported through the wire protocol | Treat as timeout, but do not assume every SDK maps it to a timeout subclass |
+| `timeout` | A target worker's handler, forwarded verbatim by the engine | Not produced by the engine or the Node/Python SDKs (they emit `TIMEOUT`); appears only if the worker you called returns it | Treat as a timeout if you know the target worker emits it; otherwise branch on `TIMEOUT` |
 | `function_not_invokable` | SDK local dispatch | Registration exists but cannot be invoked as a normal local function | Inspect registration/invocation type |
 | `invocation_failed` | SDK worker handler wrappers | Local worker handler, HTTP-invoked function wrapper, or SDK-side handler path failed | Inspect handler logs, stacktrace, and payload validation |
 | `TIMEOUT` | Node/Python SDK caller timeout | Client waited longer than `trigger()` timeout | Increase timeout only if the workload is expected to run long; otherwise optimize or enqueue |
@@ -34,7 +34,7 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 
 ## Retryability
 
-- Retry transient `timeout`, `TIMEOUT`, transport, or worker reconnect failures only when the operation is idempotent.
+- Retry transient `TIMEOUT` (or a lowercase `timeout` returned by a target worker), transport, or worker reconnect failures only when the operation is idempotent.
 - Do not retry `FORBIDDEN` without changing auth/policy.
 - Do not retry `function_not_found` by calling the same ID repeatedly; discover functions or install/start the missing worker.
 - For reliable background work, use `TriggerAction.Enqueue({ queue })` and queue retry/DLQ policy.
@@ -66,7 +66,7 @@ try:
 except InvocationError as exc:
     if exc.code == "FORBIDDEN":
         raise RuntimeError("Policy denied orders::charge")
-    if exc.code in ("TIMEOUT", "timeout"):
+    if exc.code in ("TIMEOUT", "timeout"):  # SDK caller timeout, or a lowercase code returned by the target worker
         raise RuntimeError("orders::charge timed out")
     raise RuntimeError(f"{exc.code}: {exc.message}")
 ```
@@ -95,7 +95,7 @@ Browser trigger calls reject with JavaScript errors. Preserve the engine-provide
 - For invocation modes and enqueue decisions, prefer `iii-core-primitives`.
 - For SDK-specific exception classes and syntax, prefer `iii-sdk-reference`.
 - For workflow-level retry and DLQ design, prefer `iii-architecture-patterns`.
-- For RBAC policy design and logs/traces around worker failures, use the matching worker docs under `engine/src/workers/**/skills`.
+- For RBAC policy design see the [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy); for logs and traces around worker failures, use the matching worker page on https://workers.iii.dev/.
 
 ## When to Use
 

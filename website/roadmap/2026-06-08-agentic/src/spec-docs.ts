@@ -1,11 +1,8 @@
 /**
- * Bundles this spec's markdown for the #/spec page. The glob must live
- * deck-side (import.meta.glob resolves relative to the importing file) and its
- * depth is fixed by the two-tree layout:
+ * This spec's markdown for the #/spec page, keyed by
+ * `../../../../tech-specs/2026-06-08-agentic/<file>.md` (the path the old
+ * deck-side `import.meta.glob` produced). Written before every dev/build by
+ * website/scripts/generate-roadmap-manifest.ts from the two-tree layout:
  * website/roadmap/<slug>/src/ → ../../../../tech-specs/<slug>/
  */
-export const SPEC_DOCS = import.meta.glob('../../../../tech-specs/2026-06-08-agentic/*.md', {
-  query: '?raw',
-  import: 'default',
-  eager: true,
-}) as Record<string, string>
+export { SPEC_DOCS } from "../../generated/spec-docs/2026-06-08-agentic"

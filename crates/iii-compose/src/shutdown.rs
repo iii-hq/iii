@@ -76,11 +76,18 @@ impl ShutdownSignal {
             // listener task gets its first poll.
             let mut interrupted = signal(SignalKind::interrupt()).map_err(signal_error)?;
             let mut terminated = signal(SignalKind::terminate()).map_err(signal_error)?;
+            // A closed terminal window or a dropped SSH session delivers
+            // SIGHUP. Its default action would end the daemon before the
+            // teardown below runs, and the managed engine, which lives in
+            // its own process group precisely so it is not signalled with
+            // us, would keep serving on its port with nobody owning it.
+            let mut hung_up = signal(SignalKind::hangup()).map_err(signal_error)?;
             tokio::spawn(async move {
                 loop {
                     let exit_code = tokio::select! {
                         Some(()) = interrupted.recv() => 130,
                         Some(()) = terminated.recv() => 143,
+                        Some(()) = hung_up.recv() => 129,
                     };
                     request_shutdown(&sender, exit_code);
                 }
@@ -301,6 +308,12 @@ mod tests {
     #[tokio::test]
     async fn interrupt_after_sigterm_exits_during_shutdown() {
         assert_second_signal_exits(nix::sys::signal::Signal::SIGTERM).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hangup_requests_graceful_shutdown_like_sigterm() {
+        assert_second_signal_exits(nix::sys::signal::Signal::SIGHUP).await;
     }
 
     #[cfg(unix)]

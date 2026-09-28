@@ -1,16 +1,18 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { readBlogPosts } from './blog-posts'
-import { INDEXABLE_ROUTES, SITE_ORIGIN } from './routes'
+import fs from "node:fs/promises"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+import { readBlogPosts } from "./blog-posts"
+import { INDEXABLE_ROUTES, SITE_ORIGIN } from "./routes"
 
 // Emitted into dist/ as a build artifact (this runs last in the package build
-// script) — the sitemap is generated, never checked in.
-const OUT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/sitemap.xml')
+// script, after `next build`) — the sitemap is generated, never checked in.
+// URL shapes are the site's canonical ones: marketing pages extensionless,
+// /blog/ and /blog/<slug>/ with a trailing slash, plus the .md twins.
+const OUT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/sitemap.xml")
 
 const EXTRA_SITEMAP_PATHS: { path: string; priority: string }[] = [
-  { path: '/llms.txt', priority: '0.6' },
-  { path: '/AGENTS.md', priority: '0.6' },
+  { path: "/llms.txt", priority: "0.6" },
+  { path: "/AGENTS.md", priority: "0.6" },
 ]
 
 function isoDate(d: Date = new Date()): string {
@@ -20,8 +22,8 @@ function isoDate(d: Date = new Date()): string {
 async function buildSitemap(): Promise<string> {
   const lastmod = isoDate()
   const routeUrls = INDEXABLE_ROUTES.map((route) => {
-    const loc = `${SITE_ORIGIN}${route.path === '/' ? '/' : route.path}`
-    const priority = route.path === '/' ? '1.0' : '0.7'
+    const loc = `${SITE_ORIGIN}${route.path === "/" ? "/" : route.path}`
+    const priority = route.path === "/" ? "1.0" : "0.7"
     return `  <url>
     <loc>${loc}</loc>
     <lastmod>${lastmod}</lastmod>
@@ -76,7 +78,7 @@ async function buildSitemap(): Promise<string> {
   // the roadmap (/roadmap/ and the per-spec pages) stays out of the sitemap
   // on purpose — robots.txt disallows crawling it (public/robots.txt).
 
-  const urls = [...routeUrls, ...extraUrls, ...blogUrls].join('\n')
+  const urls = [...routeUrls, ...extraUrls, ...blogUrls].join("\n")
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -86,11 +88,11 @@ ${urls}
 }
 
 async function generate() {
-  await fs.writeFile(OUT_PATH, await buildSitemap(), 'utf8')
+  await fs.writeFile(OUT_PATH, await buildSitemap(), "utf8")
   console.log(`generated ${path.relative(process.cwd(), OUT_PATH)}`)
 }
 
 generate().catch((error) => {
-  console.error('sitemap generation failed:', error)
+  console.error("sitemap generation failed:", error)
   process.exitCode = 1
 })

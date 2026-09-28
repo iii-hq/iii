@@ -24,25 +24,25 @@ export interface DeckMeta {
 }
 
 export const DECK_META: DeckMeta = {
-  wordmarkLabel: 'rbac-proxy',
+  wordmarkLabel: "rbac-proxy",
 }
 
 /** top-nav section links — each id matches the `id` passed to a <Section>. */
 export const NAV: NavItem[] = [
-  { id: 'why', label: 'why' },
-  { id: 'lifecycle', label: 'lifecycle' },
-  { id: 'map', label: 'map' },
-  { id: 'access', label: 'access' },
-  { id: 'fail-closed', label: 'fail closed' },
-  { id: 'overrides', label: 'discovery' },
-  { id: 'coexistence', label: 'coexist' },
-  { id: 'payoff', label: 'payoff' },
+  { id: "why", label: "why" },
+  { id: "lifecycle", label: "lifecycle" },
+  { id: "map", label: "map" },
+  { id: "access", label: "access" },
+  { id: "fail-closed", label: "fail closed" },
+  { id: "overrides", label: "discovery" },
+  { id: "coexistence", label: "coexist" },
+  { id: "payoff", label: "payoff" },
 ]
 
 export const FOOTER: FooterSpec = {
-  eyebrow: 'where it lives',
-  headline: 'one boundary. its own port. the engine, untouched.',
-  command: 'iii worker add rbac-proxy',
-  attribution: 'rbac-proxy · rbac at the edge',
-  source: 'source: workers/tech-specs/2026-06-22-rbac-proxy-worker',
+  eyebrow: "where it lives",
+  headline: "one boundary. its own port. the engine, untouched.",
+  command: "iii worker add rbac-proxy",
+  attribution: "rbac-proxy · rbac at the edge",
+  source: "source: workers/tech-specs/2026-06-22-rbac-proxy-worker",
 }

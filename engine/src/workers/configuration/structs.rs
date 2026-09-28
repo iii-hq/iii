@@ -57,6 +57,29 @@ impl From<&ConfigurationEntry> for ConfigurationSchemaView {
     }
 }
 
+/// Move one exact legacy id with source priority, retaining its original backup.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationMigrateInput {
+    pub from_id: String,
+    pub to_id: String,
+}
+
+/// Migration never treats an existing null value as absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrateAction {
+    Migrated,
+    Preserved,
+    Missing,
+}
+
+/// Authoritative raw destination snapshot, without environment expansion.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigurationMigrateResult {
+    pub action: MigrateAction,
+    pub entry: Option<ConfigurationEntry>,
+}
+
 // ── function inputs / outputs ───────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -101,8 +124,16 @@ pub struct ConfigurationEnsureInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationSetInput {
     pub id: String,
-    /// New configuration value. Validated against the registered schema.
+    /// New configuration value. Validated against the schema when available.
     pub value: Value,
+    /// Persist the complete value (default true). False updates only active memory
+    /// and permits delivery before the owning worker registers its schema.
+    #[serde(default = "default_flush")]
+    pub flush: bool,
+}
+
+fn default_flush() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -19,7 +19,7 @@ use tokio::io::AsyncReadExt;
 use crate::{
     config::{CONFIGURABLE_ENGINE_WORKERS, EngineSpec},
     error::{ComposeError, Result},
-    process::{ChildOutput, DEFAULT_STOP_GRACE, Supervised, spawn_supervised_piped},
+    process::{ChildOutput, DEFAULT_STOP_GRACE, Supervised},
     state::StateStore,
 };
 
@@ -30,6 +30,9 @@ const ENGINE_LOG_ARCHIVES: usize = 3;
 const ENGINE_LOCK_FILE: &str = "engine.lock";
 const ENGINE_CONFIG_FILE: &str = "engine-config.yaml";
 const DEFAULT_WORKER_MANAGER_HOST: &str = "0.0.0.0";
+
+/// Private marker enabling the managed engine's stdin lifeline.
+const ENGINE_LIFELINE_STDIN_ENV: &str = "III_COMPOSE_ENGINE_LIFELINE_STDIN";
 const DEFAULT_WORKER_MANAGER_PORT: u16 = 49134;
 
 /// The engine process owned by one foreground compose invocation.
@@ -39,6 +42,7 @@ pub struct ManagedEngine {
     config_path: PathBuf,
     log_path: PathBuf,
     remove_config_on_stop: bool,
+    _lifeline: EngineLifeline,
     _namespace_lock: Option<NamespaceLock>,
 }
 
@@ -140,7 +144,8 @@ impl ManagedEngine {
         command
             .arg("--config")
             .arg(config_path)
-            .stdin(Stdio::null());
+            .env(ENGINE_LIFELINE_STDIN_ENV, "1")
+            .stdin(Stdio::piped());
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
@@ -155,8 +160,8 @@ impl ManagedEngine {
         #[cfg(not(target_os = "linux"))]
         let _ = namespace;
 
-        let (process, output) =
-            spawn_supervised_piped(command).map_err(|err| ComposeError::EngineSpawnFailed {
+        let (process, output, lifeline) =
+            spawn_managed_engine(command).map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not start {}: {err}", executable.display()),
             })?;
         let logs = capture_output(output, log);
@@ -167,6 +172,7 @@ impl ManagedEngine {
             config_path: config_path.to_path_buf(),
             log_path: log_path.to_path_buf(),
             remove_config_on_stop: false,
+            _lifeline: lifeline,
             _namespace_lock: None,
         })
     }
@@ -219,6 +225,18 @@ impl ManagedEngine {
     pub async fn finish_logging(&self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.logs.wait()).await;
     }
+}
+
+/// The Compose-owned endpoint whose lifetime governs only the managed engine.
+struct EngineLifeline {
+    _stdin: tokio::process::ChildStdin,
+}
+
+fn spawn_managed_engine(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput, EngineLifeline)> {
+    let (process, output, stdin) = crate::process::spawn_supervised_piped_with_stdin(command)?;
+    Ok((process, output, EngineLifeline { _stdin: stdin }))
 }
 
 #[derive(Serialize)]

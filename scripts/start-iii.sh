@@ -46,6 +46,28 @@ elif [[ -z "$COMPOSE_FILE" ]]; then
   fi
 fi
 
+# SDK fixtures have companion base configurations. Copy them into a fresh,
+# private directory: workers may refresh metadata, but must never edit tracked
+# fixture files or share mutable configuration between test engine instances.
+fixture_directory="${CONFIG%.*}.configuration"
+configuration_directory=""
+ready_port=""
+if [[ -d "$fixture_directory" ]]; then
+  configuration_directory="$(mktemp -d "${TMPDIR:-/tmp}/iii-sdk-configuration.XXXXXX")"
+  chmod 700 "$configuration_directory"
+  cp "$fixture_directory"/*.yaml "$configuration_directory/"
+  export III_SDK_CONFIGURATION_DIR="$configuration_directory"
+  echo "Test configuration directory: $configuration_directory"
+  if [[ -f "$fixture_directory/ready-port" ]]; then
+    ready_port="$(cat "$fixture_directory/ready-port")"
+    if [[ ! "$ready_port" =~ ^[0-9]+$ ]] || (( ready_port < 1 || ready_port > 65535 )); then
+      echo "Invalid fixture readiness port: $ready_port" >&2
+      rm -rf -- "$configuration_directory"
+      exit 1
+    fi
+  fi
+fi
+
 if [[ -n "$COMPOSE_FILE" ]]; then
   if [[ ! -f "$COMPOSE_FILE" ]]; then
     echo "Compose file not found: $COMPOSE_FILE" >&2
@@ -88,6 +110,9 @@ cleanup_failed_start() {
   fi
   wait "$started_pid" 2>/dev/null || true
   rm -f "$PID_FILE"
+  if [[ -n "$configuration_directory" ]]; then
+    rm -rf -- "$configuration_directory"
+  fi
 }
 trap cleanup_failed_start EXIT
 
@@ -99,6 +124,12 @@ for _ in $(seq 1 "$TIMEOUT"); do
   fi
 
   if [[ -n "$COMPOSE_FILE" ]] && grep -Eq '^up: (nothing to do|[0-9]+ of [0-9]+ changed)' "$LOG_FILE"; then
+    # Compose registration alone does not mean that the HTTP listener bound
+    # the fixture's configured port. Keep waiting inside the same timeout.
+    if [[ -n "$ready_port" ]] && ! nc -z 127.0.0.1 "$ready_port" 2>/dev/null; then
+      sleep 1
+      continue
+    fi
     echo "III Engine and Compose workers are ready (PID: $pid)"
     ready=true
     exit 0

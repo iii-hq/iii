@@ -108,7 +108,7 @@ async fn a_valid_bundle_builds_a_boot_command() {
     let mut env = std::collections::HashMap::new();
     env.insert("III_NAMESPACE".to_string(), "shop-dev".to_string());
     env.insert(
-        "III_CONFIG".to_string(),
+        "APP_CONFIG_FILE".to_string(),
         "/run/iii/config/api.yaml".to_string(),
     );
 
@@ -130,7 +130,7 @@ async fn a_valid_bundle_builds_a_boot_command() {
     // The caller's env reaches the guest as boot arguments.
     assert!(rendered.contains("III_NAMESPACE=shop-dev"), "{rendered}");
     assert!(
-        rendered.contains("III_CONFIG=/run/iii/config/api.yaml"),
+        rendered.contains("APP_CONFIG_FILE=/run/iii/config/api.yaml"),
         "{rendered}"
     );
     // And its config directory is published where that path resolves.

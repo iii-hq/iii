@@ -1,5 +1,5 @@
-import { Prompt } from '@lib/components/schematic/Prompt'
-import type * as React from 'react'
+import { Prompt } from "@lib/components/schematic/Prompt"
+import type * as React from "react"
 
 interface UseCaseShellProps {
   eyebrow: string
@@ -9,9 +9,9 @@ interface UseCaseShellProps {
 }
 
 const OTHERS: Array<{ id: string; href: string; label: string }> = [
-  { id: 'telegram', href: '#/telegram', label: 'telegram bot' },
-  { id: 'console', href: '#/console', label: 'console chat' },
-  { id: 'loops', href: '#/loops', label: 'agentic loops' },
+  { id: "telegram", href: "#/telegram", label: "telegram bot" },
+  { id: "console", href: "#/console", label: "console chat" },
+  { id: "loops", href: "#/loops", label: "agentic loops" },
 ]
 
 export function UseCaseShell({ eyebrow, title, description, children }: UseCaseShellProps) {

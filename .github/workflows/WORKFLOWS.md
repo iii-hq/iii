@@ -84,15 +84,16 @@ Entry point for all releases. Provides a form with:
 | Input | Options |
 |-------|---------|
 | `target` | `iii` |
-| `bump` | `patch`, `minor`, `major` |
+| `bump` | `patch`, `minor`, `major`, `none` (ignored with a nonempty override) |
 | `prerelease` | `none`, `rc` |
+| `version_override` | Optional exact version, e.g. `0.24.1` or `0.24.1-rc.1`; blank keeps automatic calculation |
 | `dry_run` | boolean |
 
 **What it does:**
 
 1. Validates it's running on `main` and all required manifest files exist
 2. Reads the current version from the canonical manifest
-3. Calculates the next version (handles semver bump + prerelease labels + dry-run suffixes)
+3. Calculates the next version, or validates and uses `version_override` when supplied; dry-run suffixes are applied afterward
 4. **Stable releases only** — validates docs are ready (`pin_docs.py validate`): `docs/docs.json` must have a `Next` block and the `docs/next/` folder must be non-empty (stable releases pull their docs from `docs/next/`). If not, the workflow posts a Slack alert and aborts **before** bumping or tagging. Runs even on dry runs.
 5. Converts to PEP 440 format for Python packages (e.g., `1.0.0-alpha.1` becomes `1.0.0a1`)
 6. Updates all manifest files in lockstep (Cargo.toml, package.json, pyproject.toml)
@@ -109,6 +110,35 @@ Entry point for all releases. Provides a form with:
 The tag push then triggers the corresponding release workflow.
 
 **Tag format:** `{target}/v{version}` (e.g., `iii/v1.2.3`)
+
+**Explicit version recovery:** if the manifest is `0.25.0-rc.1` but the last
+stable tag is `iii/v0.24.0`, choose branch `main`, target `iii`,
+`version_override=0.24.1`, and `prerelease=none`. Leave `bump=patch` (it is ignored
+when the override is nonempty). With `dry_run=false`, the selected tag is
+`iii/v0.24.1`; without an override the existing promotion rule still selects
+`iii/v0.25.0`.
+
+An override must be a canonical version without a `v` prefix, whitespace,
+leading zeroes, or build metadata. Its suffix must match `prerelease`, its
+major/minor/patch base must be newer than the latest stable tag for the target,
+and its exact tag must not already exist. Existing published prereleases do not
+prevent selecting a lower base that is still above the latest stable. Keep an
+unused version: deleted Git tags do not reveal packages already published to
+npm, PyPI, crates.io, or Go, so operators must check those registries separately.
+
+The override changes version selection only. It publishes the checked-out
+`main` code, updates the release manifests and lockfile, and uses the normal
+documentation flow. It does **not** select an older source revision, backport
+changes, delete earlier packages, or preserve the previous manifest version on
+`main` after the release bump commits. Review the current code and `docs/next/`
+before using a maintenance-looking version number. A release from a historical
+maintenance branch remains a separate workflow capability.
+
+A dry run retains the existing behavior: an override of `0.24.1` produces
+`iii/v0.24.1-dry-run.N`, builds without publishing packages, but still creates
+and pushes that dry-run tag. It is not a side-effect-free version preview.
+The calculation step validates the override before updating any manifests or
+creating a tag; the workflow summary records the selected version and tag.
 
 ---
 

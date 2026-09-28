@@ -1,7 +1,7 @@
-import { Section } from '@lib/components/Section'
-import { SpecSheet } from '@lib/components/SpecSheet'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { DISCOVERY_LEAK, PAIN_CARDS } from '../content/why'
+import { Section } from "@lib/components/Section"
+import { SpecSheet } from "@lib/components/SpecSheet"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { DISCOVERY_LEAK, PAIN_CARDS } from "../content/why"
 
 /**
  * A2 — the problem. Name today's failures as concrete cards, then prove the
@@ -47,9 +47,9 @@ export function WhySection() {
                   key={row.fn}
                   className="grid grid-cols-[260px_88px_1fr] gap-x-4 items-center px-1 py-2 border-b border-rule-2 last:border-b-0"
                 >
-                  <FnChip tone={row.sessionAware ? 'ink' : 'alert'}>{row.fn}</FnChip>
-                  <span className={`font-mono text-[12px] ${row.sessionAware ? 'text-accent' : 'text-alert'}`}>
-                    {row.sessionAware ? '✓ partial' : '✗ none'}
+                  <FnChip tone={row.sessionAware ? "ink" : "alert"}>{row.fn}</FnChip>
+                  <span className={`font-mono text-[12px] ${row.sessionAware ? "text-accent" : "text-alert"}`}>
+                    {row.sessionAware ? "✓ partial" : "✗ none"}
                   </span>
                   <span className="font-mono text-[12px] leading-[1.5] text-ink-faint lowercase">{row.leaks}</span>
                 </div>

@@ -1,0 +1,6 @@
+id: pubsub
+name: PubSub
+description: PubSub configuration for SDK bridge backend integration tests
+value:
+  adapter:
+    name: local

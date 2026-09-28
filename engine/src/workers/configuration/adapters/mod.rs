@@ -10,7 +10,9 @@ pub mod fs;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::workers::configuration::structs::{ConfigurationEntry, EnsureAction};
+use crate::workers::configuration::structs::{
+    ConfigurationEntry, ConfigurationMigrateResult, EnsureAction,
+};
 
 /// Persistent change report returned by `register`.
 ///
@@ -145,6 +147,19 @@ pub trait ConfigurationAdapter: Send + Sync {
         anyhow::bail!(
             "this configuration adapter does not support atomic configuration::ensure; \
              refusing an unsafe read-then-register fallback"
+        )
+    }
+
+    /// Move at the authoritative store with source priority, archiving the source.
+    /// Implementations must preserve raw values and metadata, serialize with other
+    /// mutations, and keep their cache recoverable on failure. No copy/delete fallback.
+    async fn migrate(
+        &self,
+        _from_id: &str,
+        _to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        anyhow::bail!(
+            "this configuration adapter does not support configuration::migrate; refusing an unsafe copy/delete fallback"
         )
     }
 
