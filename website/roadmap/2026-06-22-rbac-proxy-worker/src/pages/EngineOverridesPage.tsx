@@ -1,9 +1,9 @@
-import { StepReveal } from '@lib/components/diagrams/StepReveal'
-import { PageShell } from '@lib/components/PageShell'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { C, CodeBlock, K, M } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { OVERRIDE_STAGES, OVERRIDE_TABLE } from '../content/flow'
+import { StepReveal } from "@lib/components/diagrams/StepReveal"
+import { PageShell } from "@lib/components/PageShell"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { C, CodeBlock, K, M } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { OVERRIDE_STAGES, OVERRIDE_TABLE } from "../content/flow"
 
 /**
  * A14 — deep dive on engine:: discovery overrides: the override flow, the full
@@ -15,7 +15,7 @@ export function EngineOverridesPage() {
       eyebrow="deep dive"
       title="engine:: discovery overrides"
       description="the addition over the engine's rbac contract. the engine still computes each answer; the proxy intercepts the request to mark it, lets the engine compute the full result, then filters that result to the caller's boundaries with the same is_function_allowed used on the invoke path."
-      related={[{ slug: 'rbac-contract', label: 'the rbac contract' }]}
+      related={[{ slug: "rbac-contract", label: "the rbac contract" }]}
     >
       <StepReveal title="engine::workers::list, filtered client-side" stages={OVERRIDE_STAGES} />
 
@@ -48,14 +48,14 @@ export function EngineOverridesPage() {
 
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
         <CodeBlock title="the two caches, over the control connection">
-          <C>{'// function catalog, for metadata filters + workers::list'}</C>
-          {'\n'}
-          <K>function_id</K> <M>→</M> <M>{'{'}</M> worker_name, metadata <M>{'}'}</M>
-          {'\n\n'}
-          <C>{'// binding index, for triggers::info instance_count'}</C>
-          {'\n'}
-          <K>registered_trigger_id</K> <M>→</M> <M>{'{'}</M> trigger_type, function_id <M>{'}'}</M>
-          {'\n'}
+          <C>{"// function catalog, for metadata filters + workers::list"}</C>
+          {"\n"}
+          <K>function_id</K> <M>→</M> <M>{"{"}</M> worker_name, metadata <M>{"}"}</M>
+          {"\n\n"}
+          <C>{"// binding index, for triggers::info instance_count"}</C>
+          {"\n"}
+          <K>registered_trigger_id</K> <M>→</M> <M>{"{"}</M> trigger_type, function_id <M>{"}"}</M>
+          {"\n"}
           <K>trigger_type</K> <M>→</M> <M>[</M> function_id <M>]</M>
         </CodeBlock>
 
@@ -96,7 +96,7 @@ export function EngineOverridesPage() {
 
       <SpecSheet title="prefix in results" meta="strip own namespace">
         <p className="font-mono text-[13px] leading-[1.7] text-ink-faint lowercase">
-          a session&apos;s own functions live in the registry as {'{prefix}::{id}'} and surface that way in discovery.
+          a session&apos;s own functions live in the registry as {"{prefix}::{id}"} and surface that way in discovery.
           the worker registered them bare and must see them bare, so the proxy strips its own session prefix from every
           id and worker name in a result. a foreign id is shown canonically. this is symmetric with the dispatch-path
           strip: the worker only ever sees foo, never tenant1::foo.

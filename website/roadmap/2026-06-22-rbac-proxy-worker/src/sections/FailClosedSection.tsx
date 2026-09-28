@@ -1,15 +1,15 @@
-import { Section } from '@lib/components/Section'
-import { Button } from '@lib/components/schematic/Button'
-import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { useState } from 'react'
+import { Section } from "@lib/components/Section"
+import { Button } from "@lib/components/schematic/Button"
+import { C, CodeBlock, K, M, S } from "@lib/components/schematic/CodeBlock"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { useState } from "react"
 
-type DoorState = 'waiting' | 'admitted' | 'rejected'
+type DoorState = "waiting" | "admitted" | "rejected"
 
 const FAIL_RULES = [
-  { fn: 'auth', when: 'unresolvable / throws', then: 'reject the upgrade: error frame + close' },
-  { fn: 'middleware', when: 'unresolvable / throws', then: 'deny the call: InvocationResult error' },
-  { fn: 'hook', when: 'unresolvable / throws', then: 'deny the registration' },
+  { fn: "auth", when: "unresolvable / throws", then: "reject the upgrade: error frame + close" },
+  { fn: "middleware", when: "unresolvable / throws", then: "deny the call: InvocationResult error" },
+  { fn: "hook", when: "unresolvable / throws", then: "deny the registration" },
 ]
 
 /**
@@ -18,7 +18,7 @@ const FAIL_RULES = [
  * connection; anything else closes it before the upstream is ever opened.
  */
 export function FailClosedSection() {
-  const [state, setState] = useState<DoorState>('waiting')
+  const [state, setState] = useState<DoorState>("waiting")
 
   return (
     <Section
@@ -36,25 +36,25 @@ export function FailClosedSection() {
 
           <div className="p-4 flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-2.5">
-              <Button onClick={() => setState('admitted')} size="sm">
+              <Button onClick={() => setState("admitted")} size="sm">
                 auth resolves
               </Button>
-              <Button variant="pill" size="sm" onClick={() => setState('rejected')}>
+              <Button variant="pill" size="sm" onClick={() => setState("rejected")}>
                 auth throws or unreachable
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setState('waiting')} disabled={state === 'waiting'}>
+              <Button variant="ghost" size="sm" onClick={() => setState("waiting")} disabled={state === "waiting"}>
                 replay
               </Button>
             </div>
 
-            {state === 'waiting' ? (
+            {state === "waiting" ? (
               <StatusPanel
                 variant="info"
                 icon={<span>·</span>}
                 headline="auth function in flight"
                 detail="the upstream engine connection is not open yet."
               />
-            ) : state === 'admitted' ? (
+            ) : state === "admitted" ? (
               <StatusPanel
                 variant="success"
                 icon={<span>✓</span>}
@@ -70,18 +70,18 @@ export function FailClosedSection() {
               />
             )}
 
-            {state === 'rejected' ? (
+            {state === "rejected" ? (
               <CodeBlock title="out-of-band rejection frame, then close">
-                <M>{'{ '}</M>
+                <M>{"{ "}</M>
                 <K>&quot;type&quot;</K>: <S>&quot;error&quot;</S>
-                {',\n  '}
-                <K>&quot;error&quot;</K>: <M>{'{ '}</M>
+                {",\n  "}
+                <K>&quot;error&quot;</K>: <M>{"{ "}</M>
                 <K>&quot;code&quot;</K>: <S>&quot;AUTH_ERROR&quot;</S>
-                {', '}
+                {", "}
                 <K>&quot;message&quot;</K>: <S>&quot;...&quot;</S>
-                <M>{' } }'}</M>
-                {'\n'}
-                <C>{'// → WS Close. upstream never dialed.'}</C>
+                <M>{" } }"}</M>
+                {"\n"}
+                <C>{"// → WS Close. upstream never dialed."}</C>
               </CodeBlock>
             ) : null}
           </div>

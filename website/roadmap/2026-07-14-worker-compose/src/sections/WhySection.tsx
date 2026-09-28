@@ -1,6 +1,6 @@
-import { Section } from '@lib/components/Section'
-import { Cell } from '@lib/components/schematic/Cell'
-import { WHY_CARDS } from '../content/why'
+import { Section } from "@lib/components/Section"
+import { Cell } from "@lib/components/schematic/Cell"
+import { WHY_CARDS } from "../content/why"
 
 /**
  * A2 — the pain. Six concrete failures in today's lifecycle, each cited to

@@ -1,7 +1,7 @@
-import { SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { Section } from '@lib/components/Section'
-import { StatusPanel } from '@lib/components/schematic/StatusPanel'
-import { SEQ_LANES, SEQ_STEPS } from '../content/sequence'
+import { SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { Section } from "@lib/components/Section"
+import { StatusPanel } from "@lib/components/schematic/StatusPanel"
+import { SEQ_LANES, SEQ_STEPS } from "../content/sequence"
 
 /**
  * A5 - the source of truth. Steps through the generation lifecycle to make the

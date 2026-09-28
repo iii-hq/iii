@@ -1,7 +1,7 @@
-import { SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { NS_LANES, NS_STEPS } from '../content/namespace'
+import { SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { NS_LANES, NS_STEPS } from "../content/namespace"
 
 /**
  * A5 — the namespace protocol: register twice under two namespaces, route
