@@ -260,6 +260,22 @@ pub(crate) fn runnable_target<T>(
     first_available(host_targets(), artifacts).unwrap_or(host_target())
 }
 
+/// The build a host with `candidates` (see [`host_targets`]) runs out of
+/// `artifacts`, as its triple and lowercase digest: the first candidate it
+/// has, else the first candidate with no digest.
+pub(crate) fn selected_artifact<'a>(
+    candidates: &[&'a str],
+    artifacts: &std::collections::BTreeMap<String, RegistryArtifact>,
+) -> (&'a str, Option<String>) {
+    let target = first_available(candidates, artifacts).unwrap_or(candidates[0]);
+    (
+        target,
+        artifacts
+            .get(target)
+            .map(|artifact| artifact.sha256.to_ascii_lowercase()),
+    )
+}
+
 /// Splits `workers.iii.dev/state` into its registry base and worker name. A
 /// reference with no host uses [`DEFAULT_REGISTRY`].
 pub(crate) fn split_reference(reference: &str) -> (String, String) {
