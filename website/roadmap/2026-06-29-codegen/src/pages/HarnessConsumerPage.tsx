@@ -1,9 +1,9 @@
-import { PageShell } from '@lib/components/PageShell'
-import { Section } from '@lib/components/Section'
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { Highlight, HighlightStyles } from '@lib/content/highlight'
-import { HARNESS_TRIGGERS } from '../content/harness'
+import { PageShell } from "@lib/components/PageShell"
+import { Section } from "@lib/components/Section"
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { Highlight, HighlightStyles } from "@lib/content/highlight"
+import { HARNESS_TRIGGERS } from "../content/harness"
 
 const CODEGEN_YML = `# generate a typed harness client
 src/iii/harness.ts:

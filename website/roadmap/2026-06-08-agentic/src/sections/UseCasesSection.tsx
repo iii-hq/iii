@@ -1,33 +1,33 @@
-import { Section } from '@lib/components/Section'
-import { FnChip } from '@lib/components/schematic/FnChip'
+import { Section } from "@lib/components/Section"
+import { FnChip } from "@lib/components/schematic/FnChip"
 
 const CASES = [
   {
-    id: 'telegram',
-    href: '#/telegram',
-    name: 'telegram bot',
+    id: "telegram",
+    href: "#/telegram",
+    name: "telegram bot",
     blurb:
-      'a webhook bridge in one worker: live message edits while the agent streams, idempotent redeliveries, /stop that actually stops.',
-    chips: ['harness::send', 'session::message-updated', 'harness::stop'],
-    foot: 'messaging surface',
+      "a webhook bridge in one worker: live message edits while the agent streams, idempotent redeliveries, /stop that actually stops.",
+    chips: ["harness::send", "session::message-updated", "harness::stop"],
+    foot: "messaging surface",
   },
   {
-    id: 'console',
-    href: '#/console',
-    name: 'console chat',
+    id: "console",
+    href: "#/console",
+    name: "console chat",
     blurb:
-      'the operator cockpit: streaming transcripts, approve/deny inline, model picker from the live catalog, every turn traceable end to end.',
-    chips: ['session::* events', 'approval::resolve', 'router::models::list'],
-    foot: 'web app',
+      "the operator cockpit: streaming transcripts, approve/deny inline, model picker from the live catalog, every turn traceable end to end.",
+    chips: ["session::* events", "approval::resolve", "router::models::list"],
+    foot: "web app",
   },
   {
-    id: 'loops',
-    href: '#/loops',
-    name: 'agentic loops',
+    id: "loops",
+    href: "#/loops",
+    name: "agentic loops",
     blurb:
-      'bind a schedule, a webhook, or a state change to a goal: an agent runs with a typed output contract, and its result fans the next actions out.',
-    chips: ['cron / state / http', 'harness::run', 'output: json + schema'],
-    foot: 'autonomous backend',
+      "bind a schedule, a webhook, or a state change to a goal: an agent runs with a typed output contract, and its result fans the next actions out.",
+    chips: ["cron / state / http", "harness::run", "output: json + schema"],
+    foot: "autonomous backend",
   },
 ] as const
 

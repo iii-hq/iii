@@ -1,5 +1,5 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
 
 interface WorkerCardProps {
   name: string
@@ -15,8 +15,8 @@ export function WorkerCard({ name, version, description, command, kind, focused,
   return (
     <article
       className={cn(
-        'border border-rule transition-colors',
-        focused ? 'bg-panel border-l-2 border-l-accent' : 'bg-bg',
+        "border border-rule transition-colors",
+        focused ? "bg-panel border-l-2 border-l-accent" : "bg-bg",
         className,
       )}
     >

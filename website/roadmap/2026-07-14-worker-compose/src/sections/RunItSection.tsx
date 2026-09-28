@@ -1,6 +1,6 @@
-import { CliPlayground } from '@lib/components/diagrams/CliPlayground'
-import { Section } from '@lib/components/Section'
-import { CLI_TRACKS } from '../content/cli-tracks'
+import { CliPlayground } from "@lib/components/diagrams/CliPlayground"
+import { Section } from "@lib/components/Section"
+import { CLI_TRACKS } from "../content/cli-tracks"
 
 /**
  * A3 — the demo, early. Four tracks: the golden path, the idempotent repeat,

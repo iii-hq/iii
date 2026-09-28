@@ -1,6 +1,6 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
+import { useEffect, useRef, useState } from "react"
 
 interface SectionProps {
   id: string
@@ -33,21 +33,21 @@ export function Section({ id, index, eyebrow, title, lede, children, className }
           }
         }
       },
-      { rootMargin: '0px 0px -10% 0px' },
+      { rootMargin: "0px 0px -10% 0px" },
     )
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
 
   return (
-    <section id={id} ref={ref} className={cn('border-t border-rule scroll-mt-[64px]', className)}>
+    <section id={id} ref={ref} className={cn("border-t border-rule scroll-mt-[64px]", className)}>
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule-2 @3xl:px-9">
         <span className="font-mono text-[12px] font-medium uppercase tracking-[0.18em] text-ink-faint">{eyebrow}</span>
         <span className="font-mono text-[12px] font-medium uppercase tracking-[0.14em] text-ink-ghost tabular-nums">
           {index}
         </span>
       </div>
-      <div className={cn('px-4 py-12 @3xl:px-9 @3xl:py-16 reveal', shown && 'reveal-in')}>
+      <div className={cn("px-4 py-12 @3xl:px-9 @3xl:py-16 reveal", shown && "reveal-in")}>
         <h2 className="font-mono text-[28px] font-medium leading-[1.25] tracking-[-0.01em] text-ink lowercase max-w-[28ch]">
           {title}
         </h2>

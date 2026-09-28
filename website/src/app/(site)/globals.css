@@ -1,0 +1,528 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Dark mode is class-based: the pre-paint theme script (src/lib/theme.ts)
+   puts `.dark` on <html> before first paint. */
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   Design system v2 (the redesign). Dark-first, set in Inter.
+   A 12-step neutral scale that flips between themes, so components
+   use one class (bg-gray-2, text-gray-11...) and never need `dark:`.
+     1-2 page / raised   3-5 surfaces & states   6-8 lines
+     9-10 muted text     11 secondary text       12 primary text
+   Ember is the brand orange: 9 = solid fills, 11 = text on the page.
+   ============================================================ */
+:root {
+  /* Light: shadcn/ui's neutral theme as the reference. White page and cards,
+     muted fills at oklch(.97), borders at oklch(.922) so every hairline is the
+     same soft grey, muted text at oklch(.556). Hue-free throughout. */
+  --gray-1: #ffffff;
+  --gray-2: #ffffff;
+  --gray-3: #f5f5f5;
+  --gray-4: #efefef;
+  --gray-5: #ebebeb;
+  --gray-6: #e5e5e5;
+  --gray-7: #d4d4d4;
+  --gray-8: #b5b5b5;
+  --gray-9: #8e8e8e;
+  --gray-10: #737373;
+  --gray-11: #525252;
+  --gray-12: #171717;
+  --ember-3: #ffede5;
+  --ember-9: #ff5a1f;
+  --ember-10: #f04d12;
+  --ember-11: #d4430e;
+  --ember-12: #5c1d05;
+  /* hairline for glass surfaces that sit over content */
+  --line: rgb(0 0 0 / 0.08);
+  --glow: rgb(255 90 31 / 0.1);
+  /* Light: shadcn's card recipe. One hairline in the border step plus shadow-xs, so a
+     white card lifts off a white page without a visible shadow. */
+  --shadow-panel: 0 0 0 1px var(--gray-5), 0 1px 2px rgb(0 0 0 / 0.05);
+}
+
+.dark {
+  --gray-1: #0c0c0b;
+  --gray-2: #121211;
+  --gray-3: #181817;
+  --gray-4: #1e1e1c;
+  --gray-5: #252523;
+  --gray-6: #2c2c2a;
+  --gray-7: #383835;
+  --gray-8: #4a4945;
+  --gray-9: #6e6c67;
+  --gray-10: #86847e;
+  --gray-11: #b4b2ac;
+  --gray-12: #eeeeec;
+  --ember-3: #2a140b;
+  --ember-9: #ff5a1f;
+  --ember-10: #ff6f3c;
+  --ember-11: #ff8a5c;
+  --ember-12: #ffd6c4;
+  --line: rgb(255 255 255 / 0.07);
+  --glow: rgb(255 90 31 / 0.16);
+  --shadow-panel:
+    0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 24px 48px -12px rgb(0 0 0 / 0.6);
+}
+
+/* ============================================================
+   iii brand tokens. The raw palette carried over from the Astro
+   site's landing.css, so the new site reads identically. Use the
+   Tailwind names (bg-bg, text-ink, border-rule, text-brand...)
+   rather than these vars directly.
+   ============================================================ */
+:root {
+  --bg: #f5f3ee;
+  --panel: #e9e6e2;
+  --paper-2: #ebe8e3;
+  --ink: #0a0a0a;
+  --ink-soft: #1a1a1a;
+  --ink-faint: #6b6865;
+  --ink-ghost: #a3a09c;
+  --rule: #d8d4cb;
+  --rule-2: #e6e3df;
+  --brand: #ff5a1f;
+  --ok: #2f9e44;
+  --danger: #c8102e;
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: var(--gray-1);
+  --panel: #1a1916;
+  --paper-2: #222220;
+  --ink: #f2f0ed;
+  --ink-soft: #e2dfd9;
+  --ink-faint: #9c9893;
+  --ink-ghost: #5d5a55;
+  --rule: #2a2926;
+  --rule-2: #1f1e1c;
+  --brand: var(--ember-11);
+  --ok: #3fb950;
+  --danger: #f85149;
+}
+
+/* shadcn/ui semantic tokens, mapped onto the brand palette so every
+   shadcn component inherits the iii look (square corners, paper + ink). */
+:root,
+.dark {
+  --background: var(--bg);
+  --foreground: var(--ink);
+  --card: var(--bg);
+  --card-foreground: var(--ink);
+  --popover: var(--bg);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--bg);
+  --secondary: var(--panel);
+  --secondary-foreground: var(--ink);
+  --muted: var(--panel);
+  --muted-foreground: var(--ink-faint);
+  --accent: var(--paper-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--danger);
+  --border: var(--rule);
+  --input: var(--rule);
+  --ring: var(--ink-ghost);
+  --radius: 0rem;
+}
+
+@theme inline {
+  /* v2 */
+  --color-gray-1: var(--gray-1);
+  --color-gray-2: var(--gray-2);
+  --color-gray-3: var(--gray-3);
+  --color-gray-4: var(--gray-4);
+  --color-gray-5: var(--gray-5);
+  --color-gray-6: var(--gray-6);
+  --color-gray-7: var(--gray-7);
+  --color-gray-8: var(--gray-8);
+  --color-gray-9: var(--gray-9);
+  --color-gray-10: var(--gray-10);
+  --color-gray-11: var(--gray-11);
+  --color-gray-12: var(--gray-12);
+  --color-ember-3: var(--ember-3);
+  --color-ember-9: var(--ember-9);
+  --color-ember-10: var(--ember-10);
+  --color-ember-11: var(--ember-11);
+  --color-ember-12: var(--ember-12);
+  --color-line: var(--line);
+  /* Presence green (Discord's), the one status colour: "people are here right now". */
+  --color-online: #23a55a;
+  --shadow-panel: var(--shadow-panel);
+
+  /* Emil Kowalski's curves: the built-in CSS easings are too weak. */
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-quart: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* legacy brand */
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-paper-2: var(--paper-2);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-ghost: var(--ink-ghost);
+  --color-rule: var(--rule);
+  --color-rule-2: var(--rule-2);
+  --color-brand: var(--brand);
+  --color-ok: var(--ok);
+  --color-danger: var(--danger);
+
+  /* shadcn */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Inter is the UI face; Geist Mono is for code, terminals and transcripts. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-heading: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
+
+  /* the sheet: the site's 1440px framed column */
+  --container-sheet: 1440px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-gray-1 text-gray-12 antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: clip;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  ::selection {
+    background: var(--gray-12);
+    color: var(--gray-1);
+  }
+}
+
+/* Shiki dual themes: tokens carry both colors; the active theme picks one.
+   Min Light in light mode, Vesper in dark. */
+.code-tokens span,
+.shiki span {
+  color: var(--shiki-light);
+}
+.dark .code-tokens span,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+.shiki {
+  /* biome-ignore lint/complexity/noImportantStyles: Shiki inlines the theme background on the <pre>; the window supplies its own */
+  background-color: transparent !important;
+}
+
+@keyframes stage-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* The opening: the hero rises in as one cascade on every load. Pure CSS so
+   it runs off the main thread while the page hydrates. */
+@keyframes intro-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(8px);
+  }
+}
+/* Blocks: `--d` is the explicit delay; `--i` is the older slot-based fallback. */
+.intro {
+  animation: intro-in 900ms var(--ease-out-quint) both;
+  animation-delay: var(--d, calc(var(--i, 0) * 100ms + 80ms));
+}
+/* Words: the headline arrives one word at a time, each rising out of a blur.
+   `--w` is the word's index; 60ms apart reads as one sweep, not a list. */
+@keyframes intro-word {
+  from {
+    opacity: 0;
+    transform: translateY(0.5em);
+    filter: blur(10px);
+  }
+}
+.intro-word {
+  display: inline-block;
+  animation: intro-word 1000ms var(--ease-out-quint) both;
+  animation-delay: calc(160ms + var(--w, 0) * 60ms);
+}
+/* Large surfaces (the window, the glyph field) settle last and from a hair smaller. */
+@keyframes intro-settle {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.985);
+    filter: blur(8px);
+  }
+}
+.intro-slow {
+  animation: intro-settle 1500ms var(--ease-out-quint) both;
+  animation-delay: var(--d, calc(var(--i, 0) * 100ms + 80ms));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .intro,
+  .intro-word,
+  .intro-slow {
+    animation: none;
+  }
+}
+
+/* ---- Long-form prose (blog posts, tech specs, manifesto, privacy) ----
+   Inter at 17px on a 68ch measure, headings stepping down the scale, code in
+   Geist Mono through Shiki (both themes; see `.shiki span` above). */
+.prose {
+  max-width: 68ch;
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--gray-11);
+  text-wrap: pretty;
+  /* Long unbroken runs (paths, identifiers) must never widen a phone page. */
+  overflow-wrap: break-word;
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote,
+.prose pre,
+.prose table,
+.prose figure {
+  margin: 0 0 1.25em;
+}
+.prose h2,
+.prose h3,
+.prose h4 {
+  color: var(--gray-12);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  scroll-margin-top: 96px;
+}
+.prose h2 {
+  margin: 2.4em 0 0.7em;
+  font-size: 1.55em;
+  line-height: 1.2;
+}
+.prose h3 {
+  margin: 2em 0 0.6em;
+  font-size: 1.2em;
+  line-height: 1.3;
+}
+.prose h4 {
+  margin: 1.6em 0 0.5em;
+  font-size: 1em;
+}
+.prose strong {
+  color: var(--gray-12);
+  font-weight: 600;
+}
+.prose em {
+  color: var(--gray-12);
+}
+.prose a {
+  color: var(--gray-12);
+  text-decoration: underline;
+  text-decoration-color: var(--gray-7);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: text-decoration-color 150ms ease;
+}
+.prose a:hover {
+  text-decoration-color: var(--gray-12);
+}
+.prose ul,
+.prose ol {
+  padding-left: 1.4em;
+}
+/* Preflight removes list markers; long-form text wants them back. */
+.prose ul {
+  list-style-type: disc;
+}
+.prose ol {
+  list-style-type: decimal;
+}
+.prose li {
+  margin: 0.35em 0;
+}
+.prose li::marker {
+  color: var(--gray-9);
+}
+.prose blockquote {
+  padding: 0.1em 0 0.1em 1.2em;
+  border-left: 2px solid var(--gray-6);
+  color: var(--gray-11);
+}
+.prose hr {
+  margin: 3em 0;
+  border: 0;
+  border-top: 1px solid var(--gray-5);
+}
+.prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  outline: 1px solid rgb(0 0 0 / 0.08);
+  outline-offset: -1px;
+}
+.dark .prose img {
+  outline-color: rgb(255 255 255 / 0.1);
+}
+/* Embedded video (YouTube iframes in the posts carry no size of their own):
+   the full measure, 16:9, the image treatment, and room above and below. */
+.prose iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  margin: 2.25em 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--gray-3);
+  outline: 1px solid rgb(0 0 0 / 0.08);
+  outline-offset: -1px;
+}
+.dark .prose iframe {
+  outline-color: rgb(255 255 255 / 0.1);
+}
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  letter-spacing: 0.01em;
+}
+.prose :not(pre) > code {
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
+  background: var(--gray-3);
+  color: var(--gray-12);
+  overflow-wrap: anywhere;
+}
+.prose pre {
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: var(--gray-2);
+  box-shadow: inset 0 0 0 1px var(--gray-5);
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.prose pre code {
+  font-size: inherit;
+  padding: 0;
+  background: none;
+}
+/* Tables scroll inside their own box on narrow screens (the renderer wraps each one). */
+.prose .table-scroll {
+  margin: 0 0 1.25em;
+  overflow-x: auto;
+}
+.prose .table-scroll > table {
+  margin: 0;
+}
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+.prose th,
+.prose td {
+  padding: 0.6em 0.8em;
+  border-bottom: 1px solid var(--gray-5);
+  text-align: left;
+  vertical-align: top;
+}
+.prose th {
+  color: var(--gray-12);
+  font-weight: 500;
+}
+.prose figcaption {
+  margin-top: 0.6em;
+  font-size: 0.85em;
+  color: var(--gray-10);
+}
+@media (max-width: 640px) {
+  .prose {
+    font-size: 16px;
+  }
+}
+
+/* Stroke draw-in for paths with pathLength="1" and stroke-dasharray: 1 (rail markers, blueprint arcs). */
+@keyframes draw-in {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+/* Line drawings that draw themselves once their box (`[data-inview]`, set by
+   the InView component) is on screen. Each stroke is normalised to pathLength
+   1; `--d` staggers strokes within one drawing. */
+.motif [data-draw] {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 900ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  transition-delay: var(--d, 0ms);
+}
+.motif [data-fill] {
+  opacity: 0;
+  transition: opacity 320ms ease;
+  transition-delay: calc(var(--d, 0ms) + 240ms);
+}
+[data-inview] .motif [data-draw] {
+  stroke-dashoffset: 0;
+}
+[data-inview] .motif [data-fill] {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .motif [data-draw],
+  .motif [data-fill] {
+    transition: none;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}

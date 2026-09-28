@@ -1,10 +1,10 @@
-import { PlayerControls } from '@lib/components/PlayerControls'
-import { FnChip } from '@lib/components/schematic/FnChip'
-import { ModeToggle } from '@lib/components/schematic/ModeToggle'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { useStepper } from '@lib/hooks/useStepper'
-import { cn } from '@lib/lib/utils'
-import { useEffect, useMemo, useState } from 'react'
+import { PlayerControls } from "@lib/components/PlayerControls"
+import { FnChip } from "@lib/components/schematic/FnChip"
+import { ModeToggle } from "@lib/components/schematic/ModeToggle"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { useStepper } from "@lib/hooks/useStepper"
+import { cn } from "@lib/lib/utils"
+import { useMemo, useState } from "react"
 
 /**
  * archetype A3 — interactive terminal step-player.
@@ -39,12 +39,12 @@ interface CliPlaygroundProps {
 /** tint one output line by its leading glyph — accent stays rationed to ✓ / results */
 function lineClass(line: string): string {
   const t = line.trimStart()
-  if (t.startsWith('✓')) return 'text-accent'
-  if (t.startsWith('✗')) return 'text-alert'
-  if (t.startsWith('!')) return 'text-warn'
-  if (t.startsWith('{') || t.startsWith('"')) return 'text-ink'
-  if (t.startsWith('→')) return 'text-ink-faint'
-  return 'text-ink-faint'
+  if (t.startsWith("✓")) return "text-accent"
+  if (t.startsWith("✗")) return "text-alert"
+  if (t.startsWith("!")) return "text-warn"
+  if (t.startsWith("{") || t.startsWith('"')) return "text-ink"
+  if (t.startsWith("→")) return "text-ink-faint"
+  return "text-ink-faint"
 }
 
 function CommandBlock({ line, active, blinkKey }: { line: CliLine; active: boolean; blinkKey: string }) {
@@ -63,30 +63,30 @@ function CommandBlock({ line, active, blinkKey }: { line: CliLine; active: boole
       ) : null}
 
       {/* output streams in, one line per row, staggered for a typed feel */}
-      {line.out && line.out.length ? (
-        <div key={blinkKey} className={cn('flex flex-col gap-y-0.5', line.cmd && 'mt-2 ml-4')}>
+      {line.out?.length ? (
+        <div key={blinkKey} className={cn("flex flex-col gap-y-0.5", line.cmd && "mt-2 ml-4")}>
           {line.out.map((text, i) => (
             <pre
               key={i}
               className={cn(
-                'font-mono text-[12.5px] leading-[1.5] whitespace-pre-wrap break-words',
+                "font-mono text-[12.5px] leading-[1.5] whitespace-pre-wrap break-words",
                 lineClass(text),
-                active && 'fade-rise',
+                active && "fade-rise",
               )}
               style={active ? { animationDelay: `${Math.min(i * 70, 700)}ms` } : undefined}
             >
-              {text || ' '}
+              {text || " "}
             </pre>
           ))}
         </div>
       ) : null}
 
-      {typeof line.exit === 'number' ? (
+      {typeof line.exit === "number" ? (
         <pre
           className={cn(
-            'mt-1 font-mono text-[11px] uppercase tracking-[0.08em] tabular-nums',
-            line.cmd && 'ml-4',
-            line.exit === 0 ? 'text-ink-ghost' : 'text-alert',
+            "mt-1 font-mono text-[11px] uppercase tracking-[0.08em] tabular-nums",
+            line.cmd && "ml-4",
+            line.exit === 0 ? "text-ink-ghost" : "text-alert",
           )}
         >
           exit {line.exit}
@@ -98,32 +98,34 @@ function CommandBlock({ line, active, blinkKey }: { line: CliLine; active: boole
 
 export function CliPlayground({
   tracks,
-  title = 'simulated terminal',
+  title = "simulated terminal",
   intervalMs = 2600,
   className,
 }: CliPlaygroundProps) {
-  const [trackId, setTrackId] = useState(tracks[0].id)
+  // null = "no explicit choice yet": the first track, derived at render time
+  const [chosenTrackId, setChosenTrackId] = useState<string | null>(null)
+  const trackId = chosenTrackId ?? tracks[0].id
   const track = useMemo(() => tracks.find((t) => t.id === trackId) ?? tracks[0], [tracks, trackId])
   const stepper = useStepper(track.lines.length, intervalMs)
 
-  // reset the transcript whenever the active track changes
-  useEffect(() => {
+  // switching tracks restarts the transcript from its first line
+  const selectTrack = (id: string) => {
+    setChosenTrackId(id)
     stepper.goTo(0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackId])
+  }
 
   const revealed = track.lines.slice(0, stepper.step + 1)
   const multi = tracks.length > 1
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       {/* panel header: title + a track toggle when there is more than one */}
       <div className="flex flex-wrap items-center justify-between gap-2 bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{title}</span>
         {multi ? (
           <ModeToggle
             value={trackId}
-            onChange={setTrackId}
+            onChange={selectTrack}
             options={tracks.map((t) => ({ value: t.id, label: t.label }))}
           />
         ) : null}

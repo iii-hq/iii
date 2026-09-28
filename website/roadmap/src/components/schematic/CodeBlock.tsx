@@ -1,7 +1,7 @@
-import { cn } from '@lib/lib/utils'
-import type * as React from 'react'
+import { cn } from "@lib/lib/utils"
+import type * as React from "react"
 
-interface CodeBlockProps extends Omit<React.HTMLAttributes<HTMLPreElement>, 'title'> {
+interface CodeBlockProps extends Omit<React.HTMLAttributes<HTMLPreElement>, "title"> {
   title?: React.ReactNode
   children: React.ReactNode
 }
@@ -14,7 +14,7 @@ interface CodeBlockProps extends Omit<React.HTMLAttributes<HTMLPreElement>, 'tit
  */
 export function CodeBlock({ title, className, children, ...props }: CodeBlockProps) {
   return (
-    <div className={cn('border border-rule bg-bg min-w-0', className)}>
+    <div className={cn("border border-rule bg-bg min-w-0", className)}>
       {title ? (
         <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
           {title}

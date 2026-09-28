@@ -1,0 +1,17 @@
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  "ignore": {
+    // public/console-demo is the prebuilt console demo copied from the Astro site (a minified vendor
+    // bundle), not source maintained here. Everything under src/ is scanned.
+    "files": ["public/**"],
+    "overrides": [
+      {
+        // The console demo iframe is our own same-origin page that the frame scripts into (site fonts,
+        // wheel hand-off, play/pause messages), so its sandbox has to allow scripts and same-origin.
+        // The attribute is set; the curated value is the point, and the rule cannot see that.
+        "files": ["src/components/landing/console-live/console-frame.tsx"],
+        "rules": ["react-doctor/iframe-missing-sandbox"]
+      }
+    ]
+  }
+}
