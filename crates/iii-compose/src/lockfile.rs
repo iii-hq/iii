@@ -431,7 +431,7 @@ fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String)> 
 
 /// Compares the package fields that can change worker runtime behavior.
 fn runtime_package_changed(previous: &ResolvedPackage, next: &ResolvedPackage) -> bool {
-    let target = crate::registry::host_target();
+    let target = crate::registry::runnable_target(&next.artifacts);
     previous.kind != next.kind
         || previous.default_config != next.default_config
         || previous

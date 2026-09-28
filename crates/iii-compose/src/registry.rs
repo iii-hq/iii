@@ -214,6 +214,52 @@ pub fn host_target() -> &'static str {
     }
 }
 
+/// The x86_64 glibc and musl dynamic loaders. A glibc distribution has the
+/// first. A musl one (Alpine) has the second, and may have the first too as a
+/// compatibility link to itself (libc6-compat, gcompat), so the musl loader
+/// decides, as it does for `iii-worker`'s own binary and the installer.
+const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
+const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
+
+/// Every triple this host can run, preferred first: [`host_target`], then,
+/// for the static musl build on a glibc machine, the glibc one. That machine
+/// runs both, and some workers publish only glibc builds (a C++ dependency
+/// with no musl toolchain, or backends loaded as shared libraries).
+pub fn host_targets() -> &'static [&'static str] {
+    static TARGETS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TARGETS.get_or_init(|| {
+        let glibc_host = Path::new(GLIBC_LOADER).exists() && !Path::new(MUSL_LOADER).exists();
+        runnable_targets(host_target(), glibc_host)
+    })
+}
+
+fn runnable_targets(native: &'static str, glibc_host: bool) -> Vec<&'static str> {
+    let mut targets = vec![native];
+    if native == "x86_64-unknown-linux-musl" && glibc_host {
+        targets.push("x86_64-unknown-linux-gnu");
+    }
+    targets
+}
+
+/// The first of `candidates` that `artifacts` has a build for.
+fn first_available<'a, T>(
+    candidates: &[&'a str],
+    artifacts: &std::collections::BTreeMap<String, T>,
+) -> Option<&'a str> {
+    candidates
+        .iter()
+        .copied()
+        .find(|target| artifacts.contains_key(*target))
+}
+
+/// The triple whose build this host installs out of `artifacts`: the first of
+/// [`host_targets`] it has, else [`host_target`] (so the error names it).
+pub(crate) fn runnable_target<T>(
+    artifacts: &std::collections::BTreeMap<String, T>,
+) -> &'static str {
+    first_available(host_targets(), artifacts).unwrap_or(host_target())
+}
+
 /// Splits `workers.iii.dev/state` into its registry base and worker name. A
 /// reference with no host uses [`DEFAULT_REGISTRY`].
 pub(crate) fn split_reference(reference: &str) -> (String, String) {
@@ -244,9 +290,8 @@ async fn install_from_registry(
     version_range: &str,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let target = host_target();
-    let worker = resolve(container, registry, name, version_range, target).await?;
-    let resolved = into_resolved_package(container, registry, worker, target)?;
+    let worker = resolve(container, registry, name, version_range, host_targets()).await?;
+    let resolved = into_resolved_package(container, registry, worker, host_target())?;
     install_resolved(container, &resolved, cache_root).await
 }
 
@@ -258,9 +303,8 @@ pub async fn resolve_package(
     version_range: &str,
 ) -> Result<ResolvedPackage> {
     let (registry, name) = split_reference(reference);
-    let target = host_target();
-    let worker = resolve(container, &registry, &name, version_range, target).await?;
-    into_resolved_package(container, &registry, worker, target)
+    let worker = resolve(container, &registry, &name, version_range, host_targets()).await?;
+    into_resolved_package(container, &registry, worker, host_target())
 }
 
 /// Converts and validates one registry response for lock persistence.
@@ -332,7 +376,7 @@ pub async fn install_resolved(
     resolved: &ResolvedPackage,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let target = host_target();
+    let target = runnable_target(&resolved.artifacts);
     let cache_root = if resolved.registry == DEFAULT_REGISTRY {
         cache_root.to_path_buf()
     } else {
@@ -424,7 +468,7 @@ impl From<ResolvedWorker> for Node {
         } else {
             worker
                 .binaries
-                .get(host_target())
+                .get(runnable_target(&worker.binaries))
                 .map(|artifact| artifact.sha256.as_str())
         }
         .map(str::to_ascii_lowercase);
@@ -448,7 +492,7 @@ impl From<&ResolvedPackage> for Node {
             kind: package.kind.clone(),
             artifact_digest: package
                 .artifacts
-                .get(host_target())
+                .get(runnable_target(&package.artifacts))
                 .map(|artifact| artifact.sha256.to_ascii_lowercase()),
             default_config: package
                 .default_config
@@ -460,7 +504,7 @@ impl From<&ResolvedPackage> for Node {
 
 pub(crate) async fn resolve_node(container: &str, reference: &str, range: &str) -> Result<Node> {
     let (registry, name) = split_reference(reference);
-    resolve(container, &registry, &name, range, host_target())
+    resolve(container, &registry, &name, range, host_targets())
         .await
         .map(Node::from)
 }
@@ -481,8 +525,8 @@ pub struct Graph {
 /// different set, because each answer is computed on its own.
 pub async fn resolve_graph(container: &str, reference: &str, version_range: &str) -> Result<Graph> {
     let (registry, name) = split_reference(reference);
-    let target = host_target();
-    let response = resolve_response(container, &registry, &name, version_range, target).await?;
+    let response =
+        resolve_response(container, &registry, &name, version_range, host_targets()).await?;
     Ok(Graph {
         nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
@@ -800,12 +844,15 @@ fn write_integrity_marker(
 }
 
 /// The raw `/resolve` answer: the worker and everything it depends on.
+/// Resolves for the first of `candidates` (normally [`host_targets`]), moving
+/// on to a later one only when the registry says the worker has no build for
+/// the platform asked.
 async fn resolve_response(
     container: &str,
     registry: &str,
     name: &str,
     version_range: &str,
-    target: &str,
+    candidates: &[&str],
 ) -> Result<ResolveResponse> {
     let client = reqwest::Client::builder()
         .timeout(RESOLVE_ATTEMPT_TIMEOUT)
@@ -813,25 +860,32 @@ async fn resolve_response(
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
     let endpoint = format!("{registry}/resolve");
-    let request = serde_json::json!({
-        "worker": name,
-        "version": version_range,
-        "target": target,
-    });
-    let response = send_resolve_request(&client, &endpoint, &request)
-        .await
-        .map_err(|err| registry_error(container, registry, &err.to_string()))?;
-
-    if !response.status().is_success() {
+    let mut index = 0;
+    let response = loop {
+        let request = serde_json::json!({
+            "worker": name,
+            "version": version_range,
+            "target": candidates[index],
+        });
+        let response = send_resolve_request(&client, &endpoint, &request)
+            .await
+            .map_err(|err| registry_error(container, registry, &err.to_string()))?;
+        if response.status().is_success() {
+            break response;
+        }
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        if let Some(next) = fallback_index(&body, candidates, index) {
+            index = next;
+            continue;
+        }
         return Err(ComposeError::PackageNotResolved {
             container: container.to_string(),
             name: name.to_string(),
             range: version_range.to_string(),
             message: registry_message(status.as_u16(), &body),
         });
-    }
+    };
 
     let resolved: ResolveResponse = response
         .json()
@@ -840,6 +894,23 @@ async fn resolve_response(
 
     check_names(container, registry, &resolved)?;
     Ok(resolved)
+}
+
+/// The index of the next of `candidates` after `tried` to resolve for: only
+/// when the registry refused `tried` as a platform the worker has no build
+/// for (`unsupported_platform`), and only one it lists as available.
+fn fallback_index(body: &str, candidates: &[&str], tried: usize) -> Option<usize> {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = parsed.get("error")?;
+    if error.get("code")?.as_str()? != "unsupported_platform" {
+        return None;
+    }
+    let available = error.get("available")?.as_array()?;
+    (tried + 1..candidates.len()).find(|&index| {
+        available
+            .iter()
+            .any(|value| value.as_str() == Some(candidates[index]))
+    })
 }
 
 async fn send_resolve_request(
@@ -922,9 +993,9 @@ async fn resolve(
     registry: &str,
     name: &str,
     version_range: &str,
-    target: &str,
+    candidates: &[&str],
 ) -> Result<ResolvedWorker> {
-    let resolved = resolve_response(container, registry, name, version_range, target).await?;
+    let resolved = resolve_response(container, registry, name, version_range, candidates).await?;
     resolved
         .graph
         .into_iter()
@@ -1471,7 +1542,7 @@ mod tests {
             &server.uri(),
             "state",
             "1.0.0",
-            "x86_64-unknown-linux-gnu",
+            &["x86_64-unknown-linux-gnu"],
         )
         .await
         .unwrap();
@@ -1496,7 +1567,7 @@ mod tests {
             &server.uri(),
             "state",
             "99.0.0",
-            "x86_64-unknown-linux-gnu",
+            &["x86_64-unknown-linux-gnu"],
         )
         .await
         .unwrap_err();
@@ -1645,6 +1716,142 @@ mod tests {
         let target = host_target();
         assert_ne!(target, "unknown", "this platform needs a triple mapping");
         assert!(target.contains('-'), "not a triple: {target}");
+        assert_eq!(
+            host_targets()[0],
+            target,
+            "the native triple stays preferred"
+        );
+    }
+
+    #[test]
+    fn only_the_musl_build_on_a_glibc_machine_also_runs_glibc_builds() {
+        const MUSL: &str = "x86_64-unknown-linux-musl";
+        const GNU: &str = "x86_64-unknown-linux-gnu";
+        assert_eq!(runnable_targets(MUSL, true), [MUSL, GNU]);
+        assert_eq!(runnable_targets(MUSL, false), [MUSL]);
+        assert_eq!(runnable_targets(GNU, true), [GNU]);
+        assert_eq!(
+            runnable_targets("aarch64-apple-darwin", true),
+            ["aarch64-apple-darwin"]
+        );
+    }
+
+    #[test]
+    fn a_published_native_build_wins_over_the_glibc_fallback() {
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+        let both = std::collections::BTreeMap::from([
+            ("x86_64-unknown-linux-gnu".to_string(), ()),
+            ("x86_64-unknown-linux-musl".to_string(), ()),
+        ]);
+        let glibc_only =
+            std::collections::BTreeMap::from([("x86_64-unknown-linux-gnu".to_string(), ())]);
+        let darwin_only =
+            std::collections::BTreeMap::from([("aarch64-apple-darwin".to_string(), ())]);
+        assert_eq!(
+            first_available(&candidates, &both),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            first_available(&candidates, &glibc_only),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(first_available(&candidates, &darwin_only), None);
+    }
+
+    #[test]
+    fn only_an_unsupported_platform_listing_a_later_candidate_falls_back() {
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+        let refused = |code: &str, available: &[&str]| {
+            serde_json::json!({ "error": {
+                "code": code,
+                "message": "Worker 'w' does not support platform 'x86_64-unknown-linux-musl'.",
+                "available": available,
+            }})
+            .to_string()
+        };
+        let glibc = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"];
+        assert_eq!(
+            fallback_index(&refused("unsupported_platform", &glibc), &candidates, 0),
+            Some(1)
+        );
+        // The last candidate has nothing after it.
+        assert_eq!(
+            fallback_index(&refused("unsupported_platform", &glibc), &candidates, 1),
+            None
+        );
+        // Not a platform refusal, or the fallback is not published either.
+        assert_eq!(
+            fallback_index(&refused("version_not_found", &glibc), &candidates, 0),
+            None
+        );
+        assert_eq!(
+            fallback_index(
+                &refused("unsupported_platform", &["aarch64-apple-darwin"]),
+                &candidates,
+                0
+            ),
+            None
+        );
+        assert_eq!(fallback_index("not json", &candidates, 0), None);
+    }
+
+    #[tokio::test]
+    async fn a_worker_without_a_musl_build_resolves_for_glibc_on_a_glibc_machine() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "target": "x86_64-unknown-linux-musl" }),
+            ))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({ "error": {
+                "code": "unsupported_platform",
+                "message": "Worker 'judge-laya' does not support platform 'x86_64-unknown-linux-musl'.",
+                "available": ["x86_64-apple-darwin", "x86_64-unknown-linux-gnu"],
+            }})))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "target": "x86_64-unknown-linux-gnu" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "judge-laya",
+                    "version": "0.2.0",
+                    "type": "binary",
+                    "binaries": { "x86_64-unknown-linux-gnu": {
+                        "sha256": "a".repeat(64),
+                        "url": "https://example.com/judge-laya.tar.gz",
+                    }},
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+        let resolved =
+            resolve_response("judge-laya", &server.uri(), "judge-laya", "*", &candidates)
+                .await
+                .unwrap();
+        assert_eq!(resolved.graph[0].version, "0.2.0");
+
+        // Without the glibc candidate the registry's refusal is the answer.
+        let error = resolve_response(
+            "judge-laya",
+            &server.uri(),
+            "judge-laya",
+            "*",
+            &candidates[..1],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("does not support platform"),
+            "{error}"
+        );
     }
 
     #[test]
