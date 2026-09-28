@@ -706,7 +706,7 @@ fails saying so, and every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
 anything is downloaded. Run compose under WSL, where the VM still needs `/dev/kvm` and a guest
-rootfs to actually boot. Every other worker kind runs on windows as it always has.
+rootfs to boot. Every other worker kind runs on windows as it always has.
 
 Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
 honours.
