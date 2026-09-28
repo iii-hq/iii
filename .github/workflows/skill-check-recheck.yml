@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   recheck:
-    uses: iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml@v0.4
+    uses: iii-hq/skills-and-validation/.github/workflows/recheck-on-comment.yml@e568f7490b9ca6cffc86c8a8f36d2ea26af68e8a # v0.4
     with:
       config-path: .skill-check.yaml
       action-ref: v0.4

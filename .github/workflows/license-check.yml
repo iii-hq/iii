@@ -24,12 +24,14 @@ jobs:
   check-license-headers:
     name: Check License Headers
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check license headers
-        uses: korandoru/hawkeye@v6
+        uses: korandoru/hawkeye@7ffde2c5fd29f3c486e4a6510436dca54f386e2a # v6
         with:
           config: engine/licenserc.toml
