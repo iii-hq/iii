@@ -67,4 +67,26 @@ writers can pause when readers cannot keep up.
 When the writer closes, the reader receives the stream end. When a worker disconnects, its channel
 connections close with it.
 
+### Channel ownership
+
+A channel belongs to the worker that called `engine::channels::create` (for example through
+`worker.createChannel()`). When that worker disconnects, the engine releases the channel:
+
+- Ends that no worker has attached yet are dropped. A later attempt to attach with that ref fails
+  with HTTP `404`.
+- A reader already waiting on the channel receives the end of the stream.
+- Streams with both ends already attached keep running until they complete.
+
+If a worker creates a channel and hands a `writerRef` or `readerRef` to another worker, the creating
+worker must stay connected until the other worker attaches to its end.
+
+### Releasing a channel
+
+The engine releases a channel as soon as either side leaves:
+
+- When the reader finishes or disconnects, the engine removes the channel. An end that was never
+  attached goes with it.
+- When the reader is gone, the engine closes an attached writer right away, even if the writer is
+  idle, instead of waiting for its next write.
+
 For bidirectional communication, create two channels: one for each direction.

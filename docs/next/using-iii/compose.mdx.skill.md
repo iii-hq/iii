@@ -20,6 +20,11 @@ the workers specified in `worker-compose.yaml`. It is approximately the equivale
 `iii compose --up` combines engine and project startup for development. Independent `iii` and
 `iii compose` daemons provide separate lifecycle control for production deployments.
 
+The engine that `--up` starts is tied to the Compose process. If Compose exits for any reason,
+including an abrupt kill such as `SIGKILL` during startup, the managed engine is terminated too, and
+the next `iii compose --up` starts a fresh engine. Run `iii` and `iii compose` separately when the
+engine needs its own lifecycle.
+
 ### Starting a project with the daemon
 
 ```text
@@ -34,10 +39,15 @@ iii compose [OPTIONS]
 | `--frozen`             | With `--up`, require the compose file and existing lock to match and skip package resolution                                                              |
 | `-f, --file <PATH>`    | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file            |
 
-`Ctrl^C`, `SIGINT` and `SIGTERM` all gracefully stop the daemon, every worker run by the daemon, and
-the iii engine if compose was started with `--up`. When `--up` has started the engine, every project
-and worker stops before the engine process is stopped. `compose::stop` is the function equivalent of
-this operation.
+`Ctrl^C`, `SIGINT`, `SIGTERM` and `SIGHUP` all gracefully stop the daemon, every worker run by the
+daemon, and the iii engine if compose was started with `--up`. When `--up` has started the engine,
+every project and worker stops before the engine process is stopped. `compose::stop` is the function
+equivalent of this operation.
+
+Compose only stops an engine it started itself. An external engine, selected with `--engine`,
+`III_URL`, or an external engine in the compose file, keeps running when Compose exits. If the
+engine's listener port is already in use, `--up` fails. Compose never adopts or kills an unrelated
+engine.
 
 `compose::*` functions as documented below are the intended way to manage a running compose daemon.
 
@@ -686,14 +696,17 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
 | `path`   | A path to a worker stored locally on disk.                                      |
 
-A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
-glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable; a
-bundle worker on a machine without `iii-worker` fails saying so, and every other worker kind is
-unaffected.
+A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii`. Native
+`iii-worker` artifacts are published for glibc and musl Linux on both x86_64 and aarch64, so Alpine
+and other musl distributions are supported alongside standard glibc ones. The shell installer and
+`iii update iii-worker` pick the right build automatically by looking for the host's musl loader,
+independent of which engine build target is installed. Compose runs `iii-worker` as a process rather
+than linking it, so the engine stays portable; a bundle worker on a machine without `iii-worker`
+fails saying so, and every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
-anything is downloaded. Run compose under WSL, where the VM has KVM to run on. Every other worker
-kind runs on windows as it always has.
+anything is downloaded. Run compose under WSL, where the VM still needs `/dev/kvm` and a guest
+rootfs to actually boot. Every other worker kind runs on windows as it always has.
 
 Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
 honours.
