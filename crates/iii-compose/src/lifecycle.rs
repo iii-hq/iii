@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::{
     config::{ComposeFile, Container, RestartPolicy},
-    configuration::{ConfigFile, merge},
+    configuration::merge,
     dag,
     engine::EngineClient,
     error::{ComposeError, Result},
@@ -88,8 +88,16 @@ impl From<&ComposeError> for OpError {
     }
 }
 
+pub(crate) fn cancelled_op(operation_id: String) -> OpResult {
+    let error = ComposeError::OperationCancelled {
+        operation_id: operation_id.clone(),
+    };
+    failed_op(operation_id, None, &error)
+}
+
 /// Everything `up`/`down` need that is not the compose file itself.
 pub struct LifecycleCtx<'a> {
+    pub(crate) shutdown: &'a crate::shutdown::ShutdownController,
     pub file: &'a ComposeFile,
     pub engine: &'a EngineClient,
     pub post_runs: &'a hooks::PostRunSupervisor,
@@ -99,8 +107,6 @@ pub struct LifecycleCtx<'a> {
     /// Namespace the *children* register in — not the daemon's own.
     pub project_namespace: &'a str,
     pub engine_url: &'a str,
-    /// Directory for resolved config files, owner-only.
-    pub config_dir: &'a std::path::Path,
     /// Where installed packages live, shared across projects on this machine.
     pub package_cache: &'a std::path::Path,
     /// Persistent, bounded stdout and stderr for every project worker.
@@ -152,9 +158,16 @@ pub async fn up(
     target: Option<&str>,
     operation_id: String,
 ) -> OpResult {
-    up_inner(ctx, children, records, target, operation_id, None)
-        .await
-        .expect("up without a shutdown signal cannot be interrupted")
+    up_inner(
+        ctx,
+        children,
+        records,
+        target,
+        operation_id.clone(),
+        Some(ctx.shutdown.signal()),
+    )
+    .await
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 /// Starts the foreground project's graph, rolling back this operation when an
@@ -167,7 +180,15 @@ pub(crate) async fn up_until_shutdown(
     operation_id: String,
     shutdown: crate::shutdown::ShutdownSignal,
 ) -> Option<OpResult> {
-    up_inner(ctx, children, records, target, operation_id, Some(shutdown)).await
+    up_inner(
+        ctx,
+        children,
+        records,
+        target,
+        operation_id,
+        Some(shutdown.or(ctx.shutdown.signal())),
+    )
+    .await
 }
 
 async fn up_inner(
@@ -407,9 +428,17 @@ pub async fn restart_one(
     key: &str,
     operation_id: String,
 ) -> OpResult {
-    restart_one_inner(ctx, children, records, key, operation_id, None, None)
-        .await
-        .expect("restart without a shutdown signal cannot be interrupted")
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id.clone(),
+        None,
+        None,
+    )
+    .await
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 pub(crate) async fn restart_one_supervised(
@@ -426,12 +455,12 @@ pub(crate) async fn restart_one_supervised(
         children,
         records,
         key,
-        operation_id,
+        operation_id.clone(),
         None,
         Some((attempt, total_attempts)),
     )
     .await
-    .expect("supervised restart without a shutdown signal cannot be interrupted")
+    .unwrap_or_else(|| cancelled_op(operation_id))
 }
 
 pub(crate) async fn restart_one_until_shutdown(
@@ -471,7 +500,9 @@ async fn restart_one_inner(
         report::summary_failed("restart", error.code(), began.elapsed());
         return Some(failed_op(operation_id, Some(key), &error));
     }
-    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+    if ctx.shutdown.signal().requested()
+        || shutdown.as_ref().is_some_and(|signal| signal.requested())
+    {
         return None;
     }
 
@@ -488,7 +519,16 @@ async fn restart_one_inner(
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    if let Err(error) = await_name_release(ctx, key).await {
+    let Some(released) = ctx
+        .shutdown
+        .signal()
+        .run(await_name_release(ctx, key))
+        .await
+    else {
+        report::plan_done();
+        return None;
+    };
+    if let Err(error) = released {
         report::failed(key, error.code(), &error.to_string());
         report::plan_done();
         report::summary_failed("restart", error.code(), began.elapsed());
@@ -497,9 +537,11 @@ async fn restart_one_inner(
 
     report::starting(key, "starting");
     let started = Instant::now();
-    // Once the old worker has stopped, finish its replacement before observing
-    // cancellation again. Returning early here would persist a stopped worker.
-    let outcome = start_one_attempt(ctx, key, None, Some(&operation_id)).await;
+    // An individual operation cancellation still finishes its replacement.
+    // Daemon shutdown is different: the target state is stopped, so interrupt
+    // preparation/readiness and reap any child already started by this attempt.
+    let outcome =
+        start_one_attempt(ctx, key, Some(ctx.shutdown.signal()), Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
@@ -556,7 +598,8 @@ async fn restart_one_inner(
             });
         }
         StartAttempt::Interrupted => {
-            unreachable!("replacement startup has no interrupt signal")
+            report::plan_done();
+            return None;
         }
     };
 
@@ -856,10 +899,9 @@ async fn start_one_until_shutdown(
     macro_rules! wait_or_interrupt {
         ($future:expr) => {{
             if let Some(signal) = shutdown.as_mut() {
-                tokio::select! {
-                    biased;
-                    _ = signal.wait() => return Err(StartFailure::Interrupted),
-                    result = $future => result,
+                match signal.run($future).await {
+                    Some(result) => result,
+                    None => return Err(StartFailure::Interrupted),
                 }
             } else {
                 $future.await
@@ -976,10 +1018,7 @@ async fn start_one_until_shutdown(
         compose_file: &ctx.file.path,
         container_key: key,
         start: &start,
-        config_path: config.as_ref().map(|resolved| resolved.file.path()),
-        config_name: config
-            .as_ref()
-            .and_then(|resolved| resolved.name.as_deref()),
+        config_name: Some(&config.name),
         working_dir: &working_dir,
         user_env: &user_env,
     };
@@ -1016,12 +1055,12 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            wait_or_interrupt!(vm_command(ctx, key, &start, &plan, config.as_ref())).map_err(
-                |message| ComposeError::SpawnFailed {
+            wait_or_interrupt!(vm_command(ctx, key, &start, &plan)).map_err(|message| {
+                ComposeError::SpawnFailed {
                     container: key.to_string(),
                     message,
-                },
-            )?
+                }
+            })?
         }
     };
 
@@ -1095,17 +1134,13 @@ async fn start_one_until_shutdown(
 /// which is the same split the installer makes by shipping `iii-worker` as its
 /// own asset.
 ///
-/// The environment sent is the one a host container would get, with one
-/// substitution: `III_CONFIG` names a host path, and the guest cannot open it.
-/// The container's config directory is published into the VM and the variable
-/// is repointed at the file inside it, so a worker reads its configuration the
-/// same way whichever side of the boundary it runs on.
+/// Uses the host container environment. Configuration is served by the engine,
+/// not mounted into the guest.
 async fn vm_command(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     start: &StartSpec,
     plan: &crate::spawn::SpawnPlan,
-    config: Option<&ResolvedConfig>,
 ) -> std::result::Result<tokio::process::Command, String> {
     let (worker_dir, run_override, prepare_command) = match start {
         StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
@@ -1116,47 +1151,13 @@ async fn vm_command(
         _ => return Err("not a VM container".to_string()),
     };
 
-    let mut env: BTreeMap<String, String> = plan.env.clone();
-    let config_dir = match config {
-        Some(config) => {
-            // Published through a directory of this container's own, not the
-            // project's `config/`. virtiofs shares a whole tree, so mounting
-            // the shared one would put every sibling's resolved secrets inside
-            // this guest. Beside the rootfs rather than inside it: the rootfs
-            // is the guest's `/`, and a `config` directory there would collide
-            // with whatever the image already has.
-            let path = config.file.path();
-            let Some(name) = path.file_name() else {
-                return Err(format!("config file has no name: {}", path.display()));
-            };
-            let dir = ctx.vm_dir.join(format!("{key}-config"));
-            std::fs::create_dir_all(&dir)
-                .map_err(|err| format!("cannot make {}: {err}", dir.display()))?;
-            let published = dir.join(name);
-            std::fs::copy(path, &published)
-                .map_err(|err| format!("cannot publish the config for the VM: {err}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600));
-            }
-            env.insert(
-                "III_CONFIG".to_string(),
-                format!("{GUEST_CONFIG_DIR}/{}", name.to_string_lossy()),
-            );
-            Some(dir)
-        }
-        None => None,
-    };
-
+    let env: BTreeMap<String, String> = plan.env.clone();
     let request = serde_json::json!({
         "worker_name": key,
         "worker_dir": worker_dir,
         "state_dir": ctx.vm_dir.join(key),
         "engine_url": ctx.engine_url,
         "extra_env": env,
-        "config_dir": config_dir,
         "run_override": run_override,
     });
 
@@ -1174,10 +1175,6 @@ async fn vm_command(
     command.stdin(std::process::Stdio::null());
     Ok(command)
 }
-
-/// Where a container's config directory appears inside the guest. The same
-/// constant `iii-worker` mounts it at; it is part of the request contract.
-const GUEST_CONFIG_DIR: &str = "/run/iii/config";
 
 /// What an `iii-worker` VM prepare command answers: a program, its arguments, and
 /// the environment to start it with.
@@ -1324,7 +1321,6 @@ async fn stop_one(
             compose_file: &ctx.file.path,
             container_key: key,
             start: &start,
-            config_path: None,
             config_name: None,
             working_dir: &working_dir,
             user_env: &user_env,
@@ -1357,40 +1353,43 @@ async fn rollback(
     }
 }
 
-/// Fetch-or-fail, then merge `config_override` on top and hand the result over
-/// as an owner-only file.
-/// What a container's configuration resolved to: the file it is handed, and
-/// the entry that value lives in.
+/// The configuration identity is always delivered, even before first registration.
 pub struct ResolvedConfig {
-    pub file: ConfigFile,
-    /// The configuration entry the value was written to, when the file named
-    /// one. Absent means the value went to the file only, and no global id was
-    /// claimed on the container's behalf.
-    pub name: Option<String>,
+    pub name: String,
 }
 
+/// Resolves the identity and merges package defaults, current values, and overrides.
+/// Injects the execution value into the service without persisting it, while
+/// service failures propagate rather than silently starting with stale defaults.
 async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
     container: &Container,
     key: &str,
     shipped: Option<serde_yaml::Value>,
-) -> Result<Option<ResolvedConfig>> {
-    // Lowest to highest: what the worker ships, what the configuration worker
-    // holds, what the compose file overrides.
+) -> Result<ResolvedConfig> {
+    let name = container.resolved_config_name(ctx.project_namespace, key)?;
+    if container.config_name.is_none() {
+        let legacy = crate::configuration::legacy_config_name(ctx.project_namespace, key);
+        ctx.engine.migrate_config(&legacy, &name).await?;
+        // Pre-namespace installations used the container key directly. Only
+        // the default namespace may adopt it, and never steal a name another
+        // container in this project explicitly owns. The bare legacy source
+        // wins even over a destination created by an earlier Compose version.
+        // The authority archives the source after publishing the destination.
+        if ctx.project_namespace == "default"
+            && !ctx
+                .file
+                .containers
+                .values()
+                .any(|other| other.config_name.as_deref() == Some(key))
+        {
+            ctx.engine.migrate_config(key, &name).await?;
+        }
+    }
+    // Lowest to highest: package defaults, current active value, compose override.
+    // NOT_FOUND contributes nothing; transport/service failures still fail boot.
     let mut value = shipped;
-
-    // Only an entry the file named. Falling back to the container key looks
-    // helpful and is the collision itself: a container called `state` would
-    // claim the global `state` entry, so two projects would take turns
-    // overwriting one another — and every `state` worker on the engine would
-    // reload on each write, because the id it watches is the one being
-    // written. A configuration entry is claimed deliberately or not at all.
-    //
-    // Absent is not empty: an entry nobody has registered yet contributes
-    // nothing, and the container starts on what the compose file declares.
-    if let Some(name) = &container.config_name
-        && let Some(fetched) = ctx.engine.fetch_config(name).await?
-    {
+    if let Some(fetched) = ctx.engine.fetch_config(&name).await? {
         value = Some(match value {
             Some(base) => merge(base, fetched),
             None => fetched,
@@ -1404,29 +1403,12 @@ async fn resolve_config(
         });
     }
 
-    let Some(value) = value else {
-        return Ok(None);
-    };
-
-    // Delivered twice, on purpose, because workers read their configuration in
-    // two different places and both have to be right.
-    //
-    // Into the configuration worker, which is where a worker built before
-    // compose existed looks: re-registering its own schema without a value
-    // reuses what is stored, so this is the value it boots on, with nothing in
-    // the fleet changed.
-    if let Some(name) = &container.config_name {
-        ctx.engine.publish_config(name, &value).await?;
+    // GET supplies the current active value, not a forced reload from disk.
+    // Omitting an override keeps that value, including after a worker restart.
+    if let Some(value) = value {
+        ctx.engine.set_config(&name, value).await?;
     }
-
-    // And as a file, which is what a worker written for compose reads. The two
-    // carry the same value, so whichever a worker trusts, it gets the same
-    // answer.
-    let file = ConfigFile::write(ctx.config_dir, key, &value)?;
-    Ok(Some(ResolvedConfig {
-        file,
-        name: container.config_name.clone(),
-    }))
+    Ok(ResolvedConfig { name })
 }
 
 async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {

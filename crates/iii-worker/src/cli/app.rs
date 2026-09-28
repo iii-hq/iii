@@ -249,6 +249,15 @@ pub enum Commands {
     #[command(name = "__local-prepare", hide = true)]
     LocalPrepare,
 
+    /// Internal: download base images into the shared rootfs cache without
+    /// starting anything, so a later spawn finds them already there.
+    #[command(name = "__pull-images", hide = true)]
+    PullImages {
+        /// OCI references, e.g. `docker.io/iiidev/node:latest`.
+        #[arg(required = true)]
+        images: Vec<String>,
+    },
+
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),

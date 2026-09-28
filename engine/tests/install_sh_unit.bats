@@ -213,3 +213,184 @@ EOF
   [[ "$output" == *"curl is required"* ]]
   [[ "$output" == *"install"* ]]
 }
+
+# MOT-4783: the worker must match the host libc, not the engine target.
+@test "worker selects musl on Alpine x86_64" {
+  run worker_target_for_host Linux x86_64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-musl" ]
+}
+
+@test "worker selects musl on Alpine aarch64" {
+  run worker_target_for_host Linux aarch64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-unknown-linux-musl" ]
+}
+
+@test "worker keeps GNU on glibc despite static musl engine target" {
+  export TARGET=x86_64-unknown-linux-musl
+  run worker_target_for_host Linux x86_64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-gnu" ]
+}
+
+@test "worker keeps GNU on glibc aarch64" {
+  run worker_target_for_host Linux aarch64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-unknown-linux-gnu" ]
+}
+
+@test "worker libc selection ignores engine glibc override" {
+  export III_USE_GLIBC=1
+  run worker_target_for_host Linux x86_64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-musl" ]
+}
+
+@test "worker preserves macOS Apple Silicon support" {
+  run worker_target_for_host Darwin aarch64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-apple-darwin" ]
+}
+
+@test "worker does not invent assets on unsupported platforms" {
+  run worker_target_for_host Darwin x86_64 gnu
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run worker_target_for_host Linux armv7 gnu
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ─────────────────────────────────────────────────────────────
+# --start-with / --need-envs: the harness setup offer
+# ─────────────────────────────────────────────────────────────
+
+@test "learn_args_for returns --learn-iii alone by default" {
+  run learn_args_for "" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii" ]
+}
+
+@test "learn_args_for passes the worker list through" {
+  run learn_args_for "worker1,worker2" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii --start-with worker1,worker2" ]
+}
+
+@test "learn_args_for passes the extra env vars through" {
+  run learn_args_for "worker1" "WORKER_API_KEY,SECOND_KEY"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii --start-with worker1 --need-envs WORKER_API_KEY,SECOND_KEY" ]
+}
+
+@test "learn_args_for drops --need-envs without --start-with" {
+  # The engine rejects the flag on its own, so never build a command it refuses.
+  run learn_args_for "" "WORKER_API_KEY"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--learn-iii" ]
+}
+
+@test "install.sh --start-with rejects the next option as its value" {
+  # `shift 2` would otherwise swallow the flag, leaving it unset.
+  run sh "$INSTALL_SH" --start-with --skip-bin-download
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--start-with needs a comma-separated worker list"* ]]
+  [[ "$output" == *"--skip-bin-download"* ]]
+}
+
+@test "install.sh --need-envs rejects the next option as its value" {
+  run sh "$INSTALL_SH" --need-envs -h
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--need-envs needs a comma-separated variable list"* ]]
+}
+
+@test "install.sh passes a version selector through without globbing it" {
+  # `worker@*` is a legal selector; an unquoted `*` would glob against the
+  # working directory instead.
+  _bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 0\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+
+  cd "$BATS_TEST_TMPDIR"
+  touch decoy-file
+
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with 'worker1@*' </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--start-with worker1@*"* ]]
+  [[ "$output" != *"decoy-file"* ]]
+}
+
+@test "install.sh --start-with rejects whitespace" {
+  run sh "$INSTALL_SH" --start-with "worker1, worker2"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--start-with does not accept whitespace"* ]]
+}
+
+@test "install.sh --need-envs rejects whitespace" {
+  run sh "$INSTALL_SH" --need-envs "A B"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--need-envs does not accept whitespace"* ]]
+}
+
+@test "install.sh --help documents --start-with and --need-envs" {
+  run sh "$INSTALL_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--start-with LIST"* ]]
+  [[ "$output" == *"--need-envs LIST"* ]]
+}
+
+@test "install.sh --help documents --skip-bin-download" {
+  run sh "$INSTALL_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--skip-bin-download"* ]]
+}
+
+@test "install.sh --skip-bin-download reaches the setup offer without installing" {
+  # No release is resolved and no asset is downloaded, so this needs no
+  # network: the offer runs against whatever iii is already on this machine.
+  #
+  # That "whatever" is a stub here. The offer is only made when the binary in
+  # BIN_DIR accepts the flags this run would pass, and a machine with no iii
+  # at all — every CI runner — is told about the quickstart instead.
+  _bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 0\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--learn-iii --start-with worker1"* ]]
+  [[ "$output" != *"Downloading"* ]]
+}
+
+@test "install.sh --skip-bin-download names no command a binary would reject" {
+  # A binary that does not know the flags must never be handed them, so the
+  # run that cannot offer the setup names the quickstart instead.
+  _bin="$BATS_TEST_TMPDIR/oldbin"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 2\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"--start-with worker1"* ]]
+  [[ "$output" == *"quickstart"* ]]
+}
+
+@test "cleanup is harmless when no download directory was made" {
+  # --skip-bin-download never creates one, and the harness prompt re-arms
+  # the trap that calls this.
+  unset tmpdir
+  run cleanup
+  [ "$status" -eq 0 ]
+}
+
+@test "cleanup removes the download directory" {
+  tmpdir="$BATS_TEST_TMPDIR/dl"
+  mkdir -p "$tmpdir"
+  run cleanup
+  [ "$status" -eq 0 ]
+  [ ! -d "$tmpdir" ]
+}

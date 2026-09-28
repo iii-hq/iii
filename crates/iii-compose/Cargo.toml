@@ -62,6 +62,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
+  "Win32_Globalization",
   # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
   "Win32_Security",
   "Win32_System_Console",

@@ -145,7 +145,7 @@ test-sdk-python:
 
 test-sdk-rust:
 	III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
-		cargo test -p iii-sdk --all-features
+		cargo test -p iii-sdk -p iii-helpers -p iii-observability --all-features
 
 test-sdk-all: test-sdk-node test-sdk-python test-sdk-rust
 
@@ -155,7 +155,7 @@ lint-python:
 	cd $(PYTHON_SDK_DIR) && uv run ruff check src
 
 lint-rust:
-	cargo clippy -p iii-sdk --all-targets --all-features -- -D warnings
+	cargo clippy -p iii-sdk -p iii-helpers -p iii-observability --all-targets --all-features -- -D warnings
 
 lint-console:
 	pnpm --filter console-frontend lint
@@ -165,7 +165,7 @@ lint: lint-python lint-rust lint-console
 # ── Format Check ──────────────────────────────────────────────────────────────
 
 fmt-check-rust:
-	cargo fmt -p iii-sdk -- --check
+	cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -- --check
 
 fmt-check-all: engine-fmt-check fmt-check-rust
 
@@ -198,7 +198,7 @@ build: sandbox build-console ## Build everything: init + engine + worker + conso
 	@echo "Add them to your PATH:"
 	@echo '  export PATH="$(CURDIR)/target/release:$(CURDIR)/target/$(WORKER_TARGET)/release:$$PATH"'
 
-# ── CI Jobs (mirror ci.yml) ──────────────────────────────────────────────────
+# ── CI Jobs (mirror ci.yml; CI additionally passes --locked to cargo) ──────────────────────────────────────────────────
 
 ci-engine: engine-build engine-test engine-fmt-check
 

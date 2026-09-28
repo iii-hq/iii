@@ -1,0 +1,16 @@
+# cargo-deny: advisory and duplicate-version checks for the whole workspace.
+# CI: .github/workflows/supply-chain.yml. Locally:
+#   cargo install cargo-deny --locked && cargo deny check advisories bans
+
+[advisories]
+version = 2
+yanked = "deny"
+# Vulnerabilities anywhere in the graph fail the check. "Unmaintained" notices
+# only fail for crates the workspace depends on directly; transitive ones
+# (bincode via msb_krun, rustls-pemfile via lapin 3's tcp-stream) are upstream's
+# to fix and would otherwise need a growing ignore list.
+unmaintained = "workspace"
+
+[bans]
+# reqwest 0.12/0.13 and a few proc-macro crates legitimately coexist today.
+multiple-versions = "warn"

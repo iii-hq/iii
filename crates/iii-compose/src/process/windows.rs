@@ -11,10 +11,9 @@
 //! console process group, so a graceful `CTRL_BREAK` can be delivered before the
 //! job is terminated outright.
 //!
-//! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is deliberately **not** set. It would
-//! kill every child the moment the daemon exits, and compose requires the
-//! opposite: children survive a daemon crash and are re-adopted on restart
-//! (see [`crate::state`]).
+//! Jobs deliberately do not use `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: workers
+//! survive a daemon crash and are re-adopted on restart (see [`crate::state`]).
+//! The managed engine uses a separate stdin lifeline instead.
 
 use std::{process::ExitStatus, time::Duration};
 
@@ -79,7 +78,7 @@ const ADOPTED_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Spawns `command` in its own job and console process group, and starts
 /// reaping it.
 pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Supervised> {
-    spawn_supervised_inner(command, false).map(|(child, _)| child)
+    spawn_supervised_inner(command, false, false).map(|(child, _, _)| child)
 }
 
 /// Same, but with the child's stdout and stderr piped back instead of inherited,
@@ -87,7 +86,17 @@ pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Sup
 pub fn spawn_supervised_piped(
     command: tokio::process::Command,
 ) -> std::io::Result<(Supervised, ChildOutput)> {
-    spawn_supervised_inner(command, true)
+    spawn_supervised_inner(command, true, false).map(|(child, output, _)| (child, output))
+}
+
+/// Same, but preserves a caller-configured piped stdin and returns its writer.
+/// Used only by the managed engine; worker spawns retain null stdin.
+pub fn spawn_supervised_piped_with_stdin(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput, tokio::process::ChildStdin)> {
+    let (child, output, stdin) = spawn_supervised_inner(command, true, true)?;
+    let stdin = stdin.ok_or_else(|| std::io::Error::other("managed engine stdin was not piped"))?;
+    Ok((child, output, stdin))
 }
 
 /// The child's output streams, when they were piped.
@@ -100,13 +109,16 @@ pub struct ChildOutput {
 fn spawn_supervised_inner(
     mut command: tokio::process::Command,
     piped: bool,
-) -> std::io::Result<(Supervised, ChildOutput)> {
+    preserve_stdin: bool,
+) -> std::io::Result<(Supervised, ChildOutput, Option<tokio::process::ChildStdin>)> {
     // Its own console group: CTRL_BREAK can then be aimed at the child alone,
     // rather than at every process sharing the daemon's console.
     command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     // A worker is not an interactive child of Compose. Inheriting stdin can
     // block startup indefinitely and differs from daemon/service semantics.
-    command.stdin(std::process::Stdio::null());
+    if !preserve_stdin {
+        command.stdin(std::process::Stdio::null());
+    }
     if piped {
         command
             .stdout(std::process::Stdio::piped())
@@ -118,6 +130,7 @@ fn spawn_supervised_inner(
         stdout: child.stdout.take(),
         stderr: child.stderr.take(),
     };
+    let stdin = child.stdin.take();
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("child exited before its pid could be read"))?;
@@ -130,7 +143,6 @@ fn spawn_supervised_inner(
         return Err(kill_and_reap(child, err));
     }
     let job = OwnedHandle(job);
-
     let Some(handle) = child.raw_handle() else {
         let err = std::io::Error::other("child handle disappeared before job assignment");
         return Err(kill_and_reap(child, err));
@@ -154,6 +166,7 @@ fn spawn_supervised_inner(
             exit: ExitSource::Reaped(exit),
         },
         output,
+        stdin,
     ))
 }
 

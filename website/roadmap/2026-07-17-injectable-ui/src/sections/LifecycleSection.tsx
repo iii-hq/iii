@@ -1,6 +1,6 @@
-import { StepReveal } from '@lib/components/diagrams/StepReveal'
-import { Section } from '@lib/components/Section'
-import { LIFECYCLE_STAGES } from '../content/lifecycle'
+import { StepReveal } from "@lib/components/diagrams/StepReveal"
+import { Section } from "@lib/components/Section"
+import { LIFECYCLE_STAGES } from "../content/lifecycle"
 
 /**
  * A6 — the lifecycle guarantee: injected ui dies with its worker, survives

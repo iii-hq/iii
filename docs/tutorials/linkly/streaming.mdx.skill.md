@@ -11,48 +11,14 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
-worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
-`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in the Compose
-engine configuration:
+`iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
+manages the streaming. `iii-stream` is an engine worker, so it runs from the start; you only enable
+the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
-engine:
-  workers:
-    iii-stream: {}
-```
-
-```bash
-mkdir -p click-streamer/src
-```
-
-Create the worker manifest and package metadata:
-
-```yaml click-streamer/iii.worker.yaml
-name: click-streamer
-scripts:
-  start: pnpm start
-```
-
-```json click-streamer/package.json
-{
-  "name": "click-streamer",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "tsx watch src/index.ts"
-  },
-  "dependencies": {
-    "iii-sdk": "0.21.4",
-    "@iii-dev/helpers": "0.21.4",
-    "tsx": "^4.22.3"
-  }
-}
-```
-
-```bash
-cd click-streamer && pnpm install && cd ..
+click-streamer:
+  worker: path://./click-streamer
+  start_after: [pubsub]
 ```
 
 ## Broadcast clicks in real time
@@ -132,22 +98,24 @@ worker.registerTrigger({
 logger.info("click-streamer ready");
 ```
 
-Register it with your project:
+Restart Compose so it picks up the change:
 
 ```bash
-iii trigger -n linkly compose::add worker=./click-streamer
+iii trigger compose::restart
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.
 
 ## See it work
 
-With the engine running, create and follow a link a few times:
+With the engine running, create a few links and follow each:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/links \
-  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
-for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+for n in $(seq 4 6); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
 ```
 
 Then read the live `clicks` stream:

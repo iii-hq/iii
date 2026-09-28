@@ -46,8 +46,8 @@ are two common paths:
 | Reproduce a project | Commit the exact versions in `worker-compose.yaml` |
 
 The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
-queue, pub/sub, cron, observability, sandbox, database, shell, console, and other capability
-workers. Those workers may ship their own function-level skills; do not duplicate every capability
+queue, pub/sub, cron, database, shell, console, rbac-proxy, and other capability workers.
+(`iii-sandbox` and `iii-observability` are engine-owned and are not added through the registry.) Those workers may ship their own function-level skills; do not duplicate every capability
 as a top-level iii skill.
 
 ### Worker Manifest
@@ -108,6 +108,17 @@ condition function returns `true`.
 
 Use enqueue for work that must complete with retries. Use void for analytics, notifications, and
 other non-critical side effects.
+
+## Namespaces
+
+Every worker registers in a namespace: the `namespace` init option, else `III_NAMESPACE`, else the
+engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace for every worker it
+starts, so all workers in one `worker-compose.yaml` share a namespace and call each other by bare
+function id. Engine-owned functions (`engine::*`, `configuration::*`, `stream::*`) live in `default`;
+`engine::*` resolves there implicitly, the others need `namespace: "default"` on the call from a
+namespaced worker. Routing is strict and ids are never prefixed with a namespace. From the CLI,
+`iii trigger -n <namespace> <function>` selects it. Details and per-language examples are in
+`iii-sdk-reference`.
 
 ## Code Examples
 
@@ -179,7 +190,7 @@ use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function(RegisterFunction::new("orders::validate", |order: serde_json::Value| {
+iii.register_function("orders::validate", RegisterFunction::new(|order: serde_json::Value| {
     if order["id"].is_null() {
         return Err("missing order id".into());
     }
@@ -187,7 +198,7 @@ iii.register_function(RegisterFunction::new("orders::validate", |order: serde_js
 }))?;
 
 let process_client = iii.clone();
-iii.register_function(RegisterFunction::new_async("orders::process", move |order: serde_json::Value| {
+iii.register_function("orders::process", RegisterFunction::new_async(move |order: serde_json::Value| {
     let iii = process_client.clone();
     async move {
         let validated = iii.trigger(TriggerRequest::new("orders::validate", order)).await?;
@@ -229,8 +240,8 @@ iii.register_trigger(RegisterTriggerInput {
 
 ## Boundaries
 
-- For engine ports, adapters, queue retry policy, worker manager, RBAC listeners, and deployment
-  config, use `iii-engine-config`.
+- For engine ports, adapters, engine-owned workers, RBAC (`rbac-proxy`), and deployment config,
+  use `iii-engine-config`.
 - For SDK-specific package exports and language caveats, use `iii-sdk-reference`.
 - For complete backend designs such as workflows, CQRS, agentic systems, and reactive apps, use
   `iii-architecture-patterns`.

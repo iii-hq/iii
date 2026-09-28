@@ -4,6 +4,68 @@ use std::path::Path;
 
 use iii_compose::ComposeFile;
 
+/// Keeps explicitly shared configuration IDs independent of the project namespace.
+#[test]
+fn explicit_configuration_name_wins_over_the_generated_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: path://./api\n    config_name: shared-api\n",
+        &[],
+    );
+    assert_eq!(
+        file.containers["api"]
+            .resolved_config_name("orders", "api")
+            .unwrap(),
+        "shared-api"
+    );
+}
+
+/// Derives runtime identity from the selected namespace without changing the parsed declaration.
+#[test]
+fn configuration_identity_uses_the_effective_namespace_without_mutating_yaml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), COMPOSE, &[]);
+    let container = &file.containers["api"];
+    let name = container.resolved_config_name("billing", "api").unwrap();
+    assert_eq!(name, "billing-api");
+    assert_ne!(
+        name,
+        container.resolved_config_name("orders", "api").unwrap()
+    );
+    assert!(container.config_name.is_none());
+}
+
+#[test]
+fn package_configuration_names_are_validated_before_startup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api.v2:\n    worker: package://example\n    version: '1.0.0'\n",
+        &[],
+    );
+    let err = iii_compose::manifest::validate_offline(&file, "default").unwrap_err();
+    assert_eq!(err.code(), "INVALID_CONFIG_NAME");
+}
+
+#[test]
+fn implicit_explicit_collision_is_rejected_but_explicit_sharing_is_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let yaml = "containers:\n  api:\n    worker: package://example\n    version: '1.0.0'\n  other:\n    worker: package://example\n    version: '1.0.0'\n    config_name: default-api\n";
+    let file = project(tmp.path(), yaml, &[]);
+    assert_eq!(
+        iii_compose::manifest::validate_offline(&file, "default")
+            .unwrap_err()
+            .code(),
+        "CONFIG_NAME_COLLISION"
+    );
+    let file = project(
+        tmp.path(),
+        &yaml.replace("  api:\n", "  api:\n    config_name: default-api\n"),
+        &[],
+    );
+    iii_compose::manifest::validate_offline(&file, "default").unwrap();
+}
 /// Writes a compose file plus env files into a tempdir and loads it, so paths
 /// resolve exactly as the CLI resolves them.
 fn project(tmp: &Path, compose: &str, files: &[(&str, &str)]) -> ComposeFile {
@@ -63,6 +125,339 @@ fn env_files_apply_in_order_and_environment_wins() {
         env["RUST_LOG"], "debug",
         "literal environment wins over every env_file"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_case_equivalent_keys_obey_source_precedence() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (first, alias) in [
+        ("token", "TOKEN"),
+        ("TOKEN", "token"),
+        ("föo", "FÖO"),
+        ("FÖO", "föo"),
+    ] {
+        for (value, expected) in [
+            ("compose", "compose"),
+            ("' '", " "),
+            ("''", "last-file"),
+            ("\"\"", "last-file"),
+            ("null", "last-file"),
+            ("~", "last-file"),
+            ("", "last-file"),
+        ] {
+            let compose = format!(
+                "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n    environment:\n      {first}: {value}\n"
+            );
+            let file = project(
+                tmp.path(),
+                &compose,
+                &[
+                    ("base.env", &format!("{first}=base\n{alias}=same-file\n")),
+                    ("last.env", &format!("{alias}=last-file\n")),
+                ],
+            );
+            let env = file.containers["api"].resolve_user_env("api").unwrap();
+            assert_eq!(env.len(), 1, "{first}/{alias}: {value:?}");
+            assert_eq!(env.values().next().unwrap(), expected);
+            let mut command = std::process::Command::new("cmd");
+            command.env_clear().envs(&env);
+            let actual: Vec<_> = command
+                .get_envs()
+                .map(|(_, value)| value.unwrap().to_str().unwrap())
+                .collect();
+            assert_eq!(actual, [expected]);
+        }
+
+        // An empty value in a later env file still overrides an earlier file;
+        // preservation applies only to an empty Compose `environment` value.
+        let file = project(
+            tmp.path(),
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n",
+            &[
+                ("base.env", &format!("{first}=base\n")),
+                ("last.env", &format!("{alias}=\n")),
+            ],
+        );
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.values().next().unwrap(), "");
+    }
+}
+
+#[test]
+fn blank_environment_values_preserve_the_last_env_file_value() {
+    for value in ["\"\"", "''", "", "null", "~"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = format!(
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, override.env]\n    environment:\n      TOKEN: {value}\n"
+        );
+        let file = project(
+            tmp.path(),
+            &compose,
+            &[
+                ("base.env", "TOKEN=base\nUNLISTED=preserved\n"),
+                ("override.env", "TOKEN=override\n"),
+            ],
+        );
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(
+            env,
+            std::collections::BTreeMap::from([
+                ("TOKEN".to_string(), "override".to_string()),
+                ("UNLISTED".to_string(), "preserved".to_string()),
+            ]),
+            "environment value: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn nonempty_environment_values_still_override_env_files() {
+    for (value, expected) in [
+        ("literal", "literal"),
+        ("\"null\"", "null"),
+        ("false", "false"),
+        ("0", "0"),
+        ("\"  \"", "  "),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let compose = format!(
+            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env]\n    environment:\n      TOKEN: {value}\n"
+        );
+        let file = project(tmp.path(), &compose, &[("base.env", "TOKEN=fromfile\n")]);
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(env["TOKEN"], expected, "environment value: {value:?}");
+    }
+}
+
+#[test]
+fn without_an_env_file_empty_strings_remain_empty_and_null_keys_are_omitted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+containers:
+  api:
+    worker: path://./api
+    environment:
+      EMPTY: ""
+      BARE:
+      NULL_VALUE: null
+      TILDE: ~
+      LITERAL_NULL: "null"
+"#,
+        &[],
+    );
+
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+    assert_eq!(
+        env,
+        std::collections::BTreeMap::from([
+            ("EMPTY".to_string(), String::new()),
+            ("LITERAL_NULL".to_string(), "null".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn optional_interpolation_preserves_env_files_unless_the_host_value_is_nonempty() {
+    for (host_value, expected) in [
+        (None, "fromfile"),
+        (Some(""), "fromfile"),
+        (Some("fromhost"), "fromhost"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut document: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+containers:
+  api:
+    worker: path://./api
+    env_file: [base.env]
+    environment:
+      TOKEN: ${TOKEN:-}
+"#,
+        )
+        .unwrap();
+        // Inject the lookup instead of mutating the process-wide environment.
+        iii_compose::interpolate::expand_tree(
+            &mut document,
+            &tmp.path().join("worker-compose.yaml"),
+            &|_| host_value.map(str::to_string),
+        )
+        .unwrap();
+        let compose = serde_yaml::to_string(&document).unwrap();
+        let file = project(tmp.path(), &compose, &[("base.env", "TOKEN=fromfile\n")]);
+
+        let env = file.containers["api"].resolve_user_env("api").unwrap();
+
+        assert_eq!(env["TOKEN"], expected, "host value: {host_value:?}");
+    }
+}
+
+#[test]
+fn retired_config_is_rejected_in_environment_and_env_files() {
+    let names = if cfg!(windows) {
+        vec!["III_CONFIG", "iii_config", "Iii_Config"]
+    } else {
+        vec!["III_CONFIG"]
+    };
+    for name in names {
+        for value in ["\"path.yaml\"", "\"\"", "null", "~", ""] {
+            let yaml = format!(
+                "containers:\n  api:\n    worker: path://./api\n    environment:\n      {name}: {value}\n"
+            );
+            let err = ComposeFile::parse(&yaml, "/tmp/worker-compose.yaml").unwrap_err();
+            assert_eq!(err.code(), "RETIRED_CONFIG_ENV");
+            assert!(err.to_string().contains("config_override"));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml = "containers:\n  api:\n    worker: path://./api\n    env_file: [settings.env]\n";
+        let contents = format!("{name}=path.yaml\n");
+        let file = project(tmp.path(), yaml, &[("settings.env", &contents)]);
+        assert_eq!(
+            file.containers["api"]
+                .resolve_user_env("api")
+                .unwrap_err()
+                .code(),
+            "RETIRED_CONFIG_ENV"
+        );
+        assert_eq!(
+            iii_compose::manifest::validate_offline(&file, "default")
+                .unwrap_err()
+                .code(),
+            "RETIRED_CONFIG_ENV"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn lowercase_config_variable_is_distinct_on_unix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: path://./api\n    environment:\n      iii_config: explicit\n    env_file: [settings.env]\n",
+        &[("settings.env", "Iii_Config=file\n")],
+    );
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+    assert_eq!(env["iii_config"], "explicit");
+    assert_eq!(env["Iii_Config"], "file");
+}
+
+#[test]
+fn blank_environment_values_cannot_bypass_reserved_key_validation() {
+    for reserved in iii_compose::spawn::RESERVED_ENV {
+        for value in ["\"\"", "", "null", "~"] {
+            let compose = format!(
+                "containers:\n  api:\n    worker: path://./api\n    environment:\n      {reserved}: {value}\n"
+            );
+
+            let err = ComposeFile::parse(&compose, "/tmp/worker-compose.yaml")
+                .expect_err("reserved keys must be rejected even without a value");
+
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{reserved}: {value}");
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_reserved_key_validation_matches_native_environment_names() {
+    // Use std's native environment-key map as an independent oracle. Windows
+    // ordinal folding is not Rust's Unicode uppercase mapping: dotless i, for
+    // example, must not be assumed to collide with ASCII I.
+    fn assert_validation<T: std::fmt::Debug>(
+        result: Result<T, iii_compose::ComposeError>,
+        name: &str,
+        collides: bool,
+    ) {
+        if collides {
+            let err = result.expect_err("native aliases must be rejected");
+            assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE", "{name}");
+            assert!(err.to_string().contains(name));
+        } else {
+            result.expect("distinct native names must remain valid");
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    for reserved in iii_compose::spawn::RESERVED_ENV {
+        for name in [
+            reserved.to_lowercase(),
+            reserved.replace('I', "ı"),
+            reserved.replace('I', "İ"),
+            reserved.replace('S', "ſ"),
+        ] {
+            let mut native = std::process::Command::new("cmd");
+            native
+                .env_clear()
+                .env(reserved, "reserved")
+                .env(&name, "explicit");
+            let collides = native.get_envs().count() == 1;
+            if name == reserved.to_lowercase() {
+                assert!(collides, "ASCII casing must collide on Windows");
+            }
+            for value in ["stale", "\"\"", "", "null", "~"] {
+                let compose = format!(
+                    "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    environment:\n      {name}: {value}\n"
+                );
+                assert_validation(
+                    ComposeFile::parse(&compose, tmp.path().join("worker-compose.yaml")),
+                    &name,
+                    collides,
+                );
+            }
+
+            let file = project(
+                tmp.path(),
+                "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    env_file: [base.env]\n",
+                &[("base.env", &format!("{name}=stale\n"))],
+            );
+            assert_validation(
+                file.containers["api"].resolve_user_env("api"),
+                &name,
+                collides,
+            );
+            assert_validation(
+                iii_compose::manifest::validate_offline(&file, "reserved-test"),
+                &name,
+                collides,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn reserved_key_validation_remains_case_sensitive_on_other_platforms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        "containers:\n  api:\n    worker: package://workers.iii.dev/queue\n    version: '0.1.0'\n    env_file: [base.env]\n    environment:\n      iii_config: compose\n      ııı_config: unicode\n",
+        &[("base.env", "iii_config_name=from-file\n")],
+    );
+    let env = file.containers["api"].resolve_user_env("api").unwrap();
+    assert_eq!(env["iii_config"], "compose");
+    assert_eq!(env["ııı_config"], "unicode");
+    assert_eq!(env["iii_config_name"], "from-file");
+    iii_compose::manifest::validate_offline(&file, "reserved-test").unwrap();
+}
+
+#[test]
+fn duplicate_environment_keys_are_rejected_even_when_null() {
+    let err = ComposeFile::parse(
+        "containers:\n  api:\n    worker: path://./api\n    environment:\n      TOKEN:\n      TOKEN: value\n",
+        "/tmp/worker-compose.yaml",
+    )
+    .expect_err("a null value must not hide a duplicate key");
+
+    assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
 #[test]
@@ -181,7 +576,6 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
         compose_file: std::path::Path::new("/srv/finance/worker-compose.yaml"),
         container_key: "state",
         start: &start,
-        config_path: Some(std::path::Path::new("/run/state.yaml")),
         config_name: Some("state-finance"),
         working_dir: std::path::Path::new("."),
         user_env: &user_env,
@@ -209,10 +603,14 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
     assert_eq!(plan.env["III_WORKER_NAME"], "state");
 }
 
+/// Delivers a first-boot registration ID even when there is no configuration file.
 #[test]
-fn a_container_without_configuration_is_told_nothing_about_one() {
-    // A stale `III_CONFIG_NAME` would point a worker at an entry compose never
-    // wrote, which is worse than the absence it replaces.
+fn a_container_without_a_value_still_receives_its_configuration_identity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), COMPOSE, &[]);
+    let config_name = file.containers["api"]
+        .resolved_config_name("finance", "api")
+        .unwrap();
     use iii_compose::manifest::StartSpec;
     use iii_compose::spawn::{SpawnCtx, spawn_plan};
 
@@ -223,14 +621,13 @@ fn a_container_without_configuration_is_told_nothing_about_one() {
         namespace: "finance",
         compose_namespace: "compose-finance",
         compose_file: std::path::Path::new("/srv/finance/worker-compose.yaml"),
-        container_key: "plain",
+        container_key: "api",
         start: &start,
-        config_path: None,
-        config_name: None,
+        config_name: Some(&config_name),
         working_dir: std::path::Path::new("."),
         user_env: &user_env,
     });
 
-    assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    assert_eq!(plan.env["III_CONFIG_NAME"], config_name);
     assert!(!plan.env.contains_key("III_CONFIG"));
 }

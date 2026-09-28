@@ -4179,8 +4179,6 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn large_graph_requires_consent_when_non_interactive() {
         let stats = DependencyGraphStats {
@@ -4260,9 +4258,6 @@ mod tests {
     #[tokio::test]
     async fn managed_force_waits_for_graph_consent_before_deleting_artifacts() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -4304,9 +4299,6 @@ mod tests {
     #[tokio::test]
     async fn local_force_waits_for_dependency_consent_before_cleanup() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -4371,7 +4363,8 @@ mod tests {
             }
         }
 
-        let _guard = CWD_LOCK.lock().unwrap();
+        // One crate-wide lock covers cwd, env vars and HOME (see cli::test_support).
+        let _guard = crate::cli::test_support::lock_home();
         let dir = tempfile::tempdir().unwrap();
         let original = std::env::current_dir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -4391,7 +4384,8 @@ mod tests {
             }
         }
 
-        let _guard = CWD_LOCK.lock().unwrap();
+        // One crate-wide lock covers cwd, env vars and HOME (see cli::test_support).
+        let _guard = crate::cli::test_support::lock_home();
         let dir = tempfile::tempdir().unwrap();
         let original = std::env::current_dir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -4403,9 +4397,6 @@ mod tests {
     #[test]
     fn active_worker_restore_holds_activation_lock_until_commit() {
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -4437,9 +4428,6 @@ mod tests {
     #[test]
     fn active_worker_restore_holds_activation_lock_until_rollback() {
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5081,9 +5069,6 @@ workers:
     #[tokio::test]
     async fn handle_resolved_graph_add_rejects_invalid_existing_lockfile_before_side_effects() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5148,9 +5133,6 @@ workers:
     #[tokio::test]
     async fn handle_resolved_graph_add_restores_config_when_later_node_fails() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5232,9 +5214,6 @@ workers:
     #[tokio::test]
     async fn handle_resolved_graph_add_installs_root_and_dependency_graph() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5352,9 +5331,6 @@ workers:
     #[tokio::test]
     async fn handle_managed_add_falls_back_to_legacy_download_when_resolve_is_unavailable() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5427,9 +5403,6 @@ workers:
     #[tokio::test]
     async fn handle_managed_add_legacy_engine_response_persists_config_and_lock() {
         in_temp_dir_async(|_| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let (base_url, server) = spawn_static_http_server(StdHashMap::from([
                 (
                     "POST /resolve".to_string(),
@@ -5568,9 +5541,6 @@ workers:
     #[tokio::test]
     async fn handle_resolved_graph_add_binary_node_fires_download_telemetry() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5770,9 +5740,6 @@ dependencies:
     #[tokio::test]
     async fn handle_worker_sync_installs_binary_from_lockfile_without_config_mutation() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5896,9 +5863,6 @@ dependencies:
     #[tokio::test]
     async fn handle_worker_sync_is_idempotent_for_matching_active_binary() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -5976,9 +5940,6 @@ dependencies:
     #[tokio::test]
     async fn handle_worker_sync_hash_mismatch_preserves_existing_binary() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6084,9 +6045,6 @@ dependencies:
     #[tokio::test]
     async fn handle_worker_sync_rejects_untrusted_lockfile_url() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6680,9 +6638,6 @@ dependencies:
         // the in-VM dependency reinstall (MOT-3585). The wipe-all path must
         // cover the same dirs as `clear <name>`.
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6717,9 +6672,6 @@ dependencies:
         // left the file on disk while still reporting it cleared and its
         // bytes freed. The wipe-all path must branch on file type.
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6805,9 +6757,6 @@ dependencies:
     #[tokio::test]
     async fn handle_managed_logs_no_logs_exit_code_depends_on_worker_being_known() {
         in_temp_dir_async(|dir| async move {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6831,9 +6780,6 @@ dependencies:
         // (a co-named binary or OCI image) stranded the marker, which silently
         // skipped the in-VM dependency reinstall on `--force`.
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);
@@ -6886,9 +6832,6 @@ dependencies:
         // ~/.iii/images/{hash} vs ~/.iii/managed/{name}), exercising the
         // claim in delete_worker_artifacts' source comment.
         in_temp_dir(|dir| {
-            let _env_guard = crate::TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let home = dir.join("home");
             std::fs::create_dir_all(&home).unwrap();
             let _home_guard = set_env_var_for_test("HOME", &home);

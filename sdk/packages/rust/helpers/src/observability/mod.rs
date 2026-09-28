@@ -4,6 +4,11 @@ pub mod telemetry;
 
 /// Re-export the raw `opentelemetry` crate so dependents can use OTel API
 /// types (traits, `KeyValue`, `global`, etc.) without a direct dep.
+///
+/// Prefer this path over declaring `opentelemetry` yourself: the types in this
+/// module's public API come from exactly this version, and each OpenTelemetry
+/// minor is an incompatible set of types. Bumping it is a breaking change for
+/// direct dependents and ships as a minor release of the iii crates.
 pub use opentelemetry;
 
 pub use self::logger::Logger;

@@ -3962,7 +3962,10 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    /// This test clears and writes the global metrics store, so it must share
+    /// the ingestion tests' serial lock rather than contaminate their counts.
     #[test]
+    #[serial]
     fn test_get_worker_metrics_from_storage_returns_none_for_unknown_worker() {
         init_metric_storage(Some(100), Some(3600));
         let storage = get_metric_storage().expect("metric storage should be initialized");

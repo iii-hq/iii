@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use opentelemetry::trace::TraceContextExt;
 use tracing::{
     Event, Level, Subscriber,
     field::{Field, Visit},
 };
-use tracing_opentelemetry::OtelData;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
@@ -129,22 +129,25 @@ where
             return;
         }
 
-        // Extract trace_id and span_id from current span context
-        // We need to get the span's own trace_id and span_id from the builder,
-        // not from parent_cx which would be empty for root spans
-        let (trace_id, span_id) = if let Some(span) = ctx.event_span(event) {
-            let extensions = span.extensions();
-            if let Some(otel_data) = extensions.get::<OtelData>() {
-                // Get trace_id and span_id from the OtelData (the current span's IDs)
-                let trace_id = otel_data.trace_id().map(|id| format!("{:032x}", id));
-                let span_id = otel_data.span_id().map(|id| format!("{:016x}", id));
-                (trace_id, span_id)
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
+        // Extract trace_id and span_id from the event's span. `get_otel_context`
+        // activates the span's own OTel context (so root spans report their own
+        // IDs rather than an empty parent) and must not be called while holding
+        // the span's extensions lock.
+        let (trace_id, span_id) = ctx
+            .event_span(event)
+            .and_then(|span| {
+                tracing::dispatcher::get_default(|dispatch| {
+                    tracing_opentelemetry::get_otel_context(&span.id(), dispatch)
+                })
+            })
+            .map(|otel_cx| otel_cx.span().span_context().clone())
+            .filter(|span_cx| span_cx.is_valid())
+            .map_or((None, None), |span_cx| {
+                (
+                    Some(format!("{:032x}", span_cx.trace_id())),
+                    Some(format!("{:016x}", span_cx.span_id())),
+                )
+            });
 
         // Collect message and attributes from event
         let mut visitor = LogFieldVisitor::new();

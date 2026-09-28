@@ -40,6 +40,20 @@ runtime:
   # base_image: ghcr.io/astral-sh/uv:bookworm-slim
 ```
 
+The images that ship with iii come in two variants:
+
+| Image                                                              | Contents                                                          | Use it when                                                                                                |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.              |
+| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution. |
+
+Select the builder variant when an install fails because a compiler is absent:
+
+```yaml
+runtime:
+  base_image: docker.io/iiidev/node:builder
+```
+
 ## `scripts`
 
 Explicit lifecycle scripts. These define how to initialize a worker's base environment (`setup`),
@@ -191,7 +205,7 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 
-## Publish metadata: `iii`, `deploy`, `manifest`, `tags`
+## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
 Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
 accepts these keys (so a manifest published from the workers repo also works with a local Compose
@@ -205,8 +219,11 @@ tags: # search aliases sent to the workers registry
   - http
   - rest
   - api
+license: Apache-2.0 # SPDX id the registry publishes the worker under
 ```
 
-`iii`, `deploy`, and `manifest` are strings. `tags` is a list of strings used for agent and user
-discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone would
-search for rather than repeating the worker description.
+`iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of strings used for agent
+and user discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone
+would search for rather than repeating the worker description. `license` is an
+[SPDX license id](https://spdx.org/licenses/), for example `Apache-2.0`. The release pipeline of the
+workers repository requires it.

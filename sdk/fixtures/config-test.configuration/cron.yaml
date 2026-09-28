@@ -1,0 +1,6 @@
+id: cron
+name: Cron
+description: Cron configuration for SDK integration tests
+value:
+  adapter:
+    name: local

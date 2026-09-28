@@ -204,6 +204,43 @@ install_companion_from_tarball() {
   return 0
 }
 
+# Unlike the static engine, the worker needs the host libc for dlopen.
+# Keep this decision separate from TARGET / III_USE_GLIBC (engine overrides).
+worker_target_for_host() {
+  case "$1:$2:$3" in
+    Linux:x86_64:musl|Linux:aarch64:musl) printf '%s-unknown-linux-musl' "$2" ;;
+    Linux:x86_64:*|Linux:aarch64:*) printf '%s-unknown-linux-gnu' "$2" ;;
+    Darwin:aarch64:*) printf 'aarch64-apple-darwin' ;;
+  esac
+}
+
+# The `iii project init` arguments the onboarding offer below runs.
+# `--start-with` and `--need-envs` are passed straight through to the engine,
+# which owns the whole flow (scaffold, API key prompts, `compose --up`, and the
+# `compose::add` for each worker).
+#
+# This builds the line the installer prints when it names the command. The run
+# that executes one passes the same arguments as positional parameters, so a
+# worker spec is never word-split or globbed.
+learn_args_for() {
+  _start_with="$1"
+  _envs="$2"
+  printf '%s' "--learn-iii"
+  if [ -n "$_start_with" ]; then
+    printf ' --start-with %s' "$_start_with"
+    if [ -n "$_envs" ]; then
+      printf ' --need-envs %s' "$_envs"
+    fi
+  fi
+}
+
+# Removes the download directory. Defined out here, not beside the `mktemp`
+# that fills `tmpdir`, because the harness prompt re-arms this trap after it
+# borrows the terminal, and with --skip-bin-download there is no download
+# directory for it to name: an unset `tmpdir` is a run with nothing to clean,
+# not an error.
+cleanup() { rm -rf "${tmpdir:-}"; }
+
 # Test-mode hook: when this var is set, stop here so unit tests can source
 # the helper functions above without running the installer.
 if [ -n "${III_INSTALL_SH_TEST_MODE:-}" ]; then
@@ -220,6 +257,36 @@ fi
 engine_version="${VERSION:-}"
 use_next=false
 use_rc=false
+start_with=""
+extra_envs=""
+skip_bin_download=false
+# Either form works: the flag, or a non-empty III_NON_INTERACTIVE.
+non_interactive=false
+if [ -n "${III_NON_INTERACTIVE:-}" ]; then
+  non_interactive=true
+fi
+
+# Both lists are word-split when they reach `iii project init`, so a value with
+# whitespace in it would silently become several arguments.
+require_no_whitespace() {
+  case "$2" in
+    *[[:space:]]*) err "args" "$1 does not accept whitespace: $2" ;;
+  esac
+}
+
+# A flag that takes a value has to be given one. Called as
+# `require_value --flag "what it wants" "$@"`, so $3 is the flag itself and $4
+# is the value it was given.
+#
+# A dash-prefixed value is a missing value, not a value: `--start-with
+# --skip-bin-download` would otherwise consume the next flag as worker data and
+# leave that flag unset, downloading the binary the caller asked to keep.
+require_value() {
+  [ $# -ge 4 ] || err "args" "$1 needs a $2"
+  case "$4" in
+    -*) err "args" "$1 needs a $2, not the option $4" ;;
+  esac
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -245,6 +312,26 @@ while [ $# -gt 0 ]; do
       use_rc=true
       shift
       ;;
+    --skip-bin-download)
+      skip_bin_download=true
+      shift
+      ;;
+    --non-interactive)
+      non_interactive=true
+      shift
+      ;;
+    --start-with)
+      require_value --start-with "comma-separated worker list" "$@"
+      require_no_whitespace --start-with "$2"
+      start_with="$2"
+      shift 2
+      ;;
+    --need-envs)
+      require_value --need-envs "comma-separated variable list" "$@"
+      require_no_whitespace --need-envs "$2"
+      extra_envs="$2"
+      shift 2
+      ;;
     -h|--help)
       cat <<'USAGE'
 Usage: install.sh [OPTIONS] [VERSION]
@@ -255,6 +342,22 @@ Options:
   -h, --help            Show this help message
   --next                Install the latest "next" pre-release
   --rc                  Install the latest release candidate
+  --skip-bin-download   Skip the download and install entirely, and run the
+                        setup offer against the iii already on this machine.
+  --non-interactive     Never ask a question, even when a terminal is
+                        attached. Same effect as answering n: install only,
+                        and print the setup command instead of running it.
+                        A run with no terminal already behaves this way.
+                        Same as setting III_NON_INTERACTIVE.
+  --start-with LIST     Comma-separated workers to start the harness with.
+                        The setup offer scaffolds a project named after the
+                        first worker, starts it, and adds every worker in the
+                        list through compose::add.
+  --need-envs LIST      Comma-separated environment variables to ask for
+                        during that setup, on top of the inference provider
+                        key. Use it for a worker that needs its own key
+                        (e.g. --start-with worker1,worker2
+                        --need-envs WORKER_API_KEY,SECOND_KEY).
 
 Environment variables:
   VERSION               Engine version to install (e.g., 0.11.0)
@@ -265,6 +368,8 @@ Environment variables:
                         aarch64-unknown-linux-gnu)
   III_USE_GLIBC         Use glibc build on Linux x86_64 (any non-empty value
                         enables; default: musl)
+  III_NON_INTERACTIVE   Any non-empty value does the same as
+                        --non-interactive.
   GITHUB_TOKEN          Authenticate GitHub API calls (raises rate limit
                         from 60/hr to 5000/hr). Any token with public read
                         access works; no scopes required.
@@ -275,6 +380,10 @@ Examples:
   curl -fsSL https://iii.dev/install.sh | sh
   curl -fsSL https://iii.dev/install.sh | sh -s -- --next
   curl -fsSL https://iii.dev/install.sh | sh -s -- --rc
+  curl -fsSL https://iii.dev/install.sh | sh -s -- --non-interactive
+  curl -fsSL https://iii.dev/install.sh | III_NON_INTERACTIVE=1 sh
+  curl -fsSL https://iii.dev/install.sh | sh -s -- --start-with worker1,worker2
+  curl -fsSL https://iii.dev/install.sh | sh -s -- --start-with worker1 --need-envs WORKER_API_KEY
   curl -fsSL https://iii.dev/install.sh | VERSION=0.11.0 sh
   curl -fsSL https://iii.dev/install.sh | BIN_DIR=/usr/local/bin sh
 USAGE
@@ -302,12 +411,15 @@ fi
 # Dependency checks
 # ---------------------------------------------------------------------------
 
+# Only the download needs them.
+if [ "$skip_bin_download" = false ]; then
 if ! command -v curl >/dev/null 2>&1; then
   err "dependency" "curl is required ($(pkg_manager_hint curl))"
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
   err "dependency" "jq is required ($(pkg_manager_hint jq))"
+fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -376,6 +488,9 @@ fi
 # Release selection
 # ---------------------------------------------------------------------------
 
+# Skipped whole with --skip-bin-download: nothing is fetched, so no release is chosen
+# and no asset is resolved.
+if [ "$skip_bin_download" = false ]; then
 if [ -n "${III_RELEASE_TAG:-}" ]; then
   # Explicit exact release tag (e.g. iii-alpha/v0.19.2-alpha.1). Bypasses the
   # iii/v<version> construction so isolated alpha releases living under a
@@ -516,6 +631,7 @@ if [ -z "$asset_url" ]; then
 fi
 
 asset_name=$(basename "$asset_url")
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve install directory and detect upgrade vs fresh install
@@ -541,18 +657,22 @@ else
   install_event_prefix="install"
 fi
 
+# Everything that downloads, installs, or reports on an install. With
+# --skip-bin-download the binary already on this machine is the one the onboarding
+# offer below runs.
+if [ "$skip_bin_download" = false ]; then
 # Idempotency: if already at target version, skip the download and move on.
+# Nothing was installed, so nothing is announced: the harness offer and the
+# quickstart link below are for someone who has just arrived, not for a
+# re-run that changed nothing.
 if [ -n "$from_version" ] && [ "$from_version" = "$release_version" ]; then
   info "$BIN_NAME is already at v$release_version — nothing to do"
-  echo ""
-  echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"
   exit 0
 fi
 
 mkdir -p "$bin_dir"
 
 tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t iii-install)
-cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
@@ -577,21 +697,13 @@ case "$uname_s" in
     ;;
 esac
 
-# iii-worker: needs glibc on Linux (KVM/libkrun); not available for x86_64-apple-darwin.
-worker_target=""
-case "$uname_s" in
-  Linux)
-    case "$arch" in
-      x86_64)  worker_target="x86_64-unknown-linux-gnu" ;;
-      aarch64) worker_target="aarch64-unknown-linux-gnu" ;;
-    esac
-    ;;
-  Darwin)
-    case "$arch" in
-      aarch64) worker_target="aarch64-apple-darwin" ;;
-    esac
-    ;;
-esac
+# The engine's default x86_64 musl build is static and also runs on glibc.
+# The worker uses dynamic musl for firmware loading, so match the host loader.
+worker_libc=gnu
+if [ -e "/lib/ld-musl-${arch}.so.1" ]; then
+  worker_libc=musl
+fi
+worker_target=$(worker_target_for_host "$uname_s" "$arch" "$worker_libc")
 
 # Pre-resolve companion URLs so we know what we're downloading before we start.
 main_tarball="$tmpdir/$asset_name"
@@ -806,6 +918,7 @@ if [ -n "$worker_install_failed" ]; then
   echo "      until you re-run install.sh or install iii-worker manually from:"
   echo "      https://github.com/$REPO/releases"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # PATH guidance
@@ -850,5 +963,99 @@ case ":$PATH:" in
     ;;
 esac
 
-echo ""
-echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"
+# ---------------------------------------------------------------------------
+# Onboarding: offer to start the harness.
+# stdin is the script itself under `curl ... | sh`, so read the answer from
+# /dev/tty. Skip silently when no terminal is attached (CI, Dockerfiles).
+# ---------------------------------------------------------------------------
+
+# The arguments as one string, for the lines that print a command to run, and
+# as positional parameters, for the two places that actually run one. Shell has
+# no arrays, and a worker spec is not safe to word-split: `worker@*` is a legal
+# version selector and an unquoted `*` is a glob against the current directory.
+# The argument loop above has consumed every positional parameter, so `set --`
+# is free to take them.
+start_cmd="$BIN_NAME project init $(learn_args_for "$start_with" "$extra_envs")"
+quickstart_url="https://iii.dev/docs/quickstart"
+
+set -- --learn-iii
+if [ -n "$start_with" ]; then
+  set -- "$@" --start-with "$start_with"
+  if [ -n "$extra_envs" ]; then
+    set -- "$@" --need-envs "$extra_envs"
+  fi
+fi
+
+# Does the binary we just installed know `--learn-iii`? Ask the parser rather
+# than reading the help text: the help is a rendered table whose column widths
+# follow the longest flag, so whether a given flag survives as one string is a
+# property of the other flags beside it. `--help` short-circuits in the parser,
+# so an accepted flag prints help and scaffolds nothing.
+#
+# Probed ONCE, above the prompt. The check used to guard only the `exec`, so
+# answering `n` — or running with no terminal — still printed a command an
+# older binary rejects with `unexpected argument '--learn-iii'`.
+#
+# Probed with the flags this run would actually pass, so a binary that knows
+# `--learn-iii` but not `--start-with` takes the quickstart branch instead of
+# failing after the operator says yes.
+has_learn_iii=0
+if "$bin_dir/$BIN_NAME" project init "$@" --help >/dev/null 2>&1; then
+  has_learn_iii=1
+fi
+
+if [ "$has_learn_iii" = 0 ]; then
+  # Never offer what this binary cannot run, and never name the command.
+  echo ""
+  echo "If you're new to iii, get started quickly here: $quickstart_url"
+elif [ "$non_interactive" = false ] && [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  echo ""
+  if [ -n "$start_with" ]; then
+    printf 'Would you like to run the setup? [Y/n] ' >/dev/tty
+  else
+    printf 'Would you like to start the iii harness and take a quick look at what iii can do? [Y/n] ' >/dev/tty
+  fi
+  # Accept a single keypress: no Enter needed. `read` is line-buffered, so
+  # drop the terminal out of canonical mode and take one byte. Enter then
+  # arrives as a newline that `$(...)` strips, which the `""` case reads as
+  # the default yes. Falls back to line input where stty is unavailable.
+  _saved_stty=$(stty -g </dev/tty 2>/dev/null) || _saved_stty=""
+  if [ -n "$_saved_stty" ]; then
+    # A signal during `dd` must not leave the terminal without echo, so the
+    # traps restore it first and then hand back to the usual cleanup.
+    _restore_tty() { stty "$_saved_stty" </dev/tty 2>/dev/null || :; }
+    trap '_restore_tty; cleanup' EXIT
+    trap '_restore_tty; exit 129' HUP
+    trap '_restore_tty; exit 130' INT
+    trap '_restore_tty; exit 143' TERM
+    stty -icanon -echo min 1 time 0 </dev/tty
+    _harness_answer=$(dd bs=1 count=1 </dev/tty 2>/dev/null)
+    _restore_tty
+    trap cleanup EXIT INT TERM
+    trap - HUP
+    printf '%s\n' "$_harness_answer" >/dev/tty
+  else
+    read -r _harness_answer </dev/tty || _harness_answer="n"
+  fi
+  case "$_harness_answer" in
+    ""|[Yy]|[Yy][Ee][Ss])
+      # stdin is the script itself under `curl ... | sh`, and `exec` hands
+      # that pipe to init. Init asks for a provider API key only when stdin
+      # is a terminal, so piped installs skipped the question in silence.
+      # The enclosing `if` has already established /dev/tty is usable.
+      exec "$bin_dir/$BIN_NAME" project init "$@" </dev/tty
+      ;;
+    *)
+      echo "No problem. Run it anytime with:"
+      echo "  $start_cmd"
+      ;;
+  esac
+elif [ -n "$start_with" ]; then
+  echo ""
+  echo "To run the setup, run:"
+  echo "  $start_cmd"
+else
+  echo ""
+  echo "To start the iii harness and see what iii can do, run:"
+  echo "  $start_cmd"
+fi

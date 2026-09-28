@@ -1,7 +1,7 @@
-import { SequencePlayer } from '@lib/components/diagrams/SequencePlayer'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { SEQ_LANES, SEQ_STEPS } from '../content/hotedit'
+import { SequencePlayer } from "@lib/components/diagrams/SequencePlayer"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { SEQ_LANES, SEQ_STEPS } from "../content/hotedit"
 
 /**
  * A5 — the interactive proof, early: one hot edit from save to hot swap,
@@ -40,8 +40,8 @@ export function HotEditSection() {
               when no hmr boundary accepts an update, vite reloads the page.
             </SpecRow>
             <SpecRow name="this design" type="never">
-              every script is its own accepting boundary and the console shell is never hot-swapped — a full reload
-              of live traces and in-flight chat is worse than one missing extension.
+              every script is its own accepting boundary and the console shell is never hot-swapped — a full reload of
+              live traces and in-flight chat is worse than one missing extension.
             </SpecRow>
             <SpecRow name="failed update" type="drop-out">
               import/setup failure: console.error + one non-fatal toast; contributions drop out until the next good

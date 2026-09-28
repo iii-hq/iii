@@ -1,9 +1,9 @@
-import { Caret } from '@lib/components/schematic/Caret'
-import { Cell } from '@lib/components/schematic/Cell'
-import { Prompt } from '@lib/components/schematic/Prompt'
-import { StatusDot } from '@lib/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
-import { HERO_CLAIMS, HERO_STATS } from '../content/hero'
+import { Caret } from "@lib/components/schematic/Caret"
+import { Cell } from "@lib/components/schematic/Cell"
+import { Prompt } from "@lib/components/schematic/Prompt"
+import { StatusDot } from "@lib/components/schematic/StatusDot"
+import { Terminal, TerminalRow } from "@lib/components/schematic/Terminal"
+import { HERO_CLAIMS, HERO_STATS } from "../content/hero"
 
 /**
  * A1 — the hero. States the WIN in one line plus a three-value subhead; never
@@ -24,9 +24,9 @@ export function Hero() {
             not inside the engine.
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[58ch]">
-            the engine&apos;s role-based access control, moved in front of the engine: a{' '}
-            <span className="text-ink">separate process</span>, the{' '}
-            <span className="text-ink">engine&apos;s exact rules</span>, fronting{' '}
+            the engine&apos;s role-based access control, moved in front of the engine: a{" "}
+            <span className="text-ink">separate process</span>, the{" "}
+            <span className="text-ink">engine&apos;s exact rules</span>, fronting{" "}
             <span className="text-ink">any engine</span> you do not own.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">

@@ -1,0 +1,9 @@
+{
+  "name": "browser-stand-in",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "iii-browser-sdk": "0.23.0"
+  }
+}

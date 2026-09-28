@@ -4,9 +4,9 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use opentelemetry::trace::{Link, SamplingDecision, SamplingResult, SpanKind, TraceId};
+use opentelemetry::trace::{Link, SpanKind, TraceId};
 use opentelemetry::{Context, KeyValue};
-use opentelemetry_sdk::trace::ShouldSample;
+use opentelemetry_sdk::trace::{SamplingDecision, SamplingResult, ShouldSample};
 use regex::Regex;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};

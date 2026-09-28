@@ -562,6 +562,24 @@ async fn async_main() -> anyhow::Result<()> {
                 .await,
             );
         }
+        Commands::PullImages { images } => {
+            // Each image is pulled in turn, not concurrently: registries
+            // throttle per connection, and `ensure_rootfs` prints a progress
+            // line per pull that two downloads would interleave.
+            //
+            // A failure here is not fatal. This command only warms a cache;
+            // whoever needs the image next pulls it themselves and reports
+            // the error in the context where it matters.
+            for image in &images {
+                let hints = iii_worker::cli::rootfs_cache::CacheHints::default();
+                if let Err(err) =
+                    iii_worker::cli::rootfs_cache::ensure_rootfs(image, &hints, || {}).await
+                {
+                    eprintln!("  could not pre-pull {image}: {err}");
+                }
+            }
+            std::process::exit(0);
+        }
         Commands::LocalPrepare => {
             std::process::exit(
                 iii_worker::cli::bundle_prepare::run(

@@ -1,0 +1,7 @@
+id: http
+name: HTTP
+description: HTTP configuration for SDK integration tests
+value:
+  host: 0.0.0.0
+  port: 3199
+  default_timeout: 30000

@@ -1920,7 +1920,7 @@ impl SpanExporter for InMemorySpanExporter {
         async { Ok(()) }
     }
 
-    fn shutdown_with_timeout(&mut self, _timeout: std::time::Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, _timeout: std::time::Duration) -> OTelSdkResult {
         // Nothing to clean up for in-memory storage
         Ok(())
     }
@@ -2035,7 +2035,7 @@ impl SpanExporter for TeeSpanExporter {
         self.otlp_exporter.set_resource(resource);
     }
 
-    fn shutdown_with_timeout(&mut self, timeout: std::time::Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, timeout: std::time::Duration) -> OTelSdkResult {
         self.otlp_exporter.shutdown_with_timeout(timeout)
     }
 }
@@ -2073,7 +2073,7 @@ impl opentelemetry_sdk::trace::ShouldSample for DynamicSampler {
         span_kind: &opentelemetry::trace::SpanKind,
         attributes: &[opentelemetry::KeyValue],
         links: &[opentelemetry::trace::Link],
-    ) -> opentelemetry::trace::SamplingResult {
+    ) -> opentelemetry_sdk::trace::SamplingResult {
         self.inner
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2187,7 +2187,7 @@ fn forward_span_is_sampled<S: opentelemetry_sdk::trace::ShouldSample>(
     sampler: &S,
     sd: &SpanData,
 ) -> bool {
-    use opentelemetry::trace::SamplingDecision;
+    use opentelemetry_sdk::trace::SamplingDecision;
     let result = sampler.should_sample(
         None,
         sd.span_context.trace_id(),
@@ -5110,7 +5110,8 @@ mod tests {
 
     #[test]
     fn dynamic_sampler_swap_changes_decision() {
-        use opentelemetry::trace::{SamplingDecision, SpanKind, TraceId};
+        use opentelemetry::trace::{SpanKind, TraceId};
+        use opentelemetry_sdk::trace::SamplingDecision;
         use opentelemetry_sdk::trace::ShouldSample;
 
         let sampler = DynamicSampler::new(Sampler::AlwaysOff);

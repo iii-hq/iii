@@ -5,15 +5,6 @@
 
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
-<Frame>
-  <video
-    controls
-    playsInline
-    preload="metadata"
-    src="https://assets.motia.dev/videos/mp4/site/v1/iii-intro.mp4"
-  />
-</Frame>
-
 <Tip title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
   [Install](./install) guide first. There you can also learn how to [set up iii for agentic
@@ -21,9 +12,9 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
 </Tip>
 
 <Note>
-  The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
-  interested in learning and exploring the full power of iii then visit our [real world
-  tutorial](./tutorials/linkly/overview).
+  The Quickstart is our original tutorial. If you want a guided, agentic learning experience that
+  can be completed in a few minutes then run the [install script](./install) and press "y" when
+  prompted.
 </Note>
 
 ## 1. Create the project

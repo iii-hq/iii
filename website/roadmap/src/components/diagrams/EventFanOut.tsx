@@ -1,5 +1,5 @@
-import { cn } from '@lib/lib/utils'
-import { useMemo } from 'react'
+import { usePrefersReducedMotion } from "@lib/hooks/usePrefersReducedMotion"
+import { cn } from "@lib/lib/utils"
 
 /**
  * A17 - one write fans out to every bound handler: an ambient, always-on
@@ -52,13 +52,10 @@ export function EventFanOut({
   ariaLabel: string
   className?: string
 }) {
-  const reducedMotion = useMemo(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    [],
-  )
+  const reducedMotion = usePrefersReducedMotion()
 
   return (
-    <div className={cn('border border-rule bg-bg', className)}>
+    <div className={cn("border border-rule bg-bg", className)}>
       <div className="flex items-center justify-between bg-panel px-3.5 py-2 border-b border-rule">
         <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">{heading}</span>
         {headingNote ? (
@@ -112,7 +109,7 @@ export function EventFanOut({
             fontSize="9"
             letterSpacing="0.04em"
             className="fill-ink-ghost"
-            style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 3.5 }}
+            style={{ paintOrder: "stroke", stroke: "var(--color-bg)", strokeWidth: 3.5 }}
           >
             emits
           </text>
@@ -140,7 +137,7 @@ export function EventFanOut({
                 cy={132}
                 className="fill-none stroke-accent ripple-ring"
                 strokeWidth={1}
-                style={{ animationDelay: '0.8s' }}
+                style={{ animationDelay: "0.8s" }}
               />
             </>
           ) : null}

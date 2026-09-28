@@ -248,9 +248,6 @@ pub struct TelemetryOptions {
     /// Framework name, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
-    /// Amplitude API key for product analytics.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub amplitude_api_key: Option<String>,
 }
 
 /// Worker metadata for auto-registration

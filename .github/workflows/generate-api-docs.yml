@@ -60,6 +60,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
 
       # Step 1: Extract TypeDoc JSON (Node SDK, Browser SDK, Helpers)
+      # iii-sdk imports @iii-dev/helpers by subpath; typedoc resolves those
+      # types from the helpers dist, so it must be built first (same as ci.yml).
+      - name: Build helper packages
+        run: pnpm --filter @iii-dev/observability build && pnpm --filter @iii-dev/helpers build
       - name: Extract Node SDK docs
         run: pnpm --filter iii-sdk docs:json
       - name: Extract Browser SDK docs

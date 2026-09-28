@@ -253,7 +253,7 @@ pub async fn update_binary(
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::current_target().to_string(),
+                platform: platform::binary_target(spec.name).to_string(),
             },
         ))
     })?;
@@ -363,7 +363,7 @@ pub async fn self_update(
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::current_target().to_string(),
+                platform: platform::binary_target(spec.name).to_string(),
             },
         ))
     })?;

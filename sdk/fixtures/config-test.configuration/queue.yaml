@@ -1,0 +1,8 @@
+id: queue
+name: Queue
+description: Queue configuration for SDK integration tests
+value:
+  adapter:
+    name: builtin
+    config:
+      store_method: in_memory

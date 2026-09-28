@@ -30,7 +30,8 @@ iii-helpers = { workspace = true }
 iii-shell-client = { path = "../iii-shell-client" }
 iii-shell-proto = { path = "../iii-shell-proto" }
 iii-supervisor = { path = "../iii-supervisor" }
-msb_krun = { version = "0.1.16", features = ["net", "blk"] }
+# Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl (breaks the Alpine iii-worker build).
+msb_krun = { version = "=0.1.16", features = ["net", "blk"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
@@ -69,7 +70,7 @@ futures = "0.3"
 # replace the monolithic `client.pull` with a streaming per-layer pull
 # for byte-level progress.
 bytes = "1"
-indicatif = "0.17"
+indicatif = "0.18"
 notify = "8.2.0"
 # `iii worker exec` stdout/stderr/stdin frames encode binary payloads
 # as base64 strings inside JSON. `0.22` matches the engine's version.

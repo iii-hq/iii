@@ -82,6 +82,7 @@ async fn set_value(harness: &Harness, value: Value) {
     let result = harness
         .configuration
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-observability".to_string(),
             value,
         })
@@ -97,6 +98,7 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
     let result = harness
         .configuration
         .set_fn(ConfigurationSetInput {
+            flush: true,
             id: "iii-observability".to_string(),
             value: value.clone(),
         })

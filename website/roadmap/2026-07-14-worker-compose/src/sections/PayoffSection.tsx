@@ -1,6 +1,6 @@
-import { Section } from '@lib/components/Section'
-import { Cell } from '@lib/components/schematic/Cell'
-import { PAYOFF_TRADEOFFS_TITLE, SCORECARD, TRADEOFFS } from '../content/payoff'
+import { Section } from "@lib/components/Section"
+import { Cell } from "@lib/components/schematic/Cell"
+import { PAYOFF_TRADEOFFS_TITLE, SCORECARD, TRADEOFFS } from "../content/payoff"
 
 /**
  * A11 — the payoff: every problem from the why section answered, plus the

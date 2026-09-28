@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { TriggerAction, registerWorker } from '../src/index'
 import type { IIIClient } from '../src/types'
 import type { TriggerConfig } from '../src/triggers'
@@ -15,9 +15,9 @@ describe('Trigger type lifecycle (two workers)', () => {
   let provider: IIIClient
   let consumer: IIIClient
   const bindings = new Map<string, TriggerConfig<TestTriggerConfig>>()
-  let registerTriggerSpy: ReturnType<typeof vi.fn>
-  let unregisterTriggerSpy: ReturnType<typeof vi.fn>
-  let handlerSpy: ReturnType<typeof vi.fn>
+  let registerTriggerSpy: Mock<(cfg: TriggerConfig<any>) => Promise<void>>
+  let unregisterTriggerSpy: Mock<(cfg: TriggerConfig<any>) => Promise<void>>
+  let handlerSpy: Mock<(payload: { n?: number }) => Promise<{ ok: boolean; payload: { n?: number } }>>
 
   // The engine keeps one live worker per (namespace, name) and fatally rejects
   // the rest, so provider and consumer — alive together — need distinct names.
@@ -35,7 +35,7 @@ describe('Trigger type lifecycle (two workers)', () => {
     registerTriggerSpy = vi.fn(async (cfg: TriggerConfig<TestTriggerConfig>) => {
       bindings.set(cfg.id, cfg)
     })
-    unregisterTriggerSpy = vi.fn()
+    unregisterTriggerSpy = vi.fn<(cfg: TriggerConfig<any>) => Promise<void>>()
 
     const sdk = registerWorker(engineWsUrl, {
       workerName: `node-tt-lifecycle:provider:${testId}`,

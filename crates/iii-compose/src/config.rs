@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     dag,
     error::{ComposeError, Result},
-    spawn::RESERVED_ENV,
+    spawn::is_reserved_env,
 };
 
 /// Default `pre_run` budget. A blocking migration or asset build routinely
@@ -194,7 +194,8 @@ pub struct Container {
     /// It is runtime state and is never read from `worker-compose.yaml`.
     pub resolved_package: Option<crate::registry::ResolvedPackage>,
     pub start_after: Vec<String>,
-    /// The configuration entry this container owns.
+    /// Explicit configuration entry. When absent, use a stable name derived
+    /// from the effective project namespace and container key.
     ///
     /// Not a source. Compose fetches it as the base, publishes the merged
     /// result back to it, and tells the child which entry is its own through
@@ -412,13 +413,48 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
     })
 }
 
+/// Reads `engine.url` from a Compose document, and nothing else.
+///
+/// `parse_engine_section` also deserializes and validates `engine.workers`, so
+/// an unsupported worker name there throws away an address the file plainly
+/// states. A caller that only needs to reach the engine does not care: a
+/// running engine answers on its address whatever the rest of the file says.
+///
+/// Only the URL value is expanded, so an unresolved variable elsewhere in the
+/// section costs nothing. One in the URL itself is an error, because the
+/// alternative is to report no address and let the caller fall back to a
+/// default endpoint that belongs to some other engine.
+pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        })?;
+    let engine_key = serde_yaml::Value::String("engine".to_string());
+    let url_key = serde_yaml::Value::String("url".to_string());
+    let Some(mut url) = document
+        .as_mapping()
+        .and_then(|mapping| mapping.get(&engine_key))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|engine| engine.get(&url_key))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    crate::interpolate::expand_tree(&mut url, path, &|name| std::env::var(name).ok())?;
+    match url {
+        serde_yaml::Value::String(url) => Ok(Some(url.trim().to_string())),
+        _ => Err(ComposeError::InvalidManagedEngineUrl),
+    }
+}
+
 /// Reads only the engine ownership section from a Compose document.
 ///
 /// Mutation preflight and teardown paths use this to reject ownership changes
 /// without requiring the container graph to be valid first. A cached project
 /// must still be stoppable or repairable when an unrelated container edit is
 /// temporarily invalid.
-pub(crate) fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
+pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
@@ -518,13 +554,23 @@ fn validate_container(
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
     for (name, value) in &raw.environment {
-        if RESERVED_ENV.contains(&name.as_str()) {
+        if crate::spawn::is_retired_config_env(name) {
+            return Err(ComposeError::RetiredConfigEnv {
+                container: key.to_string(),
+                name: name.clone(),
+            });
+        }
+        if is_reserved_env(name.as_str()) {
             return Err(ComposeError::ReservedEnvOverride {
                 container: key.to_string(),
                 name: name.clone(),
             });
         }
-        environment.insert(name.clone(), value.clone());
+        // A bare YAML key is unset, not the literal string "null". Check
+        // reserved names before omitting it so an unset key cannot bypass validation.
+        if let Some(value) = value {
+            environment.insert(name.clone(), value.clone());
+        }
     }
 
     let startup_timeout = match &raw.startup_timeout {
@@ -583,6 +629,15 @@ fn restart_duration(key: &str, raw: &Option<String>, default: Duration) -> Resul
 }
 
 impl Container {
+    /// Resolve at runtime so a namespace selected by the caller takes precedence
+    /// over the compose file, without writing generated names back into YAML.
+    pub fn resolved_config_name(&self, namespace: &str, key: &str) -> Result<String> {
+        match &self.config_name {
+            Some(name) => Ok(name.clone()),
+            None => crate::configuration::default_config_name(namespace, key),
+        }
+    }
+
     /// Directory of a `path://` worker. `None` for packages, which have no
     /// local directory until registry resolution exists.
     pub fn worker_dir(&self) -> Option<&std::path::Path> {
@@ -593,7 +648,9 @@ impl Container {
     }
 
     /// The user-defined environment for this container: env files in listed
-    /// order, then literal `environment` values on top.
+    /// order, then nonempty `environment` values on top. An empty string only
+    /// supplies a value when no env file defines the key; unset YAML keys are
+    /// omitted during validation.
     ///
     /// Read at spawn time, not at parse time: env files hold secrets, and
     /// holding them in memory for the daemon's whole life buys nothing.
@@ -605,17 +662,49 @@ impl Container {
                 source,
             })?;
             for (name, value) in parse_env_file(&text) {
-                if RESERVED_ENV.contains(&name.as_str()) {
+                if crate::spawn::is_retired_config_env(&name) {
+                    return Err(ComposeError::RetiredConfigEnv {
+                        container: container_key.to_string(),
+                        name,
+                    });
+                }
+                if is_reserved_env(name.as_str()) {
                     return Err(ComposeError::ReservedEnvOverride {
                         container: container_key.to_string(),
                         name,
                     });
                 }
-                env.insert(name, value);
+                merge_env_value(&mut env, name, value, false);
             }
         }
-        env.extend(self.environment.clone());
+        for (name, value) in &self.environment {
+            // Optional host references must not erase a value from an env file.
+            merge_env_value(&mut env, name.clone(), value.clone(), value.is_empty());
+        }
         Ok(env)
+    }
+}
+
+/// Merge one source value using the host OS's environment-key semantics.
+/// Empty Compose values preserve an earlier value; env-file entries always win.
+fn merge_env_value(
+    env: &mut BTreeMap<String, String>,
+    name: String,
+    value: String,
+    preserve_existing: bool,
+) {
+    // Retain one spelling per native key, so source order, not BTreeMap's sort
+    // order, determines the value when the map reaches the child process.
+    #[cfg(windows)]
+    let name = env
+        .keys()
+        .find(|key| crate::spawn::windows_env_key_eq(key, &name))
+        .cloned()
+        .unwrap_or(name);
+    if preserve_existing {
+        env.entry(name).or_insert(value);
+    } else {
+        env.insert(name, value);
     }
 }
 
@@ -862,6 +951,18 @@ where
     deserializer.deserialize_option(OptionalUniqueMap(std::marker::PhantomData))
 }
 
+/// Schema-only representation of YAML environment scalars. The parser keeps
+/// `Option<String>` so serde_yaml still converts booleans and numbers to strings.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)] // Only used to generate the schema, never constructed at runtime.
+enum EnvironmentValueSchema {
+    String(String),
+    Boolean(bool),
+    Number(serde_json::Number),
+    Null,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawContainer {
@@ -880,8 +981,8 @@ pub(crate) struct RawContainer {
     #[serde(default)]
     working_dir: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
-    #[schemars(with = "BTreeMap<String, String>")]
-    environment: IndexMap<String, String>,
+    #[schemars(with = "BTreeMap<String, EnvironmentValueSchema>")]
+    environment: IndexMap<String, Option<String>>,
     #[serde(default)]
     env_file: Vec<PathBuf>,
     #[serde(default)]
@@ -986,6 +1087,9 @@ containers:
   api:
     worker: path://./api
     start_after: [missing]
+    # A field this binary does not know, as a file written for a newer
+    # release would carry.
+    unknown_field: true
     environment:
       BROKEN: ${III_COMPOSE_ENGINE_ONLY_MISSING}
 "#;
@@ -996,6 +1100,37 @@ containers:
 
         assert_eq!(engine.url, "ws://127.0.0.1:49134");
         assert!(engine.workers.contains_key("iii-stream"));
+    }
+
+    #[test]
+    fn the_engine_url_survives_an_unsupported_worker_name() {
+        // `parse_engine_section` rejects the whole section over this, which
+        // used to leave a caller with no address and a silent fall back to
+        // some other engine on the default port.
+        let text = r#"
+engine:
+  url: ws://127.0.0.1:49934
+  workers:
+    not-an-engine-worker:
+      port: 1234
+"#;
+        let path = Path::new("worker-compose.yaml");
+
+        assert!(parse_engine_section(text, path).is_err());
+        assert_eq!(
+            parse_engine_url(text, path).expect("the address does not depend on the worker list"),
+            Some("ws://127.0.0.1:49934".to_string())
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_engine_url_reports_no_address() {
+        let path = Path::new("worker-compose.yaml");
+        assert_eq!(parse_engine_url("containers: {}", path).unwrap(), None);
+        assert_eq!(
+            parse_engine_url("engine:\n  workers: {}", path).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -1052,6 +1187,50 @@ containers:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    #[test]
+    fn worker_compose_schema_accepts_supported_environment_scalars() {
+        let schema = worker_compose_schema_json();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let text = r#"
+containers:
+  api:
+    worker: path://./api
+    environment:
+      BARE:
+      EMPTY: ""
+      LITERAL_NULL: "null"
+      BOOL_FALSE: false
+      BOOL_TRUE: true
+      ZERO: 0
+      NEGATIVE: -1
+      DECIMAL: 1.5
+"#;
+        let mut document: serde_json::Value = serde_yaml::from_str(text).unwrap();
+
+        assert!(validator.is_valid(&document));
+        let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
+        let env = parsed.containers["api"].resolve_user_env("api").unwrap();
+        assert!(!env.contains_key("BARE"));
+        for (key, expected) in [
+            ("EMPTY", ""),
+            ("LITERAL_NULL", "null"),
+            ("BOOL_FALSE", "false"),
+            ("BOOL_TRUE", "true"),
+            ("ZERO", "0"),
+            ("NEGATIVE", "-1"),
+            ("DECIMAL", "1.5"),
+        ] {
+            assert_eq!(env[key], expected, "key: {key}");
+        }
+
+        for value in [serde_json::json!([]), serde_json::json!({})] {
+            document["containers"]["api"]["environment"]["INVALID"] = value;
+            assert!(!validator.is_valid(&document));
+            let invalid_text = serde_yaml::to_string(&document).unwrap();
+            assert!(ComposeFile::parse(&invalid_text, "/tmp/worker-compose.yaml").is_err());
+        }
     }
 
     #[test]

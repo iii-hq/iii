@@ -17,4 +17,7 @@ pub(crate) mod store;
 pub mod structs;
 mod trigger;
 
+#[cfg(test)]
+mod injection_tests;
+
 pub use self::configuration::ConfigurationWorker;

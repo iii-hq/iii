@@ -1,0 +1,57 @@
+name: Supply Chain
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - 'website/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'skills/**'
+      - 'website/**'
+      - '**/*.md'
+      - '**/*.mdx'
+      - '.cursor/**'
+  schedule:
+    # Weekly, so advisories published against an unchanged lockfile still surface.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-advisories:
+    name: Rust advisories (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans
+
+  node-advisories:
+    name: Node advisories (SDK packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # pnpm audit reads pnpm-lock.yaml; no install needed.
+      - name: Audit SDK packages
+        run: node scripts/audit-sdk.mjs

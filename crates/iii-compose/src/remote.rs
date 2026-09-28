@@ -311,7 +311,15 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
         let registration = RegisterFunction::new_async(move |request: ComposeRequest| {
             let daemon = Arc::clone(&daemon);
             let guard_name = guard_name.clone();
-            async move { dispatch(daemon, kind, guard_name, request).await }
+            async move {
+                let Some(op) = reported_op(kind) else {
+                    return dispatch(daemon, kind, guard_name, request).await;
+                };
+                let began = std::time::Instant::now();
+                let result = dispatch(daemon, kind, guard_name, request).await;
+                report_op(op, &result, began.elapsed());
+                result
+            }
         });
         client.register_function(function.clone(), describe_op(registration, &function));
     }
@@ -333,6 +341,57 @@ enum Operation {
     Schema,
     Snapshot,
     Cancel,
+}
+
+/// The name one call reports under, or `None` for a call that reports
+/// nothing.
+///
+/// Only the mutations that answer with their own outcome are here. Add,
+/// remove and update answer as soon as they are accepted and finish in the
+/// background, so they report from [`spawn_mutation`] instead. A read-only
+/// call reports nothing at all.
+fn reported_op(kind: Operation) -> Option<&'static str> {
+    match kind {
+        Operation::Up => Some("up"),
+        Operation::Down => Some("down"),
+        Operation::Restart => Some("restart"),
+        _ => None,
+    }
+}
+
+/// Reports one mutation that answered with its outcome.
+///
+/// The outcome comes out of the answer itself: an `up` whose container failed
+/// still returns `Ok`, carrying `status: failed` and the code of the first
+/// failure. Nothing but the code is taken; the message belongs to the
+/// operator.
+///
+/// The send is spawned: the daemon that answered is still running, so the
+/// caller gets its answer now and the report finishes on its own.
+fn report_op(op: &'static str, result: &Result<Value, Error>, elapsed: std::time::Duration) {
+    let (outcome, error_kind) = match result {
+        Ok(value) => (
+            value.get("status").and_then(Value::as_str).unwrap_or("ok"),
+            value
+                .get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+        ),
+        Err(Error::Remote { code, .. }) => (
+            // A cancellation is the operator's decision, not a fault.
+            if code == "OPERATION_CANCELLED" {
+                "cancelled"
+            } else {
+                "failed"
+            },
+            Some(code.as_str()),
+        ),
+        Err(_) => ("failed", None),
+    };
+    tokio::spawn(crate::telemetry::report(
+        crate::telemetry::OP_FINISHED,
+        crate::telemetry::op_properties(op, outcome, elapsed, error_kind),
+    ));
 }
 
 impl Operation {
@@ -456,12 +515,7 @@ async fn dispatch(
                     .add_configured(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers are ready",
-                "one or more workers failed",
-            );
+            spawn_mutation(operation, mutation, ADD_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Remove => {
@@ -493,12 +547,7 @@ async fn dispatch(
                     .remove(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers were removed",
-                "one or more workers could not be removed",
-            );
+            spawn_mutation(operation, mutation, REMOVE_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Restart => match daemon
@@ -552,12 +601,7 @@ async fn dispatch(
                     .update(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(
-                operation,
-                mutation,
-                "all requested workers were updated",
-                "one or more workers could not be updated",
-            );
+            spawn_mutation(operation, mutation, UPDATE_DETAILS);
             Ok(to_value(&accepted))
         }
         Operation::Down => match daemon
@@ -687,15 +731,75 @@ async fn admit_mutation(
     Ok((operation, accepted))
 }
 
+/// Compose the terminal detail for a mutation that succeeded.
+///
+/// A non-required container that never reached its target state leaves the
+/// operation succeeding, which is by design — but the blanket success line
+/// then claims every worker is up while one is not, and a caller polling
+/// `compose::operation` has no other place to learn it. Name those containers
+/// instead (MOT-4761).
+///
+/// The list is the project's, not this operation's request: reconciliation
+/// reports every container it touched, so one left broken by an earlier
+/// operation keeps being named until it starts. That is the point — the
+/// alternative is a success line that is false about the project.
+fn succeeded_detail(details: MutationDetails, not_required_failures: &[String]) -> String {
+    if not_required_failures.is_empty() {
+        return details.success.to_string();
+    }
+    format!(
+        "{}: {}. The operation still succeeded because they are not required; \
+         check compose::status and their logs before using them.",
+        details.partial,
+        not_required_failures.join(", ")
+    )
+}
+
+/// The three terminal lines one mutation can finish with. Named fields rather
+/// than three positional `&str`s: they are the same type, so a swap at a call
+/// site would compile and only show up as a wrong sentence in a live run.
+#[derive(Clone, Copy)]
+struct MutationDetails {
+    /// What this mutation is called in telemetry.
+    op: &'static str,
+    /// Every container reached its target state.
+    success: &'static str,
+    /// The operation succeeded, but some non-required container did not.
+    partial: &'static str,
+    /// A required container did not, so the operation failed.
+    failed: &'static str,
+}
+
+const ADD_DETAILS: MutationDetails = MutationDetails {
+    op: "add",
+    success: "all requested workers are ready",
+    partial: "workers that did not start",
+    failed: "one or more workers failed",
+};
+
+const REMOVE_DETAILS: MutationDetails = MutationDetails {
+    op: "remove",
+    success: "all requested workers were removed",
+    partial: "workers that could not be removed",
+    failed: "one or more workers could not be removed",
+};
+
+const UPDATE_DETAILS: MutationDetails = MutationDetails {
+    op: "update",
+    success: "all requested workers were updated",
+    partial: "workers that could not be updated",
+    failed: "one or more workers could not be updated",
+};
+
 fn spawn_mutation<F>(
     operation: Arc<crate::operation::Operation>,
     mutation: F,
-    success_detail: &'static str,
-    failed_detail: &'static str,
+    details: MutationDetails,
 ) where
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
 {
     tokio::spawn(async move {
+        let began = std::time::Instant::now();
         if operation.is_cancelled() {
             operation
                 .finish(
@@ -706,7 +810,9 @@ fn spawn_mutation<F>(
             return;
         }
 
-        match mutation.await {
+        let result = mutation.await;
+        report_mutation(details.op, &result, began.elapsed());
+        match result {
             Ok(outcome) => {
                 let failed = outcome.is_failed();
                 operation
@@ -717,9 +823,9 @@ fn spawn_mutation<F>(
                             crate::operation::OperationStatus::Succeeded
                         },
                         if failed {
-                            failed_detail
+                            details.failed.to_string()
                         } else {
-                            success_detail
+                            succeeded_detail(details, outcome.not_required_failures())
                         },
                     )
                     .await;
@@ -739,6 +845,19 @@ fn spawn_mutation<F>(
             }
         }
     });
+}
+
+/// Reports one mutation that ran in the background after it was accepted.
+fn report_mutation(
+    op: &'static str,
+    result: &Result<MutationOutcome, ComposeError>,
+    elapsed: std::time::Duration,
+) {
+    let reported = match result {
+        Ok(outcome) => Ok(to_value(outcome)),
+        Err(error) => Err(compose_error(error)),
+    };
+    report_op(op, &reported, elapsed);
 }
 
 /// Serialize the generated root schema into the value carried over the wire.
@@ -1446,5 +1565,126 @@ mod tests {
                 "{function_id} exposes container internals"
             );
         }
+    }
+
+    #[test]
+    fn a_succeeding_mutation_names_the_workers_that_did_not_start() {
+        for details in [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ] {
+            assert_eq!(
+                super::succeeded_detail(details, &[]),
+                details.success,
+                "nothing failed, so the blanket line is true"
+            );
+            let partial = super::succeeded_detail(
+                details,
+                &["bulk-importer".to_string(), "analytics".to_string()],
+            );
+            assert!(
+                partial.starts_with(&format!("{}: bulk-importer, analytics.", details.partial)),
+                "the terminal detail names them: {partial}"
+            );
+            assert!(
+                !partial.contains(details.success),
+                "and never claims they are ready: {partial}"
+            );
+            assert!(
+                partial.contains("compose::status"),
+                "pointing at where to look: {partial}"
+            );
+        }
+    }
+
+    /// The three lines are the same type, so the compiler cannot catch a swap
+    /// at a call site; distinctness is what makes a swap visible in a test.
+    #[test]
+    fn every_mutation_names_its_own_three_outcomes() {
+        let all = [
+            super::ADD_DETAILS,
+            super::REMOVE_DETAILS,
+            super::UPDATE_DETAILS,
+        ];
+        let mut lines: Vec<&str> = all
+            .iter()
+            .flat_map(|d| [d.success, d.partial, d.failed])
+            .collect();
+        let total = lines.len();
+        lines.sort_unstable();
+        lines.dedup();
+        assert_eq!(lines.len(), total, "two mutations share a terminal line");
+        for d in all {
+            assert!(!d.partial.contains("ready") && !d.partial.contains("were "));
+        }
+    }
+
+    /// A duration no other test uses, so the report it stamps can be found.
+    fn unique_elapsed() -> std::time::Duration {
+        std::time::Duration::from_millis(uuid::Uuid::new_v4().as_u128() as u64 % 1_000_000_000)
+    }
+
+    #[tokio::test]
+    async fn an_answered_operation_reports_after_the_answer_not_before() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        let began = std::time::Instant::now();
+        report_op(
+            "up",
+            &Ok(json!({"status": "failed", "error": {"code": "SPAWN_FAILED"}})),
+            elapsed,
+        );
+
+        assert!(
+            began.elapsed() < crate::telemetry::recorder::HOLD,
+            "the report held the answer"
+        );
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, crate::telemetry::OP_FINISHED);
+        assert_eq!(reports[0].1["op"], "up");
+        assert_eq!(reports[0].1["outcome"], "failed");
+        assert_eq!(reports[0].1["error_kind"], "SPAWN_FAILED");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_operation_reports_as_cancelled_with_its_code() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op(
+            "restart",
+            &Err(Error::Remote {
+                code: "OPERATION_CANCELLED".to_string(),
+                message: "a message that must never be reported".to_string(),
+                stacktrace: None,
+            }),
+            elapsed,
+        );
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["op"], "restart");
+        assert_eq!(reports[0].1["outcome"], "cancelled");
+        assert_eq!(reports[0].1["error_kind"], "OPERATION_CANCELLED");
+        assert!(!reports[0].1.to_string().contains("must never"));
+    }
+
+    #[tokio::test]
+    async fn a_plain_success_reports_ok_with_no_error_kind() {
+        let recorder = crate::telemetry::recorder::install();
+        let elapsed = unique_elapsed();
+        let ms = elapsed.as_millis() as u64;
+
+        report_op("down", &Ok(json!({"changed": true})), elapsed);
+
+        let reports = recorder.wait_for(|p| p["duration_ms"] == ms).await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["outcome"], "ok");
+        assert!(reports[0].1["error_kind"].is_null());
     }
 }

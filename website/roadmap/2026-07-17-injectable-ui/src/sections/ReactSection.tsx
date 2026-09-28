@@ -1,8 +1,8 @@
-import { Funnel } from '@lib/components/diagrams/Funnel'
-import { Section } from '@lib/components/Section'
-import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { CodeBlock } from '@lib/components/schematic/CodeBlock'
-import { IMPORT_MAP, REACT_PATHS, REACT_REJECT, REACT_TARGET, SHIM_ROWS } from '../content/react'
+import { Funnel } from "@lib/components/diagrams/Funnel"
+import { Section } from "@lib/components/Section"
+import { SpecRow, SpecSheet } from "@lib/components/SpecSheet"
+import { CodeBlock } from "@lib/components/schematic/CodeBlock"
+import { IMPORT_MAP, REACT_PATHS, REACT_REJECT, REACT_TARGET, SHIM_ROWS } from "../content/react"
 
 /**
  * A8 — react sharing. Five bare specifiers funnel into the SPA's own bundled

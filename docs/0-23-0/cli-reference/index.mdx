@@ -1,0 +1,211 @@
+---
+title: "CLI reference"
+description: "Every flag, argument, and subcommand of the iii CLI, including iii console, generated from the CLI definitions in source."
+owner: "devrel"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
+
+Reference for the `iii` binary and the `iii console` runtime it dispatches to. Running `iii` with no subcommand starts the engine. The same information is available from the binaries themselves via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
+
+## `iii`
+
+Process communication engine
+
+```text
+iii [OPTIONS] [COMMAND]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml]. When the file does not exist, `iii` offers to create it with an empty workers list (and creates it without asking in non-interactive sessions) |
+| `-v, --version` | Print version and exit |
+| `--no-update-check` | Disable background update and security advisory checks |
+
+**Subcommands:**
+
+| Command | Description |
+| ------- | ----------- |
+| `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
+| [`console`](#iii-console) | Launch the iii web console. |
+| [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
+| [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
+
+### `iii compose`
+
+Serve worker-compose projects or prepare their registry packages.
+
+Without `--up`, worker-compose.yaml supplies daemon defaults but no project starts. Projects are then managed through `compose::*` calls. With `--up`, the initial project also starts, together with its declared engine unless `--engine` selects an existing one. `build` downloads packages without starting an engine or worker.
+
+```text
+iii compose [OPTIONS]
+iii compose <COMMAND>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--engine <URL>` | Existing engine WebSocket address. Overrides the compose file and III_URL. The local default is used when none of them supplies a URL |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in and applies to every project it loads. Several daemons attach to one engine; this is what tells them apart |
+| `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
+| `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
+
+#### `iii compose build`
+
+Download every registry package declared by the compose file
+
+```text
+iii compose build [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | Compose file whose registry packages should be downloaded [default: worker-compose.yaml] |
+
+#### `iii compose logs`
+
+Read retained worker stdout and stderr from a running Compose daemon
+
+```text
+iii compose logs [OPTIONS] [WORKER]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[WORKER]` | Worker to read. Omit to read every worker in the project |
+
+| Option | Description |
+| ------ | ----------- |
+| `--engine <URL>` | Existing engine WebSocket address. The compose file and III_URL are used when omitted |
+| `-n, --namespace <NS>` | Namespace of the Compose daemon that owns the project |
+| `-f, --file <PATH>` | Compose file path on the daemon host. The daemon's default file is used when omitted |
+| `--tail <TAIL>` | Number of recent lines to show before following new output [default: 100] |
+| `-F, --follow` | Continue waiting for new output until interrupted |
+| `--stream <STREAM>` | Restrict output to one process stream [possible values: stdout, stderr] |
+
+<Note>
+  Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
+</Note>
+
+### `iii project`
+
+Manage iii projects (init, generate-docker)
+
+```text
+iii project <COMMAND>
+```
+
+#### `iii project generate-docker`
+
+Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
+
+```text
+iii project generate-docker [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory) |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+
+#### `iii project init`
+
+Initialize a new iii project in the current directory
+
+```text
+iii project init [OPTIONS] [NAME]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[NAME]` | Target directory for the new project (positional). Ignored when `--directory` is given. The project name is the resolved directory's name |
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
+| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env). Equivalent to running `iii project generate-docker` separately |
+| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+| `--skip-iii` | Skip the iii-engine version compatibility check |
+| `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
+
+### `iii trigger`
+
+Invoke a function on a running iii engine
+
+Alias: `t`
+
+```text
+iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[FUNCTION_PATH]` | Function path (e.g. `my::fn`, `sandbox::create`). Positional |
+| `[KV]...` | Key=value payload tokens (`a=10 b="hello world"`). Combinable with `--json`: kv pairs override individual keys of the json object |
+
+| Option | Description |
+| ------ | ----------- |
+| `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
+| `--address <ADDRESS>` | Engine host address [default: localhost] |
+| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
+| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
+
+<Note>
+  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
+</Note>
+
+### `iii update`
+
+Update iii and managed binaries to their latest versions
+
+```text
+iii update [OPTIONS] [COMMAND]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[COMMAND]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+
+| Option | Description |
+| ------ | ----------- |
+| `--list-targets` | List the targets you can pass to `iii update [COMMAND]` and exit |
+
+## `iii console`
+
+Developer console for the iii engine
+
+The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`.
+
+```text
+iii console [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-p, --port <PORT>` | Port to run the console server on [default: 3113] |
+| `--host <HOST>` | Host to bind the console server to [default: 127.0.0.1] |
+| `--engine-host <ENGINE_HOST>` | Host where the iii engine is running [default: 127.0.0.1] |
+| `--engine-port <ENGINE_PORT>` | Port for the iii engine REST API [default: 3111] |
+| `--ws-port <WS_PORT>` | Port for the iii engine WebSocket [default: 3112] |
+| `--bridge-port <BRIDGE_PORT>` | Engine WebSocket port the console registers its worker functions on [default: 49134] |
+| `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
+| `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
+| `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |
+
+## Telemetry
+
+The engine sends anonymous usage data by default. This data helps to improve iii and contains no personal information.
+
+To turn the usage data off, do one of these:
+
+- Set `III_TELEMETRY_ENABLED` to `false`, `0`, `no`, or `off` before you start `iii`. Letter case does not matter, and leading or trailing spaces are ignored. Any other value, or no value, keeps the usage data on.
+- Create the file `~/.iii/telemetry_dev_optout`. The engine reads this file whenever the process starts.
+- Set `telemetry.enabled: false` in the engine configuration.
+
+The engine also turns the usage data off automatically if it detects that it is in a CICD environment.
+
+This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.

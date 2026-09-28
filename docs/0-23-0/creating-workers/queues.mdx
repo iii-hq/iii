@@ -1,0 +1,450 @@
+---
+title: "Queues"
+description:
+  "Async job processing with named topics, retries, and dead-letter support via the queue
+  worker."
+owner: "devrel"
+type: "how-to"
+---
+
+The `queue` worker decouples producers from consumers: a function publishes a message to a named
+topic and returns right away, and any function subscribed to that topic processes the message in the
+background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
+
+## Before adding the worker
+
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
+running in separate terminals before using any of the commands below. If this project does not have
+a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+
+```bash
+# terminal 1
+iii --config config.yaml
+
+# terminal 2, from the directory that contains worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134
+```
+
+`iii compose` is an intentional verbless daemon invocation, documented in the
+[CLI reference](../cli-reference/index#iii-compose). The `-n` used below is the short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger).
+
+Run the remaining commands from a third terminal in that same project directory:
+
+```bash
+iii trigger -n dev compose::add worker=queue
+```
+
+<Note>
+  This page covers common queue patterns. For the complete configuration and trigger API, see the
+  [queue worker docs](https://workers.iii.dev/workers/queue).
+</Note>
+
+## Named Queues
+
+When you need to control function execution for time consuming operations, or guarantee a certain
+number of retries then you can use `TriggerAction.Enqueue` to place that operation into a queue.
+
+### Creating a Queue
+
+Create a named queue called `email-jobs` by following the
+[queue worker configuration reference](https://workers.iii.dev/workers/queue), then use that name
+when enqueueing functions below. The worker reference owns the accepted fields, defaults, and FIFO
+options.
+
+### Enqueue functions
+
+Enqueued functions are registered the same as any other call to `worker.trigger` with the one
+difference being providing an action called `TriggerAction.Enqueue` to the trigger:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { TriggerAction, type EnqueueResult } from "iii-sdk";
+
+    const { messageReceiptId } = await worker.trigger<unknown, EnqueueResult>({
+      function_id: "email::send",
+      payload: { to: "a@b.com", subject: "hi" },
+      action: TriggerAction.Enqueue({ queue: "email-jobs" }), // "queue" specifies the name of the queue
+    });
+    // messageReceiptId identifies the enqueued job
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import TriggerAction
+
+    receipt = worker.trigger({
+        "function_id": "email::send",
+        "payload": {"to": "a@b.com", "subject": "hi"},
+        "action": TriggerAction.Enqueue(queue="email-jobs"), # "queue" specifies the name of the queue
+    })
+    # receipt["messageReceiptId"] identifies the enqueued job
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::TriggerAction;
+    use iii_sdk::protocol::TriggerRequest;
+    use serde_json::json;
+
+    let receipt = worker
+        .trigger(TriggerRequest {
+            function_id: "email::send".to_string(),
+            payload: json!({ "to": "a@b.com", "subject": "hi" }),
+            action: Some(TriggerAction::Enqueue { queue: "email-jobs".to_string() }), // "queue" specifies the name of the queue
+            timeout_ms: None,
+        })
+        .await?;
+    // receipt["messageReceiptId"] identifies the enqueued job
+    ```
+
+  </Tab>
+</Tabs>
+
+## Pub/Sub Queues
+
+Queues can also be used in a publish/subscribe form when multiple listeners need to subscribe to the
+same data and it's important that the messages be durable (ie. will succeed).
+
+### Consuming messages
+
+A consumer can bind to a message by registering a Trigger for `durable:subscriber` trigger to it.
+The engine runs the function once per message, passing the published `data` as the payload.
+Returning normally acknowledges the message; throwing nacks it, so it is retried and eventually
+dead-lettered.
+
+In a worker, register the consumer function and subscribe it to the topic. If you do not have a
+worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, {
+      workerName: "email-worker",
+      namespace: "orders",
+    });
+
+    // receives the `data` from each published message
+    worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
+      // do the work here; throw to nack and let the message retry
+      return { sent: true };
+    });
+
+    worker.registerTrigger({
+      type: "durable:subscriber",
+      function_id: "email::send",
+      config: { topic: "emails" },
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="orders"),
+    )
+
+    # receives the `data` from each published message
+    def send(msg: dict) -> dict:
+        # do the work here; raise to nack and let the message retry
+        return {"sent": True}
+
+    worker.register_function("email::send", send)
+
+    worker.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": "email::send",
+        "config": {"topic": "emails"},
+    })
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+    use iii_sdk::protocol::RegisterTriggerInput;
+    use serde::Deserialize;
+    use schemars::JsonSchema;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct Email {
+        to: String,
+        subject: String,
+    }
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
+
+    // receives the `data` from each published message
+    worker.register_function("email::send", RegisterFunction::new(|_msg: Email| {
+        // do the work here; return an error to nack and let the message retry
+        Ok(json!({ "sent": true }))
+    }));
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable:subscriber".into(),
+        function_id: "email::send".into(),
+        config: json!({ "topic": "emails" }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+Add the worker to start it:
+
+```bash
+iii trigger -n dev compose::add worker=./email-worker
+```
+
+### Publishing a message
+
+With the consumer running, publish to its topic. The engine delivers the `data` to every subscriber,
+so `email::send` runs once per message:
+
+```bash
+# publish a message to the "emails" topic
+iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+```
+
+<Tip>
+  Open the [console](../using-iii/console) and go to the **Traces** tab to watch the message flow
+  from the publish through to `email::send` running.
+</Tip>
+
+### Retries and delivery
+
+The examples use the `topic` to choose what to consume and `queue_config` to tune delivery for
+one subscriber. See the
+[`durable:subscriber` reference](https://workers.iii.dev/workers/queue) for the complete trigger
+schema, including filtering and adapter-specific options.
+
+A failed delivery retries with exponential backoff (1 second, then 2 seconds) for up to 3 attempts,
+then the message dead-letters.
+
+Each subscriber's durable queue is scoped by the subscribing worker's namespace, so two subscribers
+of the same topic and function id in different namespaces are two queues that each receive every
+published event, rather than two competing consumers of one queue.
+
+<Warning>
+  RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
+  0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
+</Warning>
+
+For example, to process messages strictly one at a time instead of concurrently, register the
+trigger with a `fifo` queue:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerTrigger({
+      type: "durable:subscriber",
+      function_id: "email::send",
+      config: { topic: "emails", queue_config: { type: "fifo" } },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": "email::send",
+        "config": {"topic": "emails", "queue_config": {"type": "fifo"}},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable:subscriber".into(),
+        function_id: "email::send".into(),
+        config: json!({ "topic": "emails", "queue_config": { "type": "fifo" } }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+## Inspecting Queue Topics
+
+These commands list both kinds of queue. A pub/sub topic appears once a function subscribes to it,
+and shows `broker_type: "builtin"`. (Publishing to a topic that nothing subscribes to does not
+register it, so there is nothing to inspect.) A configured named queue appears with
+`broker_type: "function_queue"`.
+
+List every topic (this inspects the `emails` topic from above):
+
+```bash
+iii trigger engine::queue::list_topics
+```
+
+```json
+[{ "name": "emails", "broker_type": "builtin", "subscriber_count": 1 }]
+```
+
+Get stats for the topic (`depth` is messages waiting for the consumer, `dlq_depth` is
+dead-lettered). A topic whose consumer keeps up sits at `depth: 0`. For a named queue,
+`consumer_count` reports its active delivery slots:
+
+```bash
+iii trigger engine::queue::topic_stats topic=emails
+```
+
+```json
+{ "depth": 0, "consumer_count": 1, "dlq_depth": 0, "config": null }
+```
+
+## Inspecting Dead Letter Queue Messages
+
+A message reaches the dead-letter queue only once its subscribed function exhausts its retries, so
+the DLQ functions return empty until something fails.
+
+### Forcing a message into the dead-letter queue
+
+To see the DLQ populated, make `email::send` fail by changing the handler to throw. Each message
+then fails its 3 delivery attempts (a few seconds with the exponential backoff) and dead-letters.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerFunction("email::send", async () => {
+      throw new Error("forced failure");
+    });
+
+    worker.registerTrigger({
+      type: "durable:subscriber",
+      function_id: "email::send",
+      config: { topic: "emails" },
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def send(_msg: dict) -> dict:
+        raise Exception("forced failure")
+
+    worker.register_function("email::send", send)
+
+    worker.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": "email::send",
+        "config": {"topic": "emails"},
+    })
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    worker.register_function("email::send", RegisterFunction::new(|_msg: serde_json::Value| {
+        Err::<serde_json::Value, _>(iii_sdk::Error::Handler("forced failure".into()))
+    }));
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable:subscriber".into(),
+        function_id: "email::send".into(),
+        config: json!({ "topic": "emails" }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
+
+Now publish a message; after the retries run out it lands in the DLQ (exact ids, timestamps, and
+sizes vary per run):
+
+```bash
+iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+```
+
+### Listing topics with dead-lettered messages
+
+```bash
+iii trigger engine::queue::dlq_topics
+```
+
+```json
+[{ "topic": "emails", "broker_type": "builtin", "message_count": 1 }]
+```
+
+### Browsing dead-lettered messages
+
+```bash
+iii trigger engine::queue::dlq_messages topic=emails
+```
+
+```json
+[
+  {
+    "id": "0b9c…",
+    "payload": { "to": "a@b.com", "subject": "hi" },
+    "error": "ErrorBody { code: \"invocation_failed\", message: \"forced failure\"...",
+    "failed_at": 1718900000,
+    "retries": 3,
+    "size_bytes": 64
+  }
+]
+```
+
+### Redriving dead-lettered messages
+
+Fix the code back to what it was originally, then move the topic's dead-lettered messages back to
+the main queue for reprocessing:
+
+```bash
+iii trigger iii::queue::redrive topic=emails
+```
+
+```json
+{ "queue": "emails", "redriven": 1 }
+```
+
+The fixed function now processes them, so the DLQ is empty again:
+
+```bash
+iii trigger engine::queue::dlq_messages topic=emails
+```
+
+### Redriving or discarding a single message
+
+To handle one message instead of the whole topic, pass the `id` from `engine::queue::dlq_messages`.
+Redrive one message back to the main queue:
+
+```bash
+iii trigger iii::queue::redrive_message topic=emails message_id=0b9c…
+```
+
+```json
+{ "queue": "emails", "message_id": "0b9c…", "redriven": 1 }
+```
+
+Or discard it, deleting it from the DLQ permanently:
+
+```bash
+iii trigger iii::queue::discard_message topic=emails message_id=0b9c…
+```
+
+```json
+{ "queue": "emails", "message_id": "0b9c…", "redriven": 1 }
+```

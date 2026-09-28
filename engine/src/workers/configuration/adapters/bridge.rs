@@ -19,16 +19,17 @@ use tokio::sync::OnceCell;
 
 use crate::engine::Engine;
 use crate::workers::configuration::adapters::{
-    ConfigurationAdapter, ExternalChange, ExternalChangeSender, RegisterKind, RegisterOutcome,
-    SetOutcome,
+    AdapterEnsureOutcome, ConfigurationAdapter, EnsureCandidate, EnsureSupport, ExternalChange,
+    ExternalChangeSender, RegisterKind, RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::registry::{
     ConfigurationAdapterFuture, ConfigurationAdapterRegistration,
 };
 use crate::workers::configuration::structs::{
-    ConfigurationEntry, ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput,
-    ConfigurationListInput, ConfigurationListResult, ConfigurationRegisterInput,
-    ConfigurationSetInput,
+    ConfigurationEnsureInput, ConfigurationEnsureResult, ConfigurationEntry,
+    ConfigurationEventData, ConfigurationEventType, ConfigurationGetInput, ConfigurationListInput,
+    ConfigurationListResult, ConfigurationMigrateInput, ConfigurationMigrateResult,
+    ConfigurationRegisterInput, ConfigurationSetInput,
 };
 
 const DEFAULT_BRIDGE_URL: &str = "ws://localhost:49134";
@@ -82,6 +83,7 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl ConfigurationAdapter for BridgeAdapter {
+    /// Forward explicit legacy registration, including its intentional value-replacement semantics.
     async fn register(&self, entry: ConfigurationEntry) -> anyhow::Result<RegisterOutcome> {
         let raw = self
             .call(
@@ -105,11 +107,71 @@ impl ConfigurationAdapter for BridgeAdapter {
         })
     }
 
+    /// Initialization decisions belong to the remote engine rather than the local mirror.
+    fn ensure_support(&self) -> EnsureSupport {
+        // The authoritative store lives on the REMOTE engine; the local cache is
+        // only a mirror the local `write_lock` cannot guard across processes.
+        // The store must forward the decision to us so it happens where the
+        // value actually lives.
+        EnsureSupport::Delegated
+    }
+
+    /// Forward the untouched candidate to the remote atomic API; never retry as legacy register.
+    async fn ensure(&self, candidate: EnsureCandidate) -> anyhow::Result<AdapterEnsureOutcome> {
+        // Forward the ORIGINAL candidate to the REMOTE authoritative
+        // `configuration::ensure` so the seed-vs-preserve decision is made where
+        // the value actually lives. We deliberately never read the local cache
+        // and never fall back to `configuration::register`: a remote engine
+        // without `configuration::ensure` returns a hard error here (surfaced as
+        // ADAPTER_ERROR), which is fail-closed — a legacy register could
+        // overwrite operator state on the remote engine.
+        let raw = self
+            .call("configuration::ensure", build_ensure_input(candidate))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "remote configuration::ensure failed — an engine without \
+                     configuration::ensure is unsupported by the bridge (upgrade the remote \
+                     engine; NOT falling back to configuration::register): {}",
+                    e
+                )
+            })?;
+        let result: ConfigurationEnsureResult = serde_json::from_value(raw)
+            .map_err(|e| anyhow::anyhow!("decode remote ensure response: {}", e))?;
+        Ok(AdapterEnsureOutcome {
+            action: result.action,
+            entry: result.entry,
+        })
+    }
+
+    /// The remote authority migrates and archives the source; never copy through a local mirror.
+    async fn migrate(
+        &self,
+        from_id: &str,
+        to_id: &str,
+    ) -> anyhow::Result<ConfigurationMigrateResult> {
+        let capabilities = self.call("configuration::migration-capabilities", serde_json::json!({}))
+            .await.map_err(|e| anyhow::anyhow!("upgrade remote configuration authority: migration capabilities unavailable: {e}"))?;
+        anyhow::ensure!(
+            capabilities
+                .get("source_priority_archive_revision")
+                .and_then(Value::as_u64)
+                == Some(1),
+            "upgrade remote configuration authority: source-priority archival contract is unknown"
+        );
+        let raw = self.call("configuration::migrate", ConfigurationMigrateInput {
+            from_id: from_id.to_string(), to_id: to_id.to_string(),
+        }).await.map_err(|e| anyhow::anyhow!("remote configuration::migrate failed; upgrade the remote engine if unavailable; no copy/delete fallback: {e}"))?;
+        serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("decode migration response: {e}"))
+    }
+
+    /// Replace the authoritative remote value through its validated configuration API.
     async fn set(&self, id: &str, value: Value) -> anyhow::Result<SetOutcome> {
         let raw = self
             .call(
                 "configuration::set",
                 ConfigurationSetInput {
+                    flush: true,
                     id: id.to_string(),
                     value,
                 },
@@ -239,6 +301,7 @@ impl ConfigurationAdapter for BridgeAdapter {
             .set(sender)
             .map_err(|_| anyhow::anyhow!("watch already started"))?;
         let sender_lookup = self.sender.clone();
+        let raw_reader = self.bridge.clone();
 
         // Register the relay handler on this bridge worker — when the
         // remote engine fires the `configuration` trigger we registered
@@ -247,16 +310,45 @@ impl ConfigurationAdapter for BridgeAdapter {
             RELAY_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
                 let sender_lookup = sender_lookup.clone();
+                let raw_reader = raw_reader.clone();
                 async move {
                     let event: ConfigurationEventData = serde_json::from_value(payload)
                         .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
+                        // Events carry applied values. Re-read raw before updating
+                        // the local store, or migration's template would become a secret.
+                        let raw_value =
+                            if matches!(event.event_type, ConfigurationEventType::Deleted) {
+                                Value::Null
+                            } else {
+                                match raw_reader
+                                    .trigger(TriggerRequest {
+                                        function_id: "configuration::get".into(),
+                                        payload: serde_json::json!({ "id": event.id, "raw": true }),
+                                        action: None,
+                                        timeout_ms: Some(DEFAULT_TIMEOUT_MS),
+                                    })
+                                    .await
+                                {
+                                    Ok(raw) => raw.get("value").cloned().ok_or_else(|| {
+                                        iii_sdk::Error::Handler(
+                                            "remote raw get omitted value".into(),
+                                        )
+                                    })?,
+                                    Err(iii_sdk::Error::Remote { code, .. })
+                                        if code == "NOT_FOUND" =>
+                                    {
+                                        return Ok(Value::Null);
+                                    }
+                                    Err(err) => return Err(err),
+                                }
+                            };
                         let entry = ConfigurationEntry {
                             id: event.id.clone(),
                             name: event.name.clone(),
                             description: event.description.clone(),
                             schema: event.schema.clone(),
-                            value: event.new_value.clone().unwrap_or(Value::Null),
+                            value: raw_value,
                             metadata: event.metadata.clone(),
                         };
                         let change = match event.event_type {
@@ -288,6 +380,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         Ok(())
     }
 
+    /// Unregister the relay and close the remote client without deleting configuration entries.
     async fn destroy(&self) -> anyhow::Result<()> {
         if let Some(trigger) = self
             .relay_trigger
@@ -302,6 +395,23 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 }
 
+/// Build the remote `configuration::ensure` input from a delegated candidate,
+/// forwarding the ORIGINAL seed candidate verbatim. Kept as a free function so
+/// it can be unit-tested without a live remote engine: the whole point of the
+/// bridge ensure path is that the candidate reaches the remote unchanged and no
+/// local cache value is ever substituted.
+fn build_ensure_input(candidate: EnsureCandidate) -> ConfigurationEnsureInput {
+    ConfigurationEnsureInput {
+        id: candidate.id,
+        name: candidate.name,
+        description: candidate.description,
+        schema: candidate.schema,
+        initial_value: candidate.candidate,
+        metadata: candidate.metadata,
+    }
+}
+
+/// Build a remote-backed adapter from its configured URL, falling back to the default bridge address.
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAdapterFuture {
     Box::pin(async move {
         let bridge_url = config
@@ -315,3 +425,44 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAda
 }
 
 crate::register_adapter!(<ConfigurationAdapterRegistration> name: "bridge", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    /// Preserve the candidate and metadata without substituting a cached local value.
+    fn build_ensure_input_forwards_original_candidate_verbatim() {
+        let candidate = EnsureCandidate {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "desc".into(),
+            schema: json!({ "type": "object" }),
+            candidate: Some(json!({ "port": 3112 })),
+            metadata: Some(json!({ "owner": "team" })),
+        };
+        let input = build_ensure_input(candidate);
+        // The remote engine — not the local cache — decides seed vs preserve, so
+        // the candidate must reach it exactly as supplied.
+        assert_eq!(input.id, "iii-stream");
+        assert_eq!(input.initial_value, Some(json!({ "port": 3112 })));
+        assert_eq!(input.schema, json!({ "type": "object" }));
+        assert_eq!(input.metadata, Some(json!({ "owner": "team" })));
+    }
+
+    #[test]
+    /// Missing candidates stay absent instead of becoming an explicit null seed.
+    fn build_ensure_input_preserves_absent_candidate() {
+        let candidate = EnsureCandidate {
+            id: "demo".into(),
+            name: "Demo".into(),
+            description: String::new(),
+            schema: json!({ "type": "object" }),
+            candidate: None,
+            metadata: None,
+        };
+        let input = build_ensure_input(candidate);
+        assert_eq!(input.initial_value, None);
+    }
+}

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { WebSocket } from 'ws'
 
 globalThis.WebSocket = WebSocket as unknown as typeof globalThis.WebSocket
@@ -19,16 +19,16 @@ describe('Trigger type lifecycle (two workers)', () => {
   let provider: ISdk
   let consumer: ISdk
   const bindings = new Map<string, TriggerConfig<TestTriggerConfig>>()
-  let registerTriggerSpy: ReturnType<typeof vi.fn>
-  let unregisterTriggerSpy: ReturnType<typeof vi.fn>
-  let handlerSpy: ReturnType<typeof vi.fn>
+  let registerTriggerSpy: Mock<(cfg: TriggerConfig<any>) => Promise<void>>
+  let unregisterTriggerSpy: Mock<(cfg: TriggerConfig<any>) => Promise<void>>
+  let handlerSpy: Mock<(payload: { n?: number }) => Promise<{ ok: boolean; payload: { n?: number } }>>
 
   function createProvider(): ISdk {
     bindings.clear()
     registerTriggerSpy = vi.fn(async (cfg: TriggerConfig<TestTriggerConfig>) => {
       bindings.set(cfg.id, cfg)
     })
-    unregisterTriggerSpy = vi.fn()
+    unregisterTriggerSpy = vi.fn<(cfg: TriggerConfig<any>) => Promise<void>>()
 
     const sdk = registerWorker(engineWsUrl, {
       reconnectionConfig: { maxRetries: 3, initialDelayMs: 100, maxDelayMs: 1000 },

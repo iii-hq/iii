@@ -568,6 +568,7 @@ body,
 }
 
 /* Keyboard focus lands on the clipped radio, so ring its pill instead. */
+.iii-qs:has(#qs-llm:focus-visible) .iii-qs-pill[for="qs-llm"],
 .iii-qs:has(#qs-none:focus-visible) .iii-qs-pill[for="qs-none"],
 .iii-qs:has(#qs-openai:focus-visible) .iii-qs-pill[for="qs-openai"],
 .iii-qs:has(#qs-anthropic:focus-visible) .iii-qs-pill[for="qs-anthropic"],
@@ -583,6 +584,7 @@ body,
   outline-offset: 2px;
 }
 
+.iii-qs:has(#qs-llm:checked) .iii-qs-pill[for="qs-llm"],
 .iii-qs:has(#qs-none:checked) .iii-qs-pill[for="qs-none"],
 .iii-qs:has(#qs-openai:checked) .iii-qs-pill[for="qs-openai"],
 .iii-qs:has(#qs-anthropic:checked) .iii-qs-pill[for="qs-anthropic"],
@@ -649,6 +651,7 @@ body,
   display: none;
 }
 
+.iii-qs:has(#qs-llm:checked) .iii-qs-slot[data-qs="llm"],
 .iii-qs:has(#qs-none:checked) .iii-qs-slot[data-qs="none"],
 .iii-qs:has(#qs-openai:checked) .iii-qs-slot[data-qs="openai"],
 .iii-qs:has(#qs-anthropic:checked) .iii-qs-slot[data-qs="anthropic"],
