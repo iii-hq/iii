@@ -410,8 +410,8 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
 A dependency that Compose generated for another declared package does not move to `latest` on its
 own. It follows the version that package's dependency graph selects. If no updated graph includes it
-any more but another worker still lists it in `start_after`, Compose leaves it unchanged and prints a
-warning.
+any more but a worker outside the updated plan still lists it in `start_after`, Compose leaves it
+unchanged and prints a warning.
 
 ```bash
 iii trigger compose::update
@@ -430,6 +430,13 @@ updates changed dependencies, and removes stale dependencies that Compose genera
 graph includes them and no worker outside the updated graphs lists them in `start_after`. Removing a
 dependency also removes the `start_after` entries that point to it. Manually declared workers are not
 removed.
+
+Compose does not track ownership of individual `start_after` entries. An old edge on a container
+being updated does not protect a generated dependency that its new registry graph no longer needs;
+cleanup removes both that generated container and references to it. To keep a dependency independently
+of the registry graph, remove the `# added by compose::add` comment immediately above its container
+block before updating. Compose then treats that block as operator-owned and does not remove it as a
+stale generated dependency. Its `start_after` references remain intact.
 
 A declared dependency of a selected worker that is not selected itself follows the resolved graph:
 

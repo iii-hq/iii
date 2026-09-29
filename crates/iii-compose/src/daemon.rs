@@ -2743,6 +2743,48 @@ containers:
         );
     }
 
+    #[test]
+    fn update_keeps_an_operator_owned_dependency_dropped_from_the_registry_graph() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("worker-compose.yaml");
+        // The operator adopted this dependency by removing its generated marker.
+        // Its old registry membership alone must not make it removable.
+        let generated_text = format!(
+            "containers:\n  api:\n    worker: package://api\n    version: latest\n\
+             \x20   start_after: [owned-dep]\n\
+             {MARKED}  owned-dep:\n    worker: package://owned-dep\n    version: '1.0.0'\n"
+        );
+        let text = generated_text.replace(MARKED, "");
+        let compose = crate::ComposeFile::parse(&text, &path).unwrap();
+        let previous = BTreeMap::from([(
+            "api".to_string(),
+            BTreeSet::from(["api".to_string(), "owned-dep".to_string()]),
+        )]);
+        let api = crate::edit::NewContainer {
+            key: "api".to_string(),
+            source: crate::edit::Source::Package {
+                reference: "api".to_string(),
+                version: Some("latest".to_string()),
+            },
+            start_after: Vec::new(),
+            fields: serde_yaml::Mapping::new(),
+        };
+        let plan = crate::dependencies::Plan {
+            containers: vec![api.clone()],
+            aliases: Vec::new(),
+            selected_versions: BTreeMap::from([("api".to_string(), "2.0.0".to_string())]),
+        };
+
+        let edit = apply_update_plan(&text, &compose, &previous, &[api], plan).unwrap();
+        let edited = crate::ComposeFile::parse(&edit.edited, &path).unwrap();
+
+        assert!(edited.containers.contains_key("owned-dep"));
+        assert_eq!(edited.containers["api"].start_after, vec!["owned-dep"]);
+        assert!(!edit.resolved_graphs["api"].contains("owned-dep"));
+        assert!(!edit.yaml_changed);
+        assert_eq!(edit.edited, text);
+    }
+
     fn registry_node(name: &str, version: &str) -> crate::registry::Node {
         crate::registry::Node {
             name: name.to_string(),
