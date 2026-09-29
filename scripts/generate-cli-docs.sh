@@ -54,10 +54,9 @@ To turn the usage data off, do one of these:
 
 The engine and `iii compose` also turn their product-usage data off automatically if they detect that they are running in a CICD environment. When engine telemetry is off, the engine discards usage reports from workers instead of storing them.
 
-This setting controls product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
+This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
 TELEMETRY_MDX
 } > "$OUT_FILE"
-
 # Re-render the per-doc skill artifact (<page>.mdx.skill.md) that the
 # skill-check workflow verifies. Optional locally; CI's skill-check job is
 # the authority.

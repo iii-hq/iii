@@ -431,17 +431,22 @@ fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String)> 
 
 /// Compares the package fields that can change worker runtime behavior.
 fn runtime_package_changed(previous: &ResolvedPackage, next: &ResolvedPackage) -> bool {
-    let target = crate::registry::host_target();
+    runtime_package_changed_for(crate::registry::host_targets(), previous, next)
+}
+
+/// Each side's build is selected on its own: a lock that drops the musl
+/// build a musl host was running switches the worker to the glibc one, even
+/// when that glibc build did not change.
+fn runtime_package_changed_for(
+    candidates: &[&str],
+    previous: &ResolvedPackage,
+    next: &ResolvedPackage,
+) -> bool {
+    use crate::registry::selected_artifact;
     previous.kind != next.kind
         || previous.default_config != next.default_config
-        || previous
-            .artifacts
-            .get(target)
-            .map(|artifact| artifact.sha256.to_ascii_lowercase())
-            != next
-                .artifacts
-                .get(target)
-                .map(|artifact| artifact.sha256.to_ascii_lowercase())
+        || selected_artifact(candidates, &previous.artifacts)
+            != selected_artifact(candidates, &next.artifacts)
 }
 
 /// The lock sits beside its compose file and replaces the YAML extension.
@@ -760,6 +765,52 @@ mod tests {
             "https://mirror.example.com/state.tar.gz".to_string();
 
         assert!(!runtime_package_changed(&previous, &next));
+    }
+
+    #[test]
+    fn a_switch_between_host_builds_changes_runtime_content() {
+        const MUSL: &str = "x86_64-unknown-linux-musl";
+        const GNU: &str = "x86_64-unknown-linux-gnu";
+        let package = |builds: &[(&str, char)]| ResolvedPackage {
+            artifacts: builds
+                .iter()
+                .map(|(target, digest)| {
+                    (
+                        target.to_string(),
+                        RegistryArtifact {
+                            url: "https://example.com/state.tar.gz".to_string(),
+                            sha256: digest.to_string().repeat(64),
+                        },
+                    )
+                })
+                .collect(),
+            ..lock().containers.remove("state").unwrap().resolved
+        };
+        let both = package(&[(MUSL, 'a'), (GNU, 'b')]);
+        let glibc_only = package(&[(GNU, 'b')]);
+        let musl_on_glibc = [MUSL, GNU];
+
+        // A musl host ran musl A; the next lock has only the unchanged glibc
+        // build B, so the worker moves from A to B, and back again.
+        assert!(runtime_package_changed_for(
+            &musl_on_glibc,
+            &both,
+            &glibc_only
+        ));
+        assert!(runtime_package_changed_for(
+            &musl_on_glibc,
+            &glibc_only,
+            &both
+        ));
+        // A new build this host does not run changes nothing it runs.
+        let new_glibc = package(&[(MUSL, 'a'), (GNU, 'c')]);
+        assert!(!runtime_package_changed_for(
+            &musl_on_glibc,
+            &both,
+            &new_glibc
+        ));
+        // A glibc host ran B all along.
+        assert!(!runtime_package_changed_for(&[GNU], &both, &glibc_only));
     }
 
     #[tokio::test]
