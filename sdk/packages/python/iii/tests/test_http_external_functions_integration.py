@@ -128,6 +128,7 @@ class WebhookProbe:
 
 def _make_fake_ws_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Set up a FakeWs monkeypatch and return the list that collects sent messages."""
+    import asyncio
     from types import SimpleNamespace
 
     import iii.iii as iii_module
@@ -137,16 +138,22 @@ def _make_fake_ws_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     class FakeWs:
         state = SimpleNamespace(name="OPEN")
 
+        def __init__(self) -> None:
+            self._closed = asyncio.Event()
+
         async def send(self, payload: str) -> None:
             sent.append(json.loads(payload))
 
         async def close(self) -> None:
             self.state = SimpleNamespace(name="CLOSED")
+            self._closed.set()
 
         def __aiter__(self):
             return self
 
         async def __anext__(self):
+            # Like a real socket: iteration blocks while open and ends on close.
+            await self._closed.wait()
             raise StopAsyncIteration
 
     async def fake_connect(_: str, **kwargs: object) -> FakeWs:

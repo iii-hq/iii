@@ -417,12 +417,14 @@ class III:
         self._loop.call_soon(self._loop.stop)
 
     async def _do_connect(self) -> None:
+        ws: ClientConnection | None = None
         try:
             log.debug(f"Connecting to {self._address}")
-            self._ws = await websockets.connect(
+            ws = await websockets.connect(
                 self._address,
                 additional_headers=self._options.headers,
             )
+            self._ws = ws
             log.info(f"Connected to {self._address}")
             await self._on_connected()
         except Exception as e:
@@ -437,6 +439,19 @@ class III:
             # a zombie with zero retries. CancelledError is BaseException,
             # so shutdown cancellation still propagates.
             log.warning(f"Connection failed: {type(e).__name__}: {e}")
+            if ws is not None and self._ws is ws:
+                # The socket failed after the handshake, before the receive
+                # loop started (e.g. a proxy reload closed it while the
+                # registrations were replayed). Keeping it in `_ws` would end
+                # the reconnect loop (`while not self._ws`) with no receiver:
+                # the same zombie as iii-hq/iii#2180.
+                self._ws = None
+                if self._fatal_error is None:
+                    self._set_connection_state("disconnected")
+                try:
+                    await ws.close()
+                except Exception as close_error:
+                    log.debug(f"Closing the failed socket raised: {close_error!r}")
             if self._running:
                 self._schedule_reconnect()
 
@@ -474,7 +489,6 @@ class III:
             await self._do_connect()
 
     async def _on_connected(self) -> None:
-        self._reconnect_attempt = 0
         self._set_connection_state("connected")
         # Reconnect: present the previous engine-assigned identity BEFORE the
         # registration replay so the engine retires the old connection and the
@@ -506,23 +520,52 @@ class III:
         self._register_worker_metadata()
 
         self._receiver_task = asyncio.create_task(self._receive_loop())
+        # Reset the backoff only once setup succeeded: a failure inside
+        # _on_connected counts as an attempt (and against max_retries). A
+        # connection that closes after setup restarts the backoff, as in the
+        # Node SDK.
+        self._reconnect_attempt = 0
 
     async def _receive_loop(self) -> None:
-        if not self._ws:
+        ws = self._ws
+        if not ws:
             return
         try:
-            async for msg in self._ws:
-                await self._handle_message(msg)
+            async for msg in ws:
+                try:
+                    await self._handle_message(msg)
+                except Exception:
+                    # One bad frame must not end the loop: the socket would stay
+                    # open with nobody reading it, so the worker keeps reporting
+                    # `connected` while it never answers again. The Node SDK
+                    # logs and drops unparseable frames; this also contains
+                    # errors raised while dispatching a parsed message.
+                    log.exception("Failed to handle incoming message")
         except websockets.ConnectionClosed:
-            log.debug("Connection closed")
-            self._ws = None
-            # A fatal registration rejection already set the terminal `failed`
-            # state and cleared `_running`; the socket close it triggers must not
-            # regress the state back to `disconnected`.
-            if self._fatal_error is None:
-                self._set_connection_state("disconnected")
-            if self._running:
-                self._schedule_reconnect()
+            pass
+        # Reached on every close. A normal close (1000/1001, e.g. an engine
+        # restart seen through a reverse proxy) ends `async for` quietly,
+        # because websockets swallows ConnectionClosedOK; an abnormal one
+        # raises ConnectionClosed above (iii-hq/iii#2180). Not a `finally`:
+        # shutdown cancels this task and must still find `_ws` to close it.
+        if self._ws is not ws:
+            # A stale loop: shutdown or a newer connection already owns `_ws`.
+            log.debug("Stale connection closed")
+            return
+        self._ws = None
+        # INFO with the close code: a proxy-initiated close (e.g. 1001 on a
+        # reload) followed by a reconnect should be visible without debug logs.
+        log.info(
+            f"Connection closed (code={getattr(ws, 'close_code', None)}, "
+            f"reason={getattr(ws, 'close_reason', None)!r})"
+        )
+        # A fatal registration rejection already set the terminal `failed`
+        # state and cleared `_running`; the socket close it triggers must not
+        # regress the state back to `disconnected`.
+        if self._fatal_error is None:
+            self._set_connection_state("disconnected")
+        if self._running:
+            self._schedule_reconnect()
 
     # Message handling
 
@@ -675,6 +718,12 @@ class III:
         pending = self._pending.pop(invocation_id, None)
         if not pending:
             log.debug(f"No pending invocation: {invocation_id}")
+            return
+
+        if pending.future.done():
+            # The caller stopped waiting (its await was cancelled); settling a
+            # done future raises InvalidStateError.
+            log.debug(f"Dropping result for settled invocation: {invocation_id}")
             return
 
         if error:
@@ -954,7 +1003,7 @@ class III:
 
         trigger_id = data.get("id", "")
         trigger_type = data.get("trigger_type", "")
-        message = error.get("message", "")
+        message = error.get("message", "") if isinstance(error, dict) else str(error)
         log.error(
             "[iii] Trigger registration failed for %r (%s): %s",
             trigger_id,
@@ -1494,33 +1543,39 @@ class III:
             future=future, function_id=function_id
         )
 
-        enqueue_action: TriggerActionEnqueue | None = (
-            action if isinstance(action, TriggerActionEnqueue) else None
-        )
-
-        await self._send(
-            InvokeFunctionMessage(
-                function_id=function_id,
-                data=payload,
-                metadata=metadata,
-                invocation_id=invocation_id,
-                traceparent=self._inject_traceparent(),
-                baggage=self._inject_baggage(),
-                action=enqueue_action,
-                namespace=namespace,
-            )
-        )
-
         try:
-            return await asyncio.wait_for(future, timeout=timeout_secs)
-        except asyncio.TimeoutError:
-            self._pending.pop(invocation_id, None)
-            raise InvocationError(
-                code="TIMEOUT",
-                message=f"invocation timed out after {timeout_ms}ms",
-                function_id=function_id,
-                invocation_id=invocation_id,
+            enqueue_action: TriggerActionEnqueue | None = (
+                action if isinstance(action, TriggerActionEnqueue) else None
             )
+
+            await self._send(
+                InvokeFunctionMessage(
+                    function_id=function_id,
+                    data=payload,
+                    metadata=metadata,
+                    invocation_id=invocation_id,
+                    traceparent=self._inject_traceparent(),
+                    baggage=self._inject_baggage(),
+                    action=enqueue_action,
+                    namespace=namespace,
+                )
+            )
+
+            try:
+                return await asyncio.wait_for(future, timeout=timeout_secs)
+            except asyncio.TimeoutError:
+                raise InvocationError(
+                    code="TIMEOUT",
+                    message=f"invocation timed out after {timeout_ms}ms",
+                    function_id=function_id,
+                    invocation_id=invocation_id,
+                )
+        finally:
+            # Drop the entry on every exit once it is registered: a failed or
+            # cancelled send, a timeout, or the caller's await being cancelled
+            # (e.g. an outer asyncio.wait_for shorter than this timeout), so a
+            # late result finds nothing left to settle.
+            self._pending.pop(invocation_id, None)
 
     # Internal: backing methods for items in the `iii.helpers` submodule.
     # These are renamed with a leading underscore so they don't appear on the
