@@ -2840,6 +2840,74 @@ containers:
         );
     }
 
+    #[tokio::test]
+    async fn update_preserves_operator_path_edges_on_roots_and_unchanged_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("local-db")).unwrap();
+        let path = tmp.path().join("worker-compose.yaml");
+        let text = concat!(
+            "containers:\n",
+            "  api:\n    worker: package://api.workers.iii.dev/api\n    version: latest\n",
+            "    start_after: [local-db, shell] # operator ordering\n",
+            "  shell:\n    worker: package://api.workers.iii.dev/shell\n    version: latest\n",
+            "    start_after: [local-db, helper] # also required outside the registry graph\n",
+            "  helper:\n    worker: package://api.workers.iii.dev/helper\n    version: '1.0.0'\n",
+            "  local-db:\n    worker: path://./local-db\n",
+        );
+        let compose = crate::ComposeFile::parse(text, &path).unwrap();
+        let graphs = BTreeMap::new();
+        let asked =
+            workers_to_update(&compose, &["api".to_string()], &BTreeSet::new(), &graphs).unwrap();
+        let (roots, _) = update_roots(&compose, &asked).unwrap();
+        let plan = crate::dependencies::plan_with(
+            &compose,
+            &roots,
+            &crate::dependencies::Policy::Update {
+                generated: BTreeSet::new(),
+            },
+            |key, _, _| async move {
+                assert_eq!(key, "api");
+                Ok(crate::registry::Graph {
+                    nodes: vec![
+                        registry_node("api", "1.0.0"),
+                        registry_node("shell", "1.0.0"),
+                        registry_node("helper", "1.0.0"),
+                    ],
+                    edges: vec![
+                        ("api".to_string(), "shell".to_string()),
+                        ("shell".to_string(), "helper".to_string()),
+                    ],
+                })
+            },
+            |key, _, _| async move {
+                assert!(matches!(key.as_str(), "shell" | "helper"));
+                // Existing declarations resolve to the same releases as the graph.
+                Ok(registry_node(&key, "1.0.0"))
+            },
+        )
+        .await
+        .unwrap();
+
+        let shell = plan.containers.iter().find(|c| c.key == "shell").unwrap();
+        assert_eq!(shell.start_after, vec!["helper"]);
+        assert!(!plan.selected_versions.contains_key("shell"));
+        // The planner supplies registry edges. The editor must retain the
+        // operator's extra edges for both this dependency and the root.
+        let edit = apply_update_plan(text, &compose, &graphs, &roots, plan).unwrap();
+        let edited = crate::ComposeFile::parse(&edit.edited, &path).unwrap();
+        assert_eq!(
+            edited.containers["api"].start_after,
+            vec!["local-db", "shell"]
+        );
+        assert_eq!(
+            edited.containers["shell"].start_after,
+            vec!["local-db", "helper"]
+        );
+        assert!(!edit.yaml_changed);
+        assert_eq!(edit.edited, text);
+        assert!(!runtime_topology_changed(&compose, &edited));
+    }
+
     #[test]
     fn update_without_a_selector_keeps_an_exact_version() {
         assert_eq!(update_selector(None, "0.22.8"), "0.22.8");
