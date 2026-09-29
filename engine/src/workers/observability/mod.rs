@@ -9447,6 +9447,92 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn test_list_traces_never_takes_a_hot_child_of_an_archived_span_for_a_root() {
+        reset_observability_test_state();
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let _guard = attach_test_archive(directory.path());
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        // Archived: an internal root and its child.
+        span_storage.add_spans(vec![
+            make_span(
+                "t-int",
+                "r-int",
+                None,
+                "internal",
+                "svc",
+                10,
+                100,
+                "ok",
+                vec![("function_id", "engine::traces::list")],
+            ),
+            make_span(
+                "t-int",
+                "c-int",
+                Some("r-int"),
+                "child",
+                "svc",
+                20,
+                90,
+                "ok",
+                vec![],
+            ),
+        ]);
+        flush_test_archive();
+        span_storage.clear();
+        // Hot: a grandchild whose parent lives only in the archive, as a
+        // non-root the root view never loads. It is not a root.
+        span_storage.add_spans(vec![
+            make_span(
+                "t-int",
+                "g-int",
+                Some("c-int"),
+                "grandchild",
+                "svc",
+                50,
+                60,
+                "ok",
+                vec![],
+            ),
+            make_span(
+                "t-ext",
+                "r-ext",
+                None,
+                "external",
+                "svc",
+                40,
+                45,
+                "ok",
+                vec![],
+            ),
+        ]);
+
+        let list = |include_internal: bool| {
+            module.list_traces(TracesListInput {
+                include_internal: Some(include_internal),
+                sort_order: Some("desc".to_string()),
+                ..Default::default()
+            })
+        };
+        let ids = |result: FunctionResult<TracesListResult, ErrorBody>| match result {
+            FunctionResult::Success(value) => value
+                .traces
+                .iter()
+                .map(|trace| trace.trace_id.clone())
+                .collect::<Vec<_>>(),
+            _ => panic!("expected list_traces success"),
+        };
+
+        // The internal trace stays hidden, and with internals it sorts by its
+        // real root (start 10), not by the grandchild (start 50).
+        assert_eq!(ids(list(false).await), vec!["t-ext"]);
+        assert_eq!(ids(list(true).await), vec!["t-ext", "t-int"]);
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_list_traces_root_page_widens_past_demoted_archived_children() {
         reset_observability_test_state();
         let directory = tempfile::tempdir().expect("temp trace directory");
