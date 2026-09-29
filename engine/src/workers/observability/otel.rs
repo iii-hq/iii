@@ -1496,6 +1496,64 @@ pub fn get_query_root_spans() -> Vec<StoredSpan> {
     spans
 }
 
+/// `get_query_root_spans` without the payloads: the same hot overlay and
+/// dangling-parent rule over lightweight keys, for a listing that only sorts,
+/// dedupes and pages roots before reading the spans of one page. Decoding
+/// every archived root payload made each call cost the whole history.
+pub(crate) fn get_query_root_span_keys() -> Vec<super::trace_store::RootSpanKey> {
+    let started = Instant::now();
+    let mut merged = HashMap::<(String, String), super::trace_store::RootSpanKey>::new();
+    let mut archive_count = 0;
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_root_span_keys() {
+            Ok(keys) => {
+                archive_count = keys.len();
+                for key in keys {
+                    merged.insert((key.trace_id.clone(), key.span_id.clone()), key);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    let mut hot_count = 0;
+    if let Some(storage) = get_span_storage() {
+        let hot = storage.get_spans();
+        hot_count = hot.len();
+        for span in hot {
+            merged.insert(
+                (span.trace_id.clone(), span.span_id.clone()),
+                super::trace_store::RootSpanKey {
+                    is_internal: is_internal_span(&span.attributes),
+                    trace_id: span.trace_id,
+                    span_id: span.span_id,
+                    parent_span_id: span.parent_span_id,
+                    start_time_ns: span.start_time_unix_nano,
+                },
+            );
+        }
+    }
+
+    let present_span_ids: HashSet<String> =
+        merged.values().map(|key| key.span_id.clone()).collect();
+    let keys: Vec<_> = merged
+        .into_values()
+        .filter(|key| {
+            key.parent_span_id
+                .as_ref()
+                .is_none_or(|parent| !present_span_ids.contains(parent))
+        })
+        .collect();
+    tracing::debug!(
+        query_view = "root_span_keys",
+        archive_roots = archive_count,
+        hot_spans = hot_count,
+        result_roots = keys.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query view materialized"
+    );
+    keys
+}
+
 /// The in-memory internal-span rule; must stay in lockstep with
 /// `INTERNAL_SPAN_PREDICATE_SQL` in the trace store.
 fn is_internal_span(attributes: &[(String, String)]) -> bool {
