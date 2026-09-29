@@ -32,8 +32,8 @@ SKIP_FRONTEND_BUILD=1 cargo run --quiet -p iii-console -- gen-cli-docs --out "$T
 mkdir -p "$OUT_DIR"
 # The Telemetry section is hand-authored prose, not a clap tree, so it is
 # appended here after both generated fragments to sit at the bottom of the
-# page. Keep it in sync with the CLI's opt-out gate
-# (iii::workers::telemetry::environment::env_opt_out).
+# page. Keep it in sync with the engine and CLI/Compose product-usage gates
+# (`workers::telemetry::check_disabled` and `cli::telemetry::is_telemetry_disabled`).
 {
   cat "$TMP/iii.mdx"
   echo
@@ -42,17 +42,19 @@ mkdir -p "$OUT_DIR"
 
 ## Telemetry
 
-The engine sends anonymous usage data by default. This data helps to improve iii and contains no personal information.
+The engine sends anonymous usage data by default. This data helps to improve iii. It contains no personal information unless you choose to enter your email address when you sign up. In that case, the engine attaches that email address to your usage profile.
+
+`iii compose` also reports its own usage data, such as whether a run succeeded, how long it took, how many containers it managed, and a fixed error code if it failed. These reports never include file paths, container names, worker references, or error messages.
 
 To turn the usage data off, do one of these:
 
-- Set `III_TELEMETRY_ENABLED` to `false`, `0`, `no`, or `off` before you start `iii`. Letter case does not matter, and leading or trailing spaces are ignored. Any other value, or no value, keeps the usage data on.
-- Create the file `~/.iii/telemetry_dev_optout`. The engine reads this file whenever the process starts.
-- Set `telemetry.enabled: false` in the engine configuration.
+- Set `III_TELEMETRY_ENABLED` to `false`, `0`, `no`, or `off` before you start `iii`. Letter case does not matter, and leading or trailing spaces are ignored. Any other value, or no value, keeps the usage data on. This disables both engine and `iii compose` product-usage reports.
+- Create the file `~/.iii/telemetry_dev_optout`. The engine and `iii compose` read this marker whenever the process starts.
+- Set `telemetry.enabled: false` in the engine configuration. This setting applies only to engine telemetry.
 
-The engine also turns the usage data off automatically if it detects that it is in a CICD environment.
+The engine and `iii compose` also turn their product-usage data off automatically if they detect that they are running in a CICD environment. When engine telemetry is off, the engine discards usage reports from workers instead of storing them.
 
-This setting controls anonymous product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
+This setting controls product-usage data only. It does not change OpenTelemetry observability (traces, metrics, and logs) for your own monitoring of your iii system.
 TELEMETRY_MDX
 } > "$OUT_FILE"
 
