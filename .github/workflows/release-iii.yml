@@ -735,6 +735,101 @@ jobs:
             --repo iii-hq/quickstart-validator --ref main -f channel="$CHANNEL"
 
   # ──────────────────────────────────────────────────────────────
+  # Harness E2E on the release just published
+  #
+  # Installs this exact version and runs the E2E `pr` suite on it, then
+  # answers in the release's Slack thread. It warns and never gates: the job
+  # turns red when the stack did not pass, and it stays out of
+  # `notify-complete`, whose colour is about publishing. The verdict comes
+  # from the run's summary, not its conclusion.
+  #
+  # When E2E executions go through Release Control's ledger, its own Slack
+  # message replaces this reply and the Slack steps below should go.
+  # ──────────────────────────────────────────────────────────────
+
+  verify-e2e:
+    name: Harness E2E on the release
+    needs:
+      - setup
+      - engine-release
+      - worker-release
+      - console-release
+      - sdk-npm
+      - sdk-npm-browser
+      - sdk-py
+      - sdk-rust
+      - sdk-go
+      - observability-npm
+      - observability-py
+      - observability-rust
+      - publish-builtin-workers
+      - publish-worker-skills
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the pr suite on this release
+        id: e2e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@e13e884fb6c292e5796e445be67157ef4bfce04e
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          iii: ${{ needs.setup.outputs.version }}
+
+      # Built with jq so a scenario name or an error message cannot break the
+      # payload, and escaped the way Slack's mrkdwn asks.
+      - name: Compose the Slack reply
+        id: message
+        if: always() && needs.setup.outputs.slack_ts != ''
+        env:
+          STATUS: ${{ steps.e2e.outputs.status }}
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+          RUN_URL: ${{ steps.e2e.outputs.run_url }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          THREAD_TS: ${{ needs.setup.outputs.slack_ts }}
+        run: |
+          case "$STATUS" in
+            passed) icon=":large_green_circle:" ;;
+            failed) icon=":red_circle:" ;;
+            *) icon=":large_yellow_circle:"; STATUS=not_measured ;;
+          esac
+          SUMMARY=${SUMMARY:-the verification did not run; see the workflow}
+          jq -n --arg channel "$CHANNEL_ID" --arg ts "$THREAD_TS" --arg icon "$icon" \
+            --arg version "$VERSION" --arg status "$STATUS" --arg summary "$SUMMARY" --arg url "$RUN_URL" '
+            def mrkdwn: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+            {channel: $channel, thread_ts: $ts, text: "Harness E2E \($status)",
+             blocks: [{type: "section", text: {type: "mrkdwn",
+               text: "\($icon) *Harness E2E* on iii v\($version | mrkdwn)\n\($summary | mrkdwn)\(if $url != "" then "\n<\($url)|View run>" else "" end)"}}]}
+          ' > "$RUNNER_TEMP/e2e-slack.json"
+
+      - name: Reply in the release thread
+        if: always() && steps.message.outcome == 'success'
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload-file-path: ${{ runner.temp }}/e2e-slack.json
+
+      - name: Turn red when the stack did not pass
+        if: always() && steps.e2e.outputs.status != 'passed' && steps.e2e.outputs.status != 'skipped'
+        env:
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+        run: |
+          echo "::warning::Harness E2E: ${SUMMARY:-no verdict}"
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────
   # Notification: Complete
   # ──────────────────────────────────────────────────────────────
 
