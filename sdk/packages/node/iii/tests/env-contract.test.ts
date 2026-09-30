@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_ENGINE_URL, registerWorker } from '../src/iii'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_ENGINE_URL, registerWorker as connect } from '../src/iii'
 
 /**
  * `registerWorker()` with no address: the supervisor that spawned this process
@@ -8,13 +8,27 @@ import { DEFAULT_ENGINE_URL, registerWorker } from '../src/iii'
  */
 describe('registerWorker — engine address resolution', () => {
   let previous: string | undefined
+  // Every worker here dials an engine that is not there. Left running, its
+  // reconnect and OTel sockets log after the file ends, and vitest fails the
+  // run when a log is still in flight as it closes the worker rpc.
+  const workers: ReturnType<typeof connect>[] = []
+  const registerWorker = (...args: Parameters<typeof connect>) => {
+    const worker = connect(...args)
+    workers.push(worker)
+    return worker
+  }
 
   beforeEach(() => {
     previous = process.env.III_URL
     delete process.env.III_URL
+    // Keeps the shared OTel connection of `tests/utils` from being replaced
+    // (and orphaned) by one per worker.
+    vi.stubEnv('OTEL_ENABLED', 'false')
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(workers.splice(0).map((worker) => worker.shutdown()))
+    vi.unstubAllEnvs()
     if (previous === undefined) {
       delete process.env.III_URL
     } else {
