@@ -13,7 +13,7 @@
 use super::{config::TraceStorageConfig, otel::InMemorySpanStorage};
 use rusqlite::{Connection, ToSql, params, params_from_iter};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -132,6 +132,8 @@ pub(crate) struct RootSpanKey {
     pub trace_id: String,
     pub span_id: String,
     pub parent_span_id: Option<String>,
+    pub name: String,
+    pub service_name: String,
     pub start_time_ns: u64,
     pub is_internal: bool,
 }
@@ -421,8 +423,8 @@ impl TraceDiskStore {
             .map_err(|err| database_error(&self.database_path, "root keys initialization", err))?;
         let epoch = self.epoch.load(Ordering::Acquire) as i64;
         let query = format!(
-            "SELECT s.trace_id, s.span_id, s.parent_span_id, s.start_time_ns,
-                    {INTERNAL_SPAN_PREDICATE_SQL} AS is_internal
+            "SELECT s.trace_id, s.span_id, s.parent_span_id, s.name, s.service_name,
+                    s.start_time_ns, {INTERNAL_SPAN_PREDICATE_SQL} AS is_internal
              FROM spans s
              WHERE s.epoch = ?1
                AND {ROOT_SPAN_PREDICATE_SQL}"
@@ -436,13 +438,90 @@ impl TraceDiskStore {
                     trace_id: row.get(0)?,
                     span_id: row.get(1)?,
                     parent_span_id: row.get(2)?,
-                    start_time_ns: row.get::<_, i64>(3)?.max(0) as u64,
-                    is_internal: row.get::<_, i64>(4)? != 0,
+                    name: row.get(3)?,
+                    service_name: row.get(4)?,
+                    start_time_ns: row.get::<_, i64>(5)?.max(0) as u64,
+                    is_internal: row.get::<_, i64>(6)? != 0,
                 })
             })
             .map_err(|err| format!("cannot query root keys: {err}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("cannot read root key row: {err}"))
+    }
+
+    /// `(trace_id, span_id)` of every archived span carrying `key = value`.
+    /// `span_attributes_lookup_idx` answers it without reading a payload.
+    pub(crate) fn span_keys_with_attribute(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<HashSet<(String, String)>, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| database_error(&self.database_path, "attribute lookup open", err))?;
+        configure_read_connection(&mut connection).map_err(|err| {
+            database_error(&self.database_path, "attribute lookup initialization", err)
+        })?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut statement = connection
+            .prepare(
+                "SELECT trace_id, span_id FROM span_attributes
+                 WHERE epoch = ?1 AND key = ?2 AND value = ?3",
+            )
+            .map_err(|err| format!("cannot prepare attribute lookup: {err}"))?;
+        statement
+            .query_map(params![epoch, key, value], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| format!("cannot query attribute lookup: {err}"))?
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(|err| format!("cannot read attribute lookup row: {err}"))
+    }
+
+    /// Trace ids of the archived spans whose name satisfies `matches`, read
+    /// from the `name` column ahead of `payload`, so no JSON is decoded and no
+    /// overflow page is read. Each distinct name is tested once.
+    pub(crate) fn trace_ids_with_span_name(
+        &self,
+        matches: impl Fn(&str) -> bool,
+    ) -> Result<HashSet<String>, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| database_error(&self.database_path, "span name scan open", err))?;
+        configure_read_connection(&mut connection).map_err(|err| {
+            database_error(&self.database_path, "span name scan initialization", err)
+        })?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut statement = connection
+            .prepare("SELECT trace_id, name FROM spans WHERE epoch = ?1")
+            .map_err(|err| format!("cannot prepare span name scan: {err}"))?;
+        let mut rows = statement
+            .query(params![epoch])
+            .map_err(|err| format!("cannot query span name scan: {err}"))?;
+        let mut verdicts = HashMap::<String, bool>::new();
+        let mut trace_ids = HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|err| format!("cannot read span name scan row: {err}"))?
+        {
+            let name = row
+                .get_ref(1)
+                .and_then(|value| value.as_str().map_err(Into::into))
+                .map_err(|err| format!("cannot read span name: {err}"))?;
+            let matched = match verdicts.get(name) {
+                Some(matched) => *matched,
+                None => {
+                    let matched = matches(name);
+                    verdicts.insert(name.to_string(), matched);
+                    matched
+                }
+            };
+            if matched {
+                trace_ids.insert(
+                    row.get::<_, String>(0)
+                        .map_err(|err| format!("cannot read span name trace id: {err}"))?,
+                );
+            }
+        }
+        Ok(trace_ids)
     }
 
     /// Read a chronological window of trace roots without decoding rows
@@ -2018,6 +2097,8 @@ mod tests {
                     trace_id: "trace-a".to_string(),
                     span_id: "remote-a".to_string(),
                     parent_span_id: Some("remote-span".to_string()),
+                    name: "a-remote".to_string(),
+                    service_name: "test".to_string(),
                     start_time_ns: 1_700,
                     is_internal: false,
                 },
@@ -2025,6 +2106,8 @@ mod tests {
                     trace_id: "trace-a".to_string(),
                     span_id: "root-a".to_string(),
                     parent_span_id: None,
+                    name: "a".to_string(),
+                    service_name: "test".to_string(),
                     start_time_ns: 1_000,
                     is_internal: false,
                 },
@@ -2032,6 +2115,8 @@ mod tests {
                     trace_id: "trace-c".to_string(),
                     span_id: "root-c".to_string(),
                     parent_span_id: None,
+                    name: "c".to_string(),
+                    service_name: "test".to_string(),
                     start_time_ns: 3_000,
                     is_internal: true,
                 },
@@ -2041,6 +2126,53 @@ mod tests {
         assert_eq!(
             keys.len(),
             store.get_root_spans().expect("read full roots").len()
+        );
+    }
+
+    #[test]
+    fn attribute_and_name_lookups_read_no_payload() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(32, 1_000_000));
+        store.attach_hot_storage(&hot);
+
+        let mut root = test_span("trace-a", "root-a", "Turn");
+        root.attributes = vec![("iii.session.id".to_string(), "s1".to_string())];
+        let mut child = test_span("trace-a", "child-a", "Call Tool");
+        child.parent_span_id = Some("root-a".to_string());
+        child.attributes = vec![("iii.session.id".to_string(), "s1".to_string())];
+        let mut other = test_span("trace-b", "root-b", "Call Tool");
+        other.attributes = vec![("iii.session.id".to_string(), "s2".to_string())];
+        hot.add_spans(vec![root, child, other]);
+        store.flush().expect("flush trace store");
+
+        assert_eq!(
+            store
+                .span_keys_with_attribute("iii.session.id", "s1")
+                .expect("attribute lookup"),
+            HashSet::from([
+                ("trace-a".to_string(), "root-a".to_string()),
+                ("trace-a".to_string(), "child-a".to_string()),
+            ])
+        );
+        assert!(
+            store
+                .span_keys_with_attribute("iii.session.id", "missing")
+                .expect("attribute lookup")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .trace_ids_with_span_name(|name| name.to_lowercase().contains("call"))
+                .expect("name scan"),
+            HashSet::from(["trace-a".to_string(), "trace-b".to_string()])
+        );
+        assert_eq!(
+            store
+                .trace_ids_with_span_name(|name| name == "Turn")
+                .expect("name scan"),
+            HashSet::from(["trace-a".to_string()])
         );
     }
 

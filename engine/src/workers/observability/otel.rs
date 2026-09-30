@@ -1005,6 +1005,14 @@ impl InMemorySpanStorage {
             .collect()
     }
 
+    /// Visit every hot span under the read lock without cloning it, for a
+    /// scan that keeps a few ids out of a cache of full payloads.
+    pub fn for_each_span(&self, mut visit: impl FnMut(&StoredSpan)) {
+        for slot in self.read().slots.values() {
+            visit(&slot.span);
+        }
+    }
+
     pub fn get_spans_by_trace_id(&self, trace_id: &str) -> Vec<StoredSpan> {
         let cache = self.read();
         match cache.by_trace.get(trace_id) {
@@ -1529,6 +1537,8 @@ pub(crate) fn get_query_root_span_keys() -> Vec<super::trace_store::RootSpanKey>
                     trace_id: span.trace_id,
                     span_id: span.span_id,
                     parent_span_id: span.parent_span_id,
+                    name: span.name,
+                    service_name: span.service_name,
                     start_time_ns: span.start_time_unix_nano,
                 },
             );
@@ -1562,6 +1572,60 @@ pub(crate) fn get_query_root_span_keys() -> Vec<super::trace_store::RootSpanKey>
         "trace query view materialized"
     );
     keys
+}
+
+/// `(trace_id, span_id)` of the spans carrying `key = value` in the hot +
+/// durable view, without decoding a payload. A hot row replaces its archived
+/// copy, as in every merged view, so a filter may reject on it.
+pub(crate) fn get_query_span_keys_with_attribute(
+    key: &str,
+    value: &str,
+) -> HashSet<(String, String)> {
+    let mut hot_keys = HashSet::new();
+    let mut matched = HashSet::new();
+    if let Some(storage) = get_span_storage() {
+        storage.for_each_span(|span| {
+            let span_key = (span.trace_id.clone(), span.span_id.clone());
+            if span
+                .attributes
+                .iter()
+                .any(|(candidate, found)| candidate == key && found == value)
+            {
+                matched.insert(span_key.clone());
+            }
+            hot_keys.insert(span_key);
+        });
+    }
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.span_keys_with_attribute(key, value) {
+            Ok(keys) => matched.extend(keys.into_iter().filter(|key| !hot_keys.contains(key))),
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    matched
+}
+
+/// Trace ids with a span whose lowercased name contains `needle` (already
+/// lowercased), in the hot or the durable view, without decoding a payload.
+/// A superset: a trace counts when either copy of a span matches, so callers
+/// only narrow candidates with it.
+pub(crate) fn get_query_trace_ids_with_span_name(needle: &str) -> HashSet<String> {
+    let matches = |name: &str| name.to_lowercase().contains(needle);
+    let mut trace_ids = HashSet::new();
+    if let Some(storage) = get_span_storage() {
+        storage.for_each_span(|span| {
+            if matches(&span.name) {
+                trace_ids.insert(span.trace_id.clone());
+            }
+        });
+    }
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.trace_ids_with_span_name(matches) {
+            Ok(archived) => trace_ids.extend(archived),
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    trace_ids
 }
 
 /// Parents of hot spans that are missing from the merged root-key view but
