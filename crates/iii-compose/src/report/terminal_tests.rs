@@ -401,7 +401,7 @@ async fn artifact_update_fixture() {
     std::fs::create_dir_all(other_dir.path().join("api")).unwrap();
     std::fs::write(
         &other,
-        "containers:\n  api:\n    worker: path://./api\n    scripts:\n      run: /bin/false\n",
+        "containers:\n  api:\n    worker: path://./api\n    scripts:\n      run: exit 1\n",
     )
     .unwrap();
     let foreground_before = {
@@ -575,173 +575,178 @@ async fn artifact_update_fixture() {
                 .as_str()
                 .is_some_and(|text| text.contains("1.0.0 → 2.0.0"))
     }));
-    // A verified archive gets past acquisition and through the real restart;
-    // the executable then fails readiness, not a synthetic OpResult.
-    let mut archive = tar::Builder::new(Vec::new());
-    let script = b"#!/bin/sh\nexit 1\n";
-    let mut header = tar::Header::new_gnu();
-    header.set_size(script.len() as u64);
-    header.set_mode(0o755);
-    header.set_cksum();
-    archive
-        .append_data(&mut header, "worker", &script[..])
-        .unwrap();
-    let archive = archive.into_inner().unwrap();
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut gzip, &archive).unwrap();
-    let archive = gzip.finish().unwrap();
-    use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(&archive));
-    server.reset().await;
-    Mock::given(matchers::method("GET"))
-        .and(matchers::path("/artifact"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
-        .mount(&server)
-        .await;
-    Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+    // POSIX shell archives exercise real process restart and readiness on Unix;
+    // metadata, cancellation, download failures, and wire delivery above run everywhere.
+    #[cfg(unix)]
+    {
+        // A verified archive gets past acquisition and through the real restart;
+        // the executable then fails readiness, not a synthetic OpResult.
+        let mut archive = tar::Builder::new(Vec::new());
+        let script = b"#!/bin/sh\nexit 1\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "worker", &script[..])
+            .unwrap();
+        let archive = archive.into_inner().unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gzip, &archive).unwrap();
+        let archive = gzip.finish().unwrap();
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        server.reset().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"graph": [{"name": "api", "version": "2.0.0", "type": "binary", "binaries": {(crate::registry::host_target()): {"url": format!("{}/artifact", server.uri()), "sha256": digest}}}], "edges": []}))).mount(&server).await;
-    let _restart = daemon
-        .operations
-        .create_with_id("real-restart-failure".into(), 1)
+        let _restart = daemon
+            .operations
+            .create_with_id("real-restart-failure".into(), 1)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.update(Some(&path), &selected, "real-restart-failure".into()),
+            ),
+        )
         .await
+        .unwrap()
         .unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        crate::registry::TEST_REGISTRY.scope(
-            server.uri(),
-            daemon.update(Some(&path), &selected, "real-restart-failure".into()),
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let outcome = serde_json::to_value(result).unwrap();
-    assert_eq!(
-        outcome["not_required_failures"],
-        serde_json::json!(["api"]),
-        "{outcome}"
-    );
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(outcome["version"], "2.0.0");
-    {
-        let state = console().lock().unwrap();
-        let owner = UpdateOwner {
-            project: canonical_project(&path),
-            operation: "real-restart-failure".into(),
-        };
-        assert!(
-            matches!(&state.updates[&owner]["api"].state, UpdateState::Error(text) if text.contains("1.0.0 → 2.0.0"))
+        let outcome = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            outcome["not_required_failures"],
+            serde_json::json!(["api"]),
+            "{outcome}"
         );
-    }
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(messages.lock().unwrap().iter().any(|frame| {
-        frame["function_id"] == "fixture::progress"
-            && frame["data"]["operation_id"] == "real-restart-failure"
-            && frame["data"]["phase"] == "failed"
-            && frame["data"]["detail"]
-                .as_str()
-                .is_some_and(|text| text.contains("1.0.0 → 2.0.0"))
-    }));
-    server.reset().await;
-    let script = format!(
-        "#!/bin/sh\ntouch '{}'\nexec sleep 30\n",
-        ready_marker.display()
-    );
-    let mut archive = tar::Builder::new(Vec::new());
-    let mut header = tar::Header::new_gnu();
-    header.set_size(script.len() as u64);
-    header.set_mode(0o755);
-    header.set_cksum();
-    archive
-        .append_data(&mut header, "worker", script.as_bytes())
-        .unwrap();
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut gzip, &archive.into_inner().unwrap()).unwrap();
-    let archive = gzip.finish().unwrap();
-    let digest = format!("{:x}", Sha256::digest(&archive));
-    Mock::given(matchers::method("GET"))
-        .and(matchers::path("/artifact"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
-        .mount(&server)
-        .await;
-    Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+        assert_eq!(outcome["changed"], true);
+        assert_eq!(outcome["version"], "2.0.0");
+        {
+            let state = console().lock().unwrap();
+            let owner = UpdateOwner {
+                project: canonical_project(&path),
+                operation: "real-restart-failure".into(),
+            };
+            assert!(
+                matches!(&state.updates[&owner]["api"].state, UpdateState::Error(text) if text.contains("1.0.0 → 2.0.0"))
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(messages.lock().unwrap().iter().any(|frame| {
+            frame["function_id"] == "fixture::progress"
+                && frame["data"]["operation_id"] == "real-restart-failure"
+                && frame["data"]["phase"] == "failed"
+                && frame["data"]["detail"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("1.0.0 → 2.0.0"))
+        }));
+        server.reset().await;
+        let script = format!(
+            "#!/bin/sh\ntouch '{}'\nexec sleep 30\n",
+            ready_marker.display()
+        );
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "worker", script.as_bytes())
+            .unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gzip, &archive.into_inner().unwrap()).unwrap();
+        let archive = gzip.finish().unwrap();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"graph": [{"name": "api", "version": "3.0.0", "type": "binary", "binaries": {(crate::registry::host_target()): {"url": format!("{}/artifact", server.uri()), "sha256": digest}}}], "edges": []}))).mount(&server).await;
-    let _success = daemon
-        .operations
-        .create_with_id("real-restart-success".into(), 1)
+        let _success = daemon
+            .operations
+            .create_with_id("real-restart-success".into(), 1)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.update(Some(&path), &selected, "real-restart-success".into()),
+            ),
+        )
         .await
+        .unwrap()
         .unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        crate::registry::TEST_REGISTRY.scope(
-            server.uri(),
-            daemon.update(Some(&path), &selected, "real-restart-success".into()),
-        ),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let outcome = serde_json::to_value(result).unwrap();
-    assert_eq!(outcome["changed"], true);
-    assert_eq!(outcome["version"], "3.0.0");
-    assert!(outcome.get("not_required_failures").is_none(), "{outcome}");
-    {
-        let state = console().lock().unwrap();
-        let owner = UpdateOwner {
-            project: canonical_project(&path),
-            operation: "real-restart-success".into(),
-        };
-        assert!(
-            matches!(&state.updates[&owner]["api"].state, UpdateState::Updated(text) if text == "Updated 2.0.0 → 3.0.0")
-        );
-        assert!(
-            state
-                .rows
-                .iter()
-                .any(|row| row.key == "api" && matches!(row.state, RowState::Ready { .. }))
-        );
-    }
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        messages
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|frame| frame["type"] == "invocationresult"
-                && frame["function_id"] == "compose::operation-progress"
-                && frame["result"]["detail"] == "Updated 2.0.0 → 3.0.0")
-    );
-    for function in ["compose::operation-progress", "fixture::progress"] {
+        let outcome = serde_json::to_value(result).unwrap();
+        assert_eq!(outcome["changed"], true);
+        assert_eq!(outcome["version"], "3.0.0");
+        assert!(outcome.get("not_required_failures").is_none(), "{outcome}");
+        {
+            let state = console().lock().unwrap();
+            let owner = UpdateOwner {
+                project: canonical_project(&path),
+                operation: "real-restart-success".into(),
+            };
+            assert!(
+                matches!(&state.updates[&owner]["api"].state, UpdateState::Updated(text) if text == "Updated 2.0.0 → 3.0.0")
+            );
+            assert!(
+                state
+                    .rows
+                    .iter()
+                    .any(|row| row.key == "api" && matches!(row.state, RowState::Ready { .. }))
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
             messages
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|frame| frame["function_id"] == function
-                    && frame["data"]["operation_id"] == "real-restart-success"
-                    && frame["data"]["container"] == "api"
-                    && frame["data"]["phase"] == "updated"
-                    && frame["data"]["detail"] == "Updated 2.0.0 → 3.0.0")
+                .any(|frame| frame["type"] == "invocationresult"
+                    && frame["function_id"] == "compose::operation-progress"
+                    && frame["result"]["detail"] == "Updated 2.0.0 → 3.0.0")
         );
-    }
-    daemon
-        .up(Some(&path), None, "after-update-up".into())
-        .await
-        .unwrap();
-    {
-        let mut state = console().lock().unwrap();
-        assert!(
-            state
-                .updates
-                .keys()
-                .all(|owner| owner.project != canonical_project(&path)),
-            "old update badge survived independent up"
-        );
-        assert!(
-            !state
-                .render(Some((40, 160)))
-                .contains("Updated 2.0.0 → 3.0.0")
-        );
+        for function in ["compose::operation-progress", "fixture::progress"] {
+            assert!(
+                messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|frame| frame["function_id"] == function
+                        && frame["data"]["operation_id"] == "real-restart-success"
+                        && frame["data"]["container"] == "api"
+                        && frame["data"]["phase"] == "updated"
+                        && frame["data"]["detail"] == "Updated 2.0.0 → 3.0.0")
+            );
+        }
+        daemon
+            .up(Some(&path), None, "after-update-up".into())
+            .await
+            .unwrap();
+        {
+            let mut state = console().lock().unwrap();
+            assert!(
+                state
+                    .updates
+                    .keys()
+                    .all(|owner| owner.project != canonical_project(&path)),
+                "old update badge survived independent up"
+            );
+            assert!(
+                !state
+                    .render(Some((40, 160)))
+                    .contains("Updated 2.0.0 → 3.0.0")
+            );
+        }
     }
     daemon.shutdown().await;
     transport.abort();
@@ -1476,7 +1481,7 @@ async fn bare_daemon_panel_fixture() {
     let path = root.path().join("worker-compose.yaml");
     std::fs::write(
         &path,
-        "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: /bin/false\n",
+        "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: exit 1\n",
     )
     .unwrap();
     let daemon = crate::daemon::Daemon::start(
@@ -1514,7 +1519,7 @@ async fn bare_daemon_panel_fixture() {
     let other = root.path().join("other.yaml");
     std::fs::write(
         &other,
-        "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: /bin/false\n",
+        "containers:\n  api:\n    worker: path://.\n    scripts:\n      run: exit 1\n",
     )
     .unwrap();
     let before = console().lock().unwrap().rows.clone();
@@ -1701,7 +1706,10 @@ fn foreign_lifecycle_lines_identify_project_without_relabeling_foreground() {
             if token == "restarting" && !line.contains("b.yaml") {
                 continue;
             }
-            assert!(line.contains("/b.yaml: "), "unqualified {token}: {line}");
+            assert!(
+                line.contains(&format!("{}b.yaml: ", std::path::MAIN_SEPARATOR)),
+                "unqualified {token}: {line}"
+            );
         }
     }
     assert!(
@@ -1802,6 +1810,8 @@ fn retry_only_feedback_yields_to_a_new_plan() {
     );
 }
 
+// This fixture launches POSIX shell commands to drive the real supervisor.
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "isolated subprocess for real supervisor cancellation"]
 async fn supervisor_down_releases_retry_fixture() {
@@ -1963,6 +1973,7 @@ async fn supervisor_down_releases_retry_fixture() {
     daemon.shutdown().await;
 }
 
+#[cfg(unix)]
 #[test]
 fn supervisor_down_clears_retry_and_releases_bare_panel() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
