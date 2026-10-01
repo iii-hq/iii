@@ -15,7 +15,7 @@ use std::{
 };
 
 use iii_sdk::{
-    Error, IIIClient, RegisterTriggerType,
+    Error, IIIClient, RegisterFunction, RegisterTriggerType,
     protocol::{TriggerAction, TriggerRequest},
     trigger::{TriggerConfig, TriggerHandler},
 };
@@ -79,6 +79,15 @@ pub struct ProgressEmitter {
 
 impl ProgressEmitter {
     pub fn register(client: &IIIClient) -> Self {
+        // Invoke a daemon-owned sink so progress has an ordinary engine trace
+        // even when no client subscribes to compose-operation.
+        client.register_function(
+            "compose::operation-progress",
+            RegisterFunction::new_async(|event: ProgressEvent| async move {
+                Ok::<_, Error>(serde_json::to_value(event).unwrap_or_default())
+            })
+            .description("Compose operation component progress (internal trace sink)"),
+        );
         let handler = ProgressTriggers::default();
         let bindings = Arc::clone(&handler.bindings);
         client.register_trigger_type(
@@ -97,6 +106,15 @@ impl ProgressEmitter {
     }
 
     async fn publish(&self, event: &ProgressEvent) {
+        let _ = self
+            .client
+            .trigger(TriggerRequest {
+                function_id: "compose::operation-progress".into(),
+                payload: serde_json::to_value(event).unwrap_or_default(),
+                action: Some(TriggerAction::Void),
+                timeout_ms: Some(5_000),
+            })
+            .await;
         let bindings: Vec<TriggerConfig> = self
             .bindings
             .lock()

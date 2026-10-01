@@ -378,6 +378,10 @@ impl Project {
     /// observes the gaps between operations — a deliberate stop removes the
     /// child from the map before signalling it, and is never seen here.
     pub(crate) async fn reap_unexpected_exits(&self) {
+        crate::report::in_project_scope(&self.file_path, self.reap_scoped()).await
+    }
+
+    async fn reap_scoped(&self) {
         let dead: Vec<(String, ExitStatus)> = {
             let inner = self.inner.lock().await;
             inner
@@ -433,6 +437,10 @@ impl Project {
     /// worker is in a crash loop does not stop the daemon noticing anything
     /// else. The tick interval is the granularity of the backoff.
     pub(crate) async fn drive_restarts(&self) {
+        crate::report::in_project_scope(&self.file_path, self.drive_restarts_scoped()).await
+    }
+
+    async fn drive_restarts_scoped(&self) {
         let now = Instant::now();
         let due: Vec<String> = {
             let inner = self.inner.lock().await;
@@ -613,13 +621,16 @@ impl Project {
         {
             entry.status = ChildStatus::Restarting;
         }
+        // Emit while holding the existing project lock: down cancels retries
+        // under this same lock and must not be followed by a stale waiting row.
+        if let Some((next_attempt, delay)) = next_retry {
+            crate::report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
+        }
         let snapshot = inner.state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
 
-        if let Some((next_attempt, delay)) = next_retry {
-            crate::report::retry_waiting(key, next_attempt, restart_config.max_attempts, delay);
-        } else {
+        if next_retry.is_none() {
             self.report_gave_up(key, restart_config.max_attempts).await;
             self.cascade_failure(key, Self::exhausted_reason(restart_config.max_attempts))
                 .await;

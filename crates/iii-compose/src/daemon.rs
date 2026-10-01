@@ -34,6 +34,69 @@ use crate::{
     project::Project,
 };
 
+fn version_message(phase: &str, from: Option<&str>, to: &str) -> String {
+    match from {
+        Some(from) => format!("{phase} {from} → {to}"),
+        None => format!("{phase} to {to}"),
+    }
+}
+
+pub(crate) async fn finish_updated_workers(
+    path: &Path,
+    operation_id: &str,
+    versions: &BTreeMap<String, (Option<String>, String)>,
+    up: &OpResult,
+) {
+    for (worker, (from, to)) in versions {
+        let healthy = up.containers.iter().any(|result| {
+            result.container == *worker
+                && result.state == crate::state::ChildStatus::Ready
+                && result.error.is_none()
+        });
+        let detail = version_message(
+            if healthy { "Updated" } else { "Update failed" },
+            from.as_deref(),
+            to,
+        );
+        if healthy {
+            crate::report::update_status(path, operation_id, worker, &detail, true);
+        } else {
+            crate::report::update_failed(path, operation_id, worker, &detail);
+        }
+        if let Some(operation) = crate::operation::active(operation_id) {
+            operation
+                .emit(
+                    Some(worker),
+                    if healthy { "updated" } else { "failed" },
+                    detail,
+                )
+                .await;
+        }
+    }
+}
+
+struct UpdateOverlayGuard {
+    project: PathBuf,
+    operation: String,
+}
+
+impl UpdateOverlayGuard {
+    fn new(project: &Path, operation: &str) -> Self {
+        Self {
+            project: project
+                .canonicalize()
+                .unwrap_or_else(|_| project.to_path_buf()),
+            operation: operation.to_string(),
+        }
+    }
+}
+
+impl Drop for UpdateOverlayGuard {
+    fn drop(&mut self) {
+        crate::report::update_finish(&self.project, &self.operation);
+    }
+}
+
 /// How often the supervisor checks whether a ready child is still alive.
 /// Fast enough that a crash is reported while the operator is still watching,
 /// slow enough that an idle daemon costs nothing.
@@ -609,6 +672,14 @@ impl Daemon {
     /// Keep the candidate in memory until loading and metadata-lock acquisition
     /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
+        crate::report::in_project_scope(file, self.prepare_start_project_scoped(file, frozen)).await
+    }
+
+    async fn prepare_start_project_scoped(
+        &self,
+        file: &Path,
+        frozen: bool,
+    ) -> Result<Arc<Project>> {
         let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
@@ -765,7 +836,10 @@ impl Daemon {
         if shutdown.requested() {
             return Ok(None);
         }
-        crate::report::containers_starting();
+        crate::report::in_project_scope(file, async {
+            crate::report::containers_starting();
+        })
+        .await;
         Ok(project
             .up_until_shutdown(container, operation_id, shutdown)
             .await)
@@ -799,6 +873,20 @@ impl Daemon {
 
     /// Adds worker specs or full container declarations in one atomic file edit.
     pub async fn add_configured(
+        &self,
+        file: Option<&Path>,
+        workers: &[crate::edit::WorkerInput],
+        operation_id: String,
+    ) -> Result<MutationOutcome> {
+        let path = self.resolve_file(file)?;
+        crate::report::in_project_scope(
+            path,
+            self.add_configured_scoped(Some(path), workers, operation_id),
+        )
+        .await
+    }
+
+    async fn add_configured_scoped(
         &self,
         file: Option<&Path>,
         workers: &[crate::edit::WorkerInput],
@@ -1068,6 +1156,24 @@ impl Daemon {
         operation_id: String,
     ) -> Result<MutationOutcome> {
         let path = self.resolve_file(file)?;
+        let result = crate::report::in_project_scope(
+            path,
+            self.update_scoped(Some(path), workers, operation_id.clone()),
+        )
+        .await;
+        if let Err(error) = &result {
+            crate::report::update_operation_failed(path, &operation_id, &error.to_string());
+        }
+        result
+    }
+
+    async fn update_scoped(
+        &self,
+        file: Option<&Path>,
+        workers: &[String],
+        operation_id: String,
+    ) -> Result<MutationOutcome> {
+        let path = self.resolve_file(file)?;
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1077,7 +1183,13 @@ impl Daemon {
         })?;
         let compose = crate::ComposeFile::parse(&text, path)?;
         self.engine_policy.validate_project(&compose)?;
-        let previous_graphs = crate::lockfile::graphs(path)?;
+        // Explicit exact no-ops must not need a readable lock. Only an
+        // update-all needs graph ownership to select its roots up front.
+        let previous_graphs = if workers.is_empty() {
+            crate::lockfile::graphs(path)?
+        } else {
+            BTreeMap::new()
+        };
         let generated = generated_dependencies(&text, &compose, &previous_graphs)?;
         let asked = workers_to_update(&compose, workers, &generated, &previous_graphs)?;
         let requested = asked
@@ -1086,9 +1198,46 @@ impl Daemon {
             .collect::<Vec<_>>();
         let primary = requested.first().map(String::as_str);
         let asked = coalesce_containers(asked)?;
+
+        let requested_names = asked
+            .iter()
+            .map(|worker| worker.key.clone())
+            .collect::<Vec<_>>();
+        if requested_names.is_empty() {
+            crate::report::daemon_line("Everything already up to date.", false);
+            if let Some(operation) = crate::operation::active(&operation_id) {
+                operation
+                    .emit(None, "unchanged", "Everything already up to date.")
+                    .await;
+            }
+            return Ok(MutationOutcome::from_operations(
+                OpStatus::Ok,
+                false,
+                primary,
+                Some(&requested),
+                None,
+                std::iter::empty::<&OpResult>(),
+            ));
+        }
+        crate::report::update_begin(path, &operation_id, &requested_names);
+        let _overlay = UpdateOverlayGuard::new(path, &operation_id);
         let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
         if all_explicit_exact_unchanged {
+            for worker in &requested_names {
+                crate::report::update_status(
+                    path,
+                    &operation_id,
+                    worker,
+                    "Everything already up to date.",
+                    true,
+                );
+                if let Some(operation) = crate::operation::active(&operation_id) {
+                    operation
+                        .emit(Some(worker), "unchanged", "Everything already up to date.")
+                        .await;
+                }
+            }
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1104,6 +1253,28 @@ impl Daemon {
             ));
         }
 
+        let concrete_before = crate::lockfile::concrete_versions(&compose)?;
+        let previous_graphs = if workers.is_empty() {
+            previous_graphs
+        } else {
+            crate::lockfile::graphs(path)?
+        };
+        let generated = generated_dependencies(&text, &compose, &previous_graphs)?;
+
+        for worker in &requested_names {
+            crate::report::update_status(
+                path,
+                &operation_id,
+                worker,
+                "Resolving dependencies",
+                false,
+            );
+            if let Some(operation) = crate::operation::active(&operation_id) {
+                operation
+                    .emit(Some(worker), "resolving", "Resolving dependencies")
+                    .await;
+            }
+        }
         let mut declared = compose.clone();
         crate::lockfile::attach(&mut declared)?;
         let plan = self
@@ -1163,9 +1334,8 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_with_versions(
+                crate::lockfile::prepare_metadata_with_versions(
                     &mut current,
-                    &package_cache,
                     &force,
                     &selected_versions,
                 ),
@@ -1177,11 +1347,69 @@ impl Daemon {
         let package_changed = selected_versions
             .keys()
             .any(|container| prepared.package_changed(container));
+        let changed_versions: BTreeMap<String, (Option<String>, String)> = selected_versions
+            .keys()
+            .filter(|worker| prepared.package_changed(worker))
+            .filter_map(|worker| {
+                prepared.resolved_version(worker).map(|to| {
+                    (
+                        worker.clone(),
+                        (concrete_before.get(worker).cloned(), to.to_string()),
+                    )
+                })
+            })
+            .collect();
+        for (worker, (from, to)) in &changed_versions {
+            let detail = version_message("Updating", from.as_deref(), to);
+            crate::report::update_status(path, &operation_id, worker, &detail, false);
+            if let Some(operation) = crate::operation::active(&operation_id) {
+                operation.emit(Some(worker), "updating", detail).await;
+            }
+        }
+        let acquired = self
+            .prepare(&operation_id, prepared.install(&package_cache))
+            .await
+            .and_then(|result| result);
+        if let Err(error) = acquired {
+            for (worker, (from, to)) in &changed_versions {
+                let detail = format!(
+                    "{}: {error}",
+                    version_message("Update failed", from.as_deref(), to)
+                );
+                crate::report::update_failed(path, &operation_id, worker, &detail);
+                if let Some(operation) = crate::operation::active(&operation_id) {
+                    operation.emit(Some(worker), "failed", detail).await;
+                }
+            }
+            return Err(error);
+        }
         let version = primary
             .and_then(|primary| prepared.resolved_version(primary))
             .map(str::to_string);
 
         if !yaml_changed && !prepared.changed() {
+            if requested_names.is_empty() {
+                crate::report::daemon_line("Everything already up to date.", false);
+                if let Some(operation) = crate::operation::active(&operation_id) {
+                    operation
+                        .emit(None, "unchanged", "Everything already up to date.")
+                        .await;
+                }
+            }
+            for worker in &requested_names {
+                crate::report::update_status(
+                    path,
+                    &operation_id,
+                    worker,
+                    "Everything already up to date.",
+                    true,
+                );
+                if let Some(operation) = crate::operation::active(&operation_id) {
+                    operation
+                        .emit(Some(worker), "unchanged", "Everything already up to date.")
+                        .await;
+                }
+            }
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1196,6 +1424,15 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
+            for worker in &requested_names {
+                crate::report::update_status(
+                    path,
+                    &operation_id,
+                    worker,
+                    "Everything already up to date.",
+                    true,
+                );
+            }
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 true,
@@ -1212,6 +1449,18 @@ impl Daemon {
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
         let (down, up) = self.restart_project(path, None, &operation_id).await?;
+        finish_updated_workers(path, &operation_id, &changed_versions, &up).await;
+        for worker in &requested_names {
+            if !changed_versions.contains_key(worker) {
+                crate::report::update_status(
+                    path,
+                    &operation_id,
+                    worker,
+                    "Package unchanged",
+                    true,
+                );
+            }
+        }
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
@@ -1424,7 +1673,9 @@ impl Daemon {
                     .or_insert_with(|| Arc::new(Mutex::new(()))),
             )
         };
-        lock.lock_owned().await
+        let guard = lock.lock_owned().await;
+        crate::report::mutation_begin(file);
+        guard
     }
 
     /// Takes a project down.
@@ -1436,6 +1687,7 @@ impl Daemon {
     ) -> Result<OpResult> {
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
+        crate::report::mutation_begin(path);
         let project = self.project(path).await?;
         Ok(project.down(container, operation_id).await)
     }

@@ -440,6 +440,7 @@ async fn update_accepts_multiple_unchanged_package_workers() {
     );
     let (_tmp, file, daemon) = managed_mutation_fixture(containers);
     let original = std::fs::read_to_string(&file).unwrap();
+    assert!(!file.with_extension("lock").exists());
 
     let outcome = daemon
         .update(
@@ -455,6 +456,7 @@ async fn update_accepts_multiple_unchanged_package_workers() {
     assert_eq!(outcome["changed"], false);
     assert_eq!(outcome["worker"], "state");
     assert_eq!(outcome["workers"], serde_json::json!(["state", "cache"]));
+    assert!(!file.with_extension("lock").exists());
     assert_eq!(std::fs::read_to_string(file).unwrap(), original);
 }
 
