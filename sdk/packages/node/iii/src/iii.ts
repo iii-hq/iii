@@ -820,6 +820,8 @@ class Sdk implements IIIClient {
 
     this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address, {
+      // Match the engine's message bound; outbound single frames use 16 MiB.
+      maxPayload: 64 * 1024 * 1024,
       headers: this.options?.headers,
       handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
     })
@@ -991,7 +993,12 @@ class Sdk implements IIIClient {
       ) {
         continue
       }
-      this.sendMessageRaw(JSON.stringify(message))
+      try {
+        this.sendMessageRaw(JSON.stringify(message))
+      } catch (error) {
+        if (!(error instanceof InvocationError) || error.code !== 'payload_too_large') throw error
+        this.logError('Queued JSON envelope rejected', error)
+      }
     }
   }
 
@@ -999,7 +1006,38 @@ class Sdk implements IIIClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
+  // Main protocol JSON uses one frame, with an inclusive 16 MiB limit.
+  private prepareJson(message: Record<string, unknown>): string {
+    const data = JSON.stringify(message)
+    const size = Buffer.byteLength(data, 'utf8')
+    const limit = 16 * 1024 * 1024
+    if (size <= limit) return data
+    const error = new InvocationError({
+      code: 'payload_too_large',
+      message: `Serialized JSON envelope is ${size} bytes; limit is ${limit} bytes. Use channels for large data.`,
+    })
+    if (message.type === MessageType.InvocationResult) {
+      const fallback = JSON.stringify({
+        type: MessageType.InvocationResult,
+        invocation_id: message.invocation_id,
+        function_id: message.function_id,
+        error: { code: error.code, message: error.message },
+      })
+      if (Buffer.byteLength(fallback, 'utf8') <= limit) return fallback
+    }
+    if (typeof message.invocation_id === 'string') {
+      const pending = this.invocations.get(message.invocation_id)
+      this.invocations.delete(message.invocation_id)
+      pending?.reject(error)
+    }
+    throw error
+  }
+
   private sendMessageRaw(data: string): void {
+    // Reattach and queue flush bypass sendMessage.
+    if (Buffer.byteLength(data, 'utf8') > 16 * 1024 * 1024) {
+      data = this.prepareJson(JSON.parse(data))
+    }
     if (this.ws && this.isOpen()) {
       try {
         this.ws.send(data, (err) => {
@@ -1032,10 +1070,11 @@ class Sdk implements IIIClient {
 
   private sendMessage(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>, skipIfClosed = false): void {
     const wireMessage = this.toWireFormat(messageType, message)
+    const data = this.prepareJson(wireMessage)
     if (this.isOpen()) {
-      this.sendMessageRaw(JSON.stringify(wireMessage))
+      this.sendMessageRaw(data)
     } else if (!skipIfClosed) {
-      this.messagesToSend.push(wireMessage)
+      this.messagesToSend.push(JSON.parse(data))
     }
   }
 

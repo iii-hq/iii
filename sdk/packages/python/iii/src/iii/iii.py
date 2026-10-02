@@ -66,6 +66,10 @@ TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
 
+# Outbound JSON is one frame (16 MiB); inbound messages may span frames (64 MiB).
+_MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+_MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
+
 
 def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
     """Decide how (if at all) to forward per-invocation metadata to a handler.
@@ -423,6 +427,7 @@ class III:
             ws = await websockets.connect(
                 self._address,
                 additional_headers=self._options.headers,
+                max_size=_MAX_JSON_MESSAGE_BYTES,
             )
             self._ws = ws
             log.info(f"Connected to {self._address}")
@@ -514,7 +519,17 @@ class III:
         pending, self._queue = self._queue, []
         for queued_msg in pending:
             if self._ws:
-                await self._ws.send(json.dumps(queued_msg))
+                try:
+                    await self._send(queued_msg)
+                except InvocationError as error:
+                    if error.code != "payload_too_large":
+                        raise
+                    log.warning("Queued JSON rejected: %s", error)
+                    pending_call = self._pending.pop(
+                        queued_msg.get("invocation_id"), None
+                    )
+                    if pending_call and not pending_call.future.done():
+                        pending_call.future.set_exception(error)
 
         # Register worker metadata
         self._register_worker_metadata()
@@ -584,30 +599,52 @@ class III:
             return data
         return {"data": msg}
 
-    async def _send(self, msg: Any) -> None:
+    def _prepare_json(self, msg: Any) -> str:
         data = self._to_dict(msg)
+        payload = json.dumps(data)
+        size = len(payload.encode("utf-8"))
+        if size <= _MAX_JSON_FRAME_BYTES:
+            return payload
+        error = InvocationError(
+            code="payload_too_large",
+            message=(
+                f"Serialized JSON envelope is {size} bytes; limit is "
+                f"{_MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+            ),
+        )
+        if data.get("type") == MessageType.INVOCATION_RESULT.value:
+            fallback = json.dumps(
+                {
+                    "type": MessageType.INVOCATION_RESULT.value,
+                    "invocation_id": data.get("invocation_id"),
+                    "function_id": data.get("function_id"),
+                    "error": {"code": error.code, "message": error.message},
+                }
+            )
+            if len(fallback.encode("utf-8")) <= _MAX_JSON_FRAME_BYTES:
+                return fallback
+        raise error
+
+    async def _send(self, msg: Any) -> None:
+        payload = self._prepare_json(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            # Redact the reattach secret from debug logs; it authorizes
-            # evicting this worker's previous connection.
-            log_safe = {
-                k: ("***" if k == "reattach_token" else v) for k, v in data.items()
-            }
-            log.debug(f"Send: {json.dumps(log_safe)[:200]}")
-            await self._ws.send(json.dumps(data))
+            log.debug("Send JSON envelope: %d bytes", len(payload.encode("utf-8")))
+            await self._ws.send(payload)
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
                 log.warning("Message queue full, dropping oldest message")
                 self._queue.pop(0)
-            self._queue.append(data)
+            self._queue.append(json.loads(payload))
 
     def _enqueue(self, msg: Any) -> None:
-        data = self._to_dict(msg)
+        data = json.loads(self._prepare_json(msg))
         if len(self._queue) >= MAX_QUEUE_SIZE:
             log.warning("Message queue full, dropping oldest message")
             self._queue.pop(0)
         self._queue.append(data)
 
     def _send_if_connected(self, msg: Any) -> None:
+        self._prepare_json(msg)
         if not (self._ws and self._ws.state.name == "OPEN"):
             return
         self._schedule_on_loop(self._send(msg))
@@ -1173,10 +1210,10 @@ class III:
             trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
             call_request_format=_resolve_format(trigger_type.call_request_format),
         )
+        self._send_if_connected(msg)
         self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(
             message=msg, handler=handler
         )
-        self._send_if_connected(msg)
 
         return TriggerTypeRef(
             iii=self,
@@ -1258,8 +1295,8 @@ class III:
             # same project may be the one providing the type.
             trigger_namespace=trigger.trigger_namespace,
         )
-        self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
+        self._triggers[trigger_id] = msg
 
         def unregister() -> None:
             self._triggers.pop(trigger_id, None)
