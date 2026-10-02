@@ -1,18 +1,18 @@
 ---
 title: "Registry"
-description: "Publishing your workers to the iii registry."
+description: "Registry publishing, versioning, and the bundle artifact contract for iii workers."
 owner: "devrel"
-type: "how-to"
+type: "reference"
 ---
 
 {/* Note: move this up */}
 
-The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live so
-other iii projects can declare them in `worker-compose.yaml` or add them with `compose::add`.
+The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live.
+Other iii projects declare them in `worker-compose.yaml` or add them with `compose::add`.
 
-Compose is a CLI and daemon subsystem, not a registry worker. Its daemon registers `compose::*`,
-uses `worker-compose.yaml` as the project manifest, and uses `-n` / `--namespace` to select the
-daemon that receives a trigger.
+`worker-compose.yaml` is the Compose project manifest. It lists the workers one project runs.
+`iii.worker.yaml` is the manifest of one worker. See
+[Compose](../using-iii/compose#worker-composeyaml) for the project manifest fields.
 
 ## Publish a worker
 
@@ -56,7 +56,7 @@ Use a bundle when:
   runtime ships with the engine-allowlisted base image (`docker.io/iiidev/node:latest` or
   `docker.io/iiidev/python:latest`).
 - You want installation to look identical to other supported registry workers from the user's
-  perspective (`iii trigger -n dev compose::add worker=my-worker`).
+  perspective (`iii trigger --namespace dev compose::add worker=my-worker`).
 
 ### Registry response shape
 
@@ -71,7 +71,8 @@ Use a bundle when:
 ```
 
 Compose GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
-`sha256`. Mismatches abort the install and delete the downloaded blob immediately.
+`sha256`. A mismatch, an HTTP error, an unexpected content type, or an oversized download aborts the
+install with `W142` and deletes the downloaded blob immediately.
 
 ### Archive layout
 
@@ -89,7 +90,7 @@ my-worker-1.2.0.tar.gz
 ### Manifest contract (`iii.worker.yaml`)
 
 Bundle manifests use a strict subset of the local-worker manifest. Three fields are explicitly
-**rejected**:
+**rejected** with `W180 BundleManifestRejected`:
 
 - `scripts.setup`: would execute publisher-supplied shell during install (a supply-chain smuggling
   vector).
@@ -109,6 +110,9 @@ request exceeds the cap):
 
 - `resources.cpus`: defaults to `2`, clamped to `4`.
 - `resources.memory`: defaults to `2048` MiB, clamped to `4096` MiB.
+
+A dependency graph deeper than 5 levels or wider than 32 transitive workers is rejected with
+`W183`.
 
 ```yaml
 name: my-worker
@@ -134,15 +138,5 @@ Bundle archives are extracted with tighter limits than OCI layers:
 
 Archives containing symlinks, hard links, character devices, FIFOs, or paths with `..` components
 are rejected with `W181 BundleArchiveUnsafe`.
-
-### Error codes
-
-| Code   | Failure                                                                                       |
-| ------ | --------------------------------------------------------------------------------------------- |
-| `W142` | Archive download failed (HTTP error, unexpected content-type, size cap, sha256 mismatch).     |
-| `W180` | Manifest rejected (forbidden field like `scripts.setup` or `runtime.base_image`).             |
-| `W181` | Archive contains unsafe entries (symlink, hardlink, traversal, oversized, too many entries).  |
-| `W182` | Resource request exceeded engine cap; install proceeded with clamped values (warn, not fail). |
-| `W183` | Dependency graph too wide or too deep (max depth 5, max transitive count 32).                 |
 
 {/* TODO: document the registry publish flow, storage layout, and recommended bundler configurations for Node/Bun/Python. */}

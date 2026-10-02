@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.24.4-rc.2"
+version = "0.24.6-rc.1"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -105,7 +105,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 # sockets would otherwise leak fds.
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 schemars = "0.8"

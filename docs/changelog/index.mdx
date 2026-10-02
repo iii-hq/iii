@@ -5,6 +5,80 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.24.4" description="October 2026">
+  ## Faster trace queries
+
+  - `engine::traces::list` sorts and paginates unfiltered queries using lightweight root-span keys,
+    then loads full spans only for the selected page, instead of decoding every stored root payload.
+    Filtered queries use root keys and attribute and name lookups to narrow candidates before
+    loading their payloads. Trace ordering, counts, and exact filter results are unchanged.
+  - Benchmarks on copies of real trace stores reduced a 50-trace unfiltered query from 2098 ms to
+    35 ms and a session-scoped query from 1149 ms to 48 ms. These are measured examples, not a
+    guarantee for every workload. Status, duration, and time filters alone can still require
+    decoding most traces.
+  - `engine::traces::spans` accepts `include_events: false` to omit events and links while keeping
+    the other span fields. The default remains `true`. A benchmark with the same 120 spans reduced
+    the response from 7.81 MB to 0.05 MB and median query time from 29 ms to 8 ms. Consumers must
+    request the option to use the smaller response.
+
+  ## Compose dependency updates
+
+  - `compose::update` plans selected workers and their dependency graphs together with the same
+    planner as `compose::add`. This fixes conflicting declarations for shared dependencies, such
+    as `state` and `llm-router`, when updating a Harness project without naming individual workers.
+  - When a worker is both explicitly requested and reached as a dependency, its requested
+    declaration takes precedence if both resolve to the same package and release. A different
+    release still fails with an error naming both versions. The same rule fixes batch additions
+    through `compose::add`.
+  - Targeted updates preserve operator-defined tags and unpinned selectors on shared dependencies
+    while updating the lock. Generated exact pins follow the resolved graph; operator-defined
+    ranges are checked, and a conflicting exact pin requires an explicit versioned update.
+    An update without a worker selection still moves selected packages to `latest`, while generated
+    dependencies reached by another declared package follow that package's graph.
+  - Renamed containers resolve the package they actually run instead of adding duplicate nodes.
+    Newly required transitive dependencies are retained. Obsolete generated dependencies are removed
+    only when no updated graph or container outside those graphs still references them through
+    `start_after`.
+
+  See [Worker Compose](/using-iii/compose) for update rules and dependency ownership.
+
+  ## Linux worker compatibility
+
+  - On Linux x86_64 hosts with glibc, the static musl build of iii can now install workers that
+    publish only glibc builds. Compose prefers a native musl artifact when available and falls back
+    only when the registry reports the native platform as unsupported and lists the glibc target.
+  - This does not enable glibc workers on Alpine, including Alpine with `libc6-compat` or `gcompat`.
+    Other platforms keep their existing behavior. Dependency graphs that mix a musl-only root with
+    a glibc-only dependency are still unsupported.
+
+  ## Empty package configuration defaults
+
+  - Compose treats an empty mapping in a package's shipped defaults (`default_config: {}`) as
+    absent, so the worker can seed its own runtime default on first boot. Existing locks and
+    registry metadata do not need to be rewritten.
+  - Precedence remains shipped defaults, then the active configuration, then `config_override`.
+    Explicit empty mappings in the active configuration or overrides are preserved. This does not
+    repair partially published defaults or backfill existing configuration.
+
+  <Callout type="warning">
+    If an empty shipped default has already populated the engine's in-memory active configuration,
+    restart the engine after upgrading so Compose prepares the configuration again.
+  </Callout>
+
+  ## Python SDK connection recovery
+
+  - The Python SDK reconnects and re-registers after normal WebSocket closes, including codes
+    `1000`, `1001`, and a close frame without a code (`1005`). Previously a normal close, such as
+    during a Caddy reload, could leave a worker reporting connected on a closed socket.
+  - A socket that fails after the handshake but before the receive loop starts is discarded so
+    reconnection can continue. Setup failures count toward the configured retry limit.
+  - An exception while handling one incoming message is logged without stopping the receive loop.
+    Results that arrive after the caller has timed out or cancelled are discarded, and pending
+    invocations are cleaned up after timeouts, cancellations, and send failures.
+
+  [Compare 0.24.3 to 0.24.4](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.3...iii%2Fv0.24.4).
+</Update>
+
 <Update label="0.24.3" description="September 2026">
   ## Configuration overrides reach workers through the configuration service
 

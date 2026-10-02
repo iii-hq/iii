@@ -1251,7 +1251,7 @@ impl StreamWorker {
                 }
             }
             None => match adapter.get_group(&stream_name, &group_id).await {
-                Ok(values) => FunctionResult::Success(serde_json::to_value(values).ok()),
+                Ok(values) => FunctionResult::Success(Some(Value::Array(values))),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to get group from stream");
                     FunctionResult::Failure(ErrorBody {
@@ -2814,5 +2814,34 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains(&format!("127.0.0.1:{port}")));
         assert!(message.contains("already in use"));
+    }
+
+    #[tokio::test]
+    async fn list_preserves_complete_json_array_contract() {
+        // The public contract remains an array, including null, numeric and
+        // Unicode values and the empty case; allocation behavior is benchmarked.
+        let adapter = Arc::new(FakeStreamAdapter::default());
+        let expected = vec![
+            Value::Null,
+            serde_json::json!({"text":"中文\n\\\"","n":18446744073709551615u64}),
+            serde_json::json!([true, -7, 1.25]),
+        ];
+        *adapter.get_group_result.lock().unwrap() = Ok(expected.clone());
+        let worker = create_module_with_adapter(adapter.clone());
+        match worker
+            .list(StreamListInput {
+                stream_name: "s".into(),
+                group_id: "g".into(),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(Value::Array(values))) => assert_eq!(values, expected),
+            _ => panic!("legacy list must remain a complete JSON array"),
+        }
+        *adapter.get_group_result.lock().unwrap() = Ok(Vec::new());
+        assert!(
+            matches!(worker.list(StreamListInput {stream_name:"s".into(),group_id:"g".into()}).await,
+            FunctionResult::Success(Some(Value::Array(values))) if values.is_empty())
+        );
     }
 }

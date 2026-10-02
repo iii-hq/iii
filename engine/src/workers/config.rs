@@ -980,6 +980,10 @@ impl EngineBuilder {
         // watcher's sender is the only one left (and it's dropped on exit).
         drop(config_change_tx);
 
+        // Process heap maintenance belongs to the engine, not any worker's
+        // enabled flag or reload lifecycle. Start only after fallible setup.
+        let heap_maintenance = crate::memory::HeapMaintenance::start();
+
         // Track fatal reload errors so we can exit with non-zero after teardown.
         let mut reload_error: Option<anyhow::Error> = None;
 
@@ -1012,6 +1016,8 @@ impl EngineBuilder {
         // tasks (needed when the loop broke due to a reload error rather than
         // a signal-triggered shutdown).
         let _ = global_shutdown_tx.send(true);
+
+        heap_maintenance.stop().await;
 
         // Teardown -- inline version of the old `destroy()`. Operates on the
         // local `running` Vec directly so we don't have to reconstruct `self`.

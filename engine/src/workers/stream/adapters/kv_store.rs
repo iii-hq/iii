@@ -84,10 +84,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         data: Value,
     ) -> anyhow::Result<StreamSetResult> {
         let index = self.gen_key(stream_name, group_id);
-        let result = self
-            .storage
-            .set(index, item_id.to_string(), data.clone())
-            .await;
+        let result = self.storage.set(index, item_id.to_string(), data).await;
 
         Ok(result)
     }

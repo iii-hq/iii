@@ -615,9 +615,15 @@ fn sanitize_attributes(attributes: &mut [(String, String)]) {
 const PAYLOAD_ATTRIBUTE_KEY: &str = "iii.payload.json";
 const PAYLOAD_TRUNCATED_KEY: &str = "iii.payload.truncated";
 
+/// Marker appended to a cut attribute value: `…[truncated <N> bytes]`.
+const TRUNCATION_PREFIX: &str = "…[truncated ";
+const TRUNCATION_SUFFIX: &str = " bytes]";
+
 /// Cut `value` down to `max_bytes` on a char boundary and say how much went.
 /// Returns whether anything was cut. Zero disables the cap.
 fn truncate_attribute_value(value: &mut String, max_bytes: usize) -> bool {
+    use std::fmt::Write as _;
+
     if max_bytes == 0 || value.len() <= max_bytes {
         return false;
     }
@@ -626,9 +632,25 @@ fn truncate_attribute_value(value: &mut String, max_bytes: usize) -> bool {
         cut -= 1;
     }
     let removed = value.len() - cut;
-    value.truncate(cut);
-    value.push_str(&format!("…[truncated {removed} bytes]"));
+    let marker_len = TRUNCATION_PREFIX.len() + decimal_digits(removed) + TRUNCATION_SUFFIX.len();
+    // Build the result in an exact-size String: `String::truncate` would keep
+    // the source value's full capacity alive (MOT-4987).
+    let mut truncated = String::with_capacity(cut + marker_len);
+    truncated.push_str(&value[..cut]);
+    truncated.push_str(TRUNCATION_PREFIX);
+    write!(truncated, "{removed}").expect("writing to a String cannot fail");
+    truncated.push_str(TRUNCATION_SUFFIX);
+    *value = truncated;
     true
+}
+
+fn decimal_digits(mut value: usize) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn truncate_attributes(attributes: &mut Vec<(String, String)>, max_bytes: usize) {
@@ -6503,6 +6525,26 @@ mod tests {
     }
 
     #[test]
+    fn truncated_attribute_value_releases_source_capacity() {
+        // Ingested values come from `to_string()`, so capacity == len. Cutting a
+        // 1 MiB value to the cap must not keep the 1 MiB buffer alive: the hot
+        // cache accounts `len()`, so retained capacity is invisible to its limit.
+        let mut value = "x".repeat(1024 * 1024);
+        assert!(value.capacity() >= 1024 * 1024);
+        assert!(truncate_attribute_value(&mut value, 64 * 1024));
+        assert_eq!(
+            value,
+            format!("{}…[truncated {} bytes]", "x".repeat(64 * 1024), 960 * 1024)
+        );
+        assert!(
+            value.capacity() <= value.len() + 64,
+            "retained capacity {} for len {}",
+            value.capacity(),
+            value.len()
+        );
+    }
+
+    #[test]
     fn long_attribute_values_are_truncated_and_flagged() {
         let storage = InMemorySpanStorage::new(10);
         storage.set_max_attribute_bytes(64 * 1024);
@@ -6527,6 +6569,10 @@ mod tests {
             .find(|(key, _)| key == "big")
             .expect("big attribute")
             .1;
+        assert_eq!(
+            big,
+            &format!("{}…[truncated 139264 bytes]", "é".repeat(32 * 1024))
+        );
         assert!(big.len() <= 64 * 1024 + 40, "{} bytes", big.len());
         assert!(big.ends_with("bytes]"), "{}", &big[big.len() - 40..]);
         let event = &stored.events[0];
@@ -6536,6 +6582,10 @@ mod tests {
             .find(|(key, _)| key == "iii.payload.json")
             .expect("payload attribute")
             .1;
+        assert_eq!(
+            payload,
+            &format!("{}…[truncated 139264 bytes]", "x".repeat(64 * 1024))
+        );
         assert!(payload.len() <= 64 * 1024 + 40);
         assert!(payload.contains("…[truncated"));
         assert_eq!(
