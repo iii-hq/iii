@@ -16,7 +16,7 @@ name = "iii_sdk"
 path = "src/lib.rs"
 
 [dependencies]
-async-trait = "0.1"
+async-trait = "0.1.92"
 futures-util = "0.3"
 hostname = "0.4"
 serde = { version = "1", features = ["derive"] }

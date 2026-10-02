@@ -10,8 +10,6 @@ use crate::error::Error;
 /// Custom stream-provider trait. Implementors override the engine's built-in
 /// stream storage for a specific stream name when registered through
 /// `create_stream` in the `helpers` submodule.
-// async_trait adds #[must_use] to methods returning already-must-use futures.
-#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {
     async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, Error>;

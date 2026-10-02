@@ -26,8 +26,6 @@ pub struct TriggerConfig {
 
 /// Handler trait for custom trigger types. Implement this and pass to
 /// [`IIIClient::register_trigger_type`](crate::IIIClient::register_trigger_type).
-// async_trait adds #[must_use] to methods returning already-must-use futures.
-#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
