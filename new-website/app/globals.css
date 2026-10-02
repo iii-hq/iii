@@ -1,0 +1,296 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-hero-accent: var(--hero-accent);
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-pixel: var(--font-geist-pixel-circle);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  /* Site tokens used by the SVG graphics */
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-node: var(--node);
+  --color-faint: var(--faint);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-fail: var(--fail);
+
+  /* Motion: one ease-out and one ease-in-out for the whole site (see lib/motion.ts) */
+  --ease-out: var(--motion-ease-out);
+  --ease-in-out: var(--motion-ease-in-out);
+  --default-transition-timing-function: var(--motion-ease-out);
+  --default-transition-duration: var(--motion-fast);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  /* Motion vocabulary (JS twin: lib/motion.ts) */
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --motion-fast: 150ms;
+  --motion-base: 220ms;
+  --motion-slow: 300ms;
+
+  --hero-accent: oklch(0.47 0.115 168);
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.16 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.16 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.16 0 0);
+  --primary: oklch(0.2 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.96 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.5 0 0);
+  --accent: oklch(0.95 0 0);
+  --accent-foreground: oklch(0.2 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.91 0 0);
+  --input: oklch(0.91 0 0);
+  --ring: oklch(0.708 0 0);
+
+  --line: oklch(0.86 0 0);
+  --line-strong: oklch(0.7 0 0);
+  --node: oklch(1 0 0);
+  --faint: oklch(0.97 0 0);
+  --ok: oklch(0.62 0.15 150);
+  --warn: oklch(0.72 0.15 75);
+  --fail: oklch(0.6 0.2 25);
+
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --hero-accent: oklch(0.8 0.14 168);
+  --background: oklch(0.13 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.165 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.18 0 0);
+  --popover-foreground: oklch(0.97 0 0);
+  --primary: oklch(0.97 0 0);
+  --primary-foreground: oklch(0.16 0 0);
+  --secondary: oklch(0.21 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.2 0 0);
+  --muted-foreground: oklch(0.66 0 0);
+  --accent: oklch(0.22 0 0);
+  --accent-foreground: oklch(0.97 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 9%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.556 0 0);
+
+  --line: oklch(1 0 0 / 13%);
+  --line-strong: oklch(1 0 0 / 32%);
+  --node: oklch(0.17 0 0);
+  --faint: oklch(1 0 0 / 3%);
+  --ok: oklch(0.76 0.15 150);
+  --warn: oklch(0.8 0.14 80);
+  --fail: oklch(0.7 0.18 25);
+
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+    scroll-padding-top: 88px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01";
+    overflow-x: clip;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--foreground) 18%, transparent);
+  }
+  /* Geist Mono: no sans features, native spacing, slightly lighter antialiasing so small labels stay crisp */
+  .font-mono,
+  code,
+  kbd,
+  pre {
+    font-feature-settings: normal;
+    letter-spacing: 0;
+    font-variant-ligatures: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
+  .print {
+    clip-path: none !important;
+  }
+  .rule {
+    transform: none !important;
+  }
+}
+
+/* Shiki dual themes: light by default, dark under .dark. `.code-tokens` marks client-rendered token spans. */
+.shiki,
+.shiki span {
+  background-color: transparent !important;
+}
+.dark .shiki,
+.dark .shiki span,
+.dark .code-tokens span[style] {
+  color: var(--shiki-dark) !important;
+}
+
+/* Line numbers for Shiki output, drawn from a counter so they never end up in the copied text */
+.code-numbered .shiki code {
+  display: block;
+  counter-reset: line;
+}
+.code-numbered .shiki .line::before {
+  display: inline-block;
+  width: 1.5ch;
+  margin-inline-end: 1.25rem;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  text-align: end;
+  content: counter(line);
+  counter-increment: line;
+  user-select: none;
+}
+
+/*
+ * Content swap: when a tab, step, or selection changes, the new content rises 2px and fades in.
+ * Used by every explorer on the page so switching feels the same everywhere.
+ */
+@utility swap-in {
+  animation: swap-in var(--motion-base) var(--motion-ease-out) both;
+  @media (prefers-reduced-motion: reduce) {
+    animation-duration: 0s;
+  }
+}
+@keyframes swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+/* Press feedback shared by every pressable element: a subtle scale down on :active. */
+@utility pressable {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform, translate, scale;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--motion-ease-out);
+  &:active:not(:disabled) {
+    scale: 0.97;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    transition-property: color, background-color, border-color, box-shadow, opacity;
+  }
+}
+
+/* Hairline dotted background for graphic panels */
+.bg-dots {
+  background-image: radial-gradient(color-mix(in oklch, var(--foreground) 9%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Graphics sit directly on the page; green is reserved for their animated strokes. */
+.graphic-stage {
+  --ok: var(--foreground);
+  --warn: var(--muted-foreground);
+  --fail: var(--foreground);
+  position: relative;
+}
+
+/* Theme switch: the new theme is revealed by a clip-path circle (see theme-transition.ts) */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 2;
+}

@@ -1,0 +1,251 @@
+/*
+ * Nodes are HTML laid out by a CSS grid; only the wires are SVG. The SVG is sized to the
+ * container in CSS pixels (viewBox = width × height), so every stroke is drawn 1:1 and lands on
+ * a half pixel. Text never scales with the diagram.
+ *
+ * Timing arrives as custom properties: --d (delay) and --t (duration), both in seconds.
+ */
+
+.root {
+  position: relative;
+  container-type: inline-size;
+}
+
+.wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Stacked by default; one row of four once the container is wide enough for full labels. */
+.chain {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  row-gap: 44px;
+}
+
+.cell {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  min-width: 0;
+}
+
+.spacer {
+  display: none;
+}
+
+@container (min-width: 880px) {
+  .chain {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.25fr) minmax(0, 0.7fr) minmax(0, 1.25fr);
+    align-items: stretch;
+    column-gap: 72px;
+    row-gap: 0;
+  }
+
+  .cell {
+    max-width: none;
+  }
+
+  .spacer {
+    display: block;
+  }
+}
+
+.node {
+  position: relative;
+  min-width: 0;
+  min-height: 64px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--node);
+}
+
+.dashed {
+  border-style: dashed;
+}
+
+.chip {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--faint);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ring {
+  position: absolute;
+  inset: -1px;
+  border: 1.5px solid var(--hero-accent);
+  border-radius: 10px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.halo {
+  position: absolute;
+  inset: -5px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  pointer-events: none;
+}
+
+.wire {
+  vector-effect: non-scaling-stroke;
+}
+
+.straight {
+  shape-rendering: crispEdges;
+}
+
+.lane {
+  border-color: var(--line-strong);
+}
+
+.trace {
+  border-color: var(--line);
+  background: var(--faint);
+}
+
+/* The lit route draws in under the packet, then fades once the call has returned. */
+.route {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation:
+    draw var(--t) cubic-bezier(0.37, 0, 0.63, 1) var(--d) both,
+    route-out 450ms ease-in var(--out) both;
+}
+
+.packet,
+.glow {
+  offset-rotate: 0deg;
+  opacity: 0;
+  animation: travel var(--t) cubic-bezier(0.37, 0, 0.63, 1) var(--d) both;
+}
+
+.pulse {
+  animation: pulse var(--t) ease-out var(--d) both;
+}
+
+.pop {
+  transform: scale(0);
+  animation: pop 320ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--d) both;
+}
+
+.bar {
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: grow var(--t) linear var(--d) both;
+}
+
+.message {
+  opacity: 0;
+  animation: deliver var(--t) cubic-bezier(0.65, 0, 0.35, 1) var(--d) both;
+}
+
+.swap {
+  animation: swap-in 250ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes route-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes travel {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes pop {
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes grow {
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes deliver {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  10% {
+    opacity: 1;
+  }
+  60%,
+  85% {
+    opacity: 1;
+    transform: translateX(var(--dx));
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(var(--dx));
+  }
+}
+
+@keyframes swap-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root *,
+  .trace * {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transition: none !important;
+  }
+}

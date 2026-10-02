@@ -1,0 +1,85 @@
+import { EmailSignup } from '@/components/site/email-signup'
+import { PixelHeading } from '@/components/site/pixel-heading'
+import { Reveal } from '@/components/site/reveal'
+import { tokenize } from '@/lib/highlight'
+
+import { hero } from './content'
+import { HeroTrace } from './hero-trace'
+import { InstallCommand, type InstallTab } from './install-command'
+
+/** The install paths from the content file, each command tokenized once on the server for the card. */
+async function installTabs(): Promise<InstallTab[]> {
+  return Promise.all(
+    hero.install.tabs.map(async (tab) => {
+      const commands = tab.steps.flatMap((step) => ('command' in step ? [step.command] : []))
+      const tokens = await Promise.all(commands.map((command) => tokenize(command, 'bash')))
+      return {
+        id: tab.id,
+        label: tab.label,
+        commands: commands.map((command, i) => ({ command, tokens: tokens[i].flat() })),
+      }
+    }),
+  )
+}
+
+export async function Hero() {
+  const tabs = await installTabs()
+  return (
+    // biome-ignore lint/correctness/useUniqueElementIds: The page has one hero and this is its public anchor.
+    <section id="hero" aria-labelledby="hero-title" className="relative overflow-hidden">
+      <div className="mx-auto flex w-full max-w-[1240px] flex-col items-center px-5 pt-24 pb-14 sm:px-6 sm:pt-28 sm:pb-16 md:px-5 lg:pt-36 lg:pb-24">
+        {/* A 600px column centred on the page: eyebrow, headline, paragraph and install card all share one centre line. */}
+        <div className="flex w-full max-w-[600px] flex-col items-center text-center">
+          <Reveal className="flex w-full min-w-0 justify-center">
+            <span className="inline-flex h-7 items-center gap-2 rounded-full border px-3 font-sans text-[13px] text-foreground/80 leading-none sm:h-8 sm:text-[13px]">
+              <span aria-hidden className="flex items-end gap-px">
+                {[0, 1, 2].map((i) => (
+                  <span key={i} className="flex flex-col items-center gap-px">
+                    <span className="size-[3px] bg-foreground" />
+                    <span className="h-2 w-[3px] bg-foreground" />
+                  </span>
+                ))}
+              </span>
+              {hero.pronounced}
+            </span>
+          </Reveal>
+          <Reveal delay={0.05} className="mt-5 w-full sm:mt-6">
+            {/* biome-ignore lint/correctness/useUniqueElementIds: The page has one primary heading. */}
+            <PixelHeading
+              as="h1"
+              id="hero-title"
+              delay={0.15}
+              className="text-center text-[clamp(1.75rem,9.4vw,2.75rem)] leading-[1.06] tracking-[-0.02em] sm:text-[clamp(2.25rem,5vw,4.25rem)] sm:leading-[1.04]"
+            >
+              {hero.headline.map((line) => (
+                <span key={line} className="block whitespace-nowrap">
+                  {line}
+                </span>
+              ))}
+            </PixelHeading>
+          </Reveal>
+          <Reveal delay={0.1} className="mt-5 w-full sm:mt-6">
+            <p className="mx-auto max-w-[560px] text-pretty text-center text-[15px] text-muted-foreground leading-[1.6] sm:text-[17px] sm:leading-[1.6]">
+              {hero.copy}
+            </p>
+          </Reveal>
+          {/* The install block is the hero's only call to action: one command, nothing to click through. */}
+          <Reveal delay={0.15} className="mt-8 flex w-full sm:mt-9">
+            <InstallCommand tabs={tabs} />
+          </Reveal>
+        </div>
+        <Reveal delay={0.2} className="mt-10 w-full max-w-[960px] sm:mt-12">
+          <HeroTrace />
+        </Reveal>
+        {/* Anthony: an email capture near the top, kept quiet so it doesn't compete with the install block. */}
+        <Reveal
+          delay={0.25}
+          className="mt-6 flex w-full max-w-[960px] flex-col items-start gap-3 px-1 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p className="font-sans text-[13px] text-muted-foreground">{hero.updates}</p>
+          <EmailSignup className="sm:max-w-[360px]" />
+        </Reveal>
+      </div>
+    </section>
+  )
+}

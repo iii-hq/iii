@@ -1,0 +1,205 @@
+.canvas {
+  container-type: inline-size;
+}
+
+.diagram {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px 72px 48px minmax(0, 1.4fr);
+  align-items: center;
+  min-height: 255px;
+}
+
+.node {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--node);
+}
+
+.node[data-highlight="true"] {
+  border-color: var(--line-strong);
+  background: var(--faint);
+}
+
+.trigger {
+  padding: 16px;
+}
+
+.worker {
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.function {
+  position: relative;
+  overflow: hidden;
+  border-radius: 7px;
+  padding: 12px;
+  background: var(--faint);
+}
+
+.function[data-highlight="true"] {
+  border-color: var(--line-strong);
+}
+
+.diagram[data-phase="routing"] .trigger,
+.diagram[data-phase="executing"] .worker,
+.diagram[data-phase="executing"] .function {
+  border-color: var(--hero-accent);
+}
+
+.engine {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chip {
+  position: relative;
+  display: flex;
+  width: 64px;
+  height: 64px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--background);
+  box-shadow:
+    0 0 0 5px var(--background),
+    0 0 0 6px var(--line-strong);
+}
+
+.chip::after {
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--hero-accent);
+  border-radius: inherit;
+  pointer-events: none;
+  content: '';
+  opacity: 0;
+}
+
+.bridge {
+  display: block;
+  width: 48px;
+  height: 24px;
+  overflow: visible;
+}
+
+.packet {
+  opacity: 0;
+}
+
+.playback[data-running="false"] *,
+.playback[data-running="false"] *::after {
+  animation-play-state: paused !important;
+}
+
+.progress {
+  position: absolute;
+  inset: auto 12px 0;
+  height: 1px;
+  background: var(--hero-accent);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+@container (max-width: 479px) {
+  .diagram {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 14px;
+  }
+
+  .trigger {
+    width: min(100%, 240px);
+  }
+
+  .worker {
+    width: min(100%, 300px);
+  }
+
+  .bridge {
+    transform: rotate(90deg);
+  }
+
+  .engine > span {
+    top: auto;
+    left: calc(100% + 20px);
+    margin-top: 0;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--foreground);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .node,
+  .tab {
+    transition:
+      border-color var(--motion-fast) var(--motion-ease-out),
+      color var(--motion-fast) var(--motion-ease-out),
+      background-color var(--motion-fast) var(--motion-ease-out);
+  }
+
+  .diagram[data-phase="routing"] .incoming .packet {
+    animation: travel 800ms var(--motion-ease-in-out) both;
+  }
+
+  .diagram[data-phase="executing"] .outgoing .packet {
+    animation: travel 350ms var(--motion-ease-out) both;
+  }
+
+  .diagram[data-phase="executing"] .progress {
+    animation: execute 400ms var(--motion-ease-out) 350ms both;
+  }
+
+  .diagram[data-phase="executing"] .chip::after {
+    animation: route 650ms var(--motion-ease-out) both;
+  }
+}
+
+@keyframes route {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes travel {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+}
+
+@keyframes execute {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.8;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 0;
+  }
+}

@@ -23,6 +23,7 @@
     "generate:api-docs": "bash scripts/generate-api-docs.sh",
     "dev:docs": "pnpm --filter docs dev",
     "dev:website": "turbo run dev --filter=iii-website",
+    "dev:new-website": "turbo run dev --filter=iii-new-website",
     "dev:console": "turbo run dev --filter=console-frontend"
   },
   "devDependencies": {
