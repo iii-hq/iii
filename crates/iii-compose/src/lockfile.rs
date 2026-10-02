@@ -138,7 +138,7 @@ impl PreparedLock {
     }
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
-    async fn install(&mut self, cache_root: &Path) -> Result<()> {
+    pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
         let requests = self
             .lock
             .containers
@@ -282,6 +282,29 @@ fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
     Ok(lock)
 }
 
+/// Concrete package versions attached to the current, validated lock entries.
+/// Entries whose declaration identity does not match are intentionally absent.
+pub(crate) fn concrete_versions(compose: &ComposeFile) -> Result<BTreeMap<String, String>> {
+    let Some(lock) = load(&lock_path(&compose.path))? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(compose
+        .containers
+        .iter()
+        .filter_map(|(key, container)| {
+            let WorkerSource::Package { reference } = &container.worker else {
+                return None;
+            };
+            let requested = container.version.as_deref().unwrap_or("*");
+            let worker = format!("package://{reference}");
+            lock.containers
+                .get(key)
+                .filter(|entry| entry.worker == worker && entry.requested == requested)
+                .map(|entry| (key.clone(), entry.resolved.version.clone()))
+        })
+        .collect())
+}
+
 /// Returns package graph ownership recorded beside one compose file.
 pub(crate) fn graphs(compose_path: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
     Ok(load(&lock_path(compose_path))?
@@ -300,7 +323,7 @@ pub async fn prepare_metadata(
 
 /// Builds a lock candidate and attaches its resolved packages to the runtime
 /// model. Artifact acquisition is a separate step for operations that need it.
-async fn prepare_metadata_with_versions(
+pub(crate) async fn prepare_metadata_with_versions(
     compose: &mut ComposeFile,
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
@@ -645,6 +668,22 @@ mod tests {
             lock_path(Path::new("config/worker-compose.yaml")),
             PathBuf::from("config/worker-compose.lock")
         );
+    }
+
+    #[test]
+    fn concrete_versions_require_matching_identity_and_never_use_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let compose = ComposeFile::parse("containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n", &path).unwrap();
+        assert!(concrete_versions(&compose).unwrap().is_empty());
+        let mut stored = lock();
+        std::fs::write(lock_path(&path), serde_yaml::to_string(&stored).unwrap()).unwrap();
+        assert_eq!(concrete_versions(&compose).unwrap()["state"], "0.22.8");
+        stored.containers.get_mut("state").unwrap().requested = "*".into();
+        std::fs::write(lock_path(&path), serde_yaml::to_string(&stored).unwrap()).unwrap();
+        assert!(concrete_versions(&compose).unwrap().is_empty());
+        std::fs::write(lock_path(&path), "invalid: lock").unwrap();
+        assert!(concrete_versions(&compose).is_err());
     }
 
     #[test]

@@ -395,7 +395,7 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     );
     assert!(progress.contains("Containers Not started"), "{progress}");
     assert!(!progress.contains("Containers Starting"), "{progress}");
-    assert!(!progress.contains("Containers Ready"), "{progress}");
+    assert!(!progress.contains("Containers Running"), "{progress}");
     assert!(
         !progress.contains('\x1b'),
         "redirected output must not animate: {progress}"
@@ -677,7 +677,7 @@ fn sighup_during_managed_engine_startup_stops_the_engine() {
     assert!(output.status.success(), "compose exited with {output:?}");
     let progress = String::from_utf8_lossy(&output.stderr);
     assert!(progress.contains("Cancelled"), "{progress}");
-    assert!(!progress.contains("Containers Ready"), "{progress}");
+    assert!(!progress.contains("Containers Running"), "{progress}");
     assert!(
         !generated_config.exists(),
         "managed engine config survived shutdown"
@@ -901,20 +901,17 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     assert!(stopped.exists(), "worker shutdown trap did not run");
     let progress = String::from_utf8_lossy(&output.stderr);
     assert!(progress.contains("Engine Ready"), "{progress}");
-    assert!(progress.contains("Containers Ready"), "{progress}");
+    assert!(progress.contains("Containers Running (1/1)"), "{progress}");
+    assert!(progress.contains("probe ready"), "{progress}");
 
-    let terminal = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let workers = terminal
-        .find("stopping every project...")
-        .unwrap_or_else(|| panic!("worker shutdown missing:\n{terminal}"));
-    let engine = terminal
+    // Both lifecycle messages use stderr, preserving their actual write order.
+    let workers = progress
+        .find("probe stopped")
+        .unwrap_or_else(|| panic!("worker shutdown missing:\n{progress}"));
+    let engine = progress
         .find("stopping engine...")
-        .unwrap_or_else(|| panic!("engine shutdown missing:\n{terminal}"));
-    assert!(workers < engine, "shutdown order was reversed:\n{terminal}");
+        .unwrap_or_else(|| panic!("engine shutdown missing:\n{progress}"));
+    assert!(workers < engine, "shutdown order was reversed:\n{progress}");
     TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
 }
 

@@ -453,9 +453,12 @@ async fn serve(
     let shutdown = shutdown::ShutdownSignal::install()?;
 
     let mut start_project = start.then(|| InitialProject {
-        file,
+        file: file.clone(),
         frozen,
-        progress: report::StartupProgress::start(matches!(engine_mode, EngineMode::Managed { .. })),
+        progress: report::StartupProgress::start(
+            matches!(engine_mode, EngineMode::Managed { .. }),
+            &file,
+        ),
         shape: initial_file
             .as_ref()
             .map(telemetry::ProjectShape::of)

@@ -2863,6 +2863,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.28.0",
  "url",
  "uuid",
  "vt100",
