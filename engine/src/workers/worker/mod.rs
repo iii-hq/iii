@@ -332,14 +332,16 @@ async fn ws_handler(
     let engine = state.engine.clone();
     let config = state.config.clone();
 
-    ws.on_upgrade(move |socket| async move {
-        if let Err(err) = engine
-            .handle_worker(socket, addr, uri, headers, config, state.shutdown_rx)
-            .await
-        {
-            tracing::error!(addr = %addr, error = ?err, "worker error");
-        }
-    })
+    ws.max_frame_size(16 * 1024 * 1024)
+        .max_message_size(64 * 1024 * 1024)
+        .on_upgrade(move |socket| async move {
+            if let Err(err) = engine
+                .handle_worker(socket, addr, uri, headers, config, state.shutdown_rx)
+                .await
+            {
+                tracing::error!(addr = %addr, error = ?err, "worker error");
+            }
+        })
 }
 
 /// WS upgrade handler for the OTEL-only endpoint (`/otel`).

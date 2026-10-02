@@ -301,6 +301,9 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 		return err
 	}
 	msg := &RegisterFunctionMessage{ID: id, Metadata: cfg.Metadata}
+	if _, err := prepareJSON(msg); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.functions[id] = registeredFunction{message: msg, handler: handler}
 	c.mu.Unlock()
@@ -317,6 +320,9 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 		return fmt.Errorf("iii: RegisterTriggerType(%q): handler is nil", id)
 	}
 	msg := &RegisterTriggerTypeMessage{ID: id, Description: description}
+	if _, err := prepareJSON(msg); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.triggerTypes[id] = registeredTriggerType{message: msg, handler: handler}
 	c.mu.Unlock()
@@ -388,6 +394,9 @@ func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, 
 		Metadata:    meta,
 		Namespace:   namespace,
 	}
+	if _, err := prepareJSON(msg); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.triggers[id] = msg
 	c.mu.Unlock()
@@ -435,7 +444,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 
 	// Void: fire-and-forget, no invocation_id, no pending entry, return immediately.
 	if req.Action != nil && req.Action.Type == "void" {
-		frame, err := MarshalMessage(&InvokeFunctionMessage{
+		frame, err := prepareJSON(&InvokeFunctionMessage{
 			FunctionID:  req.FunctionID,
 			Data:        data,
 			Metadata:    req.Metadata,
@@ -460,7 +469,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 	c.pending[id] = resultCh
 	c.mu.Unlock()
 
-	frame, err := MarshalMessage(&InvokeFunctionMessage{
+	frame, err := prepareJSON(&InvokeFunctionMessage{
 		InvocationID: &id,
 		FunctionID:   req.FunctionID,
 		Data:         data,
@@ -508,7 +517,7 @@ func (c *Client) clearPending(id uuid.UUID) {
 // registrations are replayed from the in-memory registries on the next connect, so
 // buffering them too would double-send. Mirrors the Node SDK's skipIfClosed=true.
 func (c *Client) sendRegistration(msg any) {
-	frame, err := MarshalMessage(msg)
+	frame, err := prepareJSON(msg)
 	if err != nil {
 		return
 	}
@@ -524,6 +533,12 @@ func (c *Client) sendRegistration(msg any) {
 // for the next connection otherwise. Only invoke/result frames reach here for buffering;
 // registrations are gated by sendRegistration.
 func (c *Client) enqueueOutbound(frame []byte) {
+	var err error
+	frame, err = prepareFrame(frame)
+	if err != nil {
+		c.rejectFrame(frame, err)
+		return
+	}
 	c.mu.Lock()
 	if c.state != StateConnected {
 		c.offline = append(c.offline, frame)
@@ -659,8 +674,8 @@ func (c *Client) runConnection() error {
 			return err
 		}
 	}
-	// The engine can send large registration payloads; lift the default read limit.
-	conn.SetReadLimit(-1)
+	// Bound inbound main-protocol messages consistently with the engine message limit.
+	conn.SetReadLimit(maxJSONMessageBytes)
 
 	// Reconnect: present the previous engine-assigned identity as the very
 	// first frame — written directly here, before the writer goroutine,
@@ -672,12 +687,15 @@ func (c *Client) runConnection() error {
 	prevWorkerID, prevToken := c.workerID, c.reattachToken
 	c.mu.Unlock()
 	if prevWorkerID != "" {
-		frame, merr := MarshalMessage(&ReattachMessage{
+		frame, merr := prepareJSON(&ReattachMessage{
 			PreviousWorkerID: prevWorkerID,
 			ReattachToken:    prevToken,
 		})
+		if merr != nil {
+			log.Printf("iii: reattach JSON rejected: %v", merr)
+		}
 		if merr == nil {
-			if werr := conn.Write(connCtx, websocket.MessageText, frame); werr != nil {
+			if werr := c.writeJSON(connCtx, conn, frame); werr != nil {
 				_ = conn.CloseNow()
 				select {
 				case <-c.shutdown:
@@ -752,17 +770,17 @@ func (c *Client) onConnect() {
 	c.mu.Lock()
 	var frames [][]byte
 	for _, tt := range c.triggerTypes {
-		if f, err := MarshalMessage(tt.message); err == nil {
+		if f, err := prepareJSON(tt.message); err == nil {
 			frames = append(frames, f)
 		}
 	}
 	for _, fn := range c.functions {
-		if f, err := MarshalMessage(fn.message); err == nil {
+		if f, err := prepareJSON(fn.message); err == nil {
 			frames = append(frames, f)
 		}
 	}
 	for _, tr := range c.triggers {
-		if f, err := MarshalMessage(tr); err == nil {
+		if f, err := prepareJSON(tr); err == nil {
 			frames = append(frames, f)
 		}
 	}
@@ -772,6 +790,12 @@ func (c *Client) onConnect() {
 	c.mu.Unlock()
 
 	for _, f := range frames {
+		checked, err := prepareFrame(f)
+		if err != nil {
+			c.rejectFrame(f, err)
+			continue
+		}
+		f = checked
 		select {
 		case c.outbound <- f:
 		case <-c.shutdown:
@@ -799,7 +823,7 @@ func (c *Client) registerWorkerMetadata() {
 	if err != nil {
 		return
 	}
-	frame, err := MarshalMessage(&InvokeFunctionMessage{
+	frame, err := prepareJSON(&InvokeFunctionMessage{
 		FunctionID: FnRegisterWorker,
 		Data:       data,
 		Action:     VoidAction(),
@@ -847,11 +871,21 @@ func (c *Client) writeLoop(ctx context.Context, conn *websocket.Conn, reply <-ch
 		case <-c.shutdown:
 			return
 		case frame := <-c.outbound:
-			if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+			if err := c.writeJSON(ctx, conn, frame); err != nil {
+				var sizeErr *InvocationError
+				if errors.As(err, &sizeErr) && sizeErr.Code == "payload_too_large" {
+					c.rejectFrame(frame, err)
+					continue
+				}
 				return // write failure ends the connection; supervisor reconnects
 			}
 		case frame := <-reply:
-			if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+			if err := c.writeJSON(ctx, conn, frame); err != nil {
+				var sizeErr *InvocationError
+				if errors.As(err, &sizeErr) && sizeErr.Code == "payload_too_large" {
+					c.rejectFrame(frame, err)
+					continue
+				}
 				return
 			}
 		}
@@ -889,7 +923,7 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 	case MsgUnregisterTrigger:
 		go c.handleUnregisterTrigger(ctx, dec.UnregisterTrigger)
 	case MsgPing:
-		if frame, err := MarshalMessage(&PongMessage{}); err == nil {
+		if frame, err := prepareJSON(&PongMessage{}); err == nil {
 			c.enqueueOutboundDirect(frame)
 		}
 	case MsgWorkerRegistered:
@@ -985,6 +1019,12 @@ func (c *Client) FatalError() error {
 // reconnect if it still wants the work). This is what keeps a stale reply from leaking
 // onto the next connection (iii-hq/iii#1749).
 func (c *Client) enqueueOutboundDirect(frame []byte) {
+	var err error
+	frame, err = prepareFrame(frame)
+	if err != nil {
+		c.rejectFrame(frame, err)
+		return
+	}
 	c.replyMu.Lock()
 	reply := c.reply
 	c.replyMu.Unlock()
@@ -1065,7 +1105,7 @@ func (c *Client) replyInvocation(msg *InvokeFunctionMessage, result json.RawMess
 	if msg.InvocationID == nil {
 		return // fire-and-forget: no reply expected
 	}
-	frame, err := MarshalMessage(&InvocationResultMessage{
+	frame, err := prepareJSON(&InvocationResultMessage{
 		InvocationID: *msg.InvocationID,
 		FunctionID:   msg.FunctionID,
 		Result:       result,
@@ -1128,7 +1168,7 @@ func (c *Client) handleRegisterTrigger(ctx context.Context, msg *RegisterTrigger
 			res.Error = &ErrorBody{Code: "trigger_registration_failed", Message: err.Error()}
 		}
 	}
-	if frame, err := MarshalMessage(res); err == nil {
+	if frame, err := prepareJSON(res); err == nil {
 		c.enqueueOutboundDirect(frame)
 	}
 }
