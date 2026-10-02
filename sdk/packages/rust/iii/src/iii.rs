@@ -1,3 +1,141 @@
+// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
+// Main JSON inbound frame/message: 64 MiB (67,108,864 bytes).
+const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(test)]
+mod json_size_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn flush_drops_permanent_rejection_without_blocking_following_messages() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let first = ws.next().await.unwrap().unwrap();
+            let second = ws.next().await.unwrap().unwrap();
+            (first, second)
+        });
+        let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (mut tx, _) = stream.split();
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        let mut queue = vec![
+            invocation("x".repeat(MAX_JSON_FRAME_BYTES)),
+            Message::InvocationResult {
+                invocation_id: Uuid::nil(),
+                function_id: "f".into(),
+                result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+                error: None,
+                traceparent: None,
+                baggage: None,
+            },
+            Message::Pong,
+        ];
+        sdk.flush_queue(&mut tx, &mut queue).await.unwrap();
+        assert!(queue.is_empty());
+        let (first, second) = server.await.unwrap();
+        let parsed: Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+        assert_eq!(parsed["error"]["code"], "payload_too_large");
+        assert_eq!(second.to_text().unwrap(), "{\"type\":\"pong\"}");
+    }
+
+    #[tokio::test]
+    async fn local_argument_rejection_clears_pending_before_connection() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        let error = sdk
+            .trigger(crate::protocol::TriggerRequest {
+                function_id: "size::echo".into(),
+                payload: Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+                action: None,
+                timeout_ms: Some(100),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert!(sdk.inner.pending.lock_or_recover().is_empty());
+    }
+
+    fn invocation(data: String) -> Message {
+        Message::InvokeFunction {
+            invocation_id: Some(Uuid::nil()),
+            function_id: "size::echo".into(),
+            data: Value::String(data),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: None,
+            namespace: None,
+        }
+    }
+
+    #[test]
+    fn complete_utf8_envelope_has_inclusive_boundary() {
+        let overhead = serde_json::to_string(&invocation(String::new()))
+            .unwrap()
+            .len();
+        for size in [
+            MAX_JSON_FRAME_BYTES - 1,
+            MAX_JSON_FRAME_BYTES,
+            MAX_JSON_FRAME_BYTES + 1,
+        ] {
+            let message = invocation("x".repeat(size - overhead));
+            let result = IIIClient::prepare_json(&message);
+            if size <= MAX_JSON_FRAME_BYTES {
+                assert_eq!(result.unwrap().len(), size);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+                assert!(IIIClient::permanent_send_error(&error));
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_and_escapes_use_serialized_bytes() {
+        let input = "😀é\n\"\\".repeat(1_700_000);
+        assert!(input.chars().count() < MAX_JSON_FRAME_BYTES);
+        assert!(IIIClient::prepare_json(&invocation(input)).is_err());
+    }
+
+    #[test]
+    fn result_fallback_preserves_correlation_and_discards_large_context() {
+        let message = Message::InvocationResult {
+            invocation_id: Uuid::nil(),
+            function_id: "size::echo".into(),
+            result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+            error: None,
+            traceparent: None,
+            baggage: Some("secret".repeat(1000)),
+        };
+        let payload = IIIClient::prepare_json(&message).unwrap();
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["invocation_id"], Uuid::nil().to_string());
+        assert_eq!(parsed["error"]["code"], "payload_too_large");
+        assert!(parsed.get("result").is_none());
+        assert!(!payload.contains("secret"));
+    }
+
+    #[test]
+    fn explicit_receive_capacity_is_bounded() {
+        let config = IIIClient::receive_config();
+        assert_eq!(config.max_frame_size, Some(67_108_864));
+        assert_eq!(config.max_message_size, Some(67_108_864));
+    }
+
+    #[test]
+    fn transport_failures_remain_transient() {
+        assert!(!IIIClient::permanent_send_error(&Error::Timeout));
+        assert!(!IIIClient::permanent_send_error(&Error::WebSocket(
+            "closed".into()
+        )));
+        assert!(IIIClient::permanent_send_error(&Error::Serde(
+            "invalid".into()
+        )));
+    }
+}
+
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -26,7 +164,12 @@ use tokio::{
     sync::{Notify, mpsc, oneshot},
     time::{Instant, interval, sleep, sleep_until},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+#[cfg(test)]
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{Message as WsMessage, protocol::WebSocketConfig},
+};
 use uuid::Uuid;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1454,11 +1597,11 @@ impl IIIClient {
             trigger_namespace: input.trigger_namespace,
         };
 
+        self.send_message(message.to_message())?;
         self.inner
             .triggers
             .lock_or_recover()
             .insert(message.id.clone(), message.clone());
-        let _ = self.send_message(message.to_message());
 
         let iii = self.clone();
         let trigger_type = message.trigger_type.clone();
@@ -1570,7 +1713,7 @@ impl IIIClient {
             .lock_or_recover()
             .insert(invocation_id, tx);
 
-        self.send_message(Message::InvokeFunction {
+        if let Err(error) = self.send_message(Message::InvokeFunction {
             invocation_id: Some(invocation_id),
             function_id: req.function_id,
             data: req.payload,
@@ -1579,7 +1722,10 @@ impl IIIClient {
             action: req.action,
             metadata,
             namespace,
-        })?;
+        }) {
+            self.inner.pending.lock_or_recover().remove(&invocation_id);
+            return Err(error);
+        }
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
@@ -1641,7 +1787,89 @@ impl IIIClient {
         }
     }
 
+    // A single-frame JSON envelope must fit Axum's inclusive 16 MiB frame limit.
+    fn receive_config() -> WebSocketConfig {
+        WebSocketConfig::default()
+            .max_frame_size(Some(MAX_JSON_MESSAGE_BYTES))
+            .max_message_size(Some(MAX_JSON_MESSAGE_BYTES))
+    }
+
+    fn prepare_json(message: &Message) -> Result<String, Error> {
+        Self::prepare_envelope(message).map(|(payload, _)| payload)
+    }
+
+    fn prepare_envelope(message: &Message) -> Result<(String, Option<Message>), Error> {
+        let payload = serde_json::to_string(message)?;
+        let size = payload.len();
+        if size <= MAX_JSON_FRAME_BYTES {
+            return Ok((payload, None));
+        }
+        let error = Error::Remote {
+            code: "payload_too_large".to_string(),
+            message: format!(
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+            ),
+            stacktrace: None,
+        };
+        if let Message::InvocationResult {
+            invocation_id,
+            function_id,
+            ..
+        } = message
+        {
+            let fallback = Message::InvocationResult {
+                invocation_id: *invocation_id,
+                function_id: function_id.clone(),
+                result: None,
+                error: Some(ErrorBody {
+                    code: "payload_too_large".to_string(),
+                    message: match &error {
+                        Error::Remote { message, .. } => message.clone(),
+                        _ => unreachable!(),
+                    },
+                    stacktrace: None,
+                }),
+                traceparent: None,
+                baggage: None,
+            };
+            let payload = serde_json::to_string(&fallback)?;
+            if payload.len() <= MAX_JSON_FRAME_BYTES {
+                return Ok((payload, Some(fallback)));
+            }
+        }
+        Err(error)
+    }
+
+    fn permanent_send_error(error: &Error) -> bool {
+        matches!(error, Error::Serde(_))
+            || matches!(error, Error::Remote { code, .. } if code == "payload_too_large")
+    }
+
     fn send_message(&self, message: Message) -> Result<(), Error> {
+        let replacement = match Self::prepare_envelope(&message) {
+            Ok((_, replacement)) => replacement,
+            Err(error) => {
+                // Public registration methods keep their signatures; report and remove
+                // rejected registrations rather than durably replaying them.
+                match &message {
+                    Message::RegisterFunction { id, .. } => {
+                        self.inner.functions.lock_or_recover().remove(id);
+                    }
+                    Message::RegisterTriggerType { id, .. } => {
+                        self.inner.trigger_types.lock_or_recover().remove(id);
+                    }
+                    Message::RegisterTrigger { id, .. } => {
+                        self.inner.triggers.lock_or_recover().remove(id);
+                    }
+                    _ => {}
+                }
+                tracing::warn!(error = %error, "JSON envelope rejected locally");
+                return Err(error);
+            }
+        };
+        // Preserve typed values (notably Some(Value::Null)) without a JSON round-trip.
+        // Only oversized results replace the original with the checked fallback.
+        let message = replacement.unwrap_or(message);
         if !self.inner.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -1688,9 +1916,14 @@ impl IIIClient {
                             request.headers_mut().insert(name, val);
                         }
                     }
-                    connect_async(request).await
+                    connect_async_with_config(request, Some(Self::receive_config()), false).await
                 } else {
-                    connect_async(&self.inner.address).await
+                    connect_async_with_config(
+                        &self.inner.address,
+                        Some(Self::receive_config()),
+                        false,
+                    )
+                    .await
                 }
             })
             .await;
@@ -1787,9 +2020,13 @@ impl IIIClient {
                                 match outgoing {
                                     Some(Outbound::Message(message)) => {
                                         if let Err(err) = self.send_ws(&mut ws_tx, &message).await {
-                                            tracing::warn!(error = %err, "send failed; reconnecting");
-                                            queue.push(message);
-                                            should_reconnect = true;
+                                            if Self::permanent_send_error(&err) {
+                                                tracing::warn!(error = %err, "JSON envelope rejected permanently");
+                                            } else {
+                                                tracing::warn!(error = %err, "send failed; reconnecting");
+                                                queue.push(message);
+                                                should_reconnect = true;
+                                            }
                                         }
                                     }
                                     Some(Outbound::Shutdown) => {
@@ -1953,6 +2190,25 @@ impl IIIClient {
         let mut iter = drained.into_iter();
         while let Some(message) = iter.next() {
             if let Err(err) = self.send_ws(ws_tx, &message).await {
+                if Self::permanent_send_error(&err) {
+                    tracing::warn!(error = %err, "queued JSON envelope rejected permanently");
+                    if let Message::InvokeFunction {
+                        invocation_id: Some(id),
+                        ..
+                    } = message
+                    {
+                        self.handle_invocation_result(
+                            id,
+                            None,
+                            Some(ErrorBody {
+                                code: "payload_too_large".into(),
+                                message: err.to_string(),
+                                stacktrace: None,
+                            }),
+                        );
+                    }
+                    continue;
+                }
                 queue.push(message);
                 queue.extend(iter);
                 return Err(err);
@@ -1963,7 +2219,7 @@ impl IIIClient {
     }
 
     async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), Error> {
-        let payload = serde_json::to_string(message)?;
+        let payload = Self::prepare_json(message)?;
         // Bound the send: on a blackholed peer with a full TCP send window,
         // send().await can block indefinitely — and since callers await this
         // inside select! handlers, an unbounded send wedges the entire

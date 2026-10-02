@@ -2618,9 +2618,18 @@ impl Engine {
                             let _ = tx.send(Outbound::Raw(WsMessage::Pong(payload))).await;
                         }
                         Some(Ok(WsMessage::Pong(_))) => {}
-                        Some(Err(_)) | None => {
+                        Some(Err(error)) => {
+                            tracing::warn!(
+                                worker_id = %worker.id,
+                                peer = %peer,
+                                error = %error,
+                                frame_limit_bytes = crate::workers::worker::MAX_JSON_FRAME_BYTES,
+                                message_limit_bytes = crate::workers::worker::MAX_JSON_MESSAGE_BYTES,
+                                "Worker WebSocket read failed"
+                            );
                             break;
                         }
+                        None => break,
                     }
                 }
             }
