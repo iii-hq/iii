@@ -7,9 +7,12 @@ from iii import InitOptions
 from iii.errors import InvocationError
 from iii.iii import III
 
+# Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+JSON_FRAME_LIMIT_BYTES = 16 * 1024 * 1024
+
 sdk = III(
-    os.environ["MOT4988_URL"],
-    InitOptions(worker_name="mot4988-python", enable_metrics_reporting=False, otel={"enabled": False}),
+    os.environ["JSON_SIZE_TEST_URL"],
+    InitOptions(worker_name="json-size-python", enable_metrics_reporting=False, otel={"enabled": False}),
 )
 sdk.register_function("size::python", lambda data: "x" * data["size"])
 sdk.register_function("size::python-length", lambda data: len(data))
@@ -25,7 +28,7 @@ try:
     identity = sdk.worker_id
     for target in ["size::node", "size::rust"]:
         try:
-            sdk.trigger({"function_id": target, "payload": {"size": 16 * 1024 * 1024}})
+            sdk.trigger({"function_id": target, "payload": {"size": JSON_FRAME_LIMIT_BYTES}})
             raise AssertionError("oversized result was accepted")
         except InvocationError as error:
             assert error.code == "payload_too_large", error
@@ -33,7 +36,7 @@ try:
         # Incoming results above the library's former 1 MiB default.
         assert len(sdk.trigger({"function_id": target, "payload": {"size": 2 * 1024 * 1024}})) == 2 * 1024 * 1024
     assert sdk.worker_id == identity
-    print("MOT4988_PYTHON_CROSS_SDK_OK", flush=True)
+    print("JSON_SIZE_PYTHON_CROSS_SDK_OK", flush=True)
     time.sleep(8)
 finally:
     sdk.shutdown()

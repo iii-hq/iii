@@ -1,4 +1,4 @@
-"""MOT-4988: complete serialized-envelope limits, not payload character counts."""
+"""complete serialized-envelope limits, not payload character counts."""
 
 import asyncio
 import json
@@ -89,7 +89,8 @@ async def test_local_argument_rejection_removes_pending():
 
 
 @pytest.mark.asyncio
-async def test_flush_skips_permanent_rejection_and_sends_following_message():
+@pytest.mark.parametrize("invocation_id", [None, "queued-call", 123])
+async def test_flush_skips_permanent_rejection_and_sends_following_message(invocation_id):
     sdk = client()
     sdk._worker_id = None
     sdk._trigger_types = {}
@@ -100,8 +101,13 @@ async def test_flush_skips_permanent_rejection_and_sends_following_message():
     sdk._set_connection_state = lambda state: None
     sdk._register_worker_metadata = lambda: None
     sdk._receive_loop = AsyncMock()
+    future = asyncio.get_running_loop().create_future()
+    sdk._pending["queued-call"] = SimpleNamespace(future=future)
+    rejected = {"type": "invokefunction", "data": "x" * _MAX_JSON_FRAME_BYTES}
+    if invocation_id is not None:
+        rejected["invocation_id"] = invocation_id
     sdk._queue = [
-        {"type": "invokefunction", "data": "x" * _MAX_JSON_FRAME_BYTES},
+        rejected,
         {"type": "invocationresult", "invocation_id": "i", "function_id": "f", "result": "x" * _MAX_JSON_FRAME_BYTES},
         {"type": "invocationresult", "invocation_id": "j", "function_id": "f", "result": 1},
     ]
@@ -112,6 +118,14 @@ async def test_flush_skips_permanent_rejection_and_sends_following_message():
     assert frames[0]["error"]["code"] == "payload_too_large"
     assert frames[1]["result"] == 1
     assert sdk._queue == []
+    if invocation_id == "queued-call":
+        assert sdk._pending == {}
+        with pytest.raises(InvocationError, match="payload_too_large"):
+            await future
+    else:
+        assert sdk._pending["queued-call"].future is future
+        assert not future.done()
+        future.cancel()
 
 
 @pytest.mark.asyncio
@@ -126,4 +140,4 @@ async def test_connect_sets_explicit_protocol_message_receive_limit(monkeypatch)
     monkeypatch.setattr("iii.iii.websockets.connect", connect)
     await sdk._do_connect()
     assert connect.call_args.kwargs["max_size"] == _MAX_JSON_MESSAGE_BYTES
-    assert _MAX_JSON_MESSAGE_BYTES == 64 * 1024 * 1024
+    assert _MAX_JSON_MESSAGE_BYTES == 67_108_864

@@ -7,6 +7,9 @@ use common::mock_engine::{MockEngine, count_type};
 use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 
+// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+const JSON_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
 #[tokio::test]
 async fn null_absent_and_oversized_results_preserve_wire_semantics() {
     let mock = MockEngine::start().await;
@@ -21,7 +24,7 @@ async fn null_absent_and_oversized_results_preserve_wire_semantics() {
                     message: "No result".into(),
                     stacktrace: None,
                 }),
-                "oversized" => Ok(Value::String("x".repeat(16 * 1024 * 1024))),
+                "oversized" => Ok(Value::String("x".repeat(JSON_FRAME_LIMIT_BYTES))),
                 _ => unreachable!(),
             }
         }),

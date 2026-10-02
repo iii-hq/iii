@@ -6,6 +6,9 @@ use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
 
+// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+const JSON_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
 #[tokio::test]
 async fn receives_large_invocations_and_results_with_and_without_headers() {
     for headers in [false, true] {
@@ -30,7 +33,7 @@ async fn receives_large_invocations_and_results_with_and_without_headers() {
             )
             .await;
         assert_eq!(count_type(&msgs, "registerfunction"), 1);
-        let huge = "x".repeat(16 * 1024 * 1024 + 1);
+        let huge = "x".repeat(JSON_FRAME_LIMIT_BYTES + 1);
         for (id, input) in [
             ("00000000-0000-4000-8000-000000000001", huge.as_str()),
             ("00000000-0000-4000-8000-000000000002", "small"),

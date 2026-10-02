@@ -67,7 +67,9 @@ TResult = TypeVar("TResult")
 log = logging.getLogger("iii.iii")
 
 # Outbound JSON is one frame (16 MiB); inbound messages may span frames (64 MiB).
+# Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
 _MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+# Main JSON inbound message: 64 MiB (67,108,864 bytes).
 _MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
@@ -525,8 +527,11 @@ class III:
                     if error.code != "payload_too_large":
                         raise
                     log.warning("Queued JSON rejected: %s", error)
-                    pending_call = self._pending.pop(
-                        queued_msg.get("invocation_id"), None
+                    invocation_id = queued_msg.get("invocation_id")
+                    pending_call = (
+                        self._pending.pop(invocation_id, None)
+                        if isinstance(invocation_id, str)
+                        else None
                     )
                     if pending_call and not pending_call.future.done():
                         pending_call.future.set_exception(error)

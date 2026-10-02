@@ -1,3 +1,8 @@
+// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
+// Main JSON inbound frame/message: 64 MiB (67,108,864 bytes).
+const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 #[cfg(test)]
 mod json_size_tests {
     use super::*;
@@ -17,11 +22,11 @@ mod json_size_tests {
         let (mut tx, _) = stream.split();
         let sdk = IIIClient::new("ws://127.0.0.1:0");
         let mut queue = vec![
-            invocation("x".repeat(16 * 1024 * 1024)),
+            invocation("x".repeat(MAX_JSON_FRAME_BYTES)),
             Message::InvocationResult {
                 invocation_id: Uuid::nil(),
                 function_id: "f".into(),
-                result: Some(Value::String("x".repeat(16 * 1024 * 1024))),
+                result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
                 error: None,
                 traceparent: None,
                 baggage: None,
@@ -42,7 +47,7 @@ mod json_size_tests {
         let error = sdk
             .trigger(crate::protocol::TriggerRequest {
                 function_id: "size::echo".into(),
-                payload: Value::String("x".repeat(16 * 1024 * 1024)),
+                payload: Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
                 action: None,
                 timeout_ms: Some(100),
             })
@@ -67,14 +72,17 @@ mod json_size_tests {
 
     #[test]
     fn complete_utf8_envelope_has_inclusive_boundary() {
-        const LIMIT: usize = 16 * 1024 * 1024;
         let overhead = serde_json::to_string(&invocation(String::new()))
             .unwrap()
             .len();
-        for size in [LIMIT - 1, LIMIT, LIMIT + 1] {
+        for size in [
+            MAX_JSON_FRAME_BYTES - 1,
+            MAX_JSON_FRAME_BYTES,
+            MAX_JSON_FRAME_BYTES + 1,
+        ] {
             let message = invocation("x".repeat(size - overhead));
             let result = IIIClient::prepare_json(&message);
-            if size <= LIMIT {
+            if size <= MAX_JSON_FRAME_BYTES {
                 assert_eq!(result.unwrap().len(), size);
             } else {
                 let error = result.unwrap_err();
@@ -87,7 +95,7 @@ mod json_size_tests {
     #[test]
     fn unicode_and_escapes_use_serialized_bytes() {
         let input = "😀é\n\"\\".repeat(1_700_000);
-        assert!(input.chars().count() < 16 * 1024 * 1024);
+        assert!(input.chars().count() < MAX_JSON_FRAME_BYTES);
         assert!(IIIClient::prepare_json(&invocation(input)).is_err());
     }
 
@@ -96,7 +104,7 @@ mod json_size_tests {
         let message = Message::InvocationResult {
             invocation_id: Uuid::nil(),
             function_id: "size::echo".into(),
-            result: Some(Value::String("x".repeat(16 * 1024 * 1024))),
+            result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
@@ -112,8 +120,8 @@ mod json_size_tests {
     #[test]
     fn explicit_receive_capacity_is_bounded() {
         let config = IIIClient::receive_config();
-        assert_eq!(config.max_frame_size, Some(64 * 1024 * 1024));
-        assert_eq!(config.max_message_size, Some(64 * 1024 * 1024));
+        assert_eq!(config.max_frame_size, Some(67_108_864));
+        assert_eq!(config.max_message_size, Some(67_108_864));
     }
 
     #[test]
@@ -1782,8 +1790,8 @@ impl IIIClient {
     // A single-frame JSON envelope must fit Axum's inclusive 16 MiB frame limit.
     fn receive_config() -> WebSocketConfig {
         WebSocketConfig::default()
-            .max_frame_size(Some(64 * 1024 * 1024))
-            .max_message_size(Some(64 * 1024 * 1024))
+            .max_frame_size(Some(MAX_JSON_MESSAGE_BYTES))
+            .max_message_size(Some(MAX_JSON_MESSAGE_BYTES))
     }
 
     fn prepare_json(message: &Message) -> Result<String, Error> {
@@ -1791,16 +1799,15 @@ impl IIIClient {
     }
 
     fn prepare_envelope(message: &Message) -> Result<(String, Option<Message>), Error> {
-        const LIMIT: usize = 16 * 1024 * 1024;
         let payload = serde_json::to_string(message)?;
         let size = payload.len();
-        if size <= LIMIT {
+        if size <= MAX_JSON_FRAME_BYTES {
             return Ok((payload, None));
         }
         let error = Error::Remote {
             code: "payload_too_large".to_string(),
             message: format!(
-                "Serialized JSON envelope is {size} bytes; limit is {LIMIT} bytes. Use channels for large data."
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
             ),
             stacktrace: None,
         };
@@ -1826,7 +1833,7 @@ impl IIIClient {
                 baggage: None,
             };
             let payload = serde_json::to_string(&fallback)?;
-            if payload.len() <= LIMIT {
+            if payload.len() <= MAX_JSON_FRAME_BYTES {
                 return Ok((payload, Some(fallback)));
             }
         }

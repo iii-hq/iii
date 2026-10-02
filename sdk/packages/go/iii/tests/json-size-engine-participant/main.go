@@ -12,8 +12,11 @@ import (
 	"time"
 )
 
+// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+const jsonFrameLimitBytes = 16 * 1024 * 1024
+
 func main() {
-	c := iii.New(os.Getenv("MOT4988_URL"), iii.WithName("mot4988-go"))
+	c := iii.New(os.Getenv("JSON_SIZE_TEST_URL"), iii.WithName("json-size-go"))
 	if err := c.RegisterFunction("size::go", func(_ context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Size int `json:"size"`
@@ -45,7 +48,7 @@ func main() {
 		}
 	}
 	for _, target := range []string{"size::rust", "size::node", "size::python"} {
-		_, err := call(target, 16*1024*1024)
+		_, err := call(target, jsonFrameLimitBytes)
 		var ie *iii.InvocationError
 		if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
 			panic(fmt.Sprintf("oversized %s: %v", target, err))
@@ -57,12 +60,12 @@ func main() {
 	}
 	// Near-limit engine-forwarded envelope; synthetic Rust socket test separately
 	// proves >16 MiB receive capacity without assuming engine trace growth.
-	near := 16*1024*1024 - 1024
+	near := jsonFrameLimitBytes - 1024
 	data, _ := json.Marshal(strings.Repeat("y", near))
 	out, err := c.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust-length", Data: data, Timeout: 10 * time.Second})
 	if err != nil || string(out) != fmt.Sprint(near) {
 		panic(fmt.Sprintf("near-limit: %s %v", out, err))
 	}
-	fmt.Println("MOT4988_GO_CROSS_SDK_OK")
+	fmt.Println("JSON_SIZE_GO_CROSS_SDK_OK")
 	time.Sleep(8 * time.Second)
 }
