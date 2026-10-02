@@ -522,7 +522,10 @@ class III:
         for queued_msg in pending:
             if self._ws:
                 try:
-                    await self._send(queued_msg)
+                    # Replay must surface a dead transport to _do_connect;
+                    # _send would requeue on a non-OPEN socket and let setup
+                    # falsely succeed, resetting the retry budget forever.
+                    await self._ws.send(self._prepare_json(queued_msg))
                 except InvocationError as error:
                     if error.code != "payload_too_large":
                         raise

@@ -141,3 +141,31 @@ async def test_connect_sets_explicit_protocol_message_receive_limit(monkeypatch)
     await sdk._do_connect()
     assert connect.call_args.kwargs["max_size"] == _MAX_JSON_MESSAGE_BYTES
     assert _MAX_JSON_MESSAGE_BYTES == 67_108_864
+
+
+@pytest.mark.asyncio
+async def test_replay_transport_failure_does_not_requeue_or_reset_backoff():
+    sdk = client()
+    sdk._worker_id = None
+    sdk._trigger_types = {}
+    sdk._functions = {}
+    sdk._triggers = {}
+    sdk._pending = {}
+    sdk._reconnect_attempt = 1
+    sdk._set_connection_state = lambda state: None
+    sdk._register_worker_metadata = lambda: None
+    sdk._receive_loop = AsyncMock()
+    socket = sdk._ws
+    socket.state.name = "CLOSING"
+    socket.send.side_effect = ConnectionError("replay socket closed")
+    sdk._queue = [{"type": "invocationresult", "invocation_id": "small", "result": 1}]
+
+    with pytest.raises(ConnectionError, match="replay socket closed"):
+        await sdk._on_connected()
+
+    socket.send.assert_awaited_once()
+    assert json.loads(socket.send.call_args.args[0])["invocation_id"] == "small"
+    assert sdk._queue == []
+    assert sdk._reconnect_attempt == 1
+    assert not hasattr(sdk, "_receiver_task")
+    sdk._receive_loop.assert_not_called()
