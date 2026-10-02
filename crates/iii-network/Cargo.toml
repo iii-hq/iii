@@ -14,7 +14,7 @@ smoltcp = { version = "0.13", default-features = false, features = [
 ] }
 crossbeam-queue = "0.3"
 # Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl (breaks the Alpine iii-worker build).
-msb_krun = { version = "=0.1.16", features = ["net"] }
+msb_krun = { version = "=0.1.39", features = ["net"] }
 libc = "0.2"
 tracing = "0.1"
 bytes = "1"
