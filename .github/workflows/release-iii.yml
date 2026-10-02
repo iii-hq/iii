@@ -723,6 +723,7 @@ jobs:
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
           owner: iii-hq
           repositories: templates,quickstart-validator
+          permission-actions: write
 
       - name: Dispatch validation workflows
         env:
