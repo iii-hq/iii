@@ -2623,8 +2623,8 @@ impl Engine {
                                 worker_id = %worker.id,
                                 peer = %peer,
                                 error = %error,
-                                frame_limit_bytes = 16 * 1024 * 1024,
-                                message_limit_bytes = 64 * 1024 * 1024,
+                                frame_limit_bytes = crate::workers::worker::MAX_JSON_FRAME_BYTES,
+                                message_limit_bytes = crate::workers::worker::MAX_JSON_MESSAGE_BYTES,
                                 "Worker WebSocket read failed"
                             );
                             break;

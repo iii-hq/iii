@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { registerWorker } from '../src/iii'
 import { MessageType } from '../src/iii-types'
 
+// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
 const LIMIT = 16 * 1024 * 1024
 // Inspect internal queue/transport state without exporting a new SDK API.
 type Internal = {
@@ -26,7 +27,7 @@ function makeSdk() {
 }
 afterEach(async () => { await sdk.shutdown() })
 
-describe('MOT-4988 JSON frame size', () => {
+describe('JSON frame size', () => {
   it.each([-1, 0, 1])('uses the inclusive complete UTF-8 envelope boundary (%i)', (delta) => {
     makeSdk()
     const message = { type: MessageType.InvokeFunction, data: '' }

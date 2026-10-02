@@ -1,10 +1,10 @@
-//! MOT-4988: real engine routing and main WebSocket transport, Rust, Node, Python and Go SDKs.
+//! real engine routing and main WebSocket transport, Rust, Node, Python and Go SDKs.
 //! Opt-in cross-language integration; run from the repository root:
 //! ```sh
 //! pnpm install --frozen-lockfile --ignore-scripts
 //! pnpm --dir sdk/packages/node/helpers build
 //! uv sync --project sdk/packages/python/iii --extra dev
-//! # Go >= 1.24 must be on PATH (or set MOT4988_GO to its verified binary).
+//! # Go >= 1.24 must be on PATH (or set JSON_SIZE_TEST_GO to its verified binary).
 //! cargo test -p iii --test json_size_sdk_e2e --locked -- --ignored --nocapture
 //! ```
 //! The default Rust/engine-coverage gate does not provision these prerequisites.
@@ -27,6 +27,9 @@ impl Drop for Participant {
         let _ = self.0.wait();
     }
 }
+
+// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+const JSON_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pnpm dependencies, built Node helpers uv Python dev .venv and Go >= 1.24; see module setup/run commands"]
@@ -104,7 +107,7 @@ async fn oversized_json_preserves_connections_across_sdks() {
                 "sdk/packages/node/iii/tests/json-size-engine-participant.ts",
             ])
             .current_dir(root)
-            .env("MOT4988_URL", &url)
+            .env("JSON_SIZE_TEST_URL", &url)
             .stdout(Stdio::from(std::fs::File::create(&node_log).unwrap()))
             .stderr(Stdio::inherit())
             .spawn()
@@ -114,7 +117,7 @@ async fn oversized_json_preserves_connections_across_sdks() {
         Command::new("sdk/packages/python/iii/.venv/bin/python")
             .arg("sdk/packages/python/iii/tests/json_size_engine_participant.py")
             .current_dir(root)
-            .env("MOT4988_URL", &url)
+            .env("JSON_SIZE_TEST_URL", &url)
             .stdout(Stdio::from(std::fs::File::create(&py_log).unwrap()))
             .stderr(Stdio::inherit())
             .spawn()
@@ -122,10 +125,10 @@ async fn oversized_json_preserves_connections_across_sdks() {
     );
     let go_log = dir.path().join("go.log");
     let mut go = Participant(
-        Command::new(std::env::var("MOT4988_GO").unwrap_or_else(|_| "go".into()))
+        Command::new(std::env::var("JSON_SIZE_TEST_GO").unwrap_or_else(|_| "go".into()))
             .args(["run", "./tests/json-size-engine-participant"])
             .current_dir(root.join("sdk/packages/go/iii"))
-            .env("MOT4988_URL", &url)
+            .env("JSON_SIZE_TEST_URL", &url)
             .stdout(Stdio::from(std::fs::File::create(&go_log).unwrap()))
             .stderr(Stdio::inherit())
             .spawn()
@@ -158,7 +161,7 @@ async fn oversized_json_preserves_connections_across_sdks() {
         let error = sdk
             .trigger(TriggerRequest {
                 function_id: target.into(),
-                payload: json!({"size": 16 * 1024 * 1024}),
+                payload: json!({"size": JSON_FRAME_LIMIT_BYTES}),
                 timeout_ms: Some(10000),
                 action: None,
             })
@@ -205,8 +208,8 @@ async fn oversized_json_preserves_connections_across_sdks() {
     let (mut raw, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let _ = raw.next().await;
     let rejected = format!(
-        "{{\"secret\":\"MOT4988_PRIVATE_MARKER{}\"}}",
-        "x".repeat(16 * 1024 * 1024)
+        "{{\"secret\":\"JSON_SIZE_PRIVATE_MARKER{}\"}}",
+        "x".repeat(JSON_FRAME_LIMIT_BYTES)
     );
     let _ = raw
         .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -222,7 +225,7 @@ async fn oversized_json_preserves_connections_across_sdks() {
     assert!(diagnostic.contains("worker_id="));
     assert!(diagnostic.contains("16777216"));
     assert!(diagnostic.contains("Message too long"));
-    assert!(!diagnostic.contains("MOT4988_PRIVATE_MARKER"));
+    assert!(!diagnostic.contains("JSON_SIZE_PRIVATE_MARKER"));
     for _ in 0..120 {
         if node.0.try_wait().unwrap().is_some()
             && python.0.try_wait().unwrap().is_some()
@@ -235,13 +238,13 @@ async fn oversized_json_preserves_connections_across_sdks() {
     let node_output = std::fs::read_to_string(node_log).unwrap();
     let py_output = std::fs::read_to_string(py_log).unwrap();
     println!("{node_output}\n{py_output}");
-    assert!(node_output.contains("MOT4988_NODE_CROSS_SDK_OK"));
-    assert!(py_output.contains("MOT4988_PYTHON_CROSS_SDK_OK"));
+    assert!(node_output.contains("JSON_SIZE_NODE_CROSS_SDK_OK"));
+    assert!(py_output.contains("JSON_SIZE_PYTHON_CROSS_SDK_OK"));
     assert!(node.0.try_wait().unwrap().unwrap().success());
     assert!(python.0.try_wait().unwrap().unwrap().success());
     let go_output = std::fs::read_to_string(go_log).unwrap();
     println!("{go_output}");
-    assert!(go_output.contains("MOT4988_GO_CROSS_SDK_OK"));
+    assert!(go_output.contains("JSON_SIZE_GO_CROSS_SDK_OK"));
     assert!(go.0.try_wait().unwrap().unwrap().success());
     sdk.shutdown_async().await;
     builder.destroy().await.unwrap();

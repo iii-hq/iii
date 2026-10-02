@@ -164,13 +164,23 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 	if !same {
 		t.Fatal("socket changed")
 	}
-	if maxJSONMessageBytes != 64*1024*1024 {
+	if maxJSONMessageBytes != 67_108_864 {
 		t.Fatal("receive bound")
 	}
 }
 
 func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 	m := newMockEngine(t)
+	// Observe the continuation on the actual socket. Race-instrumented parsing
+	// of the >16 MiB frame can take seconds on a single CI CPU; one second is
+	// not evidence that the writer exited. Wake on receipt, with a bounded
+	// deadline for a genuine stopped writer instead of sleeping/polling.
+	continued := make(chan *websocket.Conn, 1)
+	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+		if messageType(msg) == "pong" {
+			continued <- conn
+		}
+	}
 	c := connectClient(t, m)
 	if err := c.RegisterFunction("retained", func(context.Context, json.RawMessage) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
@@ -191,7 +201,7 @@ func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 	select {
 	case out := <-pending:
 		var ie *InvocationError
-		if !errors.As(out.err, &ie) {
+		if !errors.As(out.err, &ie) || ie.Code != "payload_too_large" {
 			t.Fatal(out.err)
 		}
 	case <-time.After(time.Second):
@@ -201,9 +211,22 @@ func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 	c.outbound <- raw
 	small, _ := MarshalMessage(&PongMessage{})
 	c.outbound <- small
-	msgs := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, "pong") > 0 }, time.Second)
-	if countType(msgs, "pong") == 0 {
-		t.Fatal("writer stopped on permanent rejection")
+	select {
+	case conn := <-continued:
+		if conn != socket {
+			t.Fatal("writer continued on a different socket")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("writer did not continue after permanent rejection within 30 seconds")
+	}
+	msgs := m.receivedMessages()
+	if firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+		return stringField(msg, "invocation_id") == id.String()
+	}) != nil || countType(msgs, "pong") != 1 {
+		t.Fatal("writer sent rejected frame or lost continuation")
+	}
+	if countRegister(msgs, "registerfunction", "retained") != 2 {
+		t.Fatal("registration was not retained and replayed")
 	}
 	m.mu.Lock()
 	same := socket == m.active

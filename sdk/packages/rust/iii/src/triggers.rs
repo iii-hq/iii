@@ -26,6 +26,13 @@ pub struct TriggerConfig {
 
 /// Handler trait for custom trigger types. Implement this and pass to
 /// [`IIIClient::register_trigger_type`](crate::IIIClient::register_trigger_type).
+// async_trait injects #[must_use] on boxed Future-returning trait methods.
+// Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
+// compatibility exception on the affected trait, not the crate or its impls.
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait generates redundant must_use on boxed futures"
+)]
 #[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.

@@ -10,7 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
 const maxJSONFrameBytes = 16 * 1024 * 1024
+
+// Main JSON inbound message: 64 MiB (67,108,864 bytes).
 const maxJSONMessageBytes = 64 * 1024 * 1024
 
 // MarshalMessage remains the public serializer; only transport adds size policy.

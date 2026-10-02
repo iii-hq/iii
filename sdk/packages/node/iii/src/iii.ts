@@ -14,6 +14,11 @@ import {
   WS_IDLE_TIMEOUT_MS,
   WS_PING_INTERVAL_MS,
 } from './iii-constants'
+
+// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+// Main JSON inbound message: 64 MiB (67,108,864 bytes).
+const MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
   type IIIMessage,
@@ -821,7 +826,7 @@ class Sdk implements IIIClient {
     this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address, {
       // Match the engine's message bound; outbound single frames use 16 MiB.
-      maxPayload: 64 * 1024 * 1024,
+      maxPayload: MAX_JSON_MESSAGE_BYTES,
       headers: this.options?.headers,
       handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
     })
@@ -1010,11 +1015,10 @@ class Sdk implements IIIClient {
   private prepareJson(message: Record<string, unknown>): string {
     const data = JSON.stringify(message)
     const size = Buffer.byteLength(data, 'utf8')
-    const limit = 16 * 1024 * 1024
-    if (size <= limit) return data
+    if (size <= MAX_JSON_FRAME_BYTES) return data
     const error = new InvocationError({
       code: 'payload_too_large',
-      message: `Serialized JSON envelope is ${size} bytes; limit is ${limit} bytes. Use channels for large data.`,
+      message: `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for large data.`,
     })
     if (message.type === MessageType.InvocationResult) {
       const fallback = JSON.stringify({
@@ -1023,7 +1027,7 @@ class Sdk implements IIIClient {
         function_id: message.function_id,
         error: { code: error.code, message: error.message },
       })
-      if (Buffer.byteLength(fallback, 'utf8') <= limit) return fallback
+      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_FRAME_BYTES) return fallback
     }
     if (typeof message.invocation_id === 'string') {
       const pending = this.invocations.get(message.invocation_id)
@@ -1035,7 +1039,7 @@ class Sdk implements IIIClient {
 
   private sendMessageRaw(data: string): void {
     // Reattach and queue flush bypass sendMessage.
-    if (Buffer.byteLength(data, 'utf8') > 16 * 1024 * 1024) {
+    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_FRAME_BYTES) {
       data = this.prepareJson(JSON.parse(data))
     }
     if (this.ws && this.isOpen()) {
