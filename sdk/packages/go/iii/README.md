@@ -90,7 +90,7 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
 | Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
-| Register trigger type | `client.RegisterTriggerType(id, description, handler) error` | Implement a custom trigger type. |
+| Register trigger type | `client.RegisterTriggerType(id, description, handler, opts...) error` | Implement a custom trigger type with optional configuration and event schemas. |
 | Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
 | Invoke (enqueue) | `client.Trigger(ctx, TriggerRequest{Action: iii.EnqueueAction("queue")})` | Route the invocation through a named queue. |
@@ -180,6 +180,43 @@ sidecar from `ctx` with `iii.MetadataFromContext`, same as raw handlers. Use
 `RegisterFunction` for schemaless functions or when you want to send a hand-written
 schema. `iii.InferSchema[T]()` returns the schema for a type if you want to inspect or
 reuse it.
+
+### Describing custom trigger types
+
+Pass one `RegisterTriggerTypeOptions` value to describe the configuration accepted
+when binding a trigger and the payload delivered when it fires. Given a `handler`
+that implements `iii.TriggerHandler`:
+
+```go
+err := client.RegisterTriggerType("messaging::events", "Filtered message events", handler,
+	iii.RegisterTriggerTypeOptions{
+		TriggerRequestFormat: json.RawMessage(`{
+			"type":"object",
+			"properties":{"chat_ids":{"type":"array","items":{"type":"string"}}},
+			"additionalProperties":false
+		}`),
+		CallRequestFormat: json.RawMessage(`{
+			"type":"object",
+			"properties":{"message_id":{"type":"string"},"text":{"type":"string"}},
+			"required":["message_id"]
+		}`),
+	})
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+`engine::triggers::info` exposes `TriggerRequestFormat` as `configuration_schema`
+and `CallRequestFormat` as `request_schema`. Inspect a provider using
+`{"id":"messaging::events","namespace":"your-worker-namespace"}`. You can also
+generate either schema with `iii.InferSchema[T]()`.
+
+Existing three-argument calls remain valid. Nil or empty schema bytes omit the
+corresponding field. The SDK copies the bytes for registration and reconnect
+replay, rejects malformed JSON or multiple options values, and preserves the
+previous registration when an update is rejected. Schemas describe the contract;
+handlers remain responsible for validating trigger configuration and payloads.
+The SDK checks JSON syntax, not JSON Schema semantics.
 
 ### Invoking functions
 

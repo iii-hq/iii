@@ -301,3 +301,63 @@ func TestJSONNullAbsentOnWire(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testing.T) {
+	for _, connected := range []bool{false, true} {
+		name := "offline"
+		if connected {
+			name = "connected"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newMockEngine(t)
+			c := New(m.url)
+			t.Cleanup(func() { _ = c.Close() })
+			if connected {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := c.Connect(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := &stubTriggerHandler{}
+			if err := c.RegisterTriggerType("schemas", "Original", original, RegisterTriggerTypeOptions{TriggerRequestFormat: json.RawMessage(`true`)}); err != nil {
+				t.Fatal(err)
+			}
+			if connected {
+				waitTriggerTypeRegistration(t, m, "schemas")
+			}
+			retained := c.triggerTypes["schemas"]
+			beforeOffline, beforeOutbound := len(c.offline), len(c.outbound)
+			schema := json.RawMessage(`{"description":"` + strings.Repeat("x", maxJSONFrameBytes/2) + `"}`)
+			opts := RegisterTriggerTypeOptions{TriggerRequestFormat: schema, CallRequestFormat: append(json.RawMessage(nil), schema...)}
+			for _, single := range []RegisterTriggerTypeOptions{{TriggerRequestFormat: schema}, {CallRequestFormat: schema}} {
+				if _, err := prepareJSON(&RegisterTriggerTypeMessage{ID: "schemas", Description: "Replacement", TriggerRequestFormat: single.TriggerRequestFormat, CallRequestFormat: single.CallRequestFormat}); err != nil {
+					t.Fatalf("individual schema should fit: %v", err)
+				}
+			}
+			configBefore, callBefore := string(opts.TriggerRequestFormat), string(opts.CallRequestFormat)
+			err := c.RegisterTriggerType("schemas", "Replacement", &stubTriggerHandler{}, opts)
+			var sizeErr *InvocationError
+			if !errors.As(err, &sizeErr) || sizeErr.Code != "payload_too_large" {
+				t.Fatalf("combined schema envelope: %v", err)
+			}
+			if c.triggerTypes["schemas"].message != retained.message || c.triggerTypes["schemas"].handler != retained.handler {
+				t.Fatal("rejected registration replaced retained message or handler")
+			}
+			if string(opts.TriggerRequestFormat) != configBefore || string(opts.CallRequestFormat) != callBefore {
+				t.Fatal("caller schema bytes changed")
+			}
+			if len(c.offline) != beforeOffline || len(c.outbound) != beforeOutbound {
+				t.Fatal("rejected registration was queued")
+			}
+			if connected {
+				small, _ := MarshalMessage(&PongMessage{})
+				c.outbound <- small
+				msgs := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, "pong") == 1 }, 3*time.Second)
+				if countType(msgs, "pong") != 1 || countRegister(msgs, "registertriggertype", "schemas") != 1 {
+					t.Fatal("rejected registration reached socket or continuation failed")
+				}
+			}
+		})
+	}
+}

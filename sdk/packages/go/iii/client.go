@@ -1,6 +1,7 @@
 package iii
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -121,6 +122,19 @@ type RegisterFunctionOptions struct {
 	// with the function and is distinct from the per-invocation metadata passed to
 	// handlers.
 	Metadata json.RawMessage
+}
+
+// RegisterTriggerTypeOptions describes a trigger type's configuration and the
+// payload delivered to its bound functions. The zero value omits both schemas.
+// Schemas are discovery metadata; handlers remain responsible for validation.
+type RegisterTriggerTypeOptions struct {
+	// TriggerRequestFormat is the JSON Schema for a trigger instance's config.
+	// engine::triggers::info exposes it as configuration_schema.
+	TriggerRequestFormat json.RawMessage
+	// CallRequestFormat is the JSON Schema for the payload sent to the bound
+	// function when the trigger fires. engine::triggers::info exposes it as
+	// request_schema.
+	CallRequestFormat json.RawMessage
 }
 
 func resolveRegisterFunctionOptions(name, id string, opts []RegisterFunctionOptions) (RegisterFunctionOptions, error) {
@@ -315,11 +329,38 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 
 // RegisterTriggerType registers a custom trigger-type handler (e.g. "cron"). The engine
 // will call the handler to start and stop individual trigger instances of this type.
-func (c *Client) RegisterTriggerType(id, description string, handler TriggerHandler) error {
+// Pass at most one [RegisterTriggerTypeOptions] value to advertise JSON Schemas.
+// Nonempty schemas must contain valid JSON; JSON Schema semantics are not checked.
+// The SDK copies the schema bytes and resends them on reconnect. An invalid
+// registration leaves any existing registration with the same id unchanged.
+func (c *Client) RegisterTriggerType(id, description string, handler TriggerHandler, opts ...RegisterTriggerTypeOptions) error {
 	if handler == nil {
 		return fmt.Errorf("iii: RegisterTriggerType(%q): handler is nil", id)
 	}
-	msg := &RegisterTriggerTypeMessage{ID: id, Description: description}
+	if len(opts) > 1 {
+		return fmt.Errorf("iii: RegisterTriggerType(%q): expected at most one RegisterTriggerTypeOptions, got %d", id, len(opts))
+	}
+	var cfg RegisterTriggerTypeOptions
+	if len(opts) == 1 {
+		cfg = opts[0]
+	}
+	for _, schema := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{"trigger_request_format", cfg.TriggerRequestFormat},
+		{"call_request_format", cfg.CallRequestFormat},
+	} {
+		if len(schema.data) > 0 && !json.Valid(schema.data) {
+			return fmt.Errorf("iii: RegisterTriggerType(%q): %s must contain valid JSON", id, schema.name)
+		}
+	}
+	msg := &RegisterTriggerTypeMessage{
+		ID:                   id,
+		Description:          description,
+		TriggerRequestFormat: bytes.Clone(cfg.TriggerRequestFormat),
+		CallRequestFormat:    bytes.Clone(cfg.CallRequestFormat),
+	}
 	if _, err := prepareJSON(msg); err != nil {
 		return err
 	}
