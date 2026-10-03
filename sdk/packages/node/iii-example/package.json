@@ -9,7 +9,7 @@
   "dependencies": {
     "@iii-dev/helpers": "workspace:*",
     "iii-sdk": "workspace:*",
-    "zod": "^4.3.6"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
