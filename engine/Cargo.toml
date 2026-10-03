@@ -145,7 +145,7 @@ sha2 = "0.10"
 iana-time-zone = "0.1"
 ring = "0.17.14"
 glob = "0.3.3"
-base64 = "0.22.1"
+base64 = "0.23.1"
 indicatif = "0.18"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
