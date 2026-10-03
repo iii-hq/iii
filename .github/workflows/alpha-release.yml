@@ -52,7 +52,7 @@ jobs:
       dry_run: ${{ inputs.dry_run }}
     steps:
       - name: Checkout selected branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Default GITHUB_TOKEN (contents: write) is persisted in git config
@@ -122,15 +122,15 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -280,7 +280,7 @@ jobs:
       # The tag was already pushed by `prepare`; this attaches a prerelease
       # to it. Uses the default GITHUB_TOKEN (contents: write).
       - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: iii ${{ needs.prepare.outputs.version }} (alpha)
@@ -346,7 +346,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
           # Build runs checked-out code; uploads go through softprops (token
@@ -371,7 +371,7 @@ jobs:
         run: cargo build -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iii-init-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/iii-init
@@ -390,7 +390,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.prepare.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
