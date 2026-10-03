@@ -78,6 +78,16 @@ pub struct ComposeCli {
     #[arg(short = 'f', long, value_name = "PATH", requires = "up")]
     pub file: Option<PathBuf>,
 
+    /// Print every project worker's stdout and stderr as it arrives, each
+    /// line prefixed `[worker:stream]`. Works for a bare daemon and with
+    /// `--up`; the same output stays retained for `iii compose logs`.
+    #[arg(short = 'F', long)]
+    pub follow: bool,
+
+    /// With `--follow`, print only one process stream.
+    #[arg(long, value_enum, requires = "follow")]
+    pub stream: Option<LogStream>,
+
     #[command(subcommand)]
     pub command: Option<ComposeSubcommand>,
 }
@@ -170,6 +180,10 @@ pub enum ComposeCommand {
         start: bool,
         /// Whether initial startup must use an existing, current lock.
         frozen: bool,
+        /// Print worker output to the terminal while serving.
+        follow: bool,
+        /// With `follow`, only this process stream.
+        stream: Option<LogStream>,
     },
     /// Read process output through the already-running daemon.
     Logs {
@@ -194,6 +208,8 @@ impl ComposeCli {
                         || self.up
                         || self.frozen
                         || self.file.is_some()
+                        || self.follow
+                        || self.stream.is_some()
                     {
                         return Err(ComposeError::BuildConflictsWithServeOptions);
                     }
@@ -238,6 +254,8 @@ impl ComposeCli {
             file,
             start: self.up,
             frozen: self.frozen,
+            follow: self.follow,
+            stream: self.stream,
         })
     }
 
