@@ -154,7 +154,7 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Manage iii projects (init, generate-docker)
+    /// Manage iii projects (init)
     Project(crate::cli::project::ProjectArgs),
 
     /// Serve worker-compose projects or prepare their registry packages.
@@ -214,7 +214,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
         Some(Commands::Project(args)) => match args.action {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
-            cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
         Some(Commands::Compose(args)) => match &args.command {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
@@ -1035,33 +1034,6 @@ mod tests {
             Some(Commands::Project(args)) => match args.action {
                 ProjectAction::Init(init) => assert_eq!(init.directory.as_deref(), Some("myapp")),
                 _ => panic!("expected Init action"),
-            },
-            _ => panic!("expected Project subcommand"),
-        }
-    }
-
-    #[test]
-    fn project_init_with_docker_flag_parses() {
-        let cli = Cli::try_parse_from(["iii", "project", "init", "--docker"])
-            .expect("should parse project init --docker");
-        match cli.command {
-            Some(Commands::Project(args)) => match args.action {
-                ProjectAction::Init(init) => assert!(init.docker),
-                _ => panic!("expected Init action"),
-            },
-            _ => panic!("expected Project subcommand"),
-        }
-    }
-
-    #[test]
-    fn project_generate_docker_parses() {
-        let cli = Cli::try_parse_from(["iii", "project", "generate-docker"])
-            .expect("should parse project generate-docker");
-        assert_eq!(cli_usage_command_path(&cli), "project generate-docker");
-        match cli.command {
-            Some(Commands::Project(args)) => match args.action {
-                ProjectAction::GenerateDocker(_) => {}
-                _ => panic!("expected GenerateDocker action"),
             },
             _ => panic!("expected Project subcommand"),
         }

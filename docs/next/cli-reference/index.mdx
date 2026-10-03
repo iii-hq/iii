@@ -30,7 +30,7 @@ iii [OPTIONS] [COMMAND]
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
 | [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
 | [`console`](#iii-console) | Launch the iii web console. |
-| [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`project`](#iii-project) | Manage iii projects (init) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
@@ -93,24 +93,11 @@ iii compose logs [OPTIONS] [WORKER]
 
 ### `iii project`
 
-Manage iii projects (init, generate-docker)
+Manage iii projects (init)
 
 ```text
 iii project <COMMAND>
 ```
-
-#### `iii project generate-docker`
-
-Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
-
-```text
-iii project generate-docker [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory) |
-| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 
 #### `iii project init`
 
@@ -127,7 +114,6 @@ iii project init [OPTIONS] [NAME]
 | Option | Description |
 | ------ | ----------- |
 | `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
-| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env). Equivalent to running `iii project generate-docker` separately |
 | `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
