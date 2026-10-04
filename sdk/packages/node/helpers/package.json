@@ -42,7 +42,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.222.0",
     "@opentelemetry/core": "^2.11.0",
     "@opentelemetry/instrumentation": "^0.222.0",
@@ -52,14 +52,14 @@
     "@opentelemetry/sdk-metrics": "^2.11.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
-    "@opentelemetry/semantic-conventions": "^1.28.0",
-    "ws": "^8.21.0"
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "^4.1.11",
-    "tsdown": "^0.21.4",
+    "tsdown": "^0.23.0",
     "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
