@@ -671,9 +671,7 @@ impl RuntimeAdapter for LibkrunAdapter {
         .await?;
 
         let hosts_path = rootfs_dir.join("etc/hosts");
-        if !hosts_path.exists() {
-            let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
-        }
+        super::oci::write_default_hosts_no_follow(&hosts_path);
 
         let final_arch = read_cached_rootfs_arch(&rootfs_dir);
         let final_match = final_arch
@@ -708,7 +706,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let rootfs_dir = crate::cli::rootfs_cache::resolve_cached(image, &hints)
             .unwrap_or_else(|| Self::image_rootfs(image));
         let file_path = rootfs_dir.join(path.trim_start_matches('/'));
-        std::fs::read(&file_path)
+        // The rootfs comes from the image: never follow a symlink in it
+        // (e.g. `iii/worker.yaml` pointing at a host file, a device or a FIFO).
+        super::oci::read_rootfs_file_no_follow(&rootfs_dir, std::path::Path::new(path))
             .with_context(|| format!("failed to read {} from rootfs", file_path.display()))
     }
 
@@ -789,14 +789,15 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         if !iii_filesystem::init::has_init() {
             let init_path = crate::cli::firmware::download::ensure_init_binary().await?;
             let dest = worker_rootfs.join("init.krun");
-            std::fs::copy(&init_path, &dest).with_context(|| {
-                format!("failed to copy iii-init to rootfs: {}", dest.display())
+            // The per-worker rootfs comes from the image (and, without
+            // overlay, keeps what the guest wrote), so `init.krun` may be a
+            // symlink to a host file. Never copy through it.
+            let init_bytes = std::fs::read(&init_path).with_context(|| {
+                format!("failed to read iii-init binary: {}", init_path.display())
             })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
-            }
+            super::oci::write_rootfs_file_no_follow(&dest, &init_bytes, Some(0o755)).with_context(
+                || format!("failed to copy iii-init to rootfs: {}", dest.display()),
+            )?;
         }
 
         let self_exe = std::env::current_exe().context("cannot locate iii-worker binary")?;

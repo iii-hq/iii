@@ -21,6 +21,201 @@ const MAX_ENTRY_COUNT: u64 = 1_000_000;
 /// Maximum path depth.
 const MAX_PATH_DEPTH: usize = 128;
 
+/// Name under the rootfs root that iii writes itself; no image layer may
+/// provide it.
+const RESERVED_ROOTFS_NAME_OCI_CONFIG: &str = ".oci-config.json";
+
+/// Write `contents` to `path` without ever following a symlink at the
+/// final path component. A hostile image layer (or, without overlay, the
+/// guest) can leave a symlink at a host-written name inside the rootfs
+/// (e.g. `.oci-config.json`, `etc/hosts`, `init.krun`) pointing outside it;
+/// `std::fs::write` or `std::fs::copy` would follow it and clobber an
+/// arbitrary host file. Unlink any non-directory entry left at the name (a
+/// directory there makes this fail with `EEXIST`), then create the file with
+/// O_CREAT|O_EXCL|O_NOFOLLOW so a racing symlink is refused rather than
+/// followed. With `mode`, the permissions are set exactly on the open
+/// descriptor (independent of the umask); without it, the default creation
+/// mode applies, as with `std::fs::write`.
+pub(crate) fn write_rootfs_file_no_follow(
+    path: &std::path::Path,
+    contents: &[u8],
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // remove_file unlinks a symlink itself (it does not follow it).
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    if let Some(mode) = mode {
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
+/// Read `<rootfs>/<rel>` without following a symlink anywhere below
+/// `rootfs`: every ancestor must be a real directory and the final entry a
+/// regular file. The rootfs comes from the image (and, without overlay, keeps
+/// what the guest wrote), so any component may be a symlink to a host path
+/// (reading through it would expose host contents or hit a device such as
+/// `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and its
+/// type is checked on the descriptor, so it cannot be swapped between the
+/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+pub(crate) fn read_rootfs_file_no_follow(
+    rootfs: &std::path::Path,
+    rel: &std::path::Path,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let refuse = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{why}: {}", rel.display()),
+        )
+    };
+    let mut path = rootfs.to_path_buf();
+    let mut components = rel
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir | Component::RootDir))
+        .peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(part) = component else {
+            return Err(refuse("path escapes the rootfs"));
+        };
+        path.push(part);
+        if components.peek().is_some() && !std::fs::symlink_metadata(&path)?.is_dir() {
+            return Err(refuse("non-directory ancestor in rootfs path"));
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    if !file.metadata()?.is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Read `<rootfs>/.oci-config.json` as text, refusing symlinks and
+/// non-regular files (see [`read_rootfs_file_no_follow`]).
+fn read_oci_config_contents(rootfs: &std::path::Path) -> Option<String> {
+    let rel = std::path::Path::new(RESERVED_ROOTFS_NAME_OCI_CONFIG);
+    String::from_utf8(read_rootfs_file_no_follow(rootfs, rel).ok()?).ok()
+}
+
+/// Write the default guest `/etc/hosts`, unless the rootfs already ships a
+/// regular file there, and never by following a symlink. Both `exists()` and
+/// `fs::write` follow links, so a layer shipping `etc/hosts` (or `etc`
+/// itself) as a symlink could otherwise make the host create or clobber a
+/// file outside the rootfs. Trade-off: an image whose `/etc/hosts` is a
+/// symlink gets the default file instead, and an image whose `/etc` is a
+/// symlink gets no default hosts file.
+pub(crate) fn write_default_hosts_no_follow(hosts_path: &std::path::Path) {
+    const DEFAULT_HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n";
+    // `etc` comes from the image too. O_NOFOLLOW only guards the final path
+    // component, so if a layer made `etc` a symlink, unlinking or creating
+    // `etc/hosts` would act outside the rootfs. Only proceed when the parent
+    // is a real directory.
+    match hosts_path.parent().map(std::fs::symlink_metadata) {
+        Some(Ok(meta)) if meta.file_type().is_dir() => {}
+        Some(Ok(_)) => {
+            tracing::warn!(
+                path = %hosts_path.display(),
+                "parent of etc/hosts is not a real directory; skipping default hosts file"
+            );
+            return;
+        }
+        // No `etc` at all: nothing to write into.
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Some(Err(e)) => {
+            tracing::warn!(
+                path = %hosts_path.display(),
+                error = %e,
+                "cannot inspect parent of etc/hosts; skipping default hosts file"
+            );
+            return;
+        }
+        None => return,
+    }
+    match std::fs::symlink_metadata(hosts_path) {
+        // Image already provides a real /etc/hosts — leave it untouched.
+        Ok(meta) if meta.file_type().is_file() => {}
+        // Missing, or a symlink/other non-regular entry: write a fresh
+        // regular file without following whatever is there.
+        _ => {
+            if let Err(e) = write_rootfs_file_no_follow(hosts_path, DEFAULT_HOSTS, None) {
+                tracing::warn!(
+                    path = %hosts_path.display(),
+                    error = %e,
+                    "failed to write default etc/hosts"
+                );
+            }
+        }
+    }
+}
+
+/// Apply an OCI whiteout: `<dir>/.wh.<name>` deletes `<dir>/<name>` that
+/// lower layers created. The path comes from the image, and earlier entries
+/// may have turned `<dir>` or one of its ancestors into a symlink pointing
+/// outside the rootfs. `remove_dir_all` only refuses a symlink as the final
+/// component, so walk the ancestors and require each one to be a real
+/// directory inside `dest`, and refuse names (empty, `.`, `..`) that would
+/// resolve to the directory itself or to its parent.
+fn apply_whiteout(
+    dest: &std::path::Path,
+    entry_path: &std::path::Path,
+    target_name: &str,
+    layer_index: usize,
+) {
+    if target_name.is_empty() || target_name == "." || target_name == ".." {
+        tracing::warn!(
+            layer = layer_index + 1,
+            path = %entry_path.display(),
+            "ignoring whiteout with an invalid target name"
+        );
+        return;
+    }
+    let mut dir = dest.to_path_buf();
+    for component in entry_path.parent().into_iter().flat_map(|p| p.components()) {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => dir.push(part),
+            // Absolute paths and `..` are rejected before this point.
+            _ => return,
+        }
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            Ok(_) => {
+                tracing::warn!(
+                    layer = layer_index + 1,
+                    path = %entry_path.display(),
+                    "ignoring whiteout under a non-directory (symlink?) ancestor"
+                );
+                return;
+            }
+            // Ancestor missing: nothing to delete.
+            Err(_) => return,
+        }
+    }
+    let target = dir.join(target_name);
+    // Neither call follows a symlink in the final component.
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_dir_all(&target);
+}
+
 pub fn expected_oci_arch() -> &'static str {
     match std::env::consts::ARCH {
         "aarch64" => "arm64",
@@ -30,8 +225,7 @@ pub fn expected_oci_arch() -> &'static str {
 }
 
 pub fn read_cached_rootfs_arch(rootfs_dir: &std::path::Path) -> Option<String> {
-    let config_path = rootfs_dir.join(".oci-config.json");
-    let data = std::fs::read_to_string(config_path).ok()?;
+    let data = read_oci_config_contents(rootfs_dir)?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
     json.get("architecture")
         .and_then(|v| v.as_str())
@@ -189,9 +383,7 @@ pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Re
     std::fs::create_dir_all(&workspace).ok();
 
     let hosts_path = rootfs_dir.join("etc/hosts");
-    if !hosts_path.exists() {
-        let _ = std::fs::write(&hosts_path, "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n");
-    }
+    write_default_hosts_no_follow(&hosts_path);
 
     Ok(rootfs_dir)
 }
@@ -305,13 +497,28 @@ pub fn extract_layer_with_limits(
             );
         }
 
+        // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
+        // itself after extraction, so skip any entry at that root name or
+        // beneath it (a leading `./` included) — above all a symlink. Defense
+        // in depth behind the no-follow write in pull_and_extract_rootfs.
+        let is_reserved_root = matches!(
+            path.components().find(|c| !matches!(c, Component::CurDir)),
+            Some(Component::Normal(first))
+                if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
+        );
+        if is_reserved_root {
+            tracing::warn!(
+                layer = layer_index + 1,
+                path = %path.display(),
+                "layer entry uses the reserved name .oci-config.json; skipping"
+            );
+            continue;
+        }
+
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with(".wh.")
+            && let Some(target_name) = name.strip_prefix(".wh.")
         {
-            let target = path.parent().unwrap_or(&path).join(&name[4..]);
-            let full_target = dest.join(&target);
-            let _ = std::fs::remove_file(&full_target);
-            let _ = std::fs::remove_dir_all(&full_target);
+            apply_whiteout(dest, &path, target_name, layer_index);
             continue;
         }
 
@@ -647,7 +854,12 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
 
         let config_json = &image_data.config.data;
         let config_path = extract_root.join(".oci-config.json");
-        let _ = std::fs::write(&config_path, config_json);
+        // SECURITY: never std::fs::write here — a hostile layer can leave a
+        // symlink at this name and fs::write would follow it, overwriting an
+        // arbitrary host file with publisher-controlled bytes before any VM
+        // exists. Write without following links; fail the pull if we cannot.
+        write_rootfs_file_no_follow(&config_path, config_json, None)
+            .with_context(|| format!("Failed to write image config: {}", config_path.display()))?;
         Ok(())
     })();
 
@@ -712,8 +924,7 @@ pub fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
 
 /// Read entrypoint and cmd from the saved OCI image config.
 pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<String>)> {
-    let config_path = rootfs.join(".oci-config.json");
-    let data = std::fs::read_to_string(&config_path).ok()?;
+    let data = read_oci_config_contents(rootfs)?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
 
     let config = json.get("config")?;
@@ -744,8 +955,7 @@ pub fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<Stri
 
 /// Read WorkingDir from the saved OCI image config.
 pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
-    let config_path = rootfs.join(".oci-config.json");
-    let data = std::fs::read_to_string(&config_path).ok()?;
+    let data = read_oci_config_contents(rootfs)?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
     json.get("config")?
         .get("WorkingDir")
@@ -756,10 +966,9 @@ pub fn read_oci_workdir(rootfs: &std::path::Path) -> Option<String> {
 
 /// Read environment variables from the saved OCI image config.
 pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
-    let config_path = rootfs.join(".oci-config.json");
-    let data = match std::fs::read_to_string(&config_path) {
-        Ok(d) => d,
-        Err(_) => return vec![],
+    let data = match read_oci_config_contents(rootfs) {
+        Some(d) => d,
+        None => return vec![],
     };
     let json: serde_json::Value = match serde_json::from_str(&data) {
         Ok(j) => j,
@@ -1486,5 +1695,400 @@ mod tests {
         let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
         assert_eq!(content, "hello world");
         assert_eq!(total_size, 11);
+    }
+
+    // Host-side metadata writes and reads must never follow a symlink that an
+    // image layer left inside the rootfs.
+
+    #[test]
+    fn write_rootfs_file_no_follow_replaces_symlink_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"original").unwrap();
+        let link = rootfs.join(".oci-config.json");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        write_rootfs_file_no_follow(&link, b"payload", None).unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(std::fs::read(&link).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn write_rootfs_file_no_follow_does_not_create_dangling_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let target = dir.path().join("does-not-exist");
+        let link = rootfs.join(".oci-config.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_rootfs_file_no_follow(&link, b"payload", None).unwrap();
+
+        assert!(!target.exists());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn oci_config_readers_refuse_symlinked_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        // A host file that happens to be valid image-config JSON.
+        let host_file = dir.path().join("host.json");
+        std::fs::write(
+            &host_file,
+            r#"{"architecture":"amd64","config":{"Env":["SECRET=1"],"Cmd":["/bin/sh"],"WorkingDir":"/w"}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&host_file, rootfs.join(".oci-config.json")).unwrap();
+
+        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
+        assert!(read_oci_env(&rootfs).is_empty());
+        assert!(read_oci_entrypoint(&rootfs).is_none());
+        assert!(read_oci_workdir(&rootfs).is_none());
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_does_not_follow_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("rootfs/etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let target = dir.path().join("host-file");
+        let hosts = etc.join("hosts");
+        std::os::unix::fs::symlink(&target, &hosts).unwrap();
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert!(
+            !target.exists(),
+            "must not create the symlink target on the host"
+        );
+        let meta = std::fs::symlink_metadata(&hosts).unwrap();
+        assert!(meta.file_type().is_file());
+        assert!(
+            std::fs::read_to_string(&hosts)
+                .unwrap()
+                .contains("localhost")
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_keeps_existing_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let hosts = etc.join("hosts");
+        std::fs::write(&hosts, "10.0.0.1 custom\n").unwrap();
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert_eq!(
+            std::fs::read_to_string(&hosts).unwrap(),
+            "10.0.0.1 custom\n"
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_creates_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let hosts = etc.join("hosts");
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert!(
+            std::fs::read_to_string(&hosts)
+                .unwrap()
+                .contains("localhost")
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_skips_symlinked_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("etc")).unwrap();
+
+        write_default_hosts_no_follow(&rootfs.join("etc/hosts"));
+
+        assert!(
+            !outside.join("hosts").exists(),
+            "must not write through a symlinked `etc` directory"
+        );
+    }
+
+    #[test]
+    fn extract_layer_skips_reserved_oci_config_entry() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        builder
+            .append_link(&mut header, ".oci-config.json", &victim)
+            .unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    #[test]
+    fn extract_layer_skips_reserved_oci_config_entry_with_dot_slash_prefix() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        // tar::Builder strips a leading `./`, so write the raw name into the
+        // header to mimic layers produced by `tar -C dir .`.
+        let raw_name = b"./.oci-config.json";
+        let mut header = tar::Header::new_gnu();
+        header.as_old_mut().name[..raw_name.len()].copy_from_slice(raw_name);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name(&victim).unwrap();
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, std::io::empty()).unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    #[test]
+    fn extract_layer_skips_entries_beneath_reserved_oci_config_name() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        builder
+            .append_data(&mut header, ".oci-config.json/x", &b"x"[..])
+            .unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&gz_data, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    fn layer_with(build: impl FnOnce(&mut tar::Builder<Vec<u8>>)) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        build(&mut builder);
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    fn append_symlink(b: &mut tar::Builder<Vec<u8>>, path: &str, target: &std::path::Path) {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(0);
+        h.set_mode(0o777);
+        h.set_entry_type(tar::EntryType::Symlink);
+        b.append_link(&mut h, path, target).unwrap();
+    }
+
+    fn append_empty_file(b: &mut tar::Builder<Vec<u8>>, path: &str) {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(0);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        b.append_data(&mut h, path, std::io::empty()).unwrap();
+    }
+
+    #[test]
+    fn whiteout_does_not_follow_symlinked_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(outside.join("victim")).unwrap();
+        std::fs::write(outside.join("victim/keep"), b"keep").unwrap();
+        let layer = layer_with(|b| {
+            append_symlink(b, "a", &outside);
+            append_empty_file(b, "a/.wh.victim");
+        });
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(
+            outside.join("victim/keep").exists(),
+            "whiteout deleted a host path through a symlinked ancestor"
+        );
+    }
+
+    #[test]
+    fn whiteout_rejects_parent_dir_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(cache.join("other")).unwrap();
+        std::fs::write(cache.join("other/keep"), b"keep").unwrap();
+        // `.wh...` names `..`, i.e. the directory that holds the rootfs.
+        let layer = layer_with(|b| append_empty_file(b, ".wh..."));
+
+        let rootfs = cache.join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(
+            cache.join("other/keep").exists(),
+            "whiteout escaped to the directory above the rootfs"
+        );
+        assert!(rootfs.exists());
+    }
+
+    #[test]
+    fn whiteout_removes_lower_layer_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/gone")).unwrap();
+        std::fs::write(rootfs.join("a/gone/file"), b"x").unwrap();
+        std::fs::write(rootfs.join("a/stays"), b"x").unwrap();
+        let layer = layer_with(|b| append_empty_file(b, "a/.wh.gone"));
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(!rootfs.join("a/gone").exists());
+        assert!(rootfs.join("a/stays").exists());
+    }
+
+    #[test]
+    fn write_rootfs_file_no_follow_sets_exact_mode_without_following() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"original").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("init.krun");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        // 0o777 only survives a typical 022 umask because of the fchmod.
+        write_rootfs_file_no_follow(&link, b"init", Some(0o777)).unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original");
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode();
+        assert_eq!(victim_mode & 0o777, 0o600);
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o777);
+        assert_eq!(std::fs::read(&link).unwrap(), b"init");
+    }
+
+    #[test]
+    fn oci_config_readers_do_not_block_on_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        nix::unistd::mkfifo(
+            &rootfs.join(".oci-config.json"),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+
+        // Without O_NONBLOCK the open would block waiting for a writer.
+        assert_eq!(read_cached_rootfs_arch(&rootfs), None);
+        assert!(read_oci_env(&rootfs).is_empty());
+    }
+
+    #[test]
+    fn whiteout_removes_symlink_without_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"keep").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("a/link")).unwrap();
+        let layer = layer_with(|b| append_empty_file(b, "a/.wh.link"));
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(&layer, &rootfs, 0, 1, &mut total_size).unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join("a/link")).is_err());
+        assert!(
+            outside.join("keep").exists(),
+            "whiteout followed the symlink"
+        );
+    }
+
+    #[test]
+    fn read_rootfs_file_no_follow_reads_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("iii")).unwrap();
+        std::fs::write(rootfs.join("iii/worker.yaml"), b"name: w\n").unwrap();
+
+        let got = read_rootfs_file_no_follow(&rootfs, std::path::Path::new("/iii/worker.yaml"));
+
+        assert_eq!(got.unwrap(), b"name: w\n");
+    }
+
+    #[test]
+    fn read_rootfs_file_no_follow_refuses_symlinks_and_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("worker.yaml"), b"secret: 1\n").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("etc")).unwrap();
+        // Symlinked ancestor and symlinked final entry.
+        std::os::unix::fs::symlink(&outside, rootfs.join("iii")).unwrap();
+        std::os::unix::fs::symlink(outside.join("worker.yaml"), rootfs.join("etc/worker.yaml"))
+            .unwrap();
+        let read = |rel: &str| read_rootfs_file_no_follow(&rootfs, std::path::Path::new(rel));
+
+        assert!(read("iii/worker.yaml").is_err());
+        assert!(read("etc/worker.yaml").is_err());
+        assert!(read("../outside/worker.yaml").is_err());
     }
 }
