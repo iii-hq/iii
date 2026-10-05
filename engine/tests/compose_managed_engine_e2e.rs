@@ -900,13 +900,14 @@ fn ctrl_c_stops_the_worker_before_the_managed_engine() {
     assert!(output.status.success(), "compose exited with {output:?}");
     assert!(stopped.exists(), "worker shutdown trap did not run");
     let progress = String::from_utf8_lossy(&output.stderr);
-    assert!(progress.contains("Engine Ready"), "{progress}");
+    let engine_ready = format!("Engine Ready · iii {}", env!("CARGO_PKG_VERSION"));
+    assert!(progress.contains(&engine_ready), "{progress}");
     assert!(progress.contains("Containers Running (1/1)"), "{progress}");
-    assert!(progress.contains("probe ready"), "{progress}");
+    assert!(progress.contains("probe local ready"), "{progress}");
 
     // Both lifecycle messages use stderr, preserving their actual write order.
     let workers = progress
-        .find("probe stopped")
+        .find("probe local stopped")
         .unwrap_or_else(|| panic!("worker shutdown missing:\n{progress}"));
     let engine = progress
         .find("stopping engine...")

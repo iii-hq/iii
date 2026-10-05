@@ -91,6 +91,8 @@ const CLEAR_LINE: &str = "\r\x1b[2K";
 struct Console {
     startup: Option<StartupRows>,
     updates: BTreeMap<UpdateOwner, BTreeMap<String, UpdateRow>>,
+    /// Version shown beside each worker's name in the panel owner's rows.
+    versions: BTreeMap<String, String>,
     foreground_project: Option<String>,
     foreground_active: bool,
     panel_project: Option<String>,
@@ -204,6 +206,7 @@ struct StartupRows {
 pub(crate) struct StartupProgress {
     finished: bool,
     project: String,
+    managed: bool,
 }
 
 impl StartupProgress {
@@ -221,6 +224,7 @@ impl StartupProgress {
         Self {
             finished: false,
             project,
+            managed,
         }
     }
 
@@ -229,7 +233,10 @@ impl StartupProgress {
     }
 
     pub(crate) fn engine_ready(&self) {
-        self.update_engine("Ready", true);
+        self.update_engine(
+            &engine_ready_label(self.managed, crate::host_version()),
+            true,
+        );
     }
 
     fn update_engine(&self, message: &str, ready: bool) {
@@ -301,6 +308,16 @@ impl StartupProgress {
         redraw(&mut state);
         // Keep the completed startup panel and worker lifecycle rows available
         // for subsequent updates and diagnostics.
+    }
+}
+
+/// The engine header once connected: the version Compose runs when it manages
+/// the engine, or `external` for an engine it only connects to.
+fn engine_ready_label(managed: bool, version: Option<&str>) -> String {
+    match (managed, version) {
+        (true, Some(version)) => format!("Ready · iii {version}"),
+        (true, None) => "Ready".to_string(),
+        (false, _) => "Ready · external".to_string(),
     }
 }
 
@@ -379,6 +396,20 @@ impl StartupRows {
 }
 
 /// Adds one registry artefact to the startup download section.
+/// Records the version a startup download installs, so its row shows it from
+/// the first byte. After startup the panel keeps the running version until the
+/// restart that actually runs the new one.
+pub(crate) fn download_version(key: &str, version: &str) {
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    if scoped_project().is_some() && scoped_project() != state.foreground_project {
+        return;
+    }
+    if state.startup.is_none() || state.foreground_active {
+        return;
+    }
+    state.versions.insert(key.to_string(), version.to_string());
+}
+
 pub(crate) fn download_started(key: &str, total: Option<u64>) {
     let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
     if scoped_project().is_some() && scoped_project() != state.foreground_project {
@@ -518,6 +549,12 @@ fn console() -> &'static Mutex<Console> {
 /// Announces what this operation will touch, in the shape it will touch it.
 /// `rows` is `(container, depth)` in the order to draw.
 pub fn plan(rows: &[(String, usize)]) {
+    plan_labeled(rows, &[]);
+}
+
+/// [`plan`] with the version each worker shows beside its name, recorded
+/// before the first frame so no row is drawn without it.
+pub(crate) fn plan_labeled(rows: &[(String, usize)], versions: &[(String, Option<String>)]) {
     let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
     let project = scoped_project();
     // Runtime retry feedback does not reserve a bare daemon's lifecycle panel.
@@ -533,6 +570,16 @@ pub fn plan(rows: &[(String, usize)]) {
     }
     state.planned = true;
     merge_plan_rows(&mut state.rows, rows);
+    for (key, version) in versions {
+        match version {
+            Some(version) => {
+                state.versions.insert(key.clone(), version.clone());
+            }
+            None => {
+                state.versions.remove(key);
+            }
+        }
+    }
     state.frame = 0;
     redraw(&mut state);
     drop(state);
@@ -541,7 +588,13 @@ pub fn plan(rows: &[(String, usize)]) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn plan_full(rows: &[(String, usize)]) {
+    plan_full_labeled(rows, &[]);
+}
+
+/// [`plan_labeled`] for a full operation: rows it no longer touches go first.
+pub(crate) fn plan_full_labeled(rows: &[(String, usize)], versions: &[(String, Option<String>)]) {
     {
         let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
         if state.accepts_project(scoped_project().as_deref()) {
@@ -553,7 +606,7 @@ pub(crate) fn plan_full(rows: &[(String, usize)]) {
                 .retain(|row| rows.iter().any(|(key, _)| *key == row.key));
         }
     }
-    plan(rows);
+    plan_labeled(rows, versions);
 }
 
 pub fn plan_done() {
@@ -977,7 +1030,20 @@ impl Console {
                 }
             }
         }
-        let lines: Vec<String> = rows
+        // Headers keep their names; worker rows show the version they run.
+        let headers = if self.startup.is_some() { 3 } else { 0 };
+        let shown: Vec<Row> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| match self.versions.get(&row.key) {
+                Some(version) if index >= headers => Row {
+                    key: format!("{} {}", row.key, version.dimmed()),
+                    ..row.clone()
+                },
+                _ => row.clone(),
+            })
+            .collect();
+        let lines: Vec<String> = shown
             .iter()
             .map(|row| render_row_with_width(row, self.frame, true, size.map(|(_, width)| width)))
             .collect();
@@ -994,13 +1060,13 @@ impl Console {
                 self.clear_block(&mut out);
             }
             self.static_output = true;
-            for row in &rows {
+            for (row, shown) in rows.iter().zip(&shown) {
                 if !self
                     .rendered
                     .iter()
                     .any(|previous| row.same_static_state(previous))
                 {
-                    out.push_str(&render_row(row, 0, false));
+                    out.push_str(&render_row(shown, 0, false));
                     out.push('\n');
                 }
             }

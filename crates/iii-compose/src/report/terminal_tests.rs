@@ -2169,3 +2169,88 @@ fn shared_update_failure_in_the_foreground_has_no_project_prefix() {
 
     assert!(!cause.contains(FOREGROUND_PROJECT), "{cause}");
 }
+
+fn versioned_console() -> Console {
+    let mut console = progress(0);
+    console.rows = vec![
+        Row {
+            key: "state".to_string(),
+            depth: 1,
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(338),
+            },
+        },
+        Row {
+            key: "api".to_string(),
+            depth: 1,
+            state: RowState::Ready {
+                what: "ready".to_string(),
+                elapsed: Duration::from_millis(230),
+            },
+        },
+    ];
+    console.versions = BTreeMap::from([
+        ("state".to_string(), "0.22.16".to_string()),
+        ("api".to_string(), "local".to_string()),
+    ]);
+    console
+}
+
+#[test]
+fn worker_rows_show_the_version_they_run() {
+    let frame = versioned_console().render(Some((40, 160)));
+    let text = console::strip_ansi_codes(&frame);
+
+    assert!(
+        text.contains("state 0.22.16 ready") && text.contains("api local ready"),
+        "{text}"
+    );
+}
+
+#[test]
+fn static_output_shows_the_version_each_worker_runs() {
+    let frame = versioned_console().render(None);
+    let text = console::strip_ansi_codes(&frame);
+
+    assert!(
+        text.contains("state 0.22.16 ready") && text.contains("api local ready"),
+        "{text}"
+    );
+}
+
+#[test]
+fn startup_headers_never_take_a_worker_version() {
+    let mut console = versioned_console();
+    console
+        .versions
+        .insert("Containers".to_string(), "9.9.9".to_string());
+
+    let frame = console.render(Some((40, 160)));
+
+    assert!(
+        !console::strip_ansi_codes(&frame).contains("Containers 9.9.9"),
+        "{frame}"
+    );
+}
+
+#[test]
+fn a_managed_engine_shows_the_version_compose_runs() {
+    assert_eq!(
+        engine_ready_label(true, Some("0.24.6")),
+        "Ready · iii 0.24.6"
+    );
+}
+
+#[test]
+fn a_managed_engine_without_a_known_version_is_just_ready() {
+    assert_eq!(engine_ready_label(true, None), "Ready");
+}
+
+#[test]
+fn an_external_engine_is_labeled_external() {
+    assert_eq!(
+        engine_ready_label(false, Some("0.24.6")),
+        "Ready · external"
+    );
+}

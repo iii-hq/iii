@@ -1170,6 +1170,10 @@ impl Project {
                 ContainerStatus {
                     container: key.clone(),
                     state,
+                    version: file
+                        .containers
+                        .get(key)
+                        .and_then(|container| container.version_label()),
                     pid: record.filter(|_| running).map(|record| record.pid),
                     owned: inner
                         .as_ref()
@@ -1267,6 +1271,9 @@ impl Project {
 pub struct ContainerStatus {
     pub container: String,
     pub state: ChildStatus,
+    /// Locked package version, or `local` for a `path://` worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Whether this daemon owns the process (started it and can stop it).

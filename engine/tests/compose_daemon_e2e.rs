@@ -549,6 +549,27 @@ async fn one_daemon_holds_several_projects_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn status_reports_local_as_the_version_of_a_path_worker() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), ONE_WORKER, &["ledger"]);
+    let status = call(
+        port,
+        "compose::status",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::status should answer");
+
+    assert_eq!(status["containers"][0]["version"], "local", "{status}");
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn validating_a_file_does_not_take_the_project_on() {
     isolate_state();
     let port = spawn_engine().await;

@@ -458,8 +458,9 @@ the next time the worker is restarted.
 
 ### Checking status
 
-`compose::status` reports each declared worker with its `state`, the active process `pid` when one
-exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+`compose::status` reports each declared worker with its `state`, its `version` (the locked package
+version, or `local` for a `path://` worker), the active process `pid` when one exists, an `owned`
+flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
 `false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
 compose daemon).
 

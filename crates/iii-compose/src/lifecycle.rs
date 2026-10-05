@@ -233,10 +233,11 @@ async fn up_scoped(
 
     // Everything this operation will touch, drawn before any of it moves, so an
     // operator sees the shape rather than a line at a time.
+    let versions = version_labels(ctx.file, order.iter().map(String::as_str));
     if target.is_none() {
-        report::plan_full(&dag::outline(ctx.file, &order));
+        report::plan_full_labeled(&dag::outline(ctx.file, &order), &versions);
     } else {
-        report::plan(&dag::outline(ctx.file, &order));
+        report::plan_labeled(&dag::outline(ctx.file, &order), &versions);
     }
     if let Some(operation) = crate::operation::active(&operation_id) {
         let outline = dag::outline(ctx.file, &order);
@@ -545,7 +546,7 @@ async fn restart_one_scoped(
     if let Some((attempt, total_attempts)) = retry {
         report::retry_starting(key, attempt, total_attempts);
     } else {
-        report::plan(&[(key.to_string(), 0)]);
+        report::plan_labeled(&[(key.to_string(), 0)], &version_labels(ctx.file, [key]));
     }
     let stopped = stop_one(ctx, children, records, key).await;
 
@@ -1527,6 +1528,21 @@ fn plan_targets(file: &ComposeFile, target: Option<&str>) -> Result<Vec<String>>
         .into_iter()
         .filter(|key| closure.contains(key))
         .collect())
+}
+
+/// The version each planned worker shows beside its name in the panel.
+fn version_labels<'a>(
+    file: &ComposeFile,
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Vec<(String, Option<String>)> {
+    keys.into_iter()
+        .map(|key| {
+            (
+                key.to_string(),
+                file.containers.get(key).and_then(Container::version_label),
+            )
+        })
+        .collect()
 }
 
 fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -> OpResult {

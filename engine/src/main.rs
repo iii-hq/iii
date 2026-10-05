@@ -509,6 +509,7 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
                 );
             }
             cli::telemetry::install_compose_reporter();
+            iii_compose::set_host_version(env!("CARGO_PKG_VERSION"));
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }

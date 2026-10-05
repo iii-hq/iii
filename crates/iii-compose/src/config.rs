@@ -647,6 +647,19 @@ impl Container {
         }
     }
 
+    /// The version a running worker reports: its locked package version, or
+    /// `local` for a `path://` worker. `None` while a package has no locked
+    /// resolution yet.
+    pub fn version_label(&self) -> Option<String> {
+        match &self.worker {
+            WorkerSource::Path { .. } => Some("local".to_string()),
+            WorkerSource::Package { .. } => self
+                .resolved_package
+                .as_ref()
+                .map(|package| package.version.clone()),
+        }
+    }
+
     /// The user-defined environment for this container: env files in listed
     /// order, then nonempty `environment` values on top. An empty string only
     /// supplies a value when no env file defines the key; unset YAML keys are

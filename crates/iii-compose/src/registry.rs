@@ -588,6 +588,7 @@ async fn install_binary(
     if cached && let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
     }
+    crate::report::download_version(container, &resolved.version);
     download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
@@ -651,6 +652,7 @@ async fn install_bundle(
     if cached && install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Ok((install_dir, InstallStatus::Cached));
     }
+    crate::report::download_version(container, &resolved.version);
     download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
