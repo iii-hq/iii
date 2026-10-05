@@ -168,6 +168,100 @@ fn downloaded_workers_keep_one_row_through_every_startup_phase() {
 }
 
 #[test]
+fn nested_warnings_settle_from_active_panel_at_normal_narrow_and_resized_sizes() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    for (height, width, resize) in [(24, 100, false), (24, 28, false), (24, 100, true)] {
+        let mut state = progress(0);
+        state.startup = None;
+        state.rows = vec![
+            Row {
+                key: "alpha".into(),
+                depth: 0,
+                state: RowState::Starting {
+                    what: "waiting".into(),
+                    began: Instant::now(),
+                },
+            },
+            Row {
+                key: "beta".into(),
+                depth: 1,
+                state: RowState::Starting {
+                    what: "waiting".into(),
+                    began: Instant::now(),
+                },
+            },
+        ];
+        let mut terminal = vt100::Parser::new(height, width, 1000);
+        let active = state.render(Some((height, width)));
+        write_terminal(&mut terminal, &active);
+        state.rows[0].state = RowState::Ready {
+            what: "ready".into(),
+            elapsed: Duration::ZERO,
+        };
+        state.rows[1].state = RowState::Ready {
+            what: "ready".into(),
+            elapsed: Duration::ZERO,
+        };
+        if resize {
+            terminal.screen_mut().set_size(height, 18);
+            state.observe_size(Some((height, 18)));
+        }
+        let diagnostics = [
+            EmptyEnvDiagnostic {
+                worker: "alpha".into(),
+                path: "alpha.env".into(),
+                name: "SAFE_NAME".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "beta".into(),
+                path: "beta.env".into(),
+                name: "OTHER_NAME".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+        ];
+        state.rows = final_rows_with_warnings(&state.rows, &diagnostics);
+        let output =
+            settled_warning_output(&mut state, Some((height, if resize { 18 } else { width })));
+        write_terminal(&mut terminal, &output);
+        let text = screen_and_history(&mut terminal);
+        for token in [
+            "alpha ready",
+            "⚠ alpha",
+            "SAFE_NAME",
+            "beta ready",
+            "⚠ beta",
+            "OTHER_NAME",
+        ] {
+            assert!(
+                text.contains(token),
+                "{height}x{width} resize={resize}, missing {token}: {text:?}"
+            );
+        }
+        let ar = text.find("alpha ready").unwrap();
+        let aw = text.find("⚠ alpha").unwrap();
+        let br = text.find("beta ready").unwrap();
+        let bw = text.find("⚠ beta").unwrap();
+        assert!(
+            ar < aw && aw < br && br < bw,
+            "{height}x{width} resize={resize}: {text:?}"
+        );
+        if !resize && width == 100 {
+            assert!(
+                !text.contains("Starting") && !text.contains("waiting"),
+                "stale rows: {text:?}"
+            );
+        }
+        if !resize && width == 100 {
+            assert!(
+                output.contains("\x1b["),
+                "fitting animated region should be cleared"
+            );
+        }
+    }
+}
+
+#[test]
 fn static_downloads_report_transitions_not_chunks_or_indentation_changes() {
     for size in [None, Some((3, 80)), Some((24, 20))] {
         let began = Instant::now();
@@ -484,4 +578,248 @@ async fn cancelled_retry_fixture() {
     retry_waiting("api", 1, 3, Duration::from_secs(10));
     progress.finish(false, "Cancelled");
     summary_ok("up", 0, 2, Duration::from_millis(100));
+}
+
+#[test]
+fn finishing_without_warnings_keeps_existing_settlement_semantics() {
+    let mut state = progress(0);
+    let before = state.render(Some((24, 80)));
+    state.startup.as_mut().unwrap().finish(true, "Ready");
+    let after = state.render(Some((24, 80)));
+    assert!(!before.is_empty());
+    assert!(
+        after.contains("Engine Ready") || after.is_empty(),
+        "{after:?}"
+    );
+    assert!(state.pending_env_warnings.is_empty());
+}
+
+#[test]
+fn queued_warnings_flush_once_after_settled_panel_in_every_finish_path() {
+    for mode in ["ready", "failed", "cancelled", "drop"] {
+        let text = queued_warning_output(mode);
+        assert_final_snapshot(&text, mode);
+    }
+}
+
+fn assert_final_snapshot(text: &str, mode: &str) {
+    let marker = text
+        .find("after finish")
+        .unwrap_or_else(|| panic!("finish marker missing: {text}"));
+    let before_followup = &text[..marker];
+    let final_start = before_followup
+        .rfind("✓ Engine Ready")
+        .unwrap_or_else(|| panic!("header missing: {text}"));
+    let final_text = &before_followup[final_start..];
+    for header in ["✓ Engine Ready", "Downloads No downloads", "Containers "] {
+        assert!(
+            final_text.contains(header),
+            "{mode}, missing {header}: {text}"
+        );
+    }
+    let alpha = final_text
+        .find("alpha ready")
+        .or_else(|| final_text.find("alpha Cancelled"))
+        .unwrap_or_else(|| panic!("alpha final row missing: {text}"));
+    let aw = final_text
+        .find("⚠ alpha — empty values in alpha.env")
+        .unwrap();
+    let ax = final_text
+        .find("⚠ alpha — empty values in alpha.extra.env")
+        .unwrap();
+    let beta = final_text
+        .find("beta ready")
+        .or_else(|| final_text.find("✗ beta"))
+        .or_else(|| final_text.find("beta Failed"))
+        .or_else(|| final_text.find("beta Cancelled"))
+        .unwrap_or_else(|| panic!("beta final row missing: {text}"));
+    let bw = final_text
+        .find("⚠ beta — empty values in beta.env")
+        .unwrap();
+    assert!(
+        alpha < aw && aw < ax && ax < beta && beta < bw,
+        "{mode}: {final_text}"
+    );
+    assert!(final_text.contains("    ⚠ alpha"), "indent: {final_text}");
+    assert!(
+        final_text.contains("  ⚠ orphan"),
+        "orphan must be a sibling: {final_text}"
+    );
+    assert!(
+        !final_text.contains("    ⚠ orphan"),
+        "orphan must not look owned: {final_text}"
+    );
+    assert!(
+        !text.contains('\x1b'),
+        "NO_COLOR output contains ANSI: {text:?}"
+    );
+    assert_eq!(
+        final_text
+            .matches("⚠ alpha — empty values in alpha.env")
+            .count(),
+        1,
+        "{mode}: {text}"
+    );
+    assert_eq!(final_text.matches("ALPHA_KEY").count(), 1, "dedup: {text}");
+    assert!(
+        final_text.contains("⚠ orphan — empty values in orphan.env"),
+        "unmatched fallback missing: {text}"
+    );
+    assert!(
+        final_text.contains("TOKEN_SENTINEL"),
+        "fixture sentinel missing: {text}"
+    );
+    assert_eq!(
+        text.matches("⚠ alpha — empty values in alpha.env").count(),
+        1,
+        "replay: {text}"
+    );
+    assert!(
+        !text[marker..].contains("⚠ alpha"),
+        "next operation replay: {text}"
+    );
+}
+
+fn queued_warning_output(mode: &str) -> String {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            if mode == "standalone" {
+                "report::terminal_tests::standalone_warning_fixture"
+            } else {
+                "report::terminal_tests::queued_warning_finish_fixture"
+            },
+            "--nocapture",
+        ])
+        .env("III_COMPOSE_WARNING_MODE", mode)
+        .env_remove("CLICOLOR_FORCE")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stderr).unwrap()
+}
+
+#[test]
+fn standalone_warnings_keep_source_indentation_and_worker_grouping_under_no_color() {
+    let text = queued_warning_output("standalone");
+    let lines: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            line.contains("⚠")
+                || line.contains("FIRST_NAME")
+                || line.contains("SECOND_NAME")
+                || line.contains("-> ")
+                || line.contains("Set values")
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "⚠ alpha — empty values in alpha.env",
+            "  FIRST_NAME",
+            "    -> Not set in the system environment; variable left unset.",
+            "  SECOND_NAME",
+            "    -> Using values from the system environment.",
+            "  Set values in the env file or comment out unused entries.",
+            "⚠ beta — empty values in beta.env",
+            "    -> Using a value from the Compose environment section.",
+            "  Set values in the env file or comment out unused entries.",
+        ]
+    );
+    assert!(
+        !text.contains('\x1b'),
+        "NO_COLOR output contains ANSI: {text:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "subprocess fixture for standalone environment warning output"]
+async fn standalone_warning_fixture() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    empty_env_warnings(&[
+        EmptyEnvDiagnostic {
+            worker: "alpha".into(),
+            path: "alpha.env".into(),
+            name: "FIRST_NAME".into(),
+            source: EmptyValueSource::SystemUnset,
+        },
+        EmptyEnvDiagnostic {
+            worker: "alpha".into(),
+            path: "alpha.env".into(),
+            name: "SECOND_NAME".into(),
+            source: EmptyValueSource::SystemNonEmpty,
+        },
+        EmptyEnvDiagnostic {
+            worker: "beta".into(),
+            path: "beta.env".into(),
+            name: "BETA_NAME".into(),
+            source: EmptyValueSource::ComposeEnvironmentNonEmpty,
+        },
+    ]);
+}
+
+#[tokio::test]
+#[ignore = "subprocess fixture for queued environment warning finish paths"]
+async fn queued_warning_finish_fixture() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    let mut progress = StartupProgress::start(true);
+    progress.engine_ready();
+    containers_starting();
+    plan(&[("alpha".to_string(), 0), ("beta".to_string(), 0)]);
+    ready("alpha", Duration::from_millis(5));
+    starting("beta", "waiting");
+    empty_env_warnings(&[
+        EmptyEnvDiagnostic {
+            worker: "alpha".into(),
+            path: "alpha.env".into(),
+            name: "ALPHA_KEY".into(),
+            source: EmptyValueSource::SystemUnset,
+        },
+        EmptyEnvDiagnostic {
+            worker: "alpha".into(),
+            path: "alpha.env".into(),
+            name: "ALPHA_KEY".into(),
+            source: EmptyValueSource::SystemUnset,
+        },
+        EmptyEnvDiagnostic {
+            worker: "alpha".into(),
+            path: "alpha.extra.env".into(),
+            name: "ALPHA_OTHER".into(),
+            source: EmptyValueSource::SystemNonEmpty,
+        },
+        EmptyEnvDiagnostic {
+            worker: "orphan".into(),
+            path: "orphan.env".into(),
+            name: "TOKEN_SENTINEL".into(),
+            source: EmptyValueSource::SystemUnset,
+        },
+        EmptyEnvDiagnostic {
+            worker: "beta".into(),
+            path: "beta.env".into(),
+            name: "BETA_KEY".into(),
+            source: EmptyValueSource::SystemUnset,
+        },
+    ]);
+    std::thread::sleep(Duration::from_millis(30));
+    match std::env::var("III_COMPOSE_WARNING_MODE").as_deref() {
+        Ok("ready") => {
+            ready("beta", Duration::from_millis(5));
+            progress.finish(true, "Ready");
+        }
+        Ok("failed") => {
+            failed("beta", "TEST_FAILED", "intentional test failure");
+            progress.finish(false, "Failed");
+        }
+        Ok("cancelled") => {
+            progress.finish(false, "Cancelled");
+        }
+        Ok("drop") => drop(progress),
+        other => panic!("unknown fixture mode: {other:?}"),
+    }
+    line("after finish");
+    let mut next = StartupProgress::start(true);
+    next.finish(true, "Ready");
+    std::thread::sleep(Duration::from_millis(50));
 }

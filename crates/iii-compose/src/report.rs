@@ -72,6 +72,8 @@ struct Console {
     size: Option<(u16, u16)>,
     /// Once cursor coordinates become unreliable, keep this operation static.
     static_output: bool,
+    /// Warnings queued until the startup panel has settled.
+    pending_env_warnings: Vec<crate::config::EmptyEnvDiagnostic>,
     rendered: Vec<Row>,
 }
 
@@ -132,6 +134,7 @@ enum RowState {
         what: String,
         elapsed: Duration,
     },
+    Warning(String),
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
 }
@@ -230,8 +233,32 @@ impl StartupProgress {
         };
         state.downloads.iter_mut().for_each(settle);
         state.rows.iter_mut().for_each(settle);
-        redraw(&mut state);
+        let warnings = std::mem::take(&mut state.pending_env_warnings);
+        let unmatched = warnings
+            .iter()
+            .filter(|d| !state.rows.iter().any(|row| row.key == d.worker))
+            .cloned()
+            .collect::<Vec<_>>();
+        if warnings.is_empty() {
+            redraw(&mut state);
+            *state = Console::default();
+            return;
+        }
+        state.rows = final_rows_with_warnings(&state.rows, &warnings);
+        if !unmatched.is_empty() {
+            for group in grouped_empty_env_warnings(&unmatched) {
+                state.rows.push(warning_row(group.header, 0));
+                for line in group.details {
+                    let deep = line.starts_with("-> ");
+                    state.rows.push(warning_row(line, if deep { 2 } else { 1 }));
+                }
+            }
+        }
+        let output = settled_warning_output(&mut state, terminal_size());
         *state = Console::default();
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "{output}");
+        let _ = stderr.flush();
     }
 }
 
@@ -426,6 +453,196 @@ pub(crate) fn containers_starting() {
     redraw(&mut state);
 }
 
+/// Format diagnostics as grouped worker/file blocks without including values.
+pub(crate) struct EmptyEnvWarningGroup {
+    pub(crate) worker: String,
+    pub(crate) header: String,
+    pub(crate) details: Vec<String>,
+}
+
+pub(crate) fn grouped_empty_env_warnings(
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<EmptyEnvWarningGroup> {
+    use crate::config::EmptyValueSource;
+    let mut groups: std::collections::BTreeMap<(String, std::path::PathBuf), Vec<_>> =
+        std::collections::BTreeMap::new();
+    for diagnostic in diagnostics {
+        groups
+            .entry((diagnostic.worker.clone(), diagnostic.path.clone()))
+            .or_default()
+            .push(diagnostic);
+    }
+    let mut result = Vec::new();
+    for ((worker, path), entries) in groups {
+        let mut sources: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for diagnostic in entries {
+            let message = match diagnostic.source {
+                EmptyValueSource::SystemNonEmpty => "Using values from the system environment.",
+                EmptyValueSource::SystemEmpty => {
+                    "The system environment contains an empty value; it remains empty."
+                }
+                EmptyValueSource::SystemUnset => {
+                    "Not set in the system environment; variable left unset."
+                }
+                EmptyValueSource::ProjectIdentityOverridesInherited => {
+                    "The inherited value is discarded; the project identity may supply this variable."
+                }
+                EmptyValueSource::EnvFile(_) => "Using a nonempty value from an env file.",
+                EmptyValueSource::ComposeEnvironmentEmpty => {
+                    "The Compose environment explicitly sets an empty value; it remains empty."
+                }
+                EmptyValueSource::ComposeEnvironmentNonEmpty => {
+                    "Using a value from the Compose environment section."
+                }
+            };
+            sources
+                .entry(message)
+                .or_default()
+                .push(diagnostic.name.clone());
+        }
+        let mut details = Vec::new();
+        for (message, mut names) in sources {
+            names.sort();
+            names.dedup();
+            details.push(names.join(", "));
+            details.push(format!("-> {message}"));
+        }
+        details.push("Set values in the env file or comment out unused entries.".to_string());
+        result.push(EmptyEnvWarningGroup {
+            header: format!("⚠ {worker} — empty values in {}", path.display()),
+            worker,
+            details,
+        });
+    }
+    result
+        .sort_by(|a: &EmptyEnvWarningGroup, b| (&a.worker, &a.header).cmp(&(&b.worker, &b.header)));
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn format_empty_env_warnings(
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<String> {
+    grouped_empty_env_warnings(diagnostics)
+        .into_iter()
+        .flat_map(|group| std::iter::once(group.header).chain(group.details))
+        .collect()
+}
+
+/// Queue structured environment diagnostics until the final worker panel is known.
+pub(crate) fn empty_env_warnings(diagnostics: &[crate::config::EmptyEnvDiagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    if state.startup.is_some() {
+        state.pending_env_warnings.extend_from_slice(diagnostics);
+    } else {
+        emit_unmatched_warnings(&mut state, diagnostics);
+    }
+}
+
+fn settled_warning_output(state: &mut Console, size: Option<(u16, u16)>) -> String {
+    state.observe_size(size);
+    let mut output = String::new();
+    // observe_size clears drawn when a resize invalidates cursor tracking.
+    state.clear_block(&mut output);
+    // Always emit a complete settled snapshot; static transition deduplication
+    // is intentionally bypassed here because it may omit final owner rows.
+    let rows = compose_rows(state);
+    let width = size.map(|(_, width)| width);
+    for row in rows {
+        output.push_str(&render_row_with_width(&row, state.frame, false, width));
+        output.push('\n');
+    }
+    state.drawn = 0;
+    state.rendered.clear();
+    output
+}
+
+fn compose_rows(state: &Console) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if let Some(startup) = &state.startup {
+        rows.extend([
+            startup.engine.clone(),
+            startup.downloads.clone(),
+            startup.containers.clone(),
+        ]);
+    }
+    let mut workers: Vec<Row> = state
+        .rows
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.depth += usize::from(state.startup.is_some());
+            row
+        })
+        .collect();
+    for download in &state.downloads {
+        if let Some(worker) = workers.iter_mut().find(|row| row.key == download.key) {
+            if matches!(worker.state, RowState::Waiting) {
+                worker.state = download.state.clone();
+            }
+        } else {
+            workers.push(download.clone());
+        }
+    }
+    rows.extend(workers);
+    rows
+}
+
+fn final_rows_with_warnings(
+    rows: &[Row],
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<Row> {
+    let groups = grouped_empty_env_warnings(diagnostics);
+    let mut final_rows = Vec::new();
+    for row in rows {
+        final_rows.push(row.clone());
+        for group in groups.iter().filter(|group| group.worker == row.key) {
+            final_rows.push(warning_row(group.header.clone(), row.depth + 1));
+            for line in &group.details {
+                let deep = line.starts_with("-> ");
+                final_rows.push(warning_row(
+                    line.clone(),
+                    row.depth + if deep { 3 } else { 2 },
+                ));
+            }
+        }
+    }
+    final_rows
+}
+
+fn warning_row(text: String, depth: usize) -> Row {
+    Row {
+        key: format!("warning:{}", text),
+        depth,
+        state: RowState::Warning(text),
+    }
+}
+
+fn emit_unmatched_warnings(state: &mut Console, diagnostics: &[crate::config::EmptyEnvDiagnostic]) {
+    for group in grouped_empty_env_warnings(diagnostics) {
+        let lines = std::iter::once(group.header).chain(group.details);
+        for (index, text) in lines.enumerate() {
+            let indentation = if index == 0 {
+                0
+            } else if text.starts_with("-> ") {
+                4
+            } else {
+                2
+            };
+            let out = state.line(
+                &format!("{}{}", " ".repeat(indentation), text.yellow()),
+                terminal_size(),
+            );
+            let mut stderr = std::io::stderr().lock();
+            let _ = write!(stderr, "{out}");
+        }
+    }
+}
+
 fn console() -> &'static Mutex<Console> {
     static CONSOLE: OnceLock<Mutex<Console>> = OnceLock::new();
     CONSOLE.get_or_init(|| Mutex::new(Console::default()))
@@ -525,36 +742,7 @@ impl Console {
 
     fn render(&mut self, size: Option<(u16, u16)>) -> String {
         self.observe_size(size);
-        let mut rows = Vec::new();
-        if let Some(startup) = &self.startup {
-            rows.extend([
-                startup.engine.clone(),
-                startup.downloads.clone(),
-                startup.containers.clone(),
-            ]);
-        }
-        let mut workers: Vec<Row> = self
-            .rows
-            .iter()
-            .cloned()
-            .map(|mut row| {
-                row.depth += usize::from(self.startup.is_some());
-                row
-            })
-            .collect();
-        for download in &self.downloads {
-            if let Some(worker) = workers.iter_mut().find(|row| row.key == download.key) {
-                // Keep download completion visible until this worker actually
-                // starts, then replace it with the worker's lifecycle status.
-                if matches!(worker.state, RowState::Waiting) {
-                    worker.state = download.state.clone();
-                }
-            } else {
-                // Downloads can arrive before the lifecycle plan is available.
-                workers.push(download.clone());
-            }
-        }
-        rows.extend(workers);
+        let rows = compose_rows(self);
         let lines: Vec<String> = rows
             .iter()
             .map(|row| render_row_with_width(row, self.frame, true, size.map(|(_, width)| width)))
@@ -722,6 +910,7 @@ fn render_row_with_width(row: &Row, frame: usize, animate: bool, width: Option<u
             what.red(),
             format!("({})", format_elapsed(*elapsed)).dimmed(),
         ),
+        RowState::Warning(text) => format!("{indent}{}", text.yellow()),
         RowState::Skipped(why) => format!(
             "{indent}{} {} {}",
             SKIPPED.dimmed(),
@@ -1233,6 +1422,110 @@ mod terminal_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_warning_rows_are_nested_under_each_matching_worker_in_order() {
+        use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+        let rows = vec![
+            Row {
+                key: "alpha".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+            Row {
+                key: "beta".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+        ];
+        let diagnostics = [
+            EmptyEnvDiagnostic {
+                worker: "beta".into(),
+                path: "beta.env".into(),
+                name: "BETA_NAME".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "alpha".into(),
+                path: "alpha.env".into(),
+                name: "ALPHA_NAME".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+        ];
+        let final_rows = final_rows_with_warnings(&rows, &diagnostics);
+        let alpha = final_rows.iter().position(|r| r.key == "alpha").unwrap();
+        let aw = final_rows
+            .iter()
+            .position(|r| matches!(&r.state, RowState::Warning(text) if text.contains("alpha.env")))
+            .unwrap();
+        let beta = final_rows.iter().position(|r| r.key == "beta").unwrap();
+        let bw = final_rows
+            .iter()
+            .position(|r| matches!(&r.state, RowState::Warning(text) if text.contains("beta.env")))
+            .unwrap();
+        assert!(
+            alpha < aw && aw < beta && beta < bw,
+            "row indices: {alpha}, {aw}, {beta}, {bw}"
+        );
+        assert_eq!(final_rows[aw].depth, 1);
+        assert_eq!(final_rows[bw].depth, 1);
+        assert!(render_row(&final_rows[aw], 0, false).starts_with("  ⚠ alpha"));
+        assert!(render_row(&final_rows[aw + 1], 0, false).starts_with("    ALPHA_NAME"));
+        assert!(render_row(&final_rows[aw + 2], 0, false).starts_with("      -> Using values"));
+        assert!(render_row(&final_rows[aw + 3], 0, false).starts_with("    Set values"));
+    }
+
+    #[test]
+    fn empty_env_warning_formatter_groups_deduplicates_and_never_exposes_values() {
+        use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+        let diagnostics = vec![
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_A".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_A".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_B".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "db".into(),
+                path: "db.env".into(),
+                name: "PASSWORD".into(),
+                source: EmptyValueSource::ComposeEnvironmentEmpty,
+            },
+        ];
+        let lines = format_empty_env_warnings(&diagnostics);
+        let text = lines.join("\\n");
+        assert_eq!(lines[0], "⚠ api — empty values in settings.env");
+        assert!(text.contains("TOKEN_A") && text.contains("TOKEN_B") && text.contains("PASSWORD"));
+        assert!(text.contains("Using values from the system environment."));
+        assert!(text.contains("Not set in the system environment; variable left unset."));
+        assert!(text.contains("Compose environment explicitly sets an empty value"));
+        assert_eq!(text.matches("TOKEN_A").count(), 1);
+        assert!(
+            lines
+                .iter()
+                .position(|line| line.starts_with("⚠ db"))
+                .unwrap()
+                > 0
+        );
+    }
 
     #[test]
     fn engine_failure_leaves_containers_not_started() {

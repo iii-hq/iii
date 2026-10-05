@@ -113,6 +113,7 @@ pub struct LifecycleCtx<'a> {
     pub logs: &'a LogStore,
     /// Root of the per-container VM state.
     pub vm_dir: &'a std::path::Path,
+    pub(crate) empty_env_diagnostics: &'a crate::config::EmptyEnvDiagnostics,
 }
 
 /// What one container's start produced: which one, how long it took, and
@@ -1002,7 +1003,8 @@ async fn start_one_until_shutdown(
             .await;
     }
 
-    let user_env = container.resolve_user_env(key)?;
+    let user_env =
+        container.resolve_user_env_with_diagnostics(key, Some((key, ctx.empty_env_diagnostics)))?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
     let worker_dir = container.worker_dir();
     let working_dir = resolve_working_dir(

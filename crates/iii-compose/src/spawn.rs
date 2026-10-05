@@ -122,7 +122,7 @@ pub struct SpawnPlan {
 const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
 
 /// Identify the project-scoped telemetry key using the host's naming rules.
-fn is_host_user_id(name: &str) -> bool {
+pub(crate) fn is_host_user_id(name: &str) -> bool {
     #[cfg(windows)]
     {
         windows_env_key_eq(name, HOST_USER_ID_ENV)
@@ -143,6 +143,16 @@ fn project_device_id(compose_dir: &Path) -> Option<String> {
     })
 }
 
+/// Snapshot only the inherited entries that the child spawn plan can actually receive.
+pub(crate) fn inherited_utf8_environment(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> BTreeMap<String, String> {
+    vars.into_iter()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .filter(|(name, _)| !is_host_user_id(name))
+        .collect()
+}
+
 /// Builds the spawn plan for one container.
 ///
 /// Precedence, lowest to highest: machine environment, then the container's
@@ -151,9 +161,7 @@ fn project_device_id(compose_dir: &Path) -> Option<String> {
 pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     // Plans also carry environment values into VMs, whose protocol uses UTF-8.
     // Ignore non-Unicode entries instead of panicking as std::env::vars would.
-    let env = std::env::vars_os()
-        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
-        .collect();
+    let env = inherited_utf8_environment(std::env::vars_os());
     spawn_plan_with_env(ctx, env)
 }
 
@@ -632,5 +640,30 @@ mod tests {
         );
         assert_eq!(resolve_working_dir(None, Some(&worker), &compose), worker);
         assert_eq!(resolve_working_dir(None, None, &compose), compose);
+    }
+
+    #[test]
+    fn inherited_environment_view_drops_non_utf8_and_project_device_identity() {
+        use std::ffi::OsString;
+        let mut vars = vec![
+            (OsString::from("TOKEN"), OsString::from("inherited")),
+            (
+                OsString::from(HOST_USER_ID_ENV),
+                OsString::from("parent-device"),
+            ),
+        ];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            vars.push((OsString::from("NON_UTF8"), OsString::from_vec(vec![0xff])));
+        }
+        let inherited = inherited_utf8_environment(vars);
+        assert_eq!(
+            inherited.get("TOKEN").map(String::as_str),
+            Some("inherited")
+        );
+        assert!(!inherited.contains_key(HOST_USER_ID_ENV));
+        #[cfg(unix)]
+        assert!(!inherited.contains_key("NON_UTF8"));
     }
 }
