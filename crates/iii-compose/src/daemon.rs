@@ -75,15 +75,16 @@ pub(crate) async fn finish_updated_workers(
     }
 }
 
-/// Reports every requested worker as unchanged, on the terminal and to
-/// operation subscribers, so each no-op exit of an update is observable the
-/// same way.
-async fn report_unchanged(path: &Path, operation_id: &str, workers: &[String]) {
-    const DETAIL: &str = "Everything already up to date.";
+const UP_TO_DATE: &str = "Everything already up to date.";
+
+/// Reports requested workers that an update leaves unchanged, on the terminal
+/// and to operation subscribers, so every exit of an update ends each worker
+/// the same way.
+async fn report_unchanged(path: &Path, operation_id: &str, workers: &[String], detail: &str) {
     for worker in workers {
-        crate::report::update_status(path, operation_id, worker, DETAIL, true);
+        crate::report::update_status(path, operation_id, worker, detail, true);
         if let Some(operation) = crate::operation::active(operation_id) {
-            operation.emit(Some(worker), "unchanged", DETAIL).await;
+            operation.emit(Some(worker), "unchanged", detail).await;
         }
     }
 }
@@ -1237,7 +1238,7 @@ impl Daemon {
         let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
         if all_explicit_exact_unchanged {
-            report_unchanged(path, &operation_id, &requested_names).await;
+            report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1396,7 +1397,7 @@ impl Daemon {
                         .await;
                 }
             }
-            report_unchanged(path, &operation_id, &requested_names).await;
+            report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1411,7 +1412,7 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
-            report_unchanged(path, &operation_id, &requested_names).await;
+            report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 true,
@@ -1429,17 +1430,12 @@ impl Daemon {
         // `compose::restart worker=` is the surgical one; this is the safe one.
         let (down, up) = self.restart_project(path, None, &operation_id).await?;
         finish_updated_workers(path, &operation_id, &changed_versions, &up).await;
-        for worker in &requested_names {
-            if !changed_versions.contains_key(worker) {
-                crate::report::update_status(
-                    path,
-                    &operation_id,
-                    worker,
-                    "Package unchanged",
-                    true,
-                );
-            }
-        }
+        let unchanged: Vec<String> = requested_names
+            .iter()
+            .filter(|worker| !changed_versions.contains_key(*worker))
+            .cloned()
+            .collect();
+        report_unchanged(path, &operation_id, &unchanged, "Package unchanged").await;
         Ok(MutationOutcome::from_operations(
             up.status,
             true,
