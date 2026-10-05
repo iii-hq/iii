@@ -75,6 +75,19 @@ pub(crate) async fn finish_updated_workers(
     }
 }
 
+/// Reports every requested worker as unchanged, on the terminal and to
+/// operation subscribers, so each no-op exit of an update is observable the
+/// same way.
+async fn report_unchanged(path: &Path, operation_id: &str, workers: &[String]) {
+    const DETAIL: &str = "Everything already up to date.";
+    for worker in workers {
+        crate::report::update_status(path, operation_id, worker, DETAIL, true);
+        if let Some(operation) = crate::operation::active(operation_id) {
+            operation.emit(Some(worker), "unchanged", DETAIL).await;
+        }
+    }
+}
+
 struct UpdateOverlayGuard {
     project: PathBuf,
     operation: String,
@@ -1224,20 +1237,7 @@ impl Daemon {
         let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
         if all_explicit_exact_unchanged {
-            for worker in &requested_names {
-                crate::report::update_status(
-                    path,
-                    &operation_id,
-                    worker,
-                    "Everything already up to date.",
-                    true,
-                );
-                if let Some(operation) = crate::operation::active(&operation_id) {
-                    operation
-                        .emit(Some(worker), "unchanged", "Everything already up to date.")
-                        .await;
-                }
-            }
+            report_unchanged(path, &operation_id, &requested_names).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1396,20 +1396,7 @@ impl Daemon {
                         .await;
                 }
             }
-            for worker in &requested_names {
-                crate::report::update_status(
-                    path,
-                    &operation_id,
-                    worker,
-                    "Everything already up to date.",
-                    true,
-                );
-                if let Some(operation) = crate::operation::active(&operation_id) {
-                    operation
-                        .emit(Some(worker), "unchanged", "Everything already up to date.")
-                        .await;
-                }
-            }
+            report_unchanged(path, &operation_id, &requested_names).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
@@ -1424,15 +1411,7 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
-            for worker in &requested_names {
-                crate::report::update_status(
-                    path,
-                    &operation_id,
-                    worker,
-                    "Everything already up to date.",
-                    true,
-                );
-            }
+            report_unchanged(path, &operation_id, &requested_names).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 true,
