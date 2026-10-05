@@ -30,6 +30,9 @@ use crate::{
     spawn::is_reserved_env,
 };
 
+/// Default base wait between failed replacement attempts.
+pub const DEFAULT_RESTART_DELAY: Duration = Duration::from_millis(500);
+
 /// Default `pre_run` budget. A blocking migration or asset build routinely
 /// takes tens of seconds; anything past this is treated as hung.
 pub const DEFAULT_PRE_RUN_TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,9 +43,6 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
-
-/// Default base wait between failed replacement attempts.
-pub const DEFAULT_RESTART_DELAY: Duration = Duration::from_millis(500);
 
 /// Default ceiling for the exponential restart delay.
 pub const DEFAULT_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -148,7 +148,7 @@ impl RestartPolicy {
 pub struct RestartConfig {
     /// Which exits cause a restart.
     pub condition: RestartPolicy,
-    /// Base delay used by exponential backoff.
+    /// Base wait between replacement attempts.
     pub delay: Duration,
     /// Longest delay between two replacement attempts.
     pub max_delay: Duration,
@@ -183,6 +183,92 @@ impl RestartConfig {
     /// Whether an exit with this status should be answered with a restart.
     pub fn wants_restart(&self, exit_code: i32) -> bool {
         self.condition.wants_restart(exit_code)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EmptyValueSource {
+    SystemNonEmpty,
+    SystemEmpty,
+    SystemUnset,
+    ProjectIdentityOverridesInherited,
+    EnvFile(PathBuf),
+    ComposeEnvironmentEmpty,
+    ComposeEnvironmentNonEmpty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EmptyEnvDiagnostic {
+    pub worker: String,
+    pub path: PathBuf,
+    pub name: String,
+    pub source: EmptyValueSource,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct EmptyEnvDiagnostics(
+    std::sync::Mutex<std::collections::BTreeMap<(String, PathBuf, String), EmptyEnvDiagnostic>>,
+);
+
+impl EmptyEnvDiagnostics {
+    pub(crate) fn record(&self, diagnostic: EmptyEnvDiagnostic) {
+        let mut diagnostics = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let key = diagnostics
+            .keys()
+            .find(|(worker, path, name)| {
+                worker == &diagnostic.worker
+                    && path == &diagnostic.path
+                    && env_key_eq(name, &diagnostic.name)
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                (
+                    diagnostic.worker.clone(),
+                    diagnostic.path.clone(),
+                    diagnostic.name.clone(),
+                )
+            });
+        diagnostics.insert(key, diagnostic);
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<EmptyEnvDiagnostic> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn record_effective(
+        &self,
+        worker: &str,
+        entries: Vec<(PathBuf, String)>,
+        sources: &BTreeMap<String, EmptyValueSource>,
+        mut inherited: impl FnMut(&str) -> Option<std::ffi::OsString>,
+    ) {
+        for (path, name) in entries {
+            let source = sources
+                .iter()
+                .find(|(key, _)| env_key_eq(key, &name))
+                .map(|(_, source)| source.clone())
+                .unwrap_or_else(|| {
+                    if crate::spawn::is_host_user_id(&name) {
+                        return EmptyValueSource::ProjectIdentityOverridesInherited;
+                    }
+                    match inherited(&name) {
+                        Some(value) if value.is_empty() => EmptyValueSource::SystemEmpty,
+                        Some(_) => EmptyValueSource::SystemNonEmpty,
+                        None => EmptyValueSource::SystemUnset,
+                    }
+                });
+            self.record(EmptyEnvDiagnostic {
+                worker: worker.to_string(),
+                path,
+                name,
+                source,
+            });
+        }
     }
 }
 
@@ -660,15 +746,42 @@ impl Container {
         }
     }
 
-    /// The user-defined environment for this container: env files in listed
-    /// order, then nonempty `environment` values on top. An empty string only
-    /// supplies a value when no env file defines the key; unset YAML keys are
-    /// omitted during validation.
+    /// The user-defined environment for this container: nonempty env-file
+    /// values in listed order, then `environment` values on top. Empty env-file
+    /// entries are ignored so the process environment remains the fallback;
+    /// an empty Compose value only supplies a value when no env file defines
+    /// the key. Unset YAML keys are omitted during validation.
     ///
     /// Read at spawn time, not at parse time: env files hold secrets, and
     /// holding them in memory for the daemon's whole life buys nothing.
     pub fn resolve_user_env(&self, container_key: &str) -> Result<BTreeMap<String, String>> {
-        let mut env = BTreeMap::new();
+        self.resolve_user_env_with_diagnostics(container_key, None)
+    }
+
+    pub(crate) fn resolve_user_env_with_diagnostics(
+        &self,
+        container_key: &str,
+        diagnostics: Option<(&str, &EmptyEnvDiagnostics)>,
+    ) -> Result<BTreeMap<String, String>> {
+        let inherited = crate::spawn::inherited_utf8_environment(std::env::vars_os());
+        self.resolve_user_env_with_lookup(container_key, diagnostics, |name| {
+            inherited
+                .iter()
+                .find(|(key, _)| env_key_eq(key, name))
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        })
+    }
+
+    fn resolve_user_env_with_lookup(
+        &self,
+        container_key: &str,
+        diagnostics: Option<(&str, &EmptyEnvDiagnostics)>,
+        mut inherited: impl FnMut(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<BTreeMap<String, String>> {
+        // Track provenance during this single read. Actual values never enter diagnostics.
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        let mut sources: BTreeMap<String, EmptyValueSource> = BTreeMap::new();
+        let mut empty_entries = Vec::new();
         for path in &self.env_file {
             let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
                 path: path.clone(),
@@ -687,19 +800,56 @@ impl Container {
                         name,
                     });
                 }
-                merge_env_value(&mut env, name, value, false);
+                if value.is_empty() {
+                    empty_entries.push((path.clone(), name));
+                } else {
+                    let canonical = env
+                        .keys()
+                        .find(|key| env_key_eq(key, &name))
+                        .cloned()
+                        .unwrap_or_else(|| name.clone());
+                    merge_env_value(&mut env, name, value, false);
+                    sources.insert(canonical, EmptyValueSource::EnvFile(path.clone()));
+                }
             }
         }
         for (name, value) in &self.environment {
-            // Optional host references must not erase a value from an env file.
-            merge_env_value(&mut env, name.clone(), value.clone(), value.is_empty());
+            let canonical = env
+                .keys()
+                .find(|key| env_key_eq(key, name))
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            if value.is_empty() {
+                if !env.keys().any(|key| env_key_eq(key, name)) {
+                    env.insert(name.clone(), String::new());
+                    sources.insert(canonical, EmptyValueSource::ComposeEnvironmentEmpty);
+                }
+            } else {
+                merge_env_value(&mut env, name.clone(), value.clone(), false);
+                sources.insert(canonical, EmptyValueSource::ComposeEnvironmentNonEmpty);
+            }
+        }
+        if let Some((worker, diagnostics)) = diagnostics {
+            diagnostics.record_effective(worker, empty_entries, &sources, |name| inherited(name));
         }
         Ok(env)
     }
 }
 
+fn env_key_eq(left: &str, right: &str) -> bool {
+    #[cfg(windows)]
+    {
+        crate::spawn::windows_env_key_eq(left, right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
 /// Merge one source value using the host OS's environment-key semantics.
-/// Empty Compose values preserve an earlier value; env-file entries always win.
+/// Empty Compose values preserve an earlier value; empty env-file values are
+/// filtered before merging, and nonempty env-file entries win.
 fn merge_env_value(
     env: &mut BTreeMap<String, String>,
     name: String,
@@ -1268,6 +1418,103 @@ containers:
     }
 
     #[test]
+    fn empty_env_file_merge_reports_final_source_and_preserves_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.env");
+        let later = dir.path().join("later.env");
+        std::fs::write(&base, "FILE=base\nCOMPOSE_EMPTY=file-value\nCOMPOSE_NONEMPTY=file-value\nREPEAT=first\nREPEAT=last\n").unwrap();
+        std::fs::write(&later, "FILE=\nCOMPOSE_EMPTY=\nCOMPOSE_NONEMPTY=\nREPEAT=\nCOMPOSE_ONLY_EMPTY=\nINHERITED=\nINHERITED_EMPTY=\"\"\nUNSET=''\nSPACE=' '\nDUP_EMPTY=\nDUP_EMPTY=\"\"\n").unwrap();
+        let mut container = test_container(vec![base.clone(), later.clone()]);
+        container
+            .environment
+            .insert("COMPOSE_EMPTY".into(), String::new());
+        container
+            .environment
+            .insert("COMPOSE_NONEMPTY".into(), "compose-value".into());
+        container
+            .environment
+            .insert("COMPOSE_ONLY_EMPTY".into(), String::new());
+        let diagnostics = EmptyEnvDiagnostics::default();
+        let env = container
+            .resolve_user_env_with_lookup("api", Some(("api", &diagnostics)), |name| match name {
+                "INHERITED" => Some("host-value".into()),
+                "INHERITED_EMPTY" => Some("".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(env["FILE"], "base");
+        assert_eq!(env["REPEAT"], "last");
+        assert_eq!(env["COMPOSE_EMPTY"], "file-value");
+        assert_eq!(env["COMPOSE_NONEMPTY"], "compose-value");
+        assert_eq!(env["COMPOSE_ONLY_EMPTY"], "");
+        assert_eq!(env["SPACE"], " ");
+        let snapshot = diagnostics.snapshot();
+        let source = |name: &str| {
+            snapshot
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("missing diagnostic for {name}"))
+                .source
+                .clone()
+        };
+        assert_eq!(source("FILE"), EmptyValueSource::EnvFile(base.clone()));
+        assert_eq!(
+            source("COMPOSE_EMPTY"),
+            EmptyValueSource::EnvFile(base.clone())
+        );
+        assert_eq!(
+            source("COMPOSE_NONEMPTY"),
+            EmptyValueSource::ComposeEnvironmentNonEmpty
+        );
+        assert_eq!(
+            source("COMPOSE_ONLY_EMPTY"),
+            EmptyValueSource::ComposeEnvironmentEmpty
+        );
+        assert_eq!(source("INHERITED"), EmptyValueSource::SystemNonEmpty);
+        assert_eq!(source("INHERITED_EMPTY"), EmptyValueSource::SystemEmpty);
+        assert_eq!(source("UNSET"), EmptyValueSource::SystemUnset);
+        assert!(!snapshot.iter().any(|d| d.name == "SPACE"));
+        assert_eq!(source("REPEAT"), EmptyValueSource::EnvFile(base.clone()));
+        assert!(!env.contains_key("DUP_EMPTY"));
+        assert_eq!(snapshot.iter().filter(|d| d.name == "DUP_EMPTY").count(), 1);
+        assert_eq!(snapshot.len(), 9);
+    }
+
+    #[test]
+    fn reserved_and_retired_empty_env_file_values_are_still_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, code) in [
+            ("III_CONFIG", "RETIRED_CONFIG_ENV"),
+            ("III_URL", "RESERVED_ENV_OVERRIDE"),
+        ] {
+            let path = dir.path().join("invalid.env");
+            std::fs::write(&path, format!("{name}=\"\"\n")).unwrap();
+            let container = test_container(vec![path]);
+            assert_eq!(container.resolve_user_env("api").unwrap_err().code(), code);
+        }
+    }
+
+    fn test_container(env_file: Vec<PathBuf>) -> Container {
+        Container {
+            worker: WorkerSource::Path {
+                dir: PathBuf::from("/tmp/api"),
+                declared: "path://./api".into(),
+            },
+            version: None,
+            resolved_package: None,
+            start_after: Vec::new(),
+            config_name: None,
+            config_override: None,
+            scripts: Scripts::default(),
+            working_dir: None,
+            environment: BTreeMap::new(),
+            env_file,
+            startup_timeout: Duration::from_secs(60),
+            required: true,
+            restart: RestartConfig::default(),
+        }
+    }
+    #[test]
     fn worker_compose_schema_exposes_both_restart_forms() {
         let schema = worker_compose_schema_json();
         let restart = &schema["definitions"]["RawRestart"];
@@ -1290,6 +1537,141 @@ containers:
                 properties.get("window").is_some(),
             ),
             (Some(2), true, true, true, true, true)
+        );
+    }
+    #[test]
+    fn empty_env_diagnostics_classify_inherited_values_and_replace_retry_source() {
+        let diagnostics = EmptyEnvDiagnostics::default();
+        let path = PathBuf::from("settings.env");
+        let entries = vec![
+            (path.clone(), "NONEMPTY".to_string()),
+            (path.clone(), "EMPTY".to_string()),
+            (path.clone(), "UNSET".to_string()),
+        ];
+        diagnostics.record_effective("api", entries, &BTreeMap::new(), |name| match name {
+            "NONEMPTY" => Some("from-host".into()),
+            "EMPTY" => Some("".into()),
+            _ => None,
+        });
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(diagnostics.snapshot().len(), 3);
+        diagnostics.record_effective(
+            "other-worker",
+            vec![(path.clone(), "UNSET".to_string())],
+            &BTreeMap::new(),
+            |_| None,
+        );
+        assert_eq!(diagnostics.snapshot().len(), 4);
+        assert!(
+            snapshot
+                .iter()
+                .any(|d| d.name == "NONEMPTY" && d.source == EmptyValueSource::SystemNonEmpty)
+        );
+        assert!(
+            snapshot
+                .iter()
+                .any(|d| d.name == "EMPTY" && d.source == EmptyValueSource::SystemEmpty)
+        );
+        assert!(
+            snapshot
+                .iter()
+                .any(|d| d.name == "UNSET" && d.source == EmptyValueSource::SystemUnset)
+        );
+        diagnostics.record(EmptyEnvDiagnostic {
+            worker: "api".to_string(),
+            path: path.clone(),
+            name: "NONEMPTY".to_string(),
+            source: EmptyValueSource::ComposeEnvironmentNonEmpty,
+        });
+        assert_eq!(diagnostics.snapshot().len(), 4);
+        assert!(diagnostics.snapshot().iter().any(|d| d.worker == "api"
+            && d.name == "NONEMPTY"
+            && d.source == EmptyValueSource::ComposeEnvironmentNonEmpty));
+    }
+    #[test]
+    fn empty_env_warning_never_exposes_values_from_any_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.env");
+        let later = dir.path().join("later.env");
+        std::fs::write(
+            &base,
+            "FILE_SECRET=file-sentinel\nOVERRIDE_SECRET=file-override-sentinel\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &later,
+            "INHERITED_SECRET=\nFILE_SECRET=\nOVERRIDE_SECRET=\n",
+        )
+        .unwrap();
+        let mut container = test_container(vec![base.clone(), later]);
+        container
+            .environment
+            .insert("OVERRIDE_SECRET".into(), "compose-sentinel".into());
+        let diagnostics = EmptyEnvDiagnostics::default();
+        let env = container
+            .resolve_user_env_with_lookup("api", Some(("api", &diagnostics)), |name| match name {
+                "INHERITED_SECRET" => Some("inherited-sentinel".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!env.contains_key("INHERITED_SECRET"));
+        assert_eq!(env["FILE_SECRET"], "file-sentinel");
+        assert_eq!(env["OVERRIDE_SECRET"], "compose-sentinel");
+        let snapshot = diagnostics.snapshot();
+        let lines = crate::report::format_empty_env_warnings(&snapshot);
+        let rendered = lines.join("\n");
+        let debug = format!("{snapshot:?}");
+        for sentinel in [
+            "inherited-sentinel",
+            "file-sentinel",
+            "file-override-sentinel",
+            "compose-sentinel",
+        ] {
+            assert!(!rendered.contains(sentinel), "{rendered}");
+            assert!(!debug.contains(sentinel), "{debug}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_environment_aliases_keep_final_provenance_and_deduplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.env");
+        let later = dir.path().join("later.env");
+        std::fs::write(&base, "TOKEN=file\n").unwrap();
+        std::fs::write(&later, "token=\n").unwrap();
+        let mut container = test_container(vec![base.clone(), later]);
+        let diagnostics = EmptyEnvDiagnostics::default();
+        let env = container
+            .resolve_user_env_with_lookup("api", Some(("api", &diagnostics)), |_| None)
+            .unwrap();
+        assert!(
+            env.iter()
+                .any(|(key, value)| env_key_eq(key, "TOKEN") && value == "file")
+        );
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].source, EmptyValueSource::EnvFile(base));
+
+        let aliases = dir.path().join("aliases.env");
+        std::fs::write(&aliases, "Api_Key=\nAPI_KEY=\"\"\n").unwrap();
+        let diagnostics = EmptyEnvDiagnostics::default();
+        test_container(vec![aliases])
+            .resolve_user_env_with_lookup("api", Some(("api", &diagnostics)), |_| None)
+            .unwrap();
+        assert_eq!(diagnostics.snapshot().len(), 1);
+
+        let override_file = dir.path().join("override.env");
+        std::fs::write(&override_file, "TOKEN=\n").unwrap();
+        let mut container = test_container(vec![override_file]);
+        container.environment.insert("token".into(), "x".into());
+        let diagnostics = EmptyEnvDiagnostics::default();
+        container
+            .resolve_user_env_with_lookup("api", Some(("api", &diagnostics)), |_| None)
+            .unwrap();
+        assert_eq!(
+            diagnostics.snapshot()[0].source,
+            EmptyValueSource::ComposeEnvironmentNonEmpty
         );
     }
 }

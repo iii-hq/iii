@@ -31,6 +31,7 @@ use tokio::{
     time::Instant,
 };
 
+use crate::report;
 use crate::{
     config::{ComposeFile, RestartConfig},
     engine::EngineClient,
@@ -844,12 +845,26 @@ impl Project {
         let shutdown = shutdown.or(self.shutdown.signal());
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
-        let mut inner = shutdown.run(self.inner.lock()).await?;
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let mut inner = match shutdown.run(self.inner.lock()).await {
+            Some(inner) => inner,
+            None => {
+                report::empty_env_warnings(&empty_env_diagnostics.snapshot());
+                return None;
+            }
+        };
         inner.restarts.operator_took_control(target);
         let Inner {
             children, state, ..
         } = &mut *inner;
-        let file = shutdown.run(self.file.read()).await?;
+        let file = match shutdown.run(self.file.read()).await {
+            Some(file) => file,
+            None => {
+                drop(inner);
+                report::empty_env_warnings(&empty_env_diagnostics.snapshot());
+                return None;
+            }
+        };
 
         let ctx = LifecycleCtx {
             shutdown: &self.shutdown,
@@ -862,6 +877,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            empty_env_diagnostics: &empty_env_diagnostics,
         };
 
         let result = lifecycle::up_until_shutdown(
@@ -877,6 +893,7 @@ impl Project {
         let snapshot = state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
         result
     }
 
@@ -892,6 +909,7 @@ impl Project {
     ) -> (Vec<OpResult>, OpResult, bool) {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
         let Inner {
@@ -914,6 +932,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            empty_env_diagnostics: &empty_env_diagnostics,
         };
 
         let operation = crate::operation::active(&operation_id);
@@ -963,6 +982,7 @@ impl Project {
         drop(file);
         drop(inner);
         let _ = self.store.save(&snapshot);
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
         (restarted, up, interrupted)
     }
 
@@ -980,6 +1000,7 @@ impl Project {
     ) -> (Vec<OpResult>, OpResult) {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
         let Inner {
@@ -1001,6 +1022,7 @@ impl Project {
                 logs: &self.logs,
                 package_cache: &package_cache,
                 vm_dir: &vm_dir,
+                empty_env_diagnostics: &empty_env_diagnostics,
             };
             let mut stopped = Vec::with_capacity(removed.len());
             for (index, worker) in removed.iter().enumerate() {
@@ -1035,6 +1057,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            empty_env_diagnostics: &empty_env_diagnostics,
         };
         let up = lifecycle::up(
             &ctx,
@@ -1049,6 +1072,7 @@ impl Project {
         drop(file);
         drop(inner);
         let _ = self.store.save(&snapshot);
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
         (stopped, up)
     }
 
@@ -1076,6 +1100,7 @@ impl Project {
     ) -> OpResult {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let Inner {
             children, state, ..
         } = inner;
@@ -1091,9 +1116,10 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            empty_env_diagnostics: &empty_env_diagnostics,
         };
 
-        if let Some((attempt, total_attempts)) = supervised_attempt {
+        let result = if let Some((attempt, total_attempts)) = supervised_attempt {
             lifecycle::restart_one_supervised(
                 &ctx,
                 children,
@@ -1106,12 +1132,15 @@ impl Project {
             .await
         } else {
             lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await
-        }
+        };
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
+        result
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let package_cache = self.package_cache();
         let vm_dir = self.vm_dir();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(target);
         let Inner {
@@ -1130,6 +1159,7 @@ impl Project {
             logs: &self.logs,
             package_cache: &package_cache,
             vm_dir: &vm_dir,
+            empty_env_diagnostics: &empty_env_diagnostics,
         };
 
         let result =

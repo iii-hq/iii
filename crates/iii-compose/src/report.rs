@@ -108,6 +108,10 @@ struct Console {
     size: Option<(u16, u16)>,
     /// Once cursor coordinates become unreliable, keep this operation static.
     static_output: bool,
+    /// Warnings queued until the startup panel has settled.
+    pending_env_warnings: Vec<crate::config::EmptyEnvDiagnostic>,
+    settled_env_warnings: Vec<crate::config::EmptyEnvDiagnostic>,
+    startup_finished: bool,
     rendered: Vec<Row>,
 }
 
@@ -187,6 +191,7 @@ enum RowState {
         what: String,
         elapsed: Duration,
     },
+    Warning(String),
     /// Already running, or otherwise not this operation's to start.
     Skipped(String),
 }
@@ -307,7 +312,16 @@ impl StartupProgress {
         };
         state.downloads.iter_mut().for_each(settle);
         state.rows.iter_mut().for_each(settle);
-        redraw(&mut state);
+        state.startup_finished = true;
+        state.settled_env_warnings = std::mem::take(&mut state.pending_env_warnings);
+        if state.settled_env_warnings.is_empty() {
+            redraw(&mut state);
+        } else {
+            let output = settled_warning_output(&mut state, terminal_size());
+            let mut stderr = std::io::stderr().lock();
+            let _ = write!(stderr, "{output}");
+            let _ = stderr.flush();
+        }
         // Keep the completed startup panel and worker lifecycle rows available
         // for subsequent updates and diagnostics.
     }
@@ -543,6 +557,347 @@ pub(crate) fn containers_starting() {
     redraw(&mut state);
 }
 
+/// Format diagnostics as grouped worker/file blocks without including values.
+pub(crate) struct EmptyEnvWarningGroup {
+    pub(crate) worker: String,
+    pub(crate) header: String,
+    pub(crate) details: Vec<String>,
+}
+
+pub(crate) fn grouped_empty_env_warnings(
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<EmptyEnvWarningGroup> {
+    use crate::config::EmptyValueSource;
+    let mut groups: std::collections::BTreeMap<(String, std::path::PathBuf), Vec<_>> =
+        std::collections::BTreeMap::new();
+    for diagnostic in diagnostics {
+        groups
+            .entry((diagnostic.worker.clone(), diagnostic.path.clone()))
+            .or_default()
+            .push(diagnostic);
+    }
+    let mut result = Vec::new();
+    for ((worker, path), entries) in groups {
+        let mut sources: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for diagnostic in entries {
+            let message = match diagnostic.source {
+                EmptyValueSource::SystemNonEmpty => "Using values from the system environment.",
+                EmptyValueSource::SystemEmpty => {
+                    "The system environment contains an empty value; it remains empty."
+                }
+                EmptyValueSource::SystemUnset => {
+                    "Not set in the system environment; variable left unset."
+                }
+                EmptyValueSource::ProjectIdentityOverridesInherited => {
+                    "The inherited value is discarded; the project identity may supply this variable."
+                }
+                EmptyValueSource::EnvFile(_) => "Using a nonempty value from an env file.",
+                EmptyValueSource::ComposeEnvironmentEmpty => {
+                    "The Compose environment explicitly sets an empty value; it remains empty."
+                }
+                EmptyValueSource::ComposeEnvironmentNonEmpty => {
+                    "Using a value from the Compose environment section."
+                }
+            };
+            sources
+                .entry(message)
+                .or_default()
+                .push(diagnostic.name.clone());
+        }
+        let mut details = Vec::new();
+        for (message, mut names) in sources {
+            names.sort();
+            names.dedup();
+            details.push(names.join(", "));
+            details.push(format!("-> {message}"));
+        }
+        details.push("Set values in the env file or comment out unused entries.".to_string());
+        result.push(EmptyEnvWarningGroup {
+            header: format!("⚠ {worker} — empty values in {}", path.display()),
+            worker,
+            details,
+        });
+    }
+    result
+        .sort_by(|a: &EmptyEnvWarningGroup, b| (&a.worker, &a.header).cmp(&(&b.worker, &b.header)));
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn format_empty_env_warnings(
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<String> {
+    grouped_empty_env_warnings(diagnostics)
+        .into_iter()
+        .flat_map(|group| std::iter::once(group.header).chain(group.details))
+        .collect()
+}
+
+/// Queue structured environment diagnostics until the final worker panel is known.
+pub(crate) fn empty_env_warnings(diagnostics: &[crate::config::EmptyEnvDiagnostic]) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    if state.startup.is_some()
+        && !state.startup_finished
+        && state.accepts_project(scoped_project().as_deref())
+    {
+        state.pending_env_warnings.extend_from_slice(diagnostics);
+    } else {
+        emit_unmatched_warnings(&mut state, diagnostics);
+    }
+}
+
+fn settled_warning_output(state: &mut Console, size: Option<(u16, u16)>) -> String {
+    state.observe_size(size);
+    let mut output = String::new();
+    // observe_size clears drawn when a resize invalidates cursor tracking.
+    state.clear_block(&mut output);
+    // Always emit a complete settled snapshot; static transition deduplication
+    // is intentionally bypassed here because it may omit final owner rows.
+    let rows = compose_rows(state);
+    let width = size.map(|(_, width)| width);
+    let lines: Vec<_> = rows
+        .iter()
+        .map(|row| render_row_with_width(row, state.frame, false, width))
+        .collect();
+    for line in &lines {
+        output.push_str(line);
+        output.push('\n');
+    }
+    let height = size.and_then(|(height, width)| {
+        panel_height(&lines, width).filter(|needed| *needed < usize::from(height))
+    });
+    state.static_output |= height.is_none();
+    state.drawn = if state.static_output {
+        0
+    } else {
+        height.unwrap_or_default()
+    };
+    state.rendered = rows;
+    output
+}
+
+fn compose_rows(state: &Console) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if let Some(startup) = &state.startup {
+        rows.extend([
+            startup.engine.clone(),
+            startup.downloads.clone(),
+            startup.containers.clone(),
+        ]);
+    }
+    let mut workers: Vec<Row> = state
+        .rows
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.depth += usize::from(state.startup.is_some());
+            row
+        })
+        .collect();
+    for download in &state.downloads {
+        if let Some(worker) = workers.iter_mut().find(|row| row.key == download.key) {
+            // Keep download completion visible until this worker actually
+            // starts, then replace it with the worker's lifecycle status.
+            if matches!(worker.state, RowState::Waiting) {
+                worker.state = download.state.clone();
+            }
+        } else {
+            // Downloads can arrive before the lifecycle plan is available.
+            workers.push(download.clone());
+        }
+    }
+    if state.foreground_active {
+        let ready = state
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(row.state, RowState::Ready { .. })
+                    || matches!(&row.state, RowState::Skipped(why) if why == "already running")
+            })
+            .count();
+        let total = state.rows.len();
+        if let Some(header) = rows.iter_mut().find(|row| row.key == "Containers") {
+            let what = format!("Running ({ready}/{total})");
+            header.state = if ready == total {
+                RowState::Ready {
+                    what,
+                    elapsed: Duration::ZERO,
+                }
+            } else if state
+                .rows
+                .iter()
+                .any(|row| matches!(row.state, RowState::Failed | RowState::Error { .. }))
+            {
+                RowState::Error {
+                    what,
+                    elapsed: Duration::ZERO,
+                }
+            } else {
+                RowState::Skipped(what)
+            };
+        }
+    }
+    rows.extend(final_rows_with_warnings(
+        &workers,
+        &state.settled_env_warnings,
+    ));
+    let unmatched: Vec<_> = state
+        .settled_env_warnings
+        .iter()
+        .filter(|diagnostic| !workers.iter().any(|row| row.key == diagnostic.worker))
+        .cloned()
+        .collect();
+    for group in grouped_empty_env_warnings(&unmatched) {
+        let depth = usize::from(state.startup.is_some());
+        rows.push(warning_row(group.header, depth));
+        for line in group.details {
+            let deep = line.starts_with("-> ");
+            rows.push(warning_row(line, depth + if deep { 2 } else { 1 }));
+        }
+    }
+    let foreground = state.panel_owner();
+    for (owner, updates) in &state.updates {
+        for (key, update) in updates {
+            let state = match &update.state {
+                UpdateState::Active(what) => RowState::Starting {
+                    what: what.clone(),
+                    began: update.began,
+                },
+                UpdateState::Updated(what) => RowState::Ready {
+                    what: what.clone(),
+                    elapsed: update.finished.unwrap_or_default(),
+                },
+                UpdateState::Unchanged(what) => RowState::Skipped(what.clone()),
+                UpdateState::Error(what) | UpdateState::Cancelled(what) => RowState::Error {
+                    what: what.clone(),
+                    elapsed: update.finished.unwrap_or_default(),
+                },
+            };
+            if foreground == Some(owner.project.as_str()) {
+                if !rows.iter().any(|row| row.key == *key) {
+                    rows.push(Row {
+                        key: key.clone(),
+                        depth: 1,
+                        state: RowState::Waiting,
+                    });
+                }
+                if let Some(row) = rows.iter_mut().find(|row| row.key == *key) {
+                    if matches!(row.state, RowState::Failed | RowState::Error { .. }) {
+                        let detail = match &update.state {
+                            UpdateState::Active(text)
+                            | UpdateState::Updated(text)
+                            | UpdateState::Unchanged(text)
+                            | UpdateState::Error(text)
+                            | UpdateState::Cancelled(text) => text,
+                        };
+                        row.state = RowState::Error {
+                            what: format!("Failed · {detail}"),
+                            elapsed: update.finished.unwrap_or_default(),
+                        };
+                    } else if matches!(
+                        row.state,
+                        RowState::Starting { .. } | RowState::Retrying { .. }
+                    ) && !matches!(update.state, UpdateState::Active(_))
+                    {
+                        // A retained completion badge cannot claim readiness during a later restart.
+                    } else if matches!(&row.state, RowState::Skipped(why) if why == "stopped" || why == "rolled back" || why == "not running")
+                    {
+                        let health = if let RowState::Skipped(why) = &row.state {
+                            why.clone()
+                        } else {
+                            String::new()
+                        };
+                        row.state = match state {
+                            RowState::Starting { what, began } => RowState::Starting {
+                                what: format!("{what} · {health}"),
+                                began,
+                            },
+                            _ => RowState::Skipped(health),
+                        };
+                    } else {
+                        row.state = state;
+                    }
+                }
+            } else {
+                rows.push(Row {
+                    key: format!("{key} ({} / {})", owner.project, owner.operation),
+                    depth: 1,
+                    state,
+                });
+            }
+        }
+    }
+    // Headers keep their names; worker rows show the version they run.
+    let headers = if state.startup.is_some() { 3 } else { 0 };
+    let shown: Vec<Row> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| match state.versions.get(&row.key) {
+            Some(version) if index >= headers => Row {
+                key: format!("{} {}", row.key, version.dimmed()),
+                ..row.clone()
+            },
+            _ => row.clone(),
+        })
+        .collect();
+    shown
+}
+
+fn final_rows_with_warnings(
+    rows: &[Row],
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+) -> Vec<Row> {
+    let groups = grouped_empty_env_warnings(diagnostics);
+    let mut final_rows = Vec::new();
+    for row in rows {
+        final_rows.push(row.clone());
+        for group in groups.iter().filter(|group| group.worker == row.key) {
+            final_rows.push(warning_row(group.header.clone(), row.depth + 1));
+            for line in &group.details {
+                let deep = line.starts_with("-> ");
+                final_rows.push(warning_row(
+                    line.clone(),
+                    row.depth + if deep { 3 } else { 2 },
+                ));
+            }
+        }
+    }
+    final_rows
+}
+
+fn warning_row(text: String, depth: usize) -> Row {
+    Row {
+        key: format!("warning:{}", text),
+        depth,
+        state: RowState::Warning(text),
+    }
+}
+
+fn emit_unmatched_warnings(state: &mut Console, diagnostics: &[crate::config::EmptyEnvDiagnostic]) {
+    for group in grouped_empty_env_warnings(diagnostics) {
+        let lines = std::iter::once(group.header).chain(group.details);
+        for (index, text) in lines.enumerate() {
+            let indentation = if index == 0 {
+                0
+            } else if text.starts_with("-> ") {
+                4
+            } else {
+                2
+            };
+            let out = state.line(
+                &format!("{}{}", " ".repeat(indentation), text.yellow()),
+                terminal_size(),
+            );
+            let mut stderr = std::io::stderr().lock();
+            let _ = write!(stderr, "{out}");
+        }
+    }
+}
+
 fn console() -> &'static Mutex<Console> {
     static CONSOLE: OnceLock<Mutex<Console>> = OnceLock::new();
     CONSOLE.get_or_init(|| Mutex::new(Console::default()))
@@ -652,6 +1007,11 @@ pub(crate) fn retries_cancelled(keys: &[String]) {
 pub(crate) fn mutation_begin(project: &Path) {
     let project = canonical_project(project);
     let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let cleared_warnings =
+        state.panel_owner() == Some(project.as_str()) && !state.settled_env_warnings.is_empty();
+    if cleared_warnings {
+        state.settled_env_warnings.clear();
+    }
     let before = state.updates.len();
     state.updates.retain(|owner, rows| {
         owner.project != project
@@ -659,7 +1019,7 @@ pub(crate) fn mutation_begin(project: &Path) {
                 .values()
                 .any(|row| matches!(row.state, UpdateState::Active(_)))
     });
-    if state.updates.len() != before {
+    if state.updates.len() != before || cleared_warnings {
         redraw(&mut state);
     }
 }
@@ -902,152 +1262,7 @@ impl Console {
 
     fn render(&mut self, size: Option<(u16, u16)>) -> String {
         self.observe_size(size);
-        let mut rows = Vec::new();
-        if let Some(startup) = &self.startup {
-            rows.extend([
-                startup.engine.clone(),
-                startup.downloads.clone(),
-                startup.containers.clone(),
-            ]);
-        }
-        let mut workers: Vec<Row> = self
-            .rows
-            .iter()
-            .cloned()
-            .map(|mut row| {
-                row.depth += usize::from(self.startup.is_some());
-                row
-            })
-            .collect();
-        for download in &self.downloads {
-            if let Some(worker) = workers.iter_mut().find(|row| row.key == download.key) {
-                // Keep download completion visible until this worker actually
-                // starts, then replace it with the worker's lifecycle status.
-                if matches!(worker.state, RowState::Waiting) {
-                    worker.state = download.state.clone();
-                }
-            } else {
-                // Downloads can arrive before the lifecycle plan is available.
-                workers.push(download.clone());
-            }
-        }
-        if self.foreground_active {
-            let ready = self
-                .rows
-                .iter()
-                .filter(|row| {
-                    matches!(row.state, RowState::Ready { .. })
-                        || matches!(&row.state, RowState::Skipped(why) if why == "already running")
-                })
-                .count();
-            let total = self.rows.len();
-            if let Some(header) = rows.iter_mut().find(|row| row.key == "Containers") {
-                let what = format!("Running ({ready}/{total})");
-                header.state = if ready == total {
-                    RowState::Ready {
-                        what,
-                        elapsed: Duration::ZERO,
-                    }
-                } else if self
-                    .rows
-                    .iter()
-                    .any(|row| matches!(row.state, RowState::Failed | RowState::Error { .. }))
-                {
-                    RowState::Error {
-                        what,
-                        elapsed: Duration::ZERO,
-                    }
-                } else {
-                    RowState::Skipped(what)
-                };
-            }
-        }
-        rows.extend(workers);
-        let foreground = self.panel_owner();
-        for (owner, updates) in &self.updates {
-            for (key, update) in updates {
-                let state = match &update.state {
-                    UpdateState::Active(what) => RowState::Starting {
-                        what: what.clone(),
-                        began: update.began,
-                    },
-                    UpdateState::Updated(what) => RowState::Ready {
-                        what: what.clone(),
-                        elapsed: update.finished.unwrap_or_default(),
-                    },
-                    UpdateState::Unchanged(what) => RowState::Skipped(what.clone()),
-                    UpdateState::Error(what) | UpdateState::Cancelled(what) => RowState::Error {
-                        what: what.clone(),
-                        elapsed: update.finished.unwrap_or_default(),
-                    },
-                };
-                if foreground == Some(owner.project.as_str()) {
-                    if !rows.iter().any(|row| row.key == *key) {
-                        rows.push(Row {
-                            key: key.clone(),
-                            depth: 1,
-                            state: RowState::Waiting,
-                        });
-                    }
-                    if let Some(row) = rows.iter_mut().find(|row| row.key == *key) {
-                        if matches!(row.state, RowState::Failed | RowState::Error { .. }) {
-                            let detail = match &update.state {
-                                UpdateState::Active(text)
-                                | UpdateState::Updated(text)
-                                | UpdateState::Unchanged(text)
-                                | UpdateState::Error(text)
-                                | UpdateState::Cancelled(text) => text,
-                            };
-                            row.state = RowState::Error {
-                                what: format!("Failed · {detail}"),
-                                elapsed: update.finished.unwrap_or_default(),
-                            };
-                        } else if matches!(
-                            row.state,
-                            RowState::Starting { .. } | RowState::Retrying { .. }
-                        ) && !matches!(update.state, UpdateState::Active(_))
-                        {
-                            // A retained completion badge cannot claim readiness during a later restart.
-                        } else if matches!(&row.state, RowState::Skipped(why) if why == "stopped" || why == "rolled back" || why == "not running")
-                        {
-                            let health = if let RowState::Skipped(why) = &row.state {
-                                why.clone()
-                            } else {
-                                String::new()
-                            };
-                            row.state = match state {
-                                RowState::Starting { what, began } => RowState::Starting {
-                                    what: format!("{what} · {health}"),
-                                    began,
-                                },
-                                _ => RowState::Skipped(health),
-                            };
-                        } else {
-                            row.state = state;
-                        }
-                    }
-                } else {
-                    rows.push(Row {
-                        key: format!("{key} ({} / {})", owner.project, owner.operation),
-                        depth: 1,
-                        state,
-                    });
-                }
-            }
-        }
-        // Headers keep their names; worker rows show the version they run.
-        let headers = if self.startup.is_some() { 3 } else { 0 };
-        let shown: Vec<Row> = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| match self.versions.get(&row.key) {
-                Some(version) if index >= headers => Row {
-                    key: format!("{} {}", row.key, version.dimmed()),
-                    ..row.clone()
-                },
-                _ => row.clone(),
-            })
-            .collect();
+        let shown = compose_rows(self);
         let lines: Vec<String> = shown
             .iter()
             .map(|row| render_row_with_width(row, self.frame, true, size.map(|(_, width)| width)))
@@ -1217,6 +1432,7 @@ fn render_row_with_width(row: &Row, frame: usize, animate: bool, width: Option<u
             what.red(),
             format!("({})", format_elapsed(*elapsed)).dimmed(),
         ),
+        RowState::Warning(text) => format!("{indent}{}", text.yellow()),
         RowState::Skipped(why) => format!(
             "{indent}{} {} {}",
             SKIPPED.dimmed(),
@@ -1770,6 +1986,110 @@ mod terminal_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_warning_rows_are_nested_under_each_matching_worker_in_order() {
+        use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+        let rows = vec![
+            Row {
+                key: "alpha".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+            Row {
+                key: "beta".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+        ];
+        let diagnostics = [
+            EmptyEnvDiagnostic {
+                worker: "beta".into(),
+                path: "beta.env".into(),
+                name: "BETA_NAME".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "alpha".into(),
+                path: "alpha.env".into(),
+                name: "ALPHA_NAME".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+        ];
+        let final_rows = final_rows_with_warnings(&rows, &diagnostics);
+        let alpha = final_rows.iter().position(|r| r.key == "alpha").unwrap();
+        let aw = final_rows
+            .iter()
+            .position(|r| matches!(&r.state, RowState::Warning(text) if text.contains("alpha.env")))
+            .unwrap();
+        let beta = final_rows.iter().position(|r| r.key == "beta").unwrap();
+        let bw = final_rows
+            .iter()
+            .position(|r| matches!(&r.state, RowState::Warning(text) if text.contains("beta.env")))
+            .unwrap();
+        assert!(
+            alpha < aw && aw < beta && beta < bw,
+            "row indices: {alpha}, {aw}, {beta}, {bw}"
+        );
+        assert_eq!(final_rows[aw].depth, 1);
+        assert_eq!(final_rows[bw].depth, 1);
+        assert!(render_row(&final_rows[aw], 0, false).starts_with("  ⚠ alpha"));
+        assert!(render_row(&final_rows[aw + 1], 0, false).starts_with("    ALPHA_NAME"));
+        assert!(render_row(&final_rows[aw + 2], 0, false).starts_with("      -> Using values"));
+        assert!(render_row(&final_rows[aw + 3], 0, false).starts_with("    Set values"));
+    }
+
+    #[test]
+    fn empty_env_warning_formatter_groups_deduplicates_and_never_exposes_values() {
+        use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+        let diagnostics = vec![
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_A".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_A".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+            EmptyEnvDiagnostic {
+                worker: "api".into(),
+                path: "settings.env".into(),
+                name: "TOKEN_B".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "db".into(),
+                path: "db.env".into(),
+                name: "PASSWORD".into(),
+                source: EmptyValueSource::ComposeEnvironmentEmpty,
+            },
+        ];
+        let lines = format_empty_env_warnings(&diagnostics);
+        let text = lines.join("\\n");
+        assert_eq!(lines[0], "⚠ api — empty values in settings.env");
+        assert!(text.contains("TOKEN_A") && text.contains("TOKEN_B") && text.contains("PASSWORD"));
+        assert!(text.contains("Using values from the system environment."));
+        assert!(text.contains("Not set in the system environment; variable left unset."));
+        assert!(text.contains("Compose environment explicitly sets an empty value"));
+        assert_eq!(text.matches("TOKEN_A").count(), 1);
+        assert!(
+            lines
+                .iter()
+                .position(|line| line.starts_with("⚠ db"))
+                .unwrap()
+                > 0
+        );
+    }
 
     #[test]
     fn engine_failure_leaves_containers_not_started() {
