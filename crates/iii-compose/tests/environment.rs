@@ -169,19 +169,20 @@ fn windows_case_equivalent_keys_obey_source_precedence() {
             assert_eq!(actual, [expected]);
         }
 
-        // An empty value in a later env file still overrides an earlier file;
-        // preservation applies only to an empty Compose `environment` value.
-        let file = project(
-            tmp.path(),
-            "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n",
-            &[
-                ("base.env", &format!("{first}=base\n")),
-                ("last.env", &format!("{alias}=\n")),
-            ],
-        );
-        let env = file.containers["api"].resolve_user_env("api").unwrap();
-        assert_eq!(env.len(), 1);
-        assert_eq!(env.values().next().unwrap(), "");
+        // Parsed-empty aliases must not erase an earlier nonempty file value.
+        for empty in ["", "\"\"", "''"] {
+            let file = project(
+                tmp.path(),
+                "containers:\n  api:\n    worker: path://./api\n    env_file: [base.env, last.env]\n",
+                &[
+                    ("base.env", &format!("{first}=base\n")),
+                    ("last.env", &format!("{alias}={empty}\n")),
+                ],
+            );
+            let env = file.containers["api"].resolve_user_env("api").unwrap();
+            assert_eq!(env.len(), 1, "{first}/{alias}: {empty:?}");
+            assert_eq!(env.values().next().unwrap(), "base");
+        }
     }
 }
 
