@@ -92,6 +92,8 @@ struct Console {
     startup: Option<StartupRows>,
     updates: BTreeMap<UpdateOwner, BTreeMap<String, UpdateRow>>,
     /// Version shown beside each worker's name in the panel owner's rows.
+    /// Labels belong to that owner: they are cleared whenever the panel is
+    /// released or changes hands, so a homonymous worker never inherits them.
     versions: BTreeMap<String, String>,
     foreground_project: Option<String>,
     foreground_active: bool,
@@ -560,6 +562,7 @@ pub(crate) fn plan_labeled(rows: &[(String, usize)], versions: &[(String, Option
     // Runtime retry feedback does not reserve a bare daemon's lifecycle panel.
     if state.foreground_project.is_none() && !state.planned && state.panel_project != project {
         state.rows.clear();
+        state.versions.clear();
         state.panel_project = project.clone();
     }
     if !state.accepts_project(project.as_deref()) {
@@ -613,6 +616,7 @@ pub fn plan_done() {
     let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
     if state.startup.is_none() && state.accepts_project(scoped_project().as_deref()) {
         state.rows.clear();
+        state.versions.clear();
         state.panel_project = None;
         state.planned = false;
         // Leave completed output on screen, but do not clear an overlay's frame.
@@ -637,6 +641,7 @@ pub(crate) fn retries_cancelled(keys: &[String]) {
         state.rows.retain(|row| !keys.contains(&row.key));
         if state.rows.is_empty() {
             state.panel_project = None;
+            state.versions.clear();
         }
     }
     redraw(&mut state);
@@ -1060,13 +1065,15 @@ impl Console {
                 self.clear_block(&mut out);
             }
             self.static_output = true;
-            for (row, shown) in rows.iter().zip(&shown) {
+            // Compare what is displayed, version included, so a version-only
+            // change is printed too.
+            for row in &shown {
                 if !self
                     .rendered
                     .iter()
                     .any(|previous| row.same_static_state(previous))
                 {
-                    out.push_str(&render_row(shown, 0, false));
+                    out.push_str(&render_row(row, 0, false));
                     out.push('\n');
                 }
             }
@@ -1079,7 +1086,7 @@ impl Console {
             }
             self.drawn = height.unwrap_or_default();
         }
-        self.rendered = rows;
+        self.rendered = shown;
         out
     }
 
@@ -1526,6 +1533,9 @@ fn show_retry_row(row: Row) {
             }
             state.rows.push(row);
         } else {
+            if state.panel_project != scoped_project() {
+                state.versions.clear();
+            }
             state.panel_project = scoped_project();
             state.rows.push(row);
         }

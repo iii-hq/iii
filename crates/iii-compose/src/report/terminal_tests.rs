@@ -2254,3 +2254,71 @@ fn an_external_engine_is_labeled_external() {
         "Ready · external"
     );
 }
+
+#[tokio::test]
+#[ignore = "isolated subprocess for version label ownership"]
+async fn version_label_ownership_fixture() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a.yaml");
+    let b = root.path().join("b.yaml");
+    std::fs::write(&a, "containers: {}\n").unwrap();
+    std::fs::write(&b, "containers: {}\n").unwrap();
+    // Project B labels its `state` and keeps an update overlay after
+    // releasing the bare panel.
+    in_project_scope(&b, async {
+        plan_labeled(
+            &[("state".into(), 0)],
+            &[("state".into(), Some("0.22.18".into()))],
+        );
+    })
+    .await;
+    update_begin(&b, "b-update", &["state".into()]);
+    in_project_scope(&b, async {
+        plan_done();
+    })
+    .await;
+    // Project A's own `state` retries on the idle panel. Without a terminal
+    // the panel is static, so the parent checks the line printed here.
+    in_project_scope(&a, async {
+        retry_waiting("state", 1, 2, Duration::from_secs(1));
+    })
+    .await;
+}
+
+#[test]
+fn a_retry_on_an_idle_panel_never_shows_a_previous_owners_version() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "report::terminal_tests::version_label_ownership_fixture",
+            "--nocapture",
+        ])
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stderr.contains("state Retrying"),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!stderr.contains("state 0.22.18 Retrying"), "{stderr}");
+}
+
+#[test]
+fn static_output_prints_a_version_change_without_a_state_change() {
+    let mut console = versioned_console();
+    console.render(None);
+    console
+        .versions
+        .insert("state".to_string(), "0.22.18".to_string());
+
+    let frame = console.render(None);
+
+    assert!(
+        console::strip_ansi_codes(&frame).contains("state 0.22.18 ready"),
+        "{frame}"
+    );
+}
