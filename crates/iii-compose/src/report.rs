@@ -795,12 +795,20 @@ impl Console {
         }
         shared.then(|| {
             let cause = format!("{} Update failed: {message}", FAILED.red());
-            if self.accepts_project(Some(&owner.project)) {
+            if self.panel_owner() == Some(owner.project.as_str()) {
                 cause
             } else {
                 format!("{}: {cause}", owner.project)
             }
         })
+    }
+
+    /// The project whose update rows render inside the panel; rows of any
+    /// other owner are labeled with their project and operation.
+    fn panel_owner(&self) -> Option<&str> {
+        self.foreground_project
+            .as_deref()
+            .or(self.panel_project.as_deref())
     }
 
     fn accepts_project(&self, project: Option<&str>) -> bool {
@@ -897,10 +905,7 @@ impl Console {
             }
         }
         rows.extend(workers);
-        let foreground = self
-            .foreground_project
-            .as_deref()
-            .or(self.panel_project.as_deref());
+        let foreground = self.panel_owner();
         for (owner, updates) in &self.updates {
             for (key, update) in updates {
                 let state = match &update.state {

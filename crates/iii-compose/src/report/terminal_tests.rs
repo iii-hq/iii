@@ -2115,3 +2115,31 @@ fn shared_update_failure_names_a_foreign_project() {
         "{cause}"
     );
 }
+
+#[test]
+fn shared_update_failure_names_the_project_when_nothing_owns_the_panel() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let mut console = update_console(&owner, &[("state", resolving()), ("queue", resolving())]);
+    console.foreground_project = None;
+
+    let cause = console
+        .fail_update_operation(&owner, "version conflict")
+        .unwrap();
+
+    assert!(
+        cause.starts_with(&format!("{FOREGROUND_PROJECT}: ")),
+        "{cause}"
+    );
+}
+
+#[test]
+fn shared_update_failure_in_the_foreground_has_no_project_prefix() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let mut console = update_console(&owner, &[("state", resolving()), ("queue", resolving())]);
+
+    let cause = console
+        .fail_update_operation(&owner, "version conflict")
+        .unwrap();
+
+    assert!(!cause.contains(FOREGROUND_PROJECT), "{cause}");
+}
