@@ -41,18 +41,29 @@ fn version_message(phase: &str, from: Option<&str>, to: &str) -> String {
     }
 }
 
+const UNCHANGED_NOT_READY: &str = "Package unchanged, but not ready after restart";
+
+/// Whether a worker restarted by an update came back ready.
+fn restarted_ready(up: &OpResult, worker: &str) -> bool {
+    up.containers.iter().any(|result| {
+        result.container == worker
+            && result.state == crate::state::ChildStatus::Ready
+            && result.error.is_none()
+    })
+}
+
+/// Settles every requested worker after the restart an update performed.
+/// Changed packages end as updated or failed. Unchanged ones end as unchanged
+/// only when they came back ready, so a failure is never reported as a no-op.
 pub(crate) async fn finish_updated_workers(
     path: &Path,
     operation_id: &str,
+    requested: &[String],
     versions: &BTreeMap<String, (Option<String>, String)>,
     up: &OpResult,
 ) {
     for (worker, (from, to)) in versions {
-        let healthy = up.containers.iter().any(|result| {
-            result.container == *worker
-                && result.state == crate::state::ChildStatus::Ready
-                && result.error.is_none()
-        });
+        let healthy = restarted_ready(up, worker);
         let detail = version_message(
             if healthy { "Updated" } else { "Update failed" },
             from.as_deref(),
@@ -70,6 +81,20 @@ pub(crate) async fn finish_updated_workers(
                     if healthy { "updated" } else { "failed" },
                     detail,
                 )
+                .await;
+        }
+    }
+    let (ready, not_ready): (Vec<String>, Vec<String>) = requested
+        .iter()
+        .filter(|worker| !versions.contains_key(*worker))
+        .cloned()
+        .partition(|worker| restarted_ready(up, worker));
+    report_unchanged(path, operation_id, &ready, "Package unchanged").await;
+    for worker in &not_ready {
+        crate::report::update_failed(path, operation_id, worker, UNCHANGED_NOT_READY);
+        if let Some(operation) = crate::operation::active(operation_id) {
+            operation
+                .emit(Some(worker), "failed", UNCHANGED_NOT_READY)
                 .await;
         }
     }
@@ -1429,13 +1454,14 @@ impl Daemon {
         // while its other children run would leave them supervised by nothing.
         // `compose::restart worker=` is the surgical one; this is the safe one.
         let (down, up) = self.restart_project(path, None, &operation_id).await?;
-        finish_updated_workers(path, &operation_id, &changed_versions, &up).await;
-        let unchanged: Vec<String> = requested_names
-            .iter()
-            .filter(|worker| !changed_versions.contains_key(*worker))
-            .cloned()
-            .collect();
-        report_unchanged(path, &operation_id, &unchanged, "Package unchanged").await;
+        finish_updated_workers(
+            path,
+            &operation_id,
+            &requested_names,
+            &changed_versions,
+            &up,
+        )
+        .await;
         Ok(MutationOutcome::from_operations(
             up.status,
             true,

@@ -210,11 +210,13 @@ async fn update_producer_fixture() {
         console().lock().unwrap().updates[&owner]["api"].state,
         UpdateState::Updated(_)
     ));
-    update_begin(
-        &path,
-        "partial-result",
-        &["api".into(), "dependency".into()],
-    );
+    let requested: Vec<String> = vec![
+        "api".into(),
+        "dependency".into(),
+        "steady".into(),
+        "broken".into(),
+    ];
+    update_begin(&path, "partial-result", &requested);
     let operation = daemon
         .operations
         .create_with_id("partial-result".into(), 2)
@@ -228,21 +230,39 @@ async fn update_producer_fixture() {
         operation_id: "partial-result-up".into(),
         status: crate::lifecycle::OpStatus::Failed,
         changed: true,
-        containers: vec![crate::lifecycle::ContainerResult {
-            container: "api".into(),
-            state: crate::state::ChildStatus::Ready,
-            changed: true,
-            error: None,
-        }],
+        containers: vec![
+            crate::lifecycle::ContainerResult {
+                container: "api".into(),
+                state: crate::state::ChildStatus::Ready,
+                changed: true,
+                error: None,
+            },
+            crate::lifecycle::ContainerResult {
+                container: "steady".into(),
+                state: crate::state::ChildStatus::Ready,
+                changed: true,
+                error: None,
+            },
+            crate::lifecycle::ContainerResult {
+                container: "broken".into(),
+                state: crate::state::ChildStatus::Failed,
+                changed: true,
+                error: None,
+            },
+        ],
         primary_error: None,
     };
-    crate::daemon::finish_updated_workers(&path, "partial-result", &versions, &up).await;
+    crate::daemon::finish_updated_workers(&path, "partial-result", &requested, &versions, &up)
+        .await;
     update_finish(&path, "partial-result");
     let event = operation.snapshot().await.last_event.unwrap();
     assert_eq!(event.operation_id, "partial-result");
-    assert_eq!(event.container.as_deref(), Some("dependency"));
+    assert_eq!(event.container.as_deref(), Some("broken"));
     assert_eq!(event.phase, "failed");
-    assert_eq!(event.detail, "Update failed to 3.0.0");
+    assert_eq!(
+        event.detail,
+        "Package unchanged, but not ready after restart"
+    );
     {
         let state = console().lock().unwrap();
         let owner = UpdateOwner {
@@ -254,6 +274,12 @@ async fn update_producer_fixture() {
         );
         assert!(
             matches!(&state.updates[&owner]["dependency"].state, UpdateState::Error(text) if text == "Update failed to 3.0.0")
+        );
+        assert!(
+            matches!(&state.updates[&owner]["steady"].state, UpdateState::Unchanged(text) if text == "Package unchanged")
+        );
+        assert!(
+            matches!(&state.updates[&owner]["broken"].state, UpdateState::Error(text) if text == "Package unchanged, but not ready after restart")
         );
     }
     daemon.shutdown().await;
