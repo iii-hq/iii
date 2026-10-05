@@ -709,18 +709,15 @@ pub(crate) fn update_operation_failed(project: &Path, operation: &str, message: 
         project: canonical_project(project),
         operation: operation.into(),
     };
-    if let Some(rows) = state.updates.get_mut(&owner) {
-        for row in rows.values_mut() {
-            if matches!(
-                row.state,
-                UpdateState::Active(_) | UpdateState::Cancelled(_)
-            ) {
-                row.finished.get_or_insert_with(|| row.began.elapsed());
-                row.state = UpdateState::Error(format!("Update failed: {message}"));
-            }
+    match state.fail_update_operation(&owner, message) {
+        Some(cause) => {
+            let out = state.line(&cause, terminal_size());
+            let mut stderr = std::io::stderr().lock();
+            let _ = write!(stderr, "{out}");
+            let _ = stderr.flush();
         }
+        None => redraw(&mut state),
     }
-    redraw(&mut state);
 }
 
 pub(crate) fn update_finish(project: &Path, operation: &str) {
@@ -772,6 +769,40 @@ fn set(key: &str, to: RowState) -> bool {
 }
 
 impl Console {
+    /// Settles the unfinished rows of an update that failed as a whole.
+    ///
+    /// A failure shared by several rows (a rejected plan, for example) is
+    /// returned to be printed once; repeating it on every row hides the rows.
+    fn fail_update_operation(&mut self, owner: &UpdateOwner, message: &str) -> Option<String> {
+        let rows = self.updates.get_mut(owner)?;
+        let unfinished: Vec<_> = rows
+            .values_mut()
+            .filter(|row| {
+                matches!(
+                    row.state,
+                    UpdateState::Active(_) | UpdateState::Cancelled(_)
+                )
+            })
+            .collect();
+        let shared = unfinished.len() > 1;
+        for row in unfinished {
+            row.finished.get_or_insert_with(|| row.began.elapsed());
+            row.state = UpdateState::Error(if shared {
+                "Update failed".to_string()
+            } else {
+                format!("Update failed: {message}")
+            });
+        }
+        shared.then(|| {
+            let cause = format!("{} Update failed: {message}", FAILED.red());
+            if self.accepts_project(Some(&owner.project)) {
+                cause
+            } else {
+                format!("{}: {cause}", owner.project)
+            }
+        })
+    }
+
     fn accepts_project(&self, project: Option<&str>) -> bool {
         self.foreground_project
             .as_deref()

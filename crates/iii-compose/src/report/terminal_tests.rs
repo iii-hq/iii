@@ -1993,3 +1993,125 @@ fn supervisor_down_clears_retry_and_releases_bare_panel() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+const FOREGROUND_PROJECT: &str = "/projects/foreground/worker-compose.yaml";
+
+fn update_owner(project: &str) -> UpdateOwner {
+    UpdateOwner {
+        project: project.to_string(),
+        operation: "update-all".to_string(),
+    }
+}
+
+fn resolving() -> UpdateState {
+    UpdateState::Active("Resolving dependencies".to_string())
+}
+
+fn update_console(owner: &UpdateOwner, rows: &[(&str, UpdateState)]) -> Console {
+    let mut console = Console {
+        foreground_project: Some(FOREGROUND_PROJECT.to_string()),
+        ..Console::default()
+    };
+    console.updates.insert(
+        owner.clone(),
+        rows.iter()
+            .map(|(key, state)| {
+                (
+                    (*key).to_string(),
+                    UpdateRow {
+                        state: state.clone(),
+                        began: Instant::now(),
+                        finished: None,
+                    },
+                )
+            })
+            .collect(),
+    );
+    console
+}
+
+#[test]
+fn shared_update_failure_prints_its_cause_once() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let mut console = update_console(
+        &owner,
+        &[
+            ("state", resolving()),
+            ("queue", resolving()),
+            ("harness", resolving()),
+        ],
+    );
+
+    let cause = console
+        .fail_update_operation(&owner, "version conflict")
+        .unwrap();
+    let frame = console.line(&cause, Some((40, 160)));
+
+    assert_eq!(frame.matches("version conflict").count(), 1, "{frame}");
+}
+
+#[test]
+fn shared_update_failure_leaves_a_short_status_on_each_row() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let mut console = update_console(&owner, &[("state", resolving()), ("queue", resolving())]);
+
+    console.fail_update_operation(&owner, "version conflict");
+
+    assert!(
+        console.updates[&owner]
+            .values()
+            .all(|row| matches!(&row.state, UpdateState::Error(text) if text == "Update failed"))
+    );
+}
+
+#[test]
+fn single_worker_update_failure_keeps_its_cause_on_the_row() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let mut console = update_console(&owner, &[("api", resolving())]);
+
+    let cause = console.fail_update_operation(&owner, "version conflict");
+
+    assert!(
+        cause.is_none()
+            && matches!(
+                &console.updates[&owner]["api"].state,
+                UpdateState::Error(text) if text == "Update failed: version conflict"
+            )
+    );
+}
+
+#[test]
+fn shared_update_failure_preserves_worker_specific_errors() {
+    let owner = update_owner(FOREGROUND_PROJECT);
+    let specific = "Update failed 1.0.0 → 2.0.0: download failed";
+    let mut console = update_console(
+        &owner,
+        &[
+            ("api", UpdateState::Error(specific.to_string())),
+            ("state", resolving()),
+            ("queue", resolving()),
+        ],
+    );
+
+    console.fail_update_operation(&owner, "version conflict");
+
+    assert!(matches!(
+        &console.updates[&owner]["api"].state,
+        UpdateState::Error(text) if text == specific
+    ));
+}
+
+#[test]
+fn shared_update_failure_names_a_foreign_project() {
+    let owner = update_owner("/projects/other/worker-compose.yaml");
+    let mut console = update_console(&owner, &[("state", resolving()), ("queue", resolving())]);
+
+    let cause = console
+        .fail_update_operation(&owner, "version conflict")
+        .unwrap();
+
+    assert!(
+        cause.starts_with("/projects/other/worker-compose.yaml: "),
+        "{cause}"
+    );
+}
