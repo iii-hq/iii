@@ -2852,6 +2852,120 @@ async fn standalone_warning_fixture() {
     ]);
 }
 
+#[test]
+fn foreign_env_warning_lines_identify_project_without_relabeling_panel() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "report::terminal_tests::foreign_env_warning_fixture",
+            "--nocapture",
+        ])
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let foreign_lines: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("FOREIGN_SENTINEL") || line.contains("Not set in the system"))
+        .collect();
+    assert_eq!(foreign_lines.len(), 2, "{stderr}");
+    assert!(
+        foreign_lines
+            .iter()
+            .all(|line| line.contains("/tmp/other-warning-project: ")),
+        "{foreign_lines:#?}"
+    );
+    let foreground_lines: Vec<_> = stderr
+        .lines()
+        .filter(|line| {
+            line.contains("FOREGROUND_SENTINEL") || line.contains("Using values from the system")
+        })
+        .collect();
+    assert_eq!(foreground_lines.len(), 2, "{stderr}");
+    assert!(
+        foreground_lines
+            .iter()
+            .all(|line| !line.contains("/tmp/other-warning-project: ")),
+        "{foreground_lines:#?}"
+    );
+    assert!(
+        !stderr.contains('\x1b'),
+        "NO_COLOR emitted ANSI: {stderr:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "subprocess fixture for foreign environment warning attribution"]
+async fn foreign_env_warning_fixture() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    let project_a = Path::new("/tmp/foreground-warning-project");
+    let mut startup = StartupProgress::start(true, project_a);
+    startup.engine_ready();
+    plan(&[("api".into(), 0)]);
+    starting("api", "waiting");
+    in_project_scope(project_a, async {
+        empty_env_warnings(&[EmptyEnvDiagnostic {
+            worker: "api".into(),
+            path: "worker.env".into(),
+            name: "FOREGROUND_SENTINEL".into(),
+            source: EmptyValueSource::SystemNonEmpty,
+        }]);
+    })
+    .await;
+    in_project_scope(Path::new("/tmp/other-warning-project"), async {
+        empty_env_warnings(&[EmptyEnvDiagnostic {
+            worker: "api".into(),
+            path: "worker.env".into(),
+            name: "FOREIGN_SENTINEL".into(),
+            source: EmptyValueSource::SystemUnset,
+        }]);
+    })
+    .await;
+    {
+        let state = console().lock().unwrap();
+        assert!(
+            !state
+                .pending_env_warnings
+                .iter()
+                .any(|warning| warning.name == "FOREIGN_SENTINEL")
+        );
+        assert!(
+            !state
+                .settled_env_warnings
+                .iter()
+                .any(|warning| warning.name == "FOREIGN_SENTINEL")
+        );
+        assert!(!compose_rows(&state).iter().any(
+            |row| matches!(&row.state, RowState::Warning(text) if text.contains("FOREIGN_SENTINEL"))
+        ));
+    }
+    ready("api", Duration::ZERO);
+    startup.finish(true, "Ready");
+    let state = console().lock().unwrap();
+    assert!(
+        !state
+            .pending_env_warnings
+            .iter()
+            .any(|warning| warning.name == "FOREIGN_SENTINEL")
+    );
+    assert!(
+        !state
+            .settled_env_warnings
+            .iter()
+            .any(|warning| warning.name == "FOREIGN_SENTINEL")
+    );
+    assert!(!compose_rows(&state).iter().any(
+        |row| matches!(&row.state, RowState::Warning(text) if text.contains("FOREIGN_SENTINEL"))
+    ));
+}
+
 #[tokio::test]
 #[ignore = "subprocess fixture for queued environment warning finish paths"]
 async fn queued_warning_finish_fixture() {

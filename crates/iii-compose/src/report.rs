@@ -646,7 +646,10 @@ pub(crate) fn empty_env_warnings(diagnostics: &[crate::config::EmptyEnvDiagnosti
     {
         state.pending_env_warnings.extend_from_slice(diagnostics);
     } else {
-        emit_unmatched_warnings(&mut state, diagnostics);
+        let foreign_project = scoped_project()
+            .filter(|project| !state.accepts_project(Some(project)))
+            .map(|project| format!("{project}: "));
+        emit_unmatched_warnings(&mut state, diagnostics, foreign_project.as_deref());
     }
 }
 
@@ -877,7 +880,11 @@ fn warning_row(text: String, depth: usize) -> Row {
     }
 }
 
-fn emit_unmatched_warnings(state: &mut Console, diagnostics: &[crate::config::EmptyEnvDiagnostic]) {
+fn emit_unmatched_warnings(
+    state: &mut Console,
+    diagnostics: &[crate::config::EmptyEnvDiagnostic],
+    project_prefix: Option<&str>,
+) {
     for group in grouped_empty_env_warnings(diagnostics) {
         let lines = std::iter::once(group.header).chain(group.details);
         for (index, text) in lines.enumerate() {
@@ -889,7 +896,12 @@ fn emit_unmatched_warnings(state: &mut Console, diagnostics: &[crate::config::Em
                 2
             };
             let out = state.line(
-                &format!("{}{}", " ".repeat(indentation), text.yellow()),
+                &format!(
+                    "{}{}{}",
+                    project_prefix.unwrap_or_default(),
+                    " ".repeat(indentation),
+                    text.yellow()
+                ),
                 terminal_size(),
             );
             let mut stderr = std::io::stderr().lock();
