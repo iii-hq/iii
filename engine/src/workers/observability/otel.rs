@@ -877,8 +877,7 @@ struct RootPageHotSnapshot {
     /// because that decision requires the archive read below.
     root_candidates: HashMap<(String, String), StoredSpan>,
     /// Every newest hot key is needed for archive overlay accounting.
-    hot_keys: Vec<(String, String)>,
-    hot_key_set: HashSet<(String, String)>,
+    hot_keys: HashSet<(String, String)>,
     /// Span ids from every newest hot key, preserving the existing dangling
     /// parent rule (span ids are intentionally not trace-qualified here).
     hot_span_ids: HashSet<String>,
@@ -1045,7 +1044,7 @@ impl InMemorySpanStorage {
     /// The guard is released before callers perform archive I/O. The returned
     /// candidates are owned snapshots from that same guard, so this does not
     /// combine metadata from one hot state with payloads read from another.
-    fn root_page_snapshot(&self, _include_internal: bool) -> RootPageHotSnapshot {
+    fn root_page_snapshot(&self) -> RootPageHotSnapshot {
         let cache = self.read();
         let mut newest_by_key = HashMap::<(String, String), (u64, Option<String>)>::new();
         for (&seq, slot) in &cache.slots {
@@ -1058,13 +1057,12 @@ impl InMemorySpanStorage {
             }
         }
 
-        let hot_keys: Vec<_> = newest_by_key.keys().cloned().collect();
-        let hot_key_set = hot_keys.iter().cloned().collect();
+        let hot_keys: HashSet<_> = newest_by_key.keys().cloned().collect();
         let hot_span_ids: HashSet<String> = newest_by_key
             .keys()
             .map(|(_, span_id)| span_id.clone())
             .collect();
-        let mut root_candidates = HashMap::with_capacity(newest_by_key.len());
+        let mut root_candidates = HashMap::new();
         let mut parent_keys = Vec::new();
 
         for (key, (seq, parent_span_id)) in newest_by_key {
@@ -1083,7 +1081,6 @@ impl InMemorySpanStorage {
         RootPageHotSnapshot {
             root_candidates,
             hot_keys,
-            hot_key_set,
             hot_span_ids,
             parent_keys,
         }
@@ -1809,14 +1806,14 @@ pub(crate) fn get_query_root_spans_page_by_start_time(
     // drops them, they still shadow durable rows and demote durable roots.
     let RootPageHotSnapshot {
         root_candidates: hot_by_key,
-        hot_keys,
-        hot_key_set,
+        hot_keys: hot_key_set,
         hot_span_ids,
         parent_keys,
     } = get_span_storage()
-        .map(|storage| storage.root_page_snapshot(include_internal))
+        .map(|storage| storage.root_page_snapshot())
         .unwrap_or_default();
-    let hot_count = hot_keys.len();
+    let hot_count = hot_key_set.len();
+    let hot_keys: Vec<_> = hot_key_set.iter().cloned().collect();
 
     let archive = get_trace_disk_storage();
 
