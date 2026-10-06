@@ -870,6 +870,23 @@ impl std::fmt::Debug for InMemorySpanStorage {
     }
 }
 
+#[derive(Default)]
+struct RootPageHotSnapshot {
+    /// Only hot rows that can still be roots. Rows with a hot parent never
+    /// materialize their payload; rows whose parent may be archived are kept
+    /// because that decision requires the archive read below.
+    root_candidates: HashMap<(String, String), StoredSpan>,
+    /// Every newest hot key is needed for archive overlay accounting.
+    hot_keys: Vec<(String, String)>,
+    hot_key_set: HashSet<(String, String)>,
+    /// Span ids from every newest hot key, preserving the existing dangling
+    /// parent rule (span ids are intentionally not trace-qualified here).
+    hot_span_ids: HashSet<String>,
+    /// `(trace_id, parent_span_id)` pairs absent from the hot id set. The
+    /// archive decides which of these possible roots are actually demoted.
+    parent_keys: Vec<(String, String)>,
+}
+
 impl InMemorySpanStorage {
     pub fn new(max_spans: usize) -> Self {
         Self::new_with_limits(max_spans, DEFAULT_MEMORY_MAX_BYTES)
@@ -1021,6 +1038,55 @@ impl InMemorySpanStorage {
     /// spans ingested from now on.
     pub fn set_max_attribute_bytes(&self, max: u64) {
         self.max_attribute_bytes.store(max, Ordering::Relaxed);
+    }
+
+    /// Snapshot root candidates and overlay metadata under one read guard.
+    ///
+    /// The guard is released before callers perform archive I/O. The returned
+    /// candidates are owned snapshots from that same guard, so this does not
+    /// combine metadata from one hot state with payloads read from another.
+    fn root_page_snapshot(&self, _include_internal: bool) -> RootPageHotSnapshot {
+        let cache = self.read();
+        let mut newest_by_key = HashMap::<(String, String), (u64, Option<String>)>::new();
+        for (&seq, slot) in &cache.slots {
+            let key = (slot.span.trace_id.clone(), slot.span.span_id.clone());
+            match newest_by_key.get(&key) {
+                Some((existing_seq, _)) if *existing_seq >= seq => {}
+                _ => {
+                    newest_by_key.insert(key, (seq, slot.span.parent_span_id.clone()));
+                }
+            }
+        }
+
+        let hot_keys: Vec<_> = newest_by_key.keys().cloned().collect();
+        let hot_key_set = hot_keys.iter().cloned().collect();
+        let hot_span_ids: HashSet<String> = newest_by_key
+            .keys()
+            .map(|(_, span_id)| span_id.clone())
+            .collect();
+        let mut root_candidates = HashMap::with_capacity(newest_by_key.len());
+        let mut parent_keys = Vec::new();
+
+        for (key, (seq, parent_span_id)) in newest_by_key {
+            if let Some(parent_span_id) = parent_span_id {
+                if hot_span_ids.contains(&parent_span_id) {
+                    continue;
+                }
+                parent_keys.push((key.0.clone(), parent_span_id));
+            }
+            let Some(slot) = cache.slots.get(&seq) else {
+                continue;
+            };
+            root_candidates.insert(key, slot.span.clone());
+        }
+
+        RootPageHotSnapshot {
+            root_candidates,
+            hot_keys,
+            hot_key_set,
+            hot_span_ids,
+            parent_keys,
+        }
     }
 
     pub fn get_spans(&self) -> Vec<StoredSpan> {
@@ -1741,18 +1807,16 @@ pub(crate) fn get_query_root_spans_page_by_start_time(
     let started = Instant::now();
     // Hot snapshot with internal spans INCLUDED: even when the row filter
     // drops them, they still shadow durable rows and demote durable roots.
-    let mut hot_by_key = HashMap::<(String, String), StoredSpan>::new();
-    if let Some(storage) = get_span_storage() {
-        for span in storage.get_spans() {
-            hot_by_key.insert((span.trace_id.clone(), span.span_id.clone()), span);
-        }
-    }
-    let hot_count = hot_by_key.len();
-    let hot_keys: Vec<_> = hot_by_key.keys().cloned().collect();
-    let hot_span_ids: HashSet<String> = hot_by_key
-        .keys()
-        .map(|(_, span_id)| span_id.clone())
-        .collect();
+    let RootPageHotSnapshot {
+        root_candidates: hot_by_key,
+        hot_keys,
+        hot_key_set,
+        hot_span_ids,
+        parent_keys,
+    } = get_span_storage()
+        .map(|storage| storage.root_page_snapshot(include_internal))
+        .unwrap_or_default();
+    let hot_count = hot_keys.len();
 
     let archive = get_trace_disk_storage();
 
@@ -1760,15 +1824,6 @@ pub(crate) fn get_query_root_spans_page_by_start_time(
     // in the archive; presence there disqualifies the hot span as a root.
     let mut parents_on_disk = HashSet::new();
     if let Some(archive) = &archive {
-        let parent_keys: Vec<(String, String)> = hot_by_key
-            .values()
-            .filter_map(|span| {
-                span.parent_span_id.as_ref().and_then(|parent| {
-                    (!hot_span_ids.contains(parent))
-                        .then(|| (span.trace_id.clone(), parent.clone()))
-                })
-            })
-            .collect();
         match archive.existing_span_keys(&parent_keys) {
             Ok(present) => parents_on_disk = present,
             Err(error) => archive.mark_degraded(error),
@@ -1809,13 +1864,12 @@ pub(crate) fn get_query_root_spans_page_by_start_time(
                             surviving = rows
                                 .into_iter()
                                 .filter(|span| {
-                                    !hot_by_key.contains_key(&(
-                                        span.trace_id.clone(),
-                                        span.span_id.clone(),
-                                    )) && span
-                                        .parent_span_id
-                                        .as_ref()
-                                        .is_none_or(|parent| !hot_span_ids.contains(parent))
+                                    !hot_key_set
+                                        .contains(&(span.trace_id.clone(), span.span_id.clone()))
+                                        && span
+                                            .parent_span_id
+                                            .as_ref()
+                                            .is_none_or(|parent| !hot_span_ids.contains(parent))
                                 })
                                 .collect();
                             if fetched < disk_limit {

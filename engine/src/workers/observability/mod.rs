@@ -10296,6 +10296,90 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_root_page_snapshot_clones_only_possible_roots() {
+        reset_observability_test_state();
+        let storage = otel::get_span_storage().expect("span storage should exist");
+        storage.clear();
+
+        // The older root is replaced by a newer row with a hot parent. The
+        // child has a large payload but is discarded by the hot-parent rule.
+        let mut old_root = make_span(
+            "t-root-page",
+            "root",
+            None,
+            "old root",
+            "svc",
+            1,
+            2,
+            "OK",
+            vec![],
+        );
+        old_root.events = vec![otel::StoredSpanEvent {
+            name: "old root payload".to_string(),
+            timestamp_unix_nano: 1,
+            attributes: vec![("payload".to_string(), "x".repeat(4096))],
+        }];
+        let mut replacement = make_span(
+            "t-root-page",
+            "root",
+            Some("parent"),
+            "replacement",
+            "svc",
+            3,
+            4,
+            "OK",
+            vec![],
+        );
+        replacement.events = old_root.events.clone();
+        let parent = make_span(
+            "t-root-page",
+            "parent",
+            None,
+            "parent",
+            "svc",
+            0,
+            5,
+            "OK",
+            vec![],
+        );
+        let mut child = make_span(
+            "t-root-page",
+            "child",
+            Some("parent"),
+            "child",
+            "svc",
+            6,
+            7,
+            "OK",
+            vec![],
+        );
+        child.events = vec![otel::StoredSpanEvent {
+            name: "discarded child payload".to_string(),
+            timestamp_unix_nano: 6,
+            attributes: vec![("payload".to_string(), "x".repeat(4096))],
+        }];
+        storage.add_spans(vec![old_root, replacement, parent, child]);
+
+        let before = storage.full_payload_snapshot_reads();
+        let page = otel::get_query_root_spans_page_by_start_time(0, 10, true, true);
+        assert_eq!(
+            page.spans
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["parent"],
+            "newest duplicate with a hot parent and its child must not be roots"
+        );
+        assert_eq!(page.total, 1);
+        assert_eq!(
+            storage.full_payload_snapshot_reads(),
+            before,
+            "root paging must not use the full hot payload snapshot API"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_indexed_hot_trace_visitor_visits_only_requested_slots_and_empty_request_is_noop() {
         reset_observability_test_state();
         let storage = otel::get_span_storage().expect("span storage should exist");
