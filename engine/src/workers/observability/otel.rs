@@ -896,6 +896,7 @@ impl InMemorySpanStorage {
             full_payload_snapshot_reads: AtomicUsize::new(0),
         }
     }
+
     fn read(&self) -> RwLockReadGuard<'_, HotCache> {
         self.cache
             .read()
@@ -1033,11 +1034,31 @@ impl InMemorySpanStorage {
             .collect()
     }
 
-    /// Visit every hot span under the read lock without cloning it, for a
-    /// scan that keeps a few ids out of a cache of full payloads.
+    /// Visit every hot span under the read lock without cloning it.
     pub fn for_each_span(&self, mut visit: impl FnMut(&StoredSpan)) {
         for slot in self.read().slots.values() {
             visit(&slot.span);
+        }
+    }
+
+    /// Visit hot spans for already-deduplicated trace ids under one read lock.
+    /// The by-trace index keeps the work proportional to the requested traces
+    /// without cloning full payloads.
+    pub(crate) fn for_each_span_in_traces<'a>(
+        &self,
+        trace_ids: impl IntoIterator<Item = &'a str>,
+        mut visit: impl FnMut(&StoredSpan),
+    ) {
+        let cache = self.read();
+        for trace_id in trace_ids {
+            let Some(seqs) = cache.by_trace.get(trace_id) else {
+                continue;
+            };
+            for seq in seqs {
+                if let Some(slot) = cache.slots.get(seq) {
+                    visit(&slot.span);
+                }
+            }
         }
     }
 
@@ -1918,6 +1939,10 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
     trace_ids: &[String],
 ) -> HashMap<String, BTreeMap<String, String>> {
     let started = Instant::now();
+    if trace_ids.is_empty() {
+        return HashMap::new();
+    }
+
     let mut archive_rows = Vec::new();
     if let Some(archive) = get_trace_disk_storage() {
         match archive.get_trace_tag_rows_by_trace_ids(trace_ids) {
@@ -1932,14 +1957,13 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
     // events, links, and unrelated attributes below.
     let requested_trace_ids: HashSet<&str> = trace_ids.iter().map(String::as_str).collect();
     let mut hot_keys = HashSet::<(String, String)>::new();
-    let mut hot_rows = Vec::new();
+    let mut hot_rows_by_key =
+        HashMap::<(String, String), Vec<super::trace_store::TraceTagRow>>::new();
     if let Some(storage) = get_span_storage() {
-        storage.for_each_span(|span| {
-            if !requested_trace_ids.contains(span.trace_id.as_str()) {
-                return;
-            }
+        storage.for_each_span_in_traces(requested_trace_ids.iter().copied(), |span| {
             let span_key = (span.trace_id.clone(), span.span_id.clone());
-            hot_keys.insert(span_key);
+            hot_keys.insert(span_key.clone());
+            let mut projected_rows = Vec::new();
             for (ordinal, (key, value)) in span.attributes.iter().enumerate() {
                 if key.starts_with("iii.tag.")
                     || matches!(
@@ -1947,7 +1971,7 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
                         "iii.session.id" | "iii.session.name" | "iii.message.id"
                     )
                 {
-                    hot_rows.push(super::trace_store::TraceTagRow {
+                    projected_rows.push(super::trace_store::TraceTagRow {
                         trace_id: span.trace_id.clone(),
                         span_id: span.span_id.clone(),
                         start_time_ns: span.start_time_unix_nano,
@@ -1957,6 +1981,10 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
                     });
                 }
             }
+            // by_trace is ordered by sequence, so replacing preserves the
+            // previous last-encountered winner for duplicate hot slots. An
+            // empty projection intentionally removes stale-only tags too.
+            hot_rows_by_key.insert(span_key, projected_rows);
         });
     }
 
@@ -1964,7 +1992,7 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
         .into_iter()
         .filter(|row| !hot_keys.contains(&(row.trace_id.clone(), row.span_id.clone())))
         .collect();
-    rows.extend(hot_rows);
+    rows.extend(hot_rows_by_key.into_values().flatten());
     rows.sort_by(|a, b| {
         a.trace_id
             .cmp(&b.trace_id)
