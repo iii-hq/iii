@@ -388,6 +388,35 @@ pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Re
     Ok(rootfs_dir)
 }
 
+/// Give the extracting user rwx on an extracted image directory.
+///
+/// tar-rs applies a directory's mode as soon as its entry is unpacked, so an
+/// image directory shipped without owner write/search bits (Red Hat UBI and
+/// RHEL: `/usr/bin`, `/usr/lib`, `/usr/sbin` and ca-trust's
+/// `directory-hash` are 0555, `/root` is 0550) blocks every later write into
+/// it when the puller is not root: the entries that follow it, the next
+/// layers' files and whiteouts, and `remove_dir_all` of a failed staging dir
+/// or a stale cache. Only the owner bits change; group/other and the special
+/// bits are kept. Root inside the guest bypasses directory permission bits,
+/// so the image behaves the same.
+///
+/// The final component must be a real directory, never a symlink, so the
+/// chmod cannot be redirected; `unpack_in` already refused parents that
+/// resolve outside the rootfs.
+fn keep_dir_owner_writable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_dir() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    Ok(())
+}
+
 /// Setuid + setgid bit mask.
 ///
 /// Both bits combined (0o4000 | 0o2000). Applied with a bitwise-NOT to
@@ -535,6 +564,14 @@ pub fn extract_layer_with_limits(
         // point outside the rootfs.
         if !unpacked {
             continue;
+        }
+
+        // Keep extracted directories writable for the extracting user, or a
+        // directory shipped as 0555 refuses its own entries (see
+        // `keep_dir_owner_writable`).
+        if entry_type.is_dir() {
+            keep_dir_owner_writable(&dest.join(&path))
+                .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
         }
 
         // Strip setuid/setgid from regular files. See function doc for why.
