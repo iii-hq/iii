@@ -853,6 +853,8 @@ pub struct InMemorySpanStorage {
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
+    #[cfg(test)]
+    full_payload_snapshot_reads: AtomicUsize,
 }
 
 impl std::fmt::Debug for InMemorySpanStorage {
@@ -890,9 +892,10 @@ impl InMemorySpanStorage {
             low_watermark_ratio: AtomicU64::new(low_watermark_ratio.clamp(0.5, 0.95).to_bits()),
             max_attribute_bytes: AtomicU64::new(DEFAULT_MAX_ATTRIBUTE_BYTES),
             tx,
+            #[cfg(test)]
+            full_payload_snapshot_reads: AtomicUsize::new(0),
         }
     }
-
     fn read(&self) -> RwLockReadGuard<'_, HotCache> {
         self.cache
             .read()
@@ -1020,6 +1023,9 @@ impl InMemorySpanStorage {
     }
 
     pub fn get_spans(&self) -> Vec<StoredSpan> {
+        #[cfg(test)]
+        self.full_payload_snapshot_reads
+            .fetch_add(1, Ordering::Relaxed);
         self.read()
             .slots
             .values()
@@ -1035,7 +1041,15 @@ impl InMemorySpanStorage {
         }
     }
 
+    #[cfg(test)]
+    pub fn full_payload_snapshot_reads(&self) -> usize {
+        self.full_payload_snapshot_reads.load(Ordering::Relaxed)
+    }
+
     pub fn get_spans_by_trace_id(&self, trace_id: &str) -> Vec<StoredSpan> {
+        #[cfg(test)]
+        self.full_payload_snapshot_reads
+            .fetch_add(1, Ordering::Relaxed);
         let cache = self.read();
         match cache.by_trace.get(trace_id) {
             Some(seqs) => seqs
@@ -1548,23 +1562,26 @@ pub(crate) fn get_query_root_span_keys() -> Vec<super::trace_store::RootSpanKey>
     let mut hot_count = 0;
     let mut hot_keys = HashSet::new();
     if let Some(storage) = get_span_storage() {
-        let hot = storage.get_spans();
-        hot_count = hot.len();
-        for span in hot {
-            hot_keys.insert((span.trace_id.clone(), span.span_id.clone()));
+        // Keep the read lock for the whole projection. Cloning a hot
+        // `StoredSpan` first also clones events, links, and every attribute;
+        // root listing only needs this small identity projection.
+        storage.for_each_span(|span| {
+            hot_count += 1;
+            let key = (span.trace_id.clone(), span.span_id.clone());
+            hot_keys.insert(key.clone());
             merged.insert(
-                (span.trace_id.clone(), span.span_id.clone()),
+                key,
                 super::trace_store::RootSpanKey {
                     is_internal: is_internal_span(&span.attributes),
-                    trace_id: span.trace_id,
-                    span_id: span.span_id,
-                    parent_span_id: span.parent_span_id,
-                    name: span.name,
-                    service_name: span.service_name,
+                    trace_id: span.trace_id.clone(),
+                    span_id: span.span_id.clone(),
+                    parent_span_id: span.parent_span_id.clone(),
+                    name: span.name.clone(),
+                    service_name: span.service_name.clone(),
                     start_time_ns: span.start_time_unix_nano,
                 },
             );
-        }
+        });
     }
 
     let present_span_ids: HashSet<String> =
@@ -1909,42 +1926,45 @@ pub(crate) fn get_query_trace_tags_by_trace_ids(
         }
     }
 
-    let mut hot_by_key = HashMap::<(String, String), StoredSpan>::new();
+    // The hot overlay must shadow archived rows even when a hot span has no
+    // tags. Build that key set and project matching attributes while holding
+    // one read lock; do not snapshot full spans merely to discard their
+    // events, links, and unrelated attributes below.
+    let requested_trace_ids: HashSet<&str> = trace_ids.iter().map(String::as_str).collect();
+    let mut hot_keys = HashSet::<(String, String)>::new();
+    let mut hot_rows = Vec::new();
     if let Some(storage) = get_span_storage() {
-        let mut unique_trace_ids = HashSet::with_capacity(trace_ids.len());
-        for trace_id in trace_ids {
-            if !unique_trace_ids.insert(trace_id.as_str()) {
-                continue;
+        storage.for_each_span(|span| {
+            if !requested_trace_ids.contains(span.trace_id.as_str()) {
+                return;
             }
-            for span in storage.get_spans_by_trace_id(trace_id) {
-                hot_by_key.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            let span_key = (span.trace_id.clone(), span.span_id.clone());
+            hot_keys.insert(span_key);
+            for (ordinal, (key, value)) in span.attributes.iter().enumerate() {
+                if key.starts_with("iii.tag.")
+                    || matches!(
+                        key.as_str(),
+                        "iii.session.id" | "iii.session.name" | "iii.message.id"
+                    )
+                {
+                    hot_rows.push(super::trace_store::TraceTagRow {
+                        trace_id: span.trace_id.clone(),
+                        span_id: span.span_id.clone(),
+                        start_time_ns: span.start_time_unix_nano,
+                        ordinal,
+                        key: key.clone(),
+                        value: value.clone(),
+                    });
+                }
             }
-        }
+        });
     }
 
     let mut rows: Vec<_> = archive_rows
         .into_iter()
-        .filter(|row| !hot_by_key.contains_key(&(row.trace_id.clone(), row.span_id.clone())))
+        .filter(|row| !hot_keys.contains(&(row.trace_id.clone(), row.span_id.clone())))
         .collect();
-    for span in hot_by_key.into_values() {
-        for (ordinal, (key, value)) in span.attributes.into_iter().enumerate() {
-            if key.starts_with("iii.tag.")
-                || matches!(
-                    key.as_str(),
-                    "iii.session.id" | "iii.session.name" | "iii.message.id"
-                )
-            {
-                rows.push(super::trace_store::TraceTagRow {
-                    trace_id: span.trace_id.clone(),
-                    span_id: span.span_id.clone(),
-                    start_time_ns: span.start_time_unix_nano,
-                    ordinal,
-                    key,
-                    value,
-                });
-            }
-        }
-    }
+    rows.extend(hot_rows);
     rows.sort_by(|a, b| {
         a.trace_id
             .cmp(&b.trace_id)
