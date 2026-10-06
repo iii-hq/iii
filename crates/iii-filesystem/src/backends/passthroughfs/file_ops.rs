@@ -46,6 +46,14 @@ pub(crate) fn do_open(
 
     let mut open_flags = inode::translate_open_flags(flags as i32);
 
+    // Read-only share: refuse any open that could modify the host file
+    // (write access or O_TRUNC). Checked on the host-translated flags.
+    if fs.cfg.read_only
+        && ((open_flags & libc::O_ACCMODE) != libc::O_RDONLY || open_flags & libc::O_TRUNC != 0)
+    {
+        return Err(platform::erofs());
+    }
+
     // Writeback cache: kernel may issue reads on O_WRONLY fds for cache coherency,
     // so widen to O_RDWR. Strip O_APPEND because it races with the kernel's cached
     // write position.

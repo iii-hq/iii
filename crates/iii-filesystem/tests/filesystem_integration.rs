@@ -124,6 +124,7 @@ fn new_creates_passthrough_fs_with_config() {
         attr_timeout: Duration::from_secs(2),
         cache_policy: CachePolicy::Never,
         writeback: true,
+        read_only: false,
     };
 
     assert!(PassthroughFs::new(cfg).is_ok());
