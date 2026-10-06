@@ -2725,19 +2725,71 @@ mod tests {
 
     // =========================================================================
     // 4. OTLP metrics ingestion edge cases
-    //    These tests use ingest_otlp_metrics from the otel module and require
-    //    global metric storage, so they need #[serial].
+    //    Conversion uses owned storage; global exporters cannot contaminate
+    //    exact batch-size assertions or have their data cleared by these tests.
     // =========================================================================
 
-    use serial_test::serial;
+    use super::super::otel::ingest_otlp_metrics_into;
 
-    #[tokio::test]
-    #[serial]
-    async fn test_ingest_metrics_multiple_resources() {
-        init_metric_storage(Some(100), Some(3600));
-        if let Some(storage) = get_metric_storage() {
-            storage.clear();
-        }
+    /// Model the CI flake without touching process globals: another writer adds
+    /// to a store after `clear` but before ingestion/count (what a concurrent
+    /// non-serialized test did to the process-wide store). A test that owns its
+    /// storage keeps exactly the two ingested resources regardless.
+    #[test]
+    fn test_ingest_metrics_owned_storage_ignores_foreign_writer() {
+        let shared = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        let owned = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        let batch = serde_json::json!({"resourceMetrics": [
+            {"scopeMetrics": [{"metrics": [{"name": "alpha", "gauge": {"dataPoints": [{"asDouble": 1.0}]}}]}]},
+            {"scopeMetrics": [{"metrics": [{"name": "beta", "gauge": {"dataPoints": [{"asDouble": 2.0}]}}]}]}
+        ]}).to_string();
+        shared.clear();
+        shared.add_metrics(vec![make_number_metric(
+            "iii.worker.cpu.percent",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(7.5, 1)],
+            vec![("worker.id".into(), "worker-a".into())],
+        )]);
+        ingest_otlp_metrics_into(&batch, Some(&shared)).unwrap();
+        ingest_otlp_metrics_into(&batch, Some(&owned)).unwrap();
+        assert_eq!(
+            shared.get_metrics().len(),
+            3,
+            "a serial test annotation cannot prevent an independent storage writer"
+        );
+        let all = owned.get_metrics();
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            all.iter().filter(|metric| metric.name == "alpha").count(),
+            1
+        );
+        assert_eq!(all.iter().filter(|metric| metric.name == "beta").count(), 1);
+        assert!(
+            owned
+                .get_metrics_by_name("iii.worker.cpu.percent")
+                .is_empty()
+        );
+    }
+
+    /// Parsing errors must not partially ingest earlier resources, and absence
+    /// of storage must not hide malformed JSON. Empty batches remain no-ops.
+    #[test]
+    fn test_ingest_metrics_malformed_batch_preserves_storage() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        let malformed = r#"{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"name":"valid","gauge":{"dataPoints":[{"asDouble":1.0}]}}]}]},{"scopeMetrics":"invalid"}]}"#;
+        assert!(ingest_otlp_metrics_into(malformed, Some(&storage)).is_err());
+        assert!(storage.get_metrics().is_empty());
+        assert!(ingest_otlp_metrics_into("not json", None).is_err());
+        ingest_otlp_metrics_into(r#"{"resourceMetrics":[]}"#, Some(&storage)).unwrap();
+        assert!(storage.get_metrics().is_empty());
+        ingest_otlp_metrics_into(r#"{"resourceMetrics":[]}"#, None).unwrap();
+    }
+
+    /// Verify OTLP conversion against an exclusive store, independent of exporters.
+    #[test]
+    fn test_ingest_metrics_multiple_resources() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
 
         let otlp_json = r#"{
             "resourceMetrics": [
@@ -2788,10 +2840,8 @@ mod tests {
             ]
         }"#;
 
-        let result = crate::workers::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        let result = ingest_otlp_metrics_into(otlp_json, Some(&storage));
         assert!(result.is_ok());
-
-        let storage = get_metric_storage().unwrap();
         let all = storage.get_metrics();
         assert_eq!(all.len(), 2);
 
@@ -2805,13 +2855,10 @@ mod tests {
         assert_eq!(beta[0].service_name, "service-beta");
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_ingest_metrics_multiple_scopes() {
-        init_metric_storage(Some(100), Some(3600));
-        if let Some(storage) = get_metric_storage() {
-            storage.clear();
-        }
+    /// Verify OTLP conversion against an exclusive store, independent of exporters.
+    #[test]
+    fn test_ingest_metrics_multiple_scopes() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
 
         let otlp_json = r#"{
             "resourceMetrics": [{
@@ -2861,10 +2908,8 @@ mod tests {
             }]
         }"#;
 
-        let result = crate::workers::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        let result = ingest_otlp_metrics_into(otlp_json, Some(&storage));
         assert!(result.is_ok());
-
-        let storage = get_metric_storage().unwrap();
         let all = storage.get_metrics();
         assert_eq!(all.len(), 2);
 
@@ -2893,13 +2938,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_ingest_metrics_missing_service_name() {
-        init_metric_storage(Some(100), Some(3600));
-        if let Some(storage) = get_metric_storage() {
-            storage.clear();
-        }
+    /// Verify OTLP conversion against an exclusive store, independent of exporters.
+    #[test]
+    fn test_ingest_metrics_missing_service_name() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
 
         // Resource with no service.name attribute at all
         let otlp_json = r#"{
@@ -2926,23 +2968,18 @@ mod tests {
             }]
         }"#;
 
-        let result = crate::workers::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        let result = ingest_otlp_metrics_into(otlp_json, Some(&storage));
         assert!(result.is_ok());
-
-        let storage = get_metric_storage().unwrap();
         let metrics = storage.get_metrics_by_name("no.service.metric");
         assert_eq!(metrics.len(), 1);
         // When service.name is missing, it should default to "unknown"
         assert_eq!(metrics[0].service_name, "unknown");
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_ingest_metrics_with_attributes() {
-        init_metric_storage(Some(100), Some(3600));
-        if let Some(storage) = get_metric_storage() {
-            storage.clear();
-        }
+    /// Verify OTLP conversion against an exclusive store, independent of exporters.
+    #[test]
+    fn test_ingest_metrics_with_attributes() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
 
         let otlp_json = r#"{
             "resourceMetrics": [{
@@ -2982,10 +3019,8 @@ mod tests {
             }]
         }"#;
 
-        let result = crate::workers::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        let result = ingest_otlp_metrics_into(otlp_json, Some(&storage));
         assert!(result.is_ok());
-
-        let storage = get_metric_storage().unwrap();
         let metrics = storage.get_metrics_by_name("http.server.duration");
         assert_eq!(metrics.len(), 1);
 
@@ -3007,13 +3042,10 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn test_ingest_metrics_gauge_with_int() {
-        init_metric_storage(Some(100), Some(3600));
-        if let Some(storage) = get_metric_storage() {
-            storage.clear();
-        }
+    /// Verify OTLP conversion against an exclusive store, independent of exporters.
+    #[test]
+    fn test_ingest_metrics_gauge_with_int() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
 
         // Use asInt instead of asDouble for the gauge data point
         let otlp_json = r#"{
@@ -3040,10 +3072,8 @@ mod tests {
             }]
         }"#;
 
-        let result = crate::workers::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        let result = ingest_otlp_metrics_into(otlp_json, Some(&storage));
         assert!(result.is_ok());
-
-        let storage = get_metric_storage().unwrap();
         let metrics = storage.get_metrics_by_name("active.connections");
         assert_eq!(metrics.len(), 1);
         assert!(matches!(metrics[0].metric_type, StoredMetricType::Gauge));
@@ -3963,9 +3993,10 @@ mod tests {
     }
 
     /// This test clears and writes the global metrics store, so it must share
-    /// the ingestion tests' serial lock rather than contaminate their counts.
+    /// the serial lock of the other global-store tests rather than contaminate
+    /// their state.
     #[test]
-    #[serial]
+    #[serial_test::serial]
     fn test_get_worker_metrics_from_storage_returns_none_for_unknown_worker() {
         init_metric_storage(Some(100), Some(3600));
         let storage = get_metric_storage().expect("metric storage should be initialized");
