@@ -2418,6 +2418,197 @@ fn static_output_prints_a_version_change_without_a_state_change() {
 }
 
 #[test]
+fn mutation_begin_detaches_owned_warning_snapshot_without_erasing_scrollback() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    let project = "/tmp/r1-warning-owner".to_string();
+    let mut state = Console {
+        foreground_project: Some(project.clone()),
+        foreground_active: true,
+        panel_project: Some(project.clone()),
+        startup: Some(StartupRows::new(true)),
+        rows: vec![
+            Row {
+                key: "alpha".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+            Row {
+                key: "beta".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            },
+        ],
+        settled_env_warnings: vec![
+            EmptyEnvDiagnostic {
+                worker: "alpha".into(),
+                path: "alpha.env".into(),
+                name: "ALPHA_KEY".into(),
+                source: EmptyValueSource::SystemUnset,
+            },
+            EmptyEnvDiagnostic {
+                worker: "beta".into(),
+                path: "beta.env".into(),
+                name: "BETA_KEY".into(),
+                source: EmptyValueSource::SystemNonEmpty,
+            },
+        ],
+        versions: BTreeMap::from([
+            ("alpha".into(), "1.0.0".into()),
+            ("beta".into(), "2.0.0".into()),
+        ]),
+        ..Console::default()
+    };
+    state.startup.as_mut().unwrap().finish(true, "Ready");
+    let mut terminal = vt100::Parser::new(60, 120, 500);
+    let active = state.render(Some((60, 120)));
+    write_terminal(&mut terminal, &active);
+    let settled = settled_warning_output(&mut state, Some((60, 120)));
+    assert!(
+        state.drawn > 0 && !state.static_output,
+        "fixture must have fitting tracked snapshot"
+    );
+    write_terminal(&mut terminal, &settled);
+    let initial = screen_and_history(&mut terminal);
+    assert!(
+        initial.contains("⚠ alpha") && initial.contains("⚠ beta"),
+        "{initial}"
+    );
+
+    let foreign = mutation_begin_output(&mut state, "/tmp/r1-other-project", Some((60, 120)));
+    assert!(foreign.is_empty(), "foreign owner should not redraw");
+    write_terminal(&mut terminal, &foreign);
+    assert_eq!(state.settled_env_warnings.len(), 2);
+
+    let begin = mutation_begin_output(&mut state, &project, Some((60, 120)));
+    assert!(state.settled_env_warnings.is_empty());
+    write_terminal(&mut terminal, &begin);
+    state.rows = vec![Row {
+        key: "beta".into(),
+        depth: 0,
+        state: RowState::Starting {
+            what: "restarting".into(),
+            began: Instant::now(),
+        },
+    }];
+    let next = state.render(Some((60, 120)));
+    assert!(next.contains("beta 2.0.0 restarting"), "{next:?}");
+    write_terminal(&mut terminal, &next);
+    let after = screen_and_history(&mut terminal);
+    for warning in [
+        "⚠ alpha — empty values in alpha.env",
+        "⚠ beta — empty values in beta.env",
+    ] {
+        assert!(
+            after.contains(warning),
+            "warning vanished from screen/scrollback: {warning}\n{after}"
+        );
+        assert_eq!(
+            after.matches(warning).count(),
+            1,
+            "warning replayed: {warning}\n{after}"
+        );
+    }
+    assert!(after.find("alpha 1.0.0 ready").unwrap() < after.find("⚠ alpha").unwrap());
+    assert!(after.find("beta 2.0.0 ready").unwrap() < after.find("⚠ beta").unwrap());
+    assert!(
+        after.contains("beta 2.0.0 restarting"),
+        "new panel missing: {after}"
+    );
+}
+
+#[test]
+fn mutation_begin_preserves_static_warning_dedupe_without_cursor_controls() {
+    use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
+    // None exercises redirected/static output; short height and short width each
+    // independently force untracked rendering on a real VT parser.
+    for size in [None, Some((8, 120)), Some((60, 24))] {
+        let project = "/tmp/r1-static-warning-owner".to_string();
+        let mut state = Console {
+            foreground_project: Some(project.clone()),
+            foreground_active: true,
+            panel_project: Some(project.clone()),
+            startup: Some(StartupRows::new(true)),
+            rows: vec![Row {
+                key: "alpha".into(),
+                depth: 0,
+                state: RowState::Ready {
+                    what: "ready".into(),
+                    elapsed: Duration::ZERO,
+                },
+            }],
+            settled_env_warnings: vec![EmptyEnvDiagnostic {
+                worker: "alpha".into(),
+                path: "alpha.env".into(),
+                name: "SAFE_NAME".into(),
+                source: EmptyValueSource::SystemUnset,
+            }],
+            ..Console::default()
+        };
+        state.startup.as_mut().unwrap().finish(true, "Ready");
+        let settled = settled_warning_output(&mut state, size);
+        assert!(
+            state.drawn == 0 || state.static_output,
+            "snapshot unexpectedly tracked: {size:?}"
+        );
+        let (height, width) = size.unwrap_or((8, 120));
+        let mut terminal = vt100::Parser::new(height, width, 500);
+        write_terminal(&mut terminal, &settled);
+        let begin = mutation_begin_output(&mut state, &project, size);
+        assert!(
+            begin.is_empty(),
+            "unchanged static rows should dedupe: {begin:?}"
+        );
+        assert!(state.settled_env_warnings.is_empty());
+        let after_begin = screen_and_history(&mut terminal);
+        assert_eq!(
+            after_begin.matches("alpha ready").count(),
+            1,
+            "{after_begin}"
+        );
+        assert_eq!(
+            after_begin
+                .matches("⚠ alpha — empty values in alpha.env")
+                .count(),
+            1,
+            "{after_begin}"
+        );
+        state.rows = vec![Row {
+            key: "alpha".into(),
+            depth: 0,
+            state: RowState::Starting {
+                what: "again".into(),
+                began: Instant::now(),
+            },
+        }];
+        let next = state.render(size);
+        assert!(
+            !next.contains("\x1b["),
+            "static transition emitted cursor controls: {next:?}"
+        );
+        assert!(
+            next.contains("alpha"),
+            "new static panel not emitted: {next:?}"
+        );
+        write_terminal(&mut terminal, &next);
+        let history = screen_and_history(&mut terminal);
+        assert_eq!(
+            history
+                .matches("⚠ alpha — empty values in alpha.env")
+                .count(),
+            1,
+            "{history}"
+        );
+        assert!(history.contains("alpha"), "new panel missing: {history}");
+    }
+}
+
+#[test]
 fn settled_warnings_preserve_versions_updates_and_container_counts() {
     use crate::config::{EmptyEnvDiagnostic, EmptyValueSource};
     let project = "warning-owner".to_string();

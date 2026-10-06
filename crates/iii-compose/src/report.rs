@@ -1007,9 +1007,24 @@ pub(crate) fn retries_cancelled(keys: &[String]) {
 pub(crate) fn mutation_begin(project: &Path) {
     let project = canonical_project(project);
     let mut state = console().lock().unwrap_or_else(|p| p.into_inner());
+    let output = mutation_begin_output(&mut state, &project, terminal_size());
+    if !output.is_empty() {
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "{output}");
+        let _ = stderr.flush();
+    }
+}
+
+fn mutation_begin_output(state: &mut Console, project: &str, size: Option<(u16, u16)>) -> String {
     let cleared_warnings =
-        state.panel_owner() == Some(project.as_str()) && !state.settled_env_warnings.is_empty();
+        state.panel_owner() == Some(project) && !state.settled_env_warnings.is_empty();
     if cleared_warnings {
+        // The settled warning snapshot is part of the completed operation's
+        // history. Leave its live block in place; the next panel is drawn below.
+        if state.drawn > 0 && !state.static_output {
+            state.drawn = 0;
+            state.rendered.clear();
+        }
         state.settled_env_warnings.clear();
     }
     let before = state.updates.len();
@@ -1020,7 +1035,9 @@ pub(crate) fn mutation_begin(project: &Path) {
                 .any(|row| matches!(row.state, UpdateState::Active(_)))
     });
     if state.updates.len() != before || cleared_warnings {
-        redraw(&mut state);
+        state.render(size)
+    } else {
+        String::new()
     }
 }
 
