@@ -12,5 +12,5 @@ See [Console](https://iii.dev/docs/using-iii/console).
 
 `packages/console-rust` now builds only a placeholder `iii-console` binary. It prints the notice
 above and exits with a non-zero status on any invocation. It is still released so that older `iii`
-CLIs (`iii update`, `iii console`) find an `iii-console` asset. It will stop shipping in a future
-release (TBD).
+CLIs (`iii update`, `iii console`) find an `iii-console` asset. It will stop shipping in an upcoming
+release.

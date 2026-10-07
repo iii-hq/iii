@@ -16,7 +16,7 @@ const NOTICE: &str = "\
 iii-console has been removed. Use the iii console in ADE instead: from your iii project, \
 run `iii trigger compose::add worker=ade`, then open http://127.0.0.1:3113 \
 (docs: https://iii.dev/docs/using-iii/console).
-This placeholder binary will stop shipping in a future release (TBD).";
+This placeholder binary will stop shipping in an upcoming release.";
 
 fn main() -> ExitCode {
     eprintln!("{NOTICE}");
