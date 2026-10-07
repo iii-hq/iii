@@ -269,7 +269,7 @@ EOF
 @test "iii_already_installed finds iii in bin_dir" {
   _bin="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$_bin"
-  printf '#!/bin/sh\nexit 2\n' > "$_bin/iii"
+  printf '#!/bin/sh\necho "iii 0.1.0"\n' > "$_bin/iii"
   chmod +x "$_bin/iii"
   PATH="/usr/bin:/bin" run iii_already_installed "$_bin"
   [ "$status" -eq 0 ]
@@ -278,10 +278,19 @@ EOF
 @test "iii_already_installed finds iii elsewhere on PATH" {
   _other="$BATS_TEST_TMPDIR/other"
   mkdir -p "$_other" "$BATS_TEST_TMPDIR/empty"
-  printf '#!/bin/sh\nexit 0\n' > "$_other/iii"
+  printf '#!/bin/sh\necho "iii 0.1.0"\n' > "$_other/iii"
   chmod +x "$_other/iii"
   PATH="$_other:/usr/bin:/bin" run iii_already_installed "$BATS_TEST_TMPDIR/empty"
   [ "$status" -eq 0 ]
+}
+
+@test "iii_already_installed ignores an iii whose --version fails" {
+  _bin="$BATS_TEST_TMPDIR/broken"
+  mkdir -p "$_bin"
+  printf '#!/bin/sh\nexit 1\n' > "$_bin/iii"
+  chmod +x "$_bin/iii"
+  PATH="/usr/bin:/bin" run iii_already_installed "$_bin"
+  [ "$status" -ne 0 ]
 }
 
 @test "iii_already_installed is false on a clean machine" {

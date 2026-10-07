@@ -97,11 +97,10 @@ iii_detect_from_version() {
   fi
 }
 
-# Is any iii already on this machine, in bin_dir ($1) or anywhere on PATH?
-# Apart from iii_detect_from_version on purpose: an older binary in another
-# directory, or one whose --version fails, is still an existing install.
+# Is a working iii already on this machine, in bin_dir ($1) or anywhere on
+# PATH? Working means `iii --version` succeeds.
 iii_already_installed() {
-  [ -e "$1/$BIN_NAME" ] || command -v "$BIN_NAME" >/dev/null 2>&1
+  "$1/$BIN_NAME" --version >/dev/null 2>&1 || "$BIN_NAME" --version >/dev/null 2>&1 || return 1
 }
 
 # ---------------------------------------------------------------------------
