@@ -1,0 +1,17 @@
+{
+  "//": "Type-checks only the streams-migration recipes: pnpm exec tsc -p src/streams-migration (from sdk/packages/node/iii-example). erasableSyntaxOnly keeps them runnable with Node's built-in type stripping.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["./*.ts"]
+}
