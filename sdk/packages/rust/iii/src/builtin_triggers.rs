@@ -1,3 +1,8 @@
+// The deprecated legacy trigger variants and `SubscribeTriggerConfig` are still
+// derived (schemars/serde), matched and unit-tested in this file; the lint keeps
+// firing for downstream users.
+#![allow(deprecated)]
+
 use std::collections::HashMap;
 
 use iii_helpers::stream::{StreamJoinLeaveTriggerConfig, StreamTriggerConfig};
@@ -114,6 +119,10 @@ impl QueueTriggerConfig {
 
 // ── PubSub (subscribe) ─────────────────────────────────────────────────
 
+/// Trigger config for the `subscribe` trigger type served by the `pubsub` worker.
+#[deprecated(
+    note = "SubscribeTriggerConfig is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubscribeTriggerConfig {
     /// Topic to subscribe to
@@ -292,10 +301,22 @@ pub enum IIITrigger {
     Http(HttpTriggerConfig),
     Cron(CronTriggerConfig),
     Queue(QueueTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::Subscribe is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     Subscribe(SubscribeTriggerConfig),
     State(StateTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::Stream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     Stream(StreamTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::StreamJoin is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     StreamJoin(StreamJoinLeaveTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::StreamLeave is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     StreamLeave(StreamJoinLeaveTriggerConfig),
     Log(LogTriggerConfig),
 }

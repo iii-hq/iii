@@ -1,3 +1,6 @@
+// The trait signatures name the deprecated legacy `Stream*Input` models.
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use iii_helpers::stream::{
     StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
@@ -10,6 +13,9 @@ use crate::error::Error;
 /// Custom stream-provider trait. Implementors override the engine's built-in
 /// stream storage for a specific stream name when registered through
 /// `create_stream` in the `helpers` submodule.
+#[deprecated(
+    note = "IStream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {
     async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, Error>;

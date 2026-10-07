@@ -50,6 +50,7 @@ pub use iii::TelemetryOptions;
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType, WorkerIdentityMode};
 pub use iii_helpers::queue::EnqueueResult;
 pub use protocol::{Message, TriggerAction};
+#[allow(deprecated)]
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
 pub use types::{StreamRequest, StreamResponse};
@@ -343,6 +344,7 @@ fn _ensure_stream_trigger_configs_not_top_level() {}
 fn _ensure_stream_io_types_not_top_level() {}
 
 /// ```rust,no_run
+/// # #![allow(deprecated)]
 /// use iii_helpers::stream::{StreamChangeEvent, StreamJoinLeaveEvent};
 /// fn _takes(_a: StreamChangeEvent, _b: StreamJoinLeaveEvent) {}
 /// ```

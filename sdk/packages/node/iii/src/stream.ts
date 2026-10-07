@@ -15,6 +15,8 @@ import type {
  * to override the engine's built-in stream storage.
  *
  * @typeParam TData - Type of the data stored in the stream.
+ *
+ * @deprecated IStream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface IStream<TData> {
   /** Retrieve a single item by group and item ID. */

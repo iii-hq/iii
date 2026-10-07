@@ -48,6 +48,10 @@ MergePath = str | list[str]
 class StreamAuthInput(BaseModel):
     """Input for stream authentication.
 
+    .. deprecated::
+        StreamAuthInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         headers: Request headers.
         path: Request path.
@@ -64,6 +68,10 @@ class StreamAuthInput(BaseModel):
 class StreamAuthResult(BaseModel):
     """Result of stream authentication.
 
+    .. deprecated::
+        StreamAuthResult is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         context: Arbitrary context passed to stream handlers after authentication.
     """
@@ -71,11 +79,17 @@ class StreamAuthResult(BaseModel):
     context: Any | None = None
 
 
+# Deprecated: StreamContext is deprecated (iii-stream) and will be removed in a future release (version TBD).
+# Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 StreamContext = Any
 
 
 class StreamJoinLeaveEvent(BaseModel):
     """Event for stream join/leave.
+
+    .. deprecated::
+        StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         subscription_id: Unique subscription identifier.
@@ -95,6 +109,10 @@ class StreamJoinLeaveEvent(BaseModel):
 class StreamJoinResult(BaseModel):
     """Result of stream join.
 
+    .. deprecated::
+        StreamJoinResult is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         unauthorized: Whether the join was unauthorized.
     """
@@ -104,6 +122,10 @@ class StreamJoinResult(BaseModel):
 
 class StreamGetInput(BaseModel):
     """Input for stream get operation.
+
+    .. deprecated::
+        StreamGetInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         stream_name: Name of the stream.
@@ -118,6 +140,10 @@ class StreamGetInput(BaseModel):
 
 class StreamSetInput(BaseModel):
     """Input for stream set operation.
+
+    .. deprecated::
+        StreamSetInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         stream_name: Name of the stream.
@@ -135,6 +161,10 @@ class StreamSetInput(BaseModel):
 class StreamDeleteInput(BaseModel):
     """Input for stream delete operation.
 
+    .. deprecated::
+        StreamDeleteInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         stream_name: Name of the stream.
         group_id: Group identifier.
@@ -149,6 +179,10 @@ class StreamDeleteInput(BaseModel):
 class StreamListInput(BaseModel):
     """Input for stream list operation.
 
+    .. deprecated::
+        StreamListInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         stream_name: Name of the stream.
         group_id: Group identifier.
@@ -161,6 +195,10 @@ class StreamListInput(BaseModel):
 class StreamListGroupsInput(BaseModel):
     """Input for stream list groups operation.
 
+    .. deprecated::
+        StreamListGroupsInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         stream_name: Name of the stream.
     """
@@ -170,6 +208,10 @@ class StreamListGroupsInput(BaseModel):
 
 class StreamUpdateInput(BaseModel):
     """Input for stream update operation.
+
+    .. deprecated::
+        StreamUpdateInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         stream_name: Name of the stream.
@@ -419,6 +461,10 @@ UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | Update
 class StreamTriggerConfig(BaseModel):
     """Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
 
+    .. deprecated::
+        StreamTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         stream_name: Stream name to watch. Only changes on this stream fire the handler.
         group_id: If set, only changes within this group fire the handler.
@@ -435,6 +481,10 @@ class StreamTriggerConfig(BaseModel):
 class StreamJoinLeaveTriggerConfig(BaseModel):
     """Trigger config for ``stream:join`` and ``stream:leave`` triggers.
 
+    .. deprecated::
+        StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
     Attributes:
         condition_function_id: Function ID for conditional execution. If it returns ``False``, the handler is skipped.
     """
@@ -444,6 +494,10 @@ class StreamJoinLeaveTriggerConfig(BaseModel):
 
 class StreamChangeEventDetail(BaseModel):
     """Detail of a stream change event containing the mutation type and data.
+
+    .. deprecated::
+        StreamChangeEventDetail is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         type: The kind of mutation (create, update, or delete).
@@ -456,6 +510,10 @@ class StreamChangeEventDetail(BaseModel):
 
 class StreamChangeEvent(BaseModel):
     """Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
+
+    .. deprecated::
+        StreamChangeEvent is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
         type: The event type.
