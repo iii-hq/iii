@@ -45,6 +45,9 @@ jobs:
       - name: Run bats unit tests
         env:
           RUN_NETWORK_TESTS: "1"
+          # Unauthenticated API calls share a 60/hour limit per runner IP and
+          # make the github_rate_limited test flaky.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bats engine/tests/install_sh_unit.bats
 
   integration:
