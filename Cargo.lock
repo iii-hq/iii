@@ -2752,7 +2752,6 @@ dependencies = [
  "chrono",
  "clap",
  "clap-help",
- "cliclack",
  "colored",
  "console 0.15.11",
  "criterion",

@@ -263,83 +263,36 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────
-# --start-with / --need-envs: the harness setup offer
+# iii_already_installed: an upgrade gets no setup offer
 # ─────────────────────────────────────────────────────────────
 
-@test "learn_args_for returns --learn-iii alone by default" {
-  run learn_args_for "" ""
-  [ "$status" -eq 0 ]
-  [ "$output" = "--learn-iii" ]
-}
-
-@test "learn_args_for passes the worker list through" {
-  run learn_args_for "worker1,worker2" ""
-  [ "$status" -eq 0 ]
-  [ "$output" = "--learn-iii --start-with worker1,worker2" ]
-}
-
-@test "learn_args_for passes the extra env vars through" {
-  run learn_args_for "worker1" "WORKER_API_KEY,SECOND_KEY"
-  [ "$status" -eq 0 ]
-  [ "$output" = "--learn-iii --start-with worker1 --need-envs WORKER_API_KEY,SECOND_KEY" ]
-}
-
-@test "learn_args_for drops --need-envs without --start-with" {
-  # The engine rejects the flag on its own, so never build a command it refuses.
-  run learn_args_for "" "WORKER_API_KEY"
-  [ "$status" -eq 0 ]
-  [ "$output" = "--learn-iii" ]
-}
-
-@test "install.sh --start-with rejects the next option as its value" {
-  # `shift 2` would otherwise swallow the flag, leaving it unset.
-  run sh "$INSTALL_SH" --start-with --skip-bin-download
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"--start-with needs a comma-separated worker list"* ]]
-  [[ "$output" == *"--skip-bin-download"* ]]
-}
-
-@test "install.sh --need-envs rejects the next option as its value" {
-  run sh "$INSTALL_SH" --need-envs -h
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"--need-envs needs a comma-separated variable list"* ]]
-}
-
-@test "install.sh passes a version selector through without globbing it" {
-  # `worker@*` is a legal selector; an unquoted `*` would glob against the
-  # working directory instead.
+@test "iii_already_installed finds iii in bin_dir" {
   _bin="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$_bin"
-  printf '#!/bin/sh\nexit 0\n' > "$_bin/iii"
+  printf '#!/bin/sh\nexit 2\n' > "$_bin/iii"
   chmod +x "$_bin/iii"
-
-  cd "$BATS_TEST_TMPDIR"
-  touch decoy-file
-
-  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with 'worker1@*' </dev/null
+  PATH="/usr/bin:/bin" run iii_already_installed "$_bin"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--start-with worker1@*"* ]]
-  [[ "$output" != *"decoy-file"* ]]
 }
 
-@test "install.sh --start-with rejects whitespace" {
-  run sh "$INSTALL_SH" --start-with "worker1, worker2"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"--start-with does not accept whitespace"* ]]
-}
-
-@test "install.sh --need-envs rejects whitespace" {
-  run sh "$INSTALL_SH" --need-envs "A B"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"--need-envs does not accept whitespace"* ]]
-}
-
-@test "install.sh --help documents --start-with and --need-envs" {
-  run sh "$INSTALL_SH" --help
+@test "iii_already_installed finds iii elsewhere on PATH" {
+  _other="$BATS_TEST_TMPDIR/other"
+  mkdir -p "$_other" "$BATS_TEST_TMPDIR/empty"
+  printf '#!/bin/sh\nexit 0\n' > "$_other/iii"
+  chmod +x "$_other/iii"
+  PATH="$_other:/usr/bin:/bin" run iii_already_installed "$BATS_TEST_TMPDIR/empty"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--start-with LIST"* ]]
-  [[ "$output" == *"--need-envs LIST"* ]]
 }
+
+@test "iii_already_installed is false on a clean machine" {
+  mkdir -p "$BATS_TEST_TMPDIR/empty"
+  PATH="/usr/bin:/bin" run iii_already_installed "$BATS_TEST_TMPDIR/empty"
+  [ "$status" -ne 0 ]
+}
+
+# ─────────────────────────────────────────────────────────────
+# The harness setup offer
+# ─────────────────────────────────────────────────────────────
 
 @test "install.sh --help documents --skip-bin-download" {
   run sh "$INSTALL_SH" --help
@@ -352,36 +305,36 @@ EOF
   # network: the offer runs against whatever iii is already on this machine.
   #
   # That "whatever" is a stub here. The offer is only made when the binary in
-  # BIN_DIR accepts the flags this run would pass, and a machine with no iii
-  # at all — every CI runner — is told about the quickstart instead.
+  # BIN_DIR accepts --learn-iii, and a machine with no iii at all (every CI
+  # runner) is told about the quickstart instead.
   _bin="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$_bin"
   printf '#!/bin/sh\nexit 0\n' > "$_bin/iii"
   chmod +x "$_bin/iii"
 
-  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download </dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--learn-iii --start-with worker1"* ]]
+  [[ "$output" == *"iii project init --learn-iii"* ]]
   [[ "$output" != *"Downloading"* ]]
 }
 
 @test "install.sh --skip-bin-download names no command a binary would reject" {
-  # A binary that does not know the flags must never be handed them, so the
+  # A binary that does not know --learn-iii must never be handed it, so the
   # run that cannot offer the setup names the quickstart instead.
   _bin="$BATS_TEST_TMPDIR/oldbin"
   mkdir -p "$_bin"
   printf '#!/bin/sh\nexit 2\n' > "$_bin/iii"
   chmod +x "$_bin/iii"
 
-  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download --start-with worker1 </dev/null
+  run env BIN_DIR="$_bin" sh "$INSTALL_SH" --skip-bin-download </dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" != *"--start-with worker1"* ]]
+  [[ "$output" != *"--learn-iii"* ]]
   [[ "$output" == *"quickstart"* ]]
 }
 
 @test "cleanup is harmless when no download directory was made" {
-  # --skip-bin-download never creates one, and the harness prompt re-arms
-  # the trap that calls this.
+  # --skip-bin-download never creates one, and the harness setup calls this
+  # before its `exec`.
   unset tmpdir
   run cleanup
   [ "$status" -eq 0 ]
