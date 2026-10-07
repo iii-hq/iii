@@ -13,17 +13,17 @@ type: "how-to"
   unchanged for now. This page is the migration guide.
 </Warning>
 
-This guide explains why `iii-stream` and the `pubsub` worker are deprecated, what stays supported,
-and how to move each use case to primitives every SDK already ships: worker-owned trigger types,
-explicit storage with queries, channels, and the durable queue.
+Use this page to move each `iii-stream` and `pubsub` use case to primitives every SDK already ships:
+worker-owned trigger types, explicit storage with queries, channels, and the durable queue. The
+sections below also list why both are deprecated and what stays supported.
 
 ## Why they are deprecated
 
 `iii-stream` bundles three concerns behind one API: a generic key/value store, a change
 notification, and a dedicated WebSocket transport. Every `stream::set` writes to storage even when
 the caller only wanted to notify someone, stored items have no owner that can bound or clean them
-up, and consumers depend on the stream envelope instead of a domain contract. Authorization lives in
-a separate `auth_function` that only covers the dedicated WebSocket.
+up, and consumers depend on the stream envelope instead of a domain contract. Authorization is handled
+by a separate `auth_function` that only covers the dedicated WebSocket.
 
 The `pubsub` worker is a global topic bus. It drops the namespace and metadata of a binding,
 delivers fire-and-forget with silent drops, and never evaluates `condition_function_id`.
