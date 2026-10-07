@@ -19,25 +19,14 @@ command surface as it stabilizes.
 
 ## Deploy with Docker
 
-Generate the Docker assets with the CLI and bring them up with Compose. Use
-`iii project init --docker` for a fresh project, or `iii project generate-docker` to add Docker
-assets to an existing one:
-
-```bash
-iii project generate-docker
-```
-
-Both forms emit three files at the project root: `Dockerfile`, `docker-compose.yml`, and `.env`.
-Re-running the generator does not overwrite existing files, so edits you make to the templates
-stick.
-
-Start the stack:
+Write a `Dockerfile` and a `docker-compose.yml` at the project root, then bring the stack up with
+Compose:
 
 ```bash
 docker compose up -d
 ```
 
-The generated `docker-compose.yml` exposes:
+A `docker-compose.yml` for the engine exposes:
 
 | Port  | Service                            |
 | ----- | ---------------------------------- |
@@ -45,9 +34,8 @@ The generated `docker-compose.yml` exposes:
 | 3111  | REST API                           |
 | 3112  | Stream API                         |
 
-The Dockerfile builds against `iiidev/iii:latest` (distroless, non-root). The compose file ships
-commented-out Redis and RabbitMQ services that can be uncommented when workers need external
-adapters.
+Build the image from `iiidev/iii:latest` (distroless, non-root). Add Redis or RabbitMQ services to
+the compose file when workers need those external adapters.
 
 ## Configure a reverse proxy
 

@@ -1,4 +1,4 @@
-//! End-to-end tests for `iii project init` and `iii project generate-docker`.
+//! End-to-end tests for `iii project init`.
 //! Exercises the real binary so subcommand routing and filesystem state are
 //! both verified.
 //!
@@ -20,26 +20,6 @@ fn fixtures() -> PathBuf {
         .join("tests")
         .join("fixtures")
         .join("templates")
-}
-
-fn assert_compose_mounts_engine_data_volume(project: &Path) {
-    let compose = std::fs::read_to_string(project.join("docker-compose.yml")).unwrap();
-    assert!(
-        compose.contains("- iii_data:/app/data"),
-        "docker-compose.yml should mount writable engine data, got:\n{compose}"
-    );
-    assert!(
-        compose.contains("volumes:\n  iii_data:"),
-        "docker-compose.yml should declare the iii_data named volume, got:\n{compose}"
-    );
-}
-
-fn assert_compose_reads_env_file(project_dir: &Path) {
-    let compose = std::fs::read_to_string(project_dir.join("docker-compose.yml")).unwrap();
-    assert!(
-        compose.contains("env_file: .env"),
-        "docker-compose.yml should pass the generated .env into the engine container, got:\n{compose}"
-    );
 }
 
 #[test]
@@ -166,90 +146,6 @@ fn project_init_writes_device_id_into_project_ini() {
 }
 
 #[test]
-fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
-    let dir = tempdir().unwrap();
-    let out = iii_bin()
-        .args(["project", "init", "--docker", "--template-dir"])
-        .arg(fixtures())
-        .arg("--directory")
-        .arg(dir.path())
-        .output()
-        .expect("failed to run iii");
-    assert!(
-        out.status.success(),
-        "init --docker failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    assert!(dir.path().join("Dockerfile").exists());
-    assert!(dir.path().join("docker-compose.yml").exists());
-    assert!(dir.path().join(".env").exists());
-    assert_compose_mounts_engine_data_volume(dir.path());
-    assert_compose_reads_env_file(dir.path());
-
-    let ini = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
-    let device_id_in_ini = ini
-        .lines()
-        .find_map(|l| l.strip_prefix("device_id="))
-        .map(|v| v.trim().to_string())
-        .expect("project.ini missing device_id");
-
-    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
-    assert!(
-        dockerfile.contains(&format!("ENV III_HOST_USER_ID={device_id_in_ini}")),
-        "Dockerfile should bake the literal device_id, got:\n{dockerfile}"
-    );
-    assert!(
-        !dockerfile.contains("__III_DEVICE_ID__"),
-        "placeholder must be substituted, got:\n{dockerfile}"
-    );
-
-    let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
-    assert!(
-        !env.contains("III_HOST_USER_ID"),
-        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
-    );
-}
-
-#[test]
-fn project_generate_docker_uses_existing_project_ini_device_id() {
-    let dir = tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join(".iii")).unwrap();
-    std::fs::write(
-        dir.path().join(".iii").join("project.ini"),
-        "[project]\ndevice_id=preseeded-xyz\n",
-    )
-    .unwrap();
-
-    let out = iii_bin()
-        .args(["project", "generate-docker", "--template-dir"])
-        .arg(fixtures())
-        .arg("--directory")
-        .arg(dir.path())
-        .output()
-        .expect("failed to run iii");
-    assert!(
-        out.status.success(),
-        "generate-docker failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let dockerfile = std::fs::read_to_string(dir.path().join("Dockerfile")).unwrap();
-    assert!(
-        dockerfile.contains("ENV III_HOST_USER_ID=preseeded-xyz"),
-        "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
-    );
-    assert_compose_mounts_engine_data_volume(dir.path());
-    assert_compose_reads_env_file(dir.path());
-
-    let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
-    assert!(
-        !env.contains("III_HOST_USER_ID"),
-        ".env should no longer carry III_HOST_USER_ID, got:\n{env}"
-    );
-}
-
-#[test]
 fn project_init_errors_on_non_empty_dir_without_override() {
     // A pre-existing user file in the target directory should make init
     // refuse to scaffold (we'd otherwise silently overwrite it via
@@ -346,31 +242,6 @@ fn project_init_prints_next_steps_with_docs_link() {
     assert!(
         stderr.contains("worker-compose.yaml") && stderr.contains("iii compose --up"),
         "next steps should mention Compose:\n{stderr}"
-    );
-}
-
-#[test]
-fn project_generate_docker_warns_when_no_project_ini() {
-    let dir = tempdir().unwrap();
-    let out = iii_bin()
-        .args(["project", "generate-docker", "--template-dir"])
-        .arg(fixtures())
-        .arg("--directory")
-        .arg(dir.path())
-        .output()
-        .expect("failed to run iii");
-    assert!(
-        out.status.success(),
-        "generate-docker should still succeed, just warn"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("warning:"),
-        "expected 'warning:' label in output:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("iii project init"),
-        "warning should suggest running iii project init:\n{stderr}"
     );
 }
 

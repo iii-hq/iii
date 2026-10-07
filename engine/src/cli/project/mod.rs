@@ -6,8 +6,8 @@
 
 //! `iii project` subcommand dispatch.
 //!
-//! All template content (the bare scaffold's `config.yaml`/`.gitignore` plus
-//! the Docker assets) lives in the canonical templates repo
+//! All template content (the bare scaffold's `config.yaml`/`.gitignore`)
+//! lives in the canonical templates repo
 //! (`iii-hq/templates`). The engine never embeds template content via
 //! `include_str!`; everything is fetched at runtime through
 //! [`scaffolder_core::TemplateFetcher`]. This decouples template fixes from
@@ -16,10 +16,10 @@
 
 use clap::{Args, Subcommand};
 use colored::Colorize;
+use scaffolder_core::IiiConfig;
 use scaffolder_core::cli::{
     apply_template_idempotent, build_fetcher, check_directory_state, print_err, resolve_root,
 };
-use scaffolder_core::{IiiConfig, TemplateFetcher};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +34,6 @@ pub struct ProjectArgs {
 pub enum ProjectAction {
     /// Initialize a new iii project in the current directory
     Init(InitArgs),
-    /// Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
-    GenerateDocker(GenerateDockerArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -51,11 +49,6 @@ pub struct InitArgs {
     /// directory.
     #[arg(short, long)]
     pub directory: Option<String>,
-
-    /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env).
-    /// Equivalent to running `iii project generate-docker` separately.
-    #[arg(long)]
-    pub docker: bool,
 
     /// Scaffold from a named template (e.g. "quickstart"). Triggers the
     /// interactive scaffolder TUI.
@@ -83,7 +76,7 @@ pub struct InitArgs {
     /// (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then
     /// start `iii compose --up` inside it. Cannot be combined with any other
     /// scaffolding option.
-    #[arg(long = "learn-iii", conflicts_with_all = ["directory", "template", "docker", "template_dir"])]
+    #[arg(long = "learn-iii", conflicts_with_all = ["directory", "template", "template_dir"])]
     pub learn_iii: bool,
 
     /// Start the harness with these workers already declared: a
@@ -119,18 +112,6 @@ impl InitArgs {
     }
 }
 
-#[derive(Args, Debug, Clone)]
-pub struct GenerateDockerArgs {
-    /// Target directory (defaults to current directory)
-    #[arg(short, long)]
-    pub directory: Option<String>,
-
-    /// Local directory to use for templates instead of fetching from remote
-    /// (for template development and tests).
-    #[arg(long = "template-dir")]
-    pub template_dir: Option<String>,
-}
-
 fn template_flow_requested(args: &InitArgs) -> bool {
     // Only --template triggers the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
@@ -141,7 +122,6 @@ fn template_flow_requested(args: &InitArgs) -> bool {
 pub async fn run(args: ProjectArgs) -> i32 {
     match args.action {
         ProjectAction::Init(init) => run_init(init).await,
-        ProjectAction::GenerateDocker(gd) => run_generate_docker(gd).await,
     }
 }
 
@@ -225,20 +205,9 @@ async fn run_init(args: InitArgs) -> i32 {
         }
     };
 
-    if args.docker
-        && let Err(e) = apply_docker(&mut fetcher, &root, &device_id).await
-    {
-        crate::cli::telemetry::send_project_init_failed("apply_docker", &e.to_string());
-        return print_err(
-            "could not apply 'docker' template",
-            &e.to_string(),
-            "remove existing Dockerfile/docker-compose.yml or check write permissions",
-        );
-    }
+    crate::cli::telemetry::send_project_init_succeeded(&project_id);
 
-    crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id);
-
-    print_init_success(&project_name, &root, target.is_some(), args.docker);
+    print_init_success(&project_name, &root, target.is_some());
     0
 }
 
@@ -297,33 +266,9 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
                 .unwrap_or("iii-project")
                 .to_string();
             let template_label = args.template.as_deref().unwrap_or("init-template");
-            let id = persist_project_ini(root, &project_name, template_label, &device_id)
+            persist_project_ini(root, &project_name, template_label, &device_id)
                 .await
-                .unwrap_or_default();
-
-            if args.docker {
-                let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        crate::cli::telemetry::send_project_init_failed("fetcher", &e.to_string());
-                        return print_err(
-                            "could not build template fetcher for docker assets",
-                            &e.to_string(),
-                            "check III_TEMPLATE_URL or pass --template-dir <path>",
-                        );
-                    }
-                };
-                if let Err(e) = apply_docker(&mut fetcher, root, &device_id).await {
-                    crate::cli::telemetry::send_project_init_failed("apply_docker", &e.to_string());
-                    return print_err(
-                        "could not apply 'docker' template",
-                        &e.to_string(),
-                        "remove existing Dockerfile/docker-compose.yml or check write permissions",
-                    );
-                }
-            }
-
-            id
+                .unwrap_or_default()
         } else {
             String::new()
         }
@@ -332,7 +277,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         String::new()
     };
 
-    crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id_for_event);
+    crate::cli::telemetry::send_project_init_succeeded(&project_id_for_event);
     0
 }
 
@@ -1443,117 +1388,9 @@ fn uncomment_line(line: &str) -> String {
     }
 }
 
-async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
-    let root = match resolve_root(args.directory.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            return print_err(
-                "could not resolve target directory",
-                &e,
-                "pass --directory <path> or run from a writable cwd",
-            );
-        }
-    };
-
-    let device_id = resolve_device_id_for_docker(&root);
-
-    let mut fetcher = match build_fetcher(args.template_dir.as_deref()) {
-        Ok(f) => f,
-        Err(e) => {
-            return print_err(
-                "could not build template fetcher",
-                &e.to_string(),
-                "check III_TEMPLATE_URL or pass --template-dir <path>",
-            );
-        }
-    };
-
-    if let Err(e) = apply_docker(&mut fetcher, &root, &device_id).await {
-        return print_err(
-            "could not apply 'docker' template",
-            &e.to_string(),
-            "remove existing Dockerfile/docker-compose.yml or check write permissions",
-        );
-    }
-
-    eprintln!();
-    eprintln!(
-        "  {} Docker assets generated at {}",
-        "✓".green(),
-        root.display()
-    );
-    eprintln!();
-    eprintln!("  Next: {}", "docker compose up".bold());
-    0
-}
-
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/// Fetch the docker template's two files directly (skipping the shared_files
-/// merge that [`copy_template`] applies). We can't go through `copy_template`
-/// here because it'd re-copy `config.yaml` / `.gitignore` from `shared_files`
-/// and clobber any user customizations — the caller already has those from the
-/// 'bare' template or a prior `iii project init`.
-///
-/// The Dockerfile template carries a literal `__III_DEVICE_ID__` placeholder
-/// that we substitute with the actual device_id before writing, so the image
-/// no longer needs an `III_HOST_USER_ID` env var at runtime. The generated
-/// `.env` carries RabbitMQ credentials that the engine reads while expanding
-/// `${VAR}` placeholders and that the commented-out RabbitMQ service can use.
-const DEVICE_ID_PLACEHOLDER: &str = "__III_DEVICE_ID__";
-
-async fn apply_docker(
-    fetcher: &mut TemplateFetcher,
-    target: &Path,
-    device_id: &str,
-) -> anyhow::Result<()> {
-    let dockerfile_bytes = fetcher.fetch_file_bytes("docker", "Dockerfile").await?;
-    let compose = fetcher
-        .fetch_file_bytes("docker", "docker-compose.yml")
-        .await?;
-
-    let dockerfile = substitute_device_id(&dockerfile_bytes, device_id)?;
-
-    write_if_absent(&target.join("Dockerfile"), &dockerfile)?;
-    write_if_absent(&target.join("docker-compose.yml"), &compose)?;
-    write_env_if_absent(target)?;
-    Ok(())
-}
-
-fn substitute_device_id(bytes: &[u8], device_id: &str) -> anyhow::Result<Vec<u8>> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|e| anyhow::anyhow!("Dockerfile template is not valid UTF-8: {e}"))?;
-    if !text.contains(DEVICE_ID_PLACEHOLDER) {
-        anyhow::bail!(
-            "Dockerfile template is missing the {DEVICE_ID_PLACEHOLDER} \
-             placeholder — the template repo and engine are out of sync"
-        );
-    }
-    Ok(text.replace(DEVICE_ID_PLACEHOLDER, device_id).into_bytes())
-}
-
-fn write_if_absent(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    if path.exists() {
-        return Ok(());
-    }
-    std::fs::write(path, contents)
-}
-
-fn write_env_if_absent(target: &Path) -> std::io::Result<()> {
-    let path = target.join(".env");
-    if path.exists() {
-        return Ok(());
-    }
-    let rabbitmq_pass = uuid::Uuid::new_v4().simple().to_string();
-    let contents = format!(
-        "# Generated by `iii project generate-docker`. Do not commit.\n\
-         RABBITMQ_USER=iii\n\
-         RABBITMQ_PASS={rabbitmq_pass}\n",
-    );
-    std::fs::write(path, contents)
-}
 
 /// Persist `.iii/project.ini`, preserving any existing project_id when called
 /// against an already-initialized project. Returns the (existing or freshly
@@ -1583,9 +1420,7 @@ fn read_existing_project_id(root: &Path) -> Option<String> {
 
 /// Read a single key from `.iii/project.ini` (flat or `[project]`-prefixed
 /// format), returning `None` when the file is absent, unreadable, or the key
-/// is missing/empty. The format-tolerant parser is shared between
-/// `read_existing_project_id` (used by re-init) and
-/// `resolve_device_id_for_docker` (used by the docker generator).
+/// is missing/empty.
 fn read_project_ini_field(root: &Path, key: &str) -> Option<String> {
     let path = root.join(".iii").join("project.ini");
     let contents = std::fs::read_to_string(path).ok()?;
@@ -1597,41 +1432,7 @@ fn read_project_ini_field(root: &Path, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn resolve_device_id_for_docker(root: &Path) -> String {
-    let ini_exists = root.join(".iii").join("project.ini").exists();
-    match read_project_ini_field(root, "device_id") {
-        Some(id) => id,
-        None => {
-            if ini_exists {
-                // Legacy project.ini that pre-dates the device_id field
-                // (e.g. created by the old iii-tools or the interactive
-                // TUI flow without a --directory). Don't claim the
-                // project is uninitialized — it isn't.
-                eprintln!(
-                    "  {} no device_id in .iii/project.ini; generating a fresh one.",
-                    "note:".dimmed()
-                );
-            } else {
-                warn_missing_project_ini(root);
-            }
-            iii::workers::telemetry::environment::get_or_create_device_id()
-        }
-    }
-}
-
-fn warn_missing_project_ini(root: &Path) {
-    eprintln!(
-        "  {} project not initialized at {}",
-        "warning:".yellow().bold(),
-        root.display()
-    );
-    eprintln!(
-        "  {} run `iii project init` here first to persist a project identity.",
-        "fix:".dimmed()
-    );
-}
-
-fn print_init_success(project_name: &str, root: &Path, target_specified: bool, docker: bool) {
+fn print_init_success(project_name: &str, root: &Path, target_specified: bool) {
     eprintln!();
     eprintln!(
         "  {} iii project '{}' initialized at {}",
@@ -1652,12 +1453,6 @@ fn print_init_success(project_name: &str, root: &Path, target_specified: bool, d
         "    {}    # start the engine and project workers",
         "iii compose --up".bold()
     );
-    if docker {
-        eprintln!(
-            "    {}           # or start in Docker",
-            "docker compose up".bold()
-        );
-    }
     eprintln!();
     eprintln!("  Docs: https://iii.dev/docs/quickstart");
 }
@@ -1929,7 +1724,6 @@ mod tests {
         for extra in [
             &["-t", "quickstart"][..],
             &["-d", "x"],
-            &["--docker"],
             &["--template-dir", "x"],
         ] {
             let mut argv = vec!["project", "init", "--learn-iii"];
