@@ -9,6 +9,7 @@ import pytest
 
 from iii.errors import InvocationError
 from iii.iii import _MAX_JSON_FRAME_BYTES, III
+from iii.triggers import TriggerHandler
 
 
 def client():
@@ -82,8 +83,11 @@ async def test_local_argument_rejection_removes_pending():
     sdk._invocation_namespace = lambda *args: None
     sdk._inject_traceparent = lambda: None
     sdk._inject_baggage = lambda: None
-    with pytest.raises(InvocationError, match="payload_too_large"):
+    with pytest.raises(InvocationError, match="payload_too_large") as raised:
         await sdk.trigger_async({"function_id": "f", "payload": "x" * _MAX_JSON_FRAME_BYTES})
+    assert raised.value.function_id == "f"
+    assert isinstance(raised.value.invocation_id, str)
+    assert raised.value.invocation_id
     assert sdk._pending == {}
     sdk._ws.send.assert_not_called()
 
@@ -169,3 +173,113 @@ async def test_replay_transport_failure_does_not_requeue_or_reset_backoff():
     assert sdk._reconnect_attempt == 1
     assert not hasattr(sdk, "_receiver_task")
     sdk._receive_loop.assert_not_called()
+
+
+@pytest.mark.parametrize("invocation_id", [None, 123, "local-call"])
+def test_local_size_error_correlates_only_valid_invocation_ids(invocation_id):
+    sdk = client()
+    message = {"type": "invokefunction", "function_id": "size::echo", "data": "x" * _MAX_JSON_FRAME_BYTES}
+    if invocation_id is not None:
+        message["invocation_id"] = invocation_id
+    with pytest.raises(InvocationError) as raised:
+        sdk._prepare_json(message)
+    assert raised.value.code == "payload_too_large"
+    assert raised.value.invocation_id == (invocation_id if isinstance(invocation_id, str) else None)
+    assert raised.value.function_id == ("size::echo" if isinstance(invocation_id, str) else None)
+
+
+class TestTriggerHandler(TriggerHandler):
+    async def register_trigger(self, config):
+        pass
+
+    async def unregister_trigger(self, config):
+        pass
+
+
+def registration_client():
+    sdk = client()
+    sdk._ws.state.name = "CLOSING"
+    sdk._options = SimpleNamespace(namespace=None)
+    sdk._trigger_types = {}
+    sdk._functions = {}
+    sdk._triggers = {}
+    return sdk
+
+
+@pytest.mark.asyncio
+async def test_trigger_snapshot_survives_caller_mutation_and_replays_following_work():
+    sdk = registration_client()
+    config = {"nested": {"value": "accepted"}}
+    metadata = {"tags": ["original"], "nullable": None}
+    sdk.register_trigger({"type": "custom", "function_id": "size::echo", "config": config, "metadata": metadata})
+    retained = next(iter(sdk._triggers.values()))
+    assert retained.config is not config
+    assert retained.config["nested"] is not config["nested"]
+    assert retained.metadata is not metadata
+    config["nested"]["value"] = "x" * _MAX_JSON_FRAME_BYTES
+    metadata["tags"].append("mutated")
+    sdk._worker_id = None
+    sdk._pending = {}
+    sdk._reconnect_attempt = 2
+    sdk._set_connection_state = lambda state: None
+    sdk._register_worker_metadata = lambda: None
+    sdk._receive_loop = AsyncMock()
+    sdk._queue = [{"type": "invocationresult", "invocation_id": "next", "result": 1}]
+    sdk._ws.state.name = "OPEN"
+
+    await sdk._on_connected()
+    await sdk._receiver_task
+
+    frames = [json.loads(call.args[0]) for call in sdk._ws.send.call_args_list]
+    assert frames[0]["config"] == {"nested": {"value": "accepted"}}
+    assert frames[0]["metadata"] == {"tags": ["original"], "nullable": None}
+    assert frames[1]["invocation_id"] == "next"
+    assert frames[1]["result"] == 1
+    assert sdk._queue == []
+    assert sdk._reconnect_attempt == 0
+    sdk._receive_loop.assert_awaited_once()
+
+
+def test_related_registration_snapshots_preserve_schemas_metadata_and_http_config():
+    from iii_helpers.http import HttpInvocationConfig
+
+    sdk = registration_client()
+    schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+    metadata = {"nested": {"value": "original"}}
+    def handler(value):
+        return value
+
+    sdk.register_function("size::handler", handler, request_format=schema, response_format=schema, metadata=metadata)
+    invocation = HttpInvocationConfig(url="https://example.invalid/handler", headers={"X-Test": "original"})
+    sdk.register_function("size::http", invocation, request_format=schema, metadata=metadata)
+    type_handler = TestTriggerHandler()
+    sdk.register_trigger_type(
+        {"id": "custom", "description": "accepted", "trigger_request_format": schema, "call_request_format": schema},
+        type_handler,
+    )
+    schema["properties"]["value"]["type"] = "x" * _MAX_JSON_FRAME_BYTES
+    metadata["nested"]["value"] = "mutated"
+    invocation.headers["X-Test"] = "mutated"
+    expected = {"type": "object", "properties": {"value": {"type": "string"}}}
+    for registration in sdk._functions.values():
+        assert registration.message.request_format == expected
+        assert registration.message.metadata == {"nested": {"value": "original"}}
+        sdk._prepare_json(registration.message)
+    assert sdk._functions["size::handler"].message.response_format == expected
+    assert sdk._functions["size::http"].message.invocation.headers == {"X-Test": "original"}
+    assert sdk._trigger_types["custom"].message.trigger_request_format == expected
+    assert sdk._trigger_types["custom"].message.call_request_format == expected
+    assert sdk._trigger_types["custom"].handler is type_handler
+    sdk._prepare_json(sdk._trigger_types["custom"].message)
+
+
+def test_rejected_trigger_type_replacement_preserves_accepted_handler_and_message():
+    sdk = registration_client()
+    original_handler = TestTriggerHandler()
+    sdk.register_trigger_type({"id": "custom", "description": "accepted"}, original_handler)
+    retained = sdk._trigger_types["custom"]
+    with pytest.raises(InvocationError, match="payload_too_large"):
+        sdk.register_trigger_type({"id": "custom", "description": "x" * _MAX_JSON_FRAME_BYTES}, object())
+    assert sdk._trigger_types["custom"] is retained
+    assert retained.handler is original_handler
+    assert sdk._queue == []

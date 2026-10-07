@@ -57,6 +57,187 @@ mod json_size_tests {
         assert!(sdk.inner.pending.lock_or_recover().is_empty());
     }
 
+    struct TestTriggerHandler;
+
+    #[async_trait::async_trait]
+    impl TriggerHandler for TestTriggerHandler {
+        async fn register_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    fn register_test_type(sdk: &IIIClient, description: String) {
+        sdk.register_trigger_type(RegisterTriggerType::new(
+            "size::custom",
+            description,
+            TestTriggerHandler,
+        ));
+    }
+
+    #[test]
+    fn rejected_replacement_preserves_accepted_trigger_type_ownership() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        sdk.inner.running.store(true, Ordering::SeqCst);
+        register_test_type(&sdk, "accepted".into());
+        let accepted_handler = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
+            .handler
+            .clone();
+        let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+
+        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+
+        let types = sdk.inner.trigger_types.lock_or_recover();
+        let accepted = &types["size::custom"];
+        assert_eq!(accepted.message.description, "accepted");
+        assert!(Arc::ptr_eq(&accepted.handler, &accepted_handler));
+        assert!(receiver.try_recv().is_err());
+        drop(types);
+        register_test_type(&sdk, "following".into());
+        assert_eq!(
+            sdk.inner.trigger_types.lock_or_recover()["size::custom"]
+                .message
+                .description,
+            "following"
+        );
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+    }
+
+    #[test]
+    fn rejected_function_handle_cannot_unregister_an_accepted_owner() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        sdk.inner.running.store(true, Ordering::SeqCst);
+        let handler: RemoteFunctionHandlerWithMetadata =
+            Arc::new(|_, _| Box::pin(async { Ok(Value::Null) }));
+        sdk.register_function_inner(
+            RegisterFunctionMessage::with_id("size::handler".into()),
+            Some(handler.clone()),
+        );
+        let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+        let rejected = sdk.register_function_inner(
+            RegisterFunctionMessage::with_id("size::handler".into())
+                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+            None,
+        );
+        rejected.unregister();
+        let functions = sdk.inner.functions.lock_or_recover();
+        let accepted = &functions["size::handler"];
+        assert!(Arc::ptr_eq(accepted.handler.as_ref().unwrap(), &handler));
+        assert!(accepted.message.description.is_none());
+        assert!(receiver.try_recv().is_err());
+        drop(functions);
+        sdk.register_function_inner(
+            RegisterFunctionMessage::with_id("size::following".into()),
+            None,
+        );
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+    }
+
+    #[test]
+    fn oversized_registrations_are_neither_retained_nor_enqueued() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        sdk.inner.running.store(true, Ordering::SeqCst);
+        let rejected = sdk.register_function_inner(
+            RegisterFunctionMessage::with_id("size::rejected".into())
+                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+            None,
+        );
+        rejected.unregister();
+        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+        let error = sdk
+            .register_trigger(RegisterTriggerInput::new(
+                "size::custom",
+                "size::handler",
+                Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+            ))
+            .err()
+            .expect("oversized trigger must fail");
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert!(sdk.inner.functions.lock_or_recover().is_empty());
+        assert!(sdk.inner.trigger_types.lock_or_recover().is_empty());
+        assert!(sdk.inner.triggers.lock_or_recover().is_empty());
+        assert!(
+            sdk.inner
+                .receiver
+                .lock_or_recover()
+                .as_mut()
+                .unwrap()
+                .try_recv()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rejected_trigger_type_preflight_does_not_acquire_ownership_mutex() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        sdk.inner.running.store(true, Ordering::SeqCst);
+        register_test_type(&sdk, "accepted".into());
+        let rejected_sdk = sdk.clone();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let owned = sdk.inner.trigger_types.lock_or_recover();
+        let thread = std::thread::spawn(move || {
+            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+            finished_tx.send(()).unwrap();
+        });
+        // Holding the mutex makes the old insertion-before-validation path
+        // deterministically unable to finish; this is a timeout, not a sleep.
+        let completed_without_ownership = finished_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+        assert_eq!(owned["size::custom"].message.description, "accepted");
+        drop(owned);
+        thread.join().unwrap();
+        assert!(
+            completed_without_ownership,
+            "rejected registration touched ownership"
+        );
+    }
+
+    #[test]
+    fn delayed_send_rejection_cannot_remove_a_newer_accepted_generation() {
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        sdk.inner.running.store(true, Ordering::SeqCst);
+        register_test_type(&sdk, "previous".into());
+        let rejected_message = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
+            .message
+            .clone();
+        let mut rejected_message = rejected_message.to_message();
+        if let Message::RegisterTriggerType { description, .. } = &mut rejected_message {
+            *description = "x".repeat(MAX_JSON_FRAME_BYTES);
+        }
+        let rejected_sdk = sdk.clone();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            proceed_rx.recv().unwrap();
+            rejected_sdk.send_message(rejected_message).unwrap_err()
+        });
+        // Order the same shared-helper rejection after a newer accepted owner,
+        // exactly the harmful rollback interleaving, without timing guesses.
+        register_test_type(&sdk, "newer".into());
+        let newer_handler = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
+            .handler
+            .clone();
+        proceed_tx.send(()).unwrap();
+        let error = thread.join().unwrap();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        let types = sdk.inner.trigger_types.lock_or_recover();
+        assert_eq!(types["size::custom"].message.description, "newer");
+        assert!(Arc::ptr_eq(&types["size::custom"].handler, &newer_handler));
+        drop(types);
+        let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
+        assert!(receiver.try_recv().is_err());
+        sdk.send_message(Message::Pong).unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Outbound::Message(Message::Pong))
+        ));
+    }
+
     fn invocation(data: String) -> Message {
         Message::InvokeFunction {
             invocation_id: Some(Uuid::nil()),
@@ -1351,6 +1532,14 @@ impl IIIClient {
         if id.trim().is_empty() {
             panic!("id is required");
         }
+        if let Err(error) = Self::prepare_json(&message.to_message()) {
+            tracing::warn!(error = %error, "Function registration rejected locally");
+            // A rejected handle must not unregister a previous owner of this ID.
+            return FunctionRef {
+                id,
+                unregister_fn: Arc::new(|| {}),
+            };
+        }
         let data = RemoteFunctionData {
             message: message.clone(),
             handler,
@@ -1515,15 +1704,24 @@ impl IIIClient {
 
         let trigger_type_id = message.id.clone();
 
-        self.inner.trigger_types.lock_or_recover().insert(
-            message.id.clone(),
-            RemoteTriggerTypeData {
-                message: message.clone(),
-                handler: Arc::new(trigger_type.handler),
-            },
-        );
+        // Validate before touching ownership: rollback by ID could remove a
+        // previously accepted handler, including a newer concurrent generation.
+        match Self::prepare_json(&message.to_message()) {
+            Ok(_) => {
+                self.inner.trigger_types.lock_or_recover().insert(
+                    message.id.clone(),
+                    RemoteTriggerTypeData {
+                        message: message.clone(),
+                        handler: Arc::new(trigger_type.handler),
+                    },
+                );
 
-        let _ = self.send_message(message.to_message());
+                let _ = self.send_message(message.to_message());
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Trigger type registration rejected locally")
+            }
+        }
 
         TriggerTypeRef {
             iii: self.clone(),
@@ -1849,20 +2047,6 @@ impl IIIClient {
         let replacement = match Self::prepare_envelope(&message) {
             Ok((_, replacement)) => replacement,
             Err(error) => {
-                // Public registration methods keep their signatures; report and remove
-                // rejected registrations rather than durably replaying them.
-                match &message {
-                    Message::RegisterFunction { id, .. } => {
-                        self.inner.functions.lock_or_recover().remove(id);
-                    }
-                    Message::RegisterTriggerType { id, .. } => {
-                        self.inner.trigger_types.lock_or_recover().remove(id);
-                    }
-                    Message::RegisterTrigger { id, .. } => {
-                        self.inner.triggers.lock_or_recover().remove(id);
-                    }
-                    _ => {}
-                }
                 tracing::warn!(error = %error, "JSON envelope rejected locally");
                 return Err(error);
             }

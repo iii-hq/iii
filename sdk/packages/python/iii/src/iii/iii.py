@@ -613,8 +613,18 @@ class III:
         size = len(payload.encode("utf-8"))
         if size <= _MAX_JSON_FRAME_BYTES:
             return payload
+        invocation_id = data.get("invocation_id")
+        function_id = data.get("function_id")
+        correlated_call = (
+            data.get("type") == MessageType.INVOKE_FUNCTION.value
+            and isinstance(invocation_id, str)
+        )
         error = InvocationError(
             code="payload_too_large",
+            invocation_id=invocation_id if correlated_call else None,
+            function_id=(
+                function_id if correlated_call and isinstance(function_id, str) else None
+            ),
             message=(
                 f"Serialized JSON envelope is {size} bytes; limit is "
                 f"{_MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
@@ -1218,6 +1228,8 @@ class III:
             trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
             call_request_format=_resolve_format(trigger_type.call_request_format),
         )
+        # Isolate retained JSON fields from later caller mutations.
+        msg = msg.model_copy(deep=True)
         self._send_if_connected(msg)
         self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(
             message=msg, handler=handler
@@ -1303,6 +1315,8 @@ class III:
             # same project may be the one providing the type.
             trigger_namespace=trigger.trigger_namespace,
         )
+        # Isolate retained JSON fields from later caller mutations.
+        msg = msg.model_copy(deep=True)
         self._send_if_connected(msg)
         self._triggers[trigger_id] = msg
 
@@ -1423,6 +1437,8 @@ class III:
                 request_format=func.request_format,
                 response_format=func.response_format,
             )
+            # Isolate retained JSON fields from later caller mutations.
+            msg = msg.model_copy(deep=True)
             self._send_if_connected(msg)
             self._functions[func.id] = RemoteFunctionData(message=msg)
         else:
@@ -1439,6 +1455,8 @@ class III:
                 request_format=func.request_format,
                 response_format=func.response_format,
             )
+            # Isolate retained JSON fields from later caller mutations.
+            msg = msg.model_copy(deep=True)
             self._send_if_connected(msg)
 
             # Decide once, at registration time, whether this handler accepts
