@@ -1,7 +1,7 @@
 iii: v1
 name: iii-stream
 type: engine
-description: Build durable streams for real-time data subscriptions.
+description: "Build durable streams for real-time data subscriptions. iii-stream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 repo: https://github.com/iii-hq/iii
 config:
   port: 3112

@@ -749,6 +749,20 @@ impl TriggerRegistry {
             trigger.trigger_type.purple().bold(),
         );
         match known_trigger_type_provider(&trigger.trigger_type) {
+            // iii-stream is an engine worker: it is enabled through engine
+            // configuration, not installed with compose::add. It is also
+            // deprecated, so point at the migration guide.
+            Some(worker_name @ "iii-stream") => format!(
+                "{} If this persists, the {} engine worker is not running — enable it in the \
+                 engine config.yaml (`workers:` entry `- name: iii-stream`) or under \
+                 `engine.workers.iii-stream` in worker-compose.yaml. {}",
+                base,
+                worker_name.cyan().bold(),
+                crate::deprecation::stream_deprecation_message(&format!(
+                    "{} trigger type",
+                    trigger.trigger_type
+                )),
+            ),
             Some(worker_name) => format!(
                 "{} If this persists, the {} worker is missing — run: {}",
                 base,
@@ -1730,6 +1744,28 @@ mod tests {
                 "worker namespace must not be presented as the Compose daemon namespace: {msg}"
             );
             assert!(!msg.contains("iii worker"), "legacy command leaked: {msg}");
+        }
+    }
+
+    #[test]
+    fn pending_warning_for_stream_types_explains_iii_stream_without_compose_add() {
+        for trigger_type in ["stream", "stream:join", "stream:leave"] {
+            assert_eq!(
+                known_trigger_type_provider(trigger_type),
+                Some("iii-stream")
+            );
+            let msg = TriggerRegistry::pending_trigger_warning(&make_trigger("t1", trigger_type));
+            assert!(
+                !msg.contains("compose::add"),
+                "must not suggest compose::add: {msg}"
+            );
+            assert!(msg.contains("engine.workers.iii-stream"), "{msg}");
+            assert!(
+                msg.contains(&crate::deprecation::stream_deprecation_message(&format!(
+                    "{trigger_type} trigger type"
+                ))),
+                "{msg}"
+            );
         }
     }
 
