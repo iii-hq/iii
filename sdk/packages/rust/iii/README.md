@@ -145,8 +145,8 @@ iii.trigger(TriggerRequest {
 > **Deprecated.** The `stream::*` functions, the `stream`, `stream:join` and `stream:leave` trigger types,
 > `IStream`, `iii_sdk::helpers::create_stream`, `IIITrigger::{Stream, StreamJoin, StreamLeave}` and the legacy
 > Streams-only models in `iii_helpers::stream` (`Stream*Input`, `StreamTriggerConfig`,
-> `StreamJoinLeaveTriggerConfig`, `StreamChangeEvent`, ...) are deprecated (iii-stream) and will be removed in a
-> future release (version TBD). Behavior is unchanged for now. Migration guide:
+> `StreamJoinLeaveTriggerConfig`, `StreamChangeEvent`, ...) are deprecated (iii-stream) and will be removed in an
+> upcoming release. Behavior is unchanged for now. Migration guide:
 > https://iii.dev/docs/upgrading/migrate-from-streams
 >
 > `IIITrigger::Subscribe` and `SubscribeTriggerConfig` are deprecated (pubsub) on the same terms.

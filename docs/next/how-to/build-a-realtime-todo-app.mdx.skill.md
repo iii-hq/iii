@@ -5,7 +5,7 @@
 
 <Warning title="Deprecated">
   This outline is built on `stream::get`, `stream::set`, `stream::list` and `stream::delete`.
-  `stream::*` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  `stream::*` is deprecated (iii-stream) and will be removed in an upcoming release.
   Behavior is unchanged for now. For new apps, follow the stored records recipe in
   [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
 </Warning>

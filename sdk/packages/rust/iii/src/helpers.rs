@@ -33,7 +33,7 @@ pub async fn create_channel(iii: &IIIClient, buffer_size: Option<usize>) -> Resu
 /// `list_groups`) on the engine through the supplied [`IStream`] implementor.
 /// `update` is **not** registered, atomic updates remain engine-side.
 #[deprecated(
-    note = "create_stream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    note = "create_stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
 #[allow(deprecated)]
 pub fn create_stream<S>(iii: &IIIClient, stream_name: impl Into<String>, stream: S)

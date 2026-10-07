@@ -27,7 +27,7 @@ do not declare them. Any other name makes initial startup or config reload fail 
 guide](../upgrading/workers-to-compose).
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
   Behavior is unchanged for now: the engine still accepts the configuration shown below. See
   [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>

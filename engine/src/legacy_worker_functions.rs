@@ -33,8 +33,8 @@ fn stream_unavailable_message(function_id: &str) -> Option<String> {
         "Function {function_id} is not available: the iii-stream worker is not running. To keep \
          using it, enable iii-stream in the engine config.yaml (`workers:` entry `- name: \
          iii-stream`) or under `engine.workers.iii-stream` in worker-compose.yaml. \
-         {function_id} is deprecated (iii-stream) and will be removed in a future release \
-         (version TBD). Behavior is unchanged for now. Migration guide: \
+         {function_id} is deprecated (iii-stream) and will be removed in an upcoming release. \
+         Behavior is unchanged for now. Migration guide: \
          {STREAM_MIGRATION_GUIDE}"
     ))
 }
@@ -138,8 +138,8 @@ mod tests {
             assert!(message.contains("- name: iii-stream"), "{message}");
             assert!(
                 message.contains(&format!(
-                    "{function_id} is deprecated (iii-stream) and will be removed in a future \
-                     release (version TBD). Behavior is unchanged for now. Migration guide: \
+                    "{function_id} is deprecated (iii-stream) and will be removed in an upcoming \
+                     release. Behavior is unchanged for now. Migration guide: \
                      {STREAM_MIGRATION_GUIDE}"
                 )),
                 "{message}"

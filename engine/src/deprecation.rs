@@ -50,8 +50,8 @@ const ABSENT: &str = "-";
 /// trigger type, or entry-point name).
 pub(crate) fn stream_deprecation_message(entry: &str) -> String {
     format!(
-        "{entry} is deprecated (iii-stream) and will be removed in a future release \
-         (version TBD). Behavior is unchanged for now. Migration guide: \
+        "{entry} is deprecated (iii-stream) and will be removed in an upcoming release. \
+         Behavior is unchanged for now. Migration guide: \
          {STREAM_MIGRATION_GUIDE}"
     )
 }
@@ -351,8 +351,8 @@ mod tests {
     fn message_is_the_standard_sentence() {
         assert_eq!(
             stream_deprecation_message("stream::set"),
-            "stream::set is deprecated (iii-stream) and will be removed in a future release \
-             (version TBD). Behavior is unchanged for now. Migration guide: \
+            "stream::set is deprecated (iii-stream) and will be removed in an upcoming release. \
+             Behavior is unchanged for now. Migration guide: \
              https://iii.dev/docs/upgrading/migrate-from-streams"
         );
     }

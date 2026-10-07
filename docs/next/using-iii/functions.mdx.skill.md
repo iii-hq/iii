@@ -242,8 +242,8 @@ Each of these is published by a separate worker. Function ids, payload shapes, a
 behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.dev):
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
-  `pubsub` is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
   unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>
 

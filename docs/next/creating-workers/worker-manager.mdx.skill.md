@@ -52,7 +52,7 @@ workers:
 
 <Warning title="Deprecated">
   The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream) and
-  will be removed in a future release (version TBD). Behavior is unchanged for now. Expose your own
+  will be removed in an upcoming release. Behavior is unchanged for now. Expose your own
   domain functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
   The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only the
   separate `auth_function` setting of `iii-stream` is.

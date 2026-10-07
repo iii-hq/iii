@@ -49,7 +49,7 @@ class StreamAuthInput(BaseModel):
     """Input for stream authentication.
 
     .. deprecated::
-        StreamAuthInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamAuthInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -69,7 +69,7 @@ class StreamAuthResult(BaseModel):
     """Result of stream authentication.
 
     .. deprecated::
-        StreamAuthResult is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamAuthResult is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -79,7 +79,7 @@ class StreamAuthResult(BaseModel):
     context: Any | None = None
 
 
-# Deprecated: StreamContext is deprecated (iii-stream) and will be removed in a future release (version TBD).
+# Deprecated: StreamContext is deprecated (iii-stream) and will be removed in an upcoming release.
 # Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 StreamContext = Any
 
@@ -88,7 +88,7 @@ class StreamJoinLeaveEvent(BaseModel):
     """Event for stream join/leave.
 
     .. deprecated::
-        StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -110,7 +110,7 @@ class StreamJoinResult(BaseModel):
     """Result of stream join.
 
     .. deprecated::
-        StreamJoinResult is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamJoinResult is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -124,7 +124,7 @@ class StreamGetInput(BaseModel):
     """Input for stream get operation.
 
     .. deprecated::
-        StreamGetInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamGetInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -142,7 +142,7 @@ class StreamSetInput(BaseModel):
     """Input for stream set operation.
 
     .. deprecated::
-        StreamSetInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamSetInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -162,7 +162,7 @@ class StreamDeleteInput(BaseModel):
     """Input for stream delete operation.
 
     .. deprecated::
-        StreamDeleteInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamDeleteInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -180,7 +180,7 @@ class StreamListInput(BaseModel):
     """Input for stream list operation.
 
     .. deprecated::
-        StreamListInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamListInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -196,7 +196,7 @@ class StreamListGroupsInput(BaseModel):
     """Input for stream list groups operation.
 
     .. deprecated::
-        StreamListGroupsInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamListGroupsInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -210,7 +210,7 @@ class StreamUpdateInput(BaseModel):
     """Input for stream update operation.
 
     .. deprecated::
-        StreamUpdateInput is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamUpdateInput is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -462,7 +462,7 @@ class StreamTriggerConfig(BaseModel):
     """Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
 
     .. deprecated::
-        StreamTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -482,7 +482,7 @@ class StreamJoinLeaveTriggerConfig(BaseModel):
     """Trigger config for ``stream:join`` and ``stream:leave`` triggers.
 
     .. deprecated::
-        StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -496,7 +496,7 @@ class StreamChangeEventDetail(BaseModel):
     """Detail of a stream change event containing the mutation type and data.
 
     .. deprecated::
-        StreamChangeEventDetail is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamChangeEventDetail is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:
@@ -512,7 +512,7 @@ class StreamChangeEvent(BaseModel):
     """Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
 
     .. deprecated::
-        StreamChangeEvent is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Attributes:

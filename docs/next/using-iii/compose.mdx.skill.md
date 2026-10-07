@@ -645,7 +645,7 @@ usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and 
 these workers.
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
   Behavior is unchanged for now. See
   [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>

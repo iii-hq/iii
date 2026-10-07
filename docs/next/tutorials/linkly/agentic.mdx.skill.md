@@ -366,8 +366,8 @@ click counts to a durable queue.
 iii's **composability** once again makes it easy to take applications from demo to production-ready.
 
 <Warning title="Deprecated">
-  This prompt adds the `pubsub` worker. `pubsub` is deprecated (pubsub) and will be removed in a
-  future release (version TBD). Behavior is unchanged for now. See
+  This prompt adds the `pubsub` worker. `pubsub` is deprecated (pubsub) and will be removed in an
+  upcoming release. Behavior is unchanged for now. See
   [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#migrate-from-pubsub).
 </Warning>
 
@@ -434,7 +434,7 @@ subscribers in real time through a `clicks` stream via the stream worker.
 
 <Warning title="Deprecated">
   This prompt builds on `stream::set` and `stream::list`. `stream::*` is deprecated (iii-stream) and
-  will be removed in a future release (version TBD). Behavior is unchanged for now. See
+  will be removed in an upcoming release. Behavior is unchanged for now. See
   [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
 </Warning>
 

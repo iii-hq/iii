@@ -250,8 +250,8 @@ export default function App() {
 #### Subscribe to `clicks`
 
 <Warning title="Deprecated">
-  The `stream` trigger type is deprecated (iii-stream) and will be removed in a future release
-  (version TBD). Behavior is unchanged for now. For new code, bind to a worker-owned trigger type and
+  The `stream` trigger type is deprecated (iii-stream) and will be removed in an upcoming release.
+  Behavior is unchanged for now. For new code, bind to a worker-owned trigger type and
   read the initial state with a query, as in
   [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
 </Warning>

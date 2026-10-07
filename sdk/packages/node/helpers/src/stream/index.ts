@@ -1,7 +1,7 @@
 /**
  * Input for stream authentication.
  *
- * @deprecated StreamAuthInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamAuthInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamAuthInput {
   /** Request headers. */
@@ -17,7 +17,7 @@ export interface StreamAuthInput {
 /**
  * Result of stream authentication.
  *
- * @deprecated StreamAuthResult is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamAuthResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamAuthResult {
   /** Arbitrary context passed to stream handlers after authentication. */
@@ -28,14 +28,14 @@ export interface StreamAuthResult {
 /**
  * Context type extracted from {@link StreamAuthResult}.
  *
- * @deprecated StreamContext is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamContext is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamContext = StreamAuthResult['context']
 
 /**
  * Event payload for stream join/leave events.
  *
- * @deprecated StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamJoinLeaveEvent {
   /** Unique subscription identifier. */
@@ -53,7 +53,7 @@ export interface StreamJoinLeaveEvent {
 /**
  * Result of a stream join request.
  *
- * @deprecated StreamJoinResult is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamJoinResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamJoinResult {
   /** Whether the join was unauthorized. */
@@ -63,7 +63,7 @@ export interface StreamJoinResult {
 /**
  * Input for retrieving a single stream item.
  *
- * @deprecated StreamGetInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamGetInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamGetInput = {
   /** Name of the stream. */
@@ -77,7 +77,7 @@ export type StreamGetInput = {
 /**
  * Input for setting a stream item.
  *
- * @deprecated StreamSetInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamSetInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamSetInput = {
   /** Name of the stream. */
@@ -94,7 +94,7 @@ export type StreamSetInput = {
 /**
  * Input for deleting a stream item.
  *
- * @deprecated StreamDeleteInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamDeleteInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamDeleteInput = {
   /** Name of the stream. */
@@ -108,7 +108,7 @@ export type StreamDeleteInput = {
 /**
  * Input for listing all items in a stream group.
  *
- * @deprecated StreamListInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamListInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamListInput = {
   /** Name of the stream. */
@@ -120,7 +120,7 @@ export type StreamListInput = {
 /**
  * Input for listing all groups in a stream.
  *
- * @deprecated StreamListGroupsInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamListGroupsInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamListGroupsInput = {
   /** Name of the stream. */
@@ -130,7 +130,7 @@ export type StreamListGroupsInput = {
 /**
  * Result of a stream set operation.
  *
- * @deprecated StreamSetResult is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamSetResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamSetResult<TData> = {
   /** Previous value (if it existed). */
@@ -142,7 +142,7 @@ export type StreamSetResult<TData> = {
 /**
  * Result of a stream update operation.
  *
- * @deprecated StreamUpdateResult is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamUpdateResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamUpdateResult<TData> = {
   /** Previous value (if it existed). */
@@ -296,7 +296,7 @@ export type UpdateOpError = {
 /**
  * Result of a stream delete operation.
  *
- * @deprecated StreamDeleteResult is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamDeleteResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamDeleteResult = {
   /** Previous value (if it existed). */
@@ -321,7 +321,7 @@ export type UpdateOp =
 /**
  * Input for atomically updating a stream item.
  *
- * @deprecated StreamUpdateInput is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamUpdateInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamUpdateInput = {
   /** Name of the stream. */
@@ -337,7 +337,7 @@ export type StreamUpdateInput = {
 /**
  * Trigger config for `stream` triggers. Filters which item changes fire the handler.
  *
- * @deprecated StreamTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamTriggerConfig {
   /** Stream name to watch. Only changes on this stream fire the handler. */
@@ -353,7 +353,7 @@ export interface StreamTriggerConfig {
 /**
  * Trigger config for `stream:join` and `stream:leave` triggers.
  *
- * @deprecated StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamJoinLeaveTriggerConfig {
   /** Function ID for conditional execution. If it returns `false`, the handler is skipped. */
@@ -363,7 +363,7 @@ export interface StreamJoinLeaveTriggerConfig {
 /**
  * Detail of a stream change event containing the mutation type and data.
  *
- * @deprecated StreamChangeEventDetail is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamChangeEventDetail is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export type StreamChangeEventDetail = {
   /** The kind of mutation (create, update, or delete). */
@@ -376,7 +376,7 @@ export type StreamChangeEventDetail = {
 /**
  * Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`.
  *
- * @deprecated StreamChangeEvent is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ * @deprecated StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export interface StreamChangeEvent {
   /** The event type. */

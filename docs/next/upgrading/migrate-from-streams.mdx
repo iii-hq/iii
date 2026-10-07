@@ -8,8 +8,8 @@ type: "how-to"
 ---
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
-  `pubsub` is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
   unchanged for now. This page is the migration guide.
 </Warning>
 
@@ -43,8 +43,8 @@ worker. They put each concern with the worker that owns the data.
 | Phase | What happens | When |
 | --- | --- | --- |
 | Deprecation (now) | Everything keeps working. Engine, SDKs and the `pubsub` worker emit deprecation warnings. Response contracts do not change. | Now |
-| Support window | Migrate producers and consumers together. | TBD |
-| Removal | A separately announced breaking release removes `iii-stream`, its SDK helpers and the `pubsub` worker. | Version TBD |
+| Support window | Migrate producers and consumers together. | Until the removal release |
+| Removal | A separately announced breaking release removes `iii-stream`, its SDK helpers and the `pubsub` worker. | An upcoming release, announced in the changelog |
 
 What the warnings look like:
 
@@ -466,7 +466,7 @@ keys. Do not delete the `iii-stream` store files or Redis keys until your consum
 `iii-stream`.
 
 A documented export path, the id mapping and a rollback plan are part of the removal phase and will
-be published before storage access is removed (release TBD).
+be published before storage access is removed in an upcoming release.
 
 ## Tutorials that still use iii-stream or pubsub
 

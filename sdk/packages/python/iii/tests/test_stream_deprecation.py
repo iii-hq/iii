@@ -22,7 +22,7 @@ GUIDE_URL = "https://iii.dev/docs/upgrading/migrate-from-streams"
 
 def _expected(entry: str) -> str:
     return (
-        f"{entry} is deprecated (iii-stream) and will be removed in a future release (version TBD). "
+        f"{entry} is deprecated (iii-stream) and will be removed in an upcoming release. "
         f"Behavior is unchanged for now. Migration guide: {GUIDE_URL}"
     )
 

@@ -21,7 +21,7 @@ from iii_helpers.stream import (
 TData = TypeVar("TData")
 
 _ISTREAM_DEPRECATION = (
-    "IStream is deprecated (iii-stream) and will be removed in a future release (version TBD). "
+    "IStream is deprecated (iii-stream) and will be removed in an upcoming release. "
     "Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )
 
@@ -30,7 +30,7 @@ class IStream(ABC, Generic[TData]):
     """Abstract interface for stream operations.
 
     .. deprecated::
-        IStream is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        IStream is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Defining a subclass emits a :class:`FutureWarning` attributed to the line of the

@@ -1,7 +1,7 @@
 # iii-stream
 
-> **Deprecated.** iii-stream is deprecated (iii-stream) and will be removed in a future release
-> (version TBD). Behavior is unchanged for now. Migration guide:
+> **Deprecated.** iii-stream is deprecated (iii-stream) and will be removed in an upcoming release.
+> Behavior is unchanged for now. Migration guide:
 > https://iii.dev/docs/upgrading/migrate-from-streams
 
 Durable streams for real-time data subscriptions. Streams organize data hierarchically: `stream_name` > `group_id` > `item_id`. Clients subscribe via WebSocket and receive real-time updates when items change.

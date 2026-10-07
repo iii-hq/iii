@@ -14,7 +14,7 @@ use crate::error::Error;
 /// stream storage for a specific stream name when registered through
 /// `create_stream` in the `helpers` submodule.
 #[deprecated(
-    note = "IStream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    note = "IStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {

@@ -3,7 +3,7 @@
 
 <Warning title="Deprecated">
   This chapter uses the `pubsub` worker (`publish` and `subscribe`). `pubsub` is deprecated (pubsub)
-  and will be removed in a future release (version TBD). Behavior is unchanged for now, so the
+  and will be removed in an upcoming release. Behavior is unchanged for now, so the
   chapter still works. The durable `queue` parts are not deprecated. See
   [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#migrate-from-pubsub).
 </Warning>

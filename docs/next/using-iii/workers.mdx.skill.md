@@ -114,7 +114,7 @@ external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telem
 `iii-observability` are injected automatically. They must not be added as Compose package roots.
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
   Behavior is unchanged for now. See
   [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>

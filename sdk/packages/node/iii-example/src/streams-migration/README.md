@@ -1,6 +1,6 @@
 # Migrating from iii-stream: runnable recipes
 
-The iii-stream worker (its `set` / `get` / `delete` / `list` / `list_groups` / `list_all` / `send` / `update` functions, the `stream`, `stream:join` and `stream:leave` trigger types, and the dedicated Streams WebSocket) is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+The iii-stream worker (its `set` / `get` / `delete` / `list` / `list_groups` / `list_all` / `send` / `update` functions, the `stream`, `stream:join` and `stream:leave` trigger types, and the dedicated Streams WebSocket) is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 These three recipes rebuild what applications used iii-stream for with SDK primitives that already exist: function registration, a worker-owned trigger type, trigger bindings and channels. None of them calls an iii-stream function or binds an iii-stream trigger type, and they all run on an engine **without** iii-stream.
 

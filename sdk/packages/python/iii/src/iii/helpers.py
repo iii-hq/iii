@@ -20,7 +20,7 @@ from .types import Channel, IIIClient, extract_channel_refs, is_channel_ref
 TData = TypeVar("TData")
 
 _CREATE_STREAM_DEPRECATION = (
-    "create_stream is deprecated (iii-stream) and will be removed in a future release (version TBD). "
+    "create_stream is deprecated (iii-stream) and will be removed in an upcoming release. "
     "Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )
 
@@ -83,7 +83,7 @@ def create_stream(iii: IIIClient, stream_name: str, stream: IStream[TData]) -> N
     validate the implementor's get/set/delete/list signatures.
 
     .. deprecated::
-        create_stream is deprecated (iii-stream) and will be removed in a future release (version TBD).
+        create_stream is deprecated (iii-stream) and will be removed in an upcoming release.
         Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
     Emits a :class:`FutureWarning` attributed to the caller's line on every call.

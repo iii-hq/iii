@@ -121,7 +121,7 @@ impl QueueTriggerConfig {
 
 /// Trigger config for the `subscribe` trigger type served by the `pubsub` worker.
 #[deprecated(
-    note = "SubscribeTriggerConfig is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    note = "SubscribeTriggerConfig is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubscribeTriggerConfig {
@@ -302,20 +302,20 @@ pub enum IIITrigger {
     Cron(CronTriggerConfig),
     Queue(QueueTriggerConfig),
     #[deprecated(
-        note = "IIITrigger::Subscribe is deprecated (pubsub) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+        note = "IIITrigger::Subscribe is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
     )]
     Subscribe(SubscribeTriggerConfig),
     State(StateTriggerConfig),
     #[deprecated(
-        note = "IIITrigger::Stream is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+        note = "IIITrigger::Stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
     )]
     Stream(StreamTriggerConfig),
     #[deprecated(
-        note = "IIITrigger::StreamJoin is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+        note = "IIITrigger::StreamJoin is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
     )]
     StreamJoin(StreamJoinLeaveTriggerConfig),
     #[deprecated(
-        note = "IIITrigger::StreamLeave is deprecated (iii-stream) and will be removed in a future release (version TBD). Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+        note = "IIITrigger::StreamLeave is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
     )]
     StreamLeave(StreamJoinLeaveTriggerConfig),
     Log(LogTriggerConfig),
