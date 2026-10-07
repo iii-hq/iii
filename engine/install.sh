@@ -923,12 +923,19 @@ fi
 start_cmd="$BIN_NAME project init --learn-iii"
 quickstart_url="https://iii.dev/docs/quickstart"
 
+# The binary the setup runs: the one in bin_dir, or with --skip-bin-download
+# and none there, the one on PATH.
+iii_bin="$bin_dir/$BIN_NAME"
+if [ "$skip_bin_download" = true ] && [ ! -x "$iii_bin" ]; then
+  iii_bin=$(command -v "$BIN_NAME" 2>/dev/null) || iii_bin="$bin_dir/$BIN_NAME"
+fi
+
 # Does the binary we just installed know `--learn-iii`? Ask the parser rather
 # than reading the help text: the help is a rendered table whose column widths
 # follow the longest flag, so whether a given flag survives as one string is a
 # property of the other flags beside it. `--help` short-circuits in the parser,
 # so an accepted flag prints help and scaffolds nothing.
-if ! "$bin_dir/$BIN_NAME" project init --learn-iii --help >/dev/null 2>&1; then
+if ! "$iii_bin" project init --learn-iii --help >/dev/null 2>&1; then
   # Never offer what this binary cannot run, and never name the command.
   echo ""
   echo "If you're new to iii, get started quickly here: $quickstart_url"
@@ -941,7 +948,7 @@ elif [ "$non_interactive" = false ] && [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/
   # that pipe to init, so give it the terminal instead. `exec` skips the
   # EXIT trap, so clean up first.
   cleanup
-  exec "$bin_dir/$BIN_NAME" project init --learn-iii </dev/tty
+  exec "$iii_bin" project init --learn-iii </dev/tty
 else
   echo ""
   echo "To start the iii harness and see what iii can do, run:"

@@ -318,6 +318,19 @@ EOF
   [[ "$output" != *"Downloading"* ]]
 }
 
+@test "install.sh --skip-bin-download uses the iii on PATH when BIN_DIR has none" {
+  _path="$BATS_TEST_TMPDIR/onpath"
+  mkdir -p "$_path" "$BATS_TEST_TMPDIR/emptybin"
+  printf '#!/bin/sh\nexit 0\n' > "$_path/iii"
+  chmod +x "$_path/iii"
+
+  run env PATH="$_path:/usr/bin:/bin" BIN_DIR="$BATS_TEST_TMPDIR/emptybin" \
+    sh "$INSTALL_SH" --skip-bin-download </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iii project init --learn-iii"* ]]
+  [[ "$output" != *"quickstart"* ]]
+}
+
 @test "install.sh --skip-bin-download names no command a binary would reject" {
   # A binary that does not know --learn-iii must never be handed it, so the
   # run that cannot offer the setup names the quickstart instead.
