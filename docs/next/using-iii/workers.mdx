@@ -111,10 +111,17 @@ Explicit saves persist the submitted value. See [Configuration](./configuration)
 
 ## Engine-managed exceptions
 
-`configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`, and `iii-sandbox` remain
+`configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream` (deprecated), and
+`iii-sandbox` remain
 engine-owned. Put them under `engine.workers` for managed Compose, or in `config.yaml` only when an
 external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telemetry`, and
 `iii-observability` are injected automatically. They must not be added as Compose package roots.
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  Behavior is unchanged for now. See
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 To admit untrusted workers, browsers, or agents, keep the engine port internal and add the
 [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) with

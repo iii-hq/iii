@@ -253,6 +253,13 @@ export default function App() {
 
 #### Subscribe to `clicks`
 
+<Warning title="Deprecated">
+  The `stream` trigger type is deprecated (iii-stream) and will be removed in a future release
+  (version TBD). Behavior is unchanged for now. For new code, bind to a worker-owned trigger type and
+  read the initial state with a query, as in
+  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
+</Warning>
+
 Subscribe to the `clicks` stream we setup in Chapter 5. The `useEffect` registers a function the
 browser exposes (`ui::on_click`) and a `stream` trigger that routes every new row to it; the cleanup
 unregisters both on unmount:

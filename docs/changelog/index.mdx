@@ -5,6 +5,58 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="TBD" description="TBD">
+  ## iii-stream and pubsub are deprecated
+
+  The `iii-stream` engine worker and the `pubsub` worker are deprecated. Behavior is unchanged in
+  this release: existing configurations, calls and bindings keep working, and response contracts do
+  not change. This release only adds warnings and documentation.
+
+  Deprecated:
+
+  - The `iii-stream` worker, its functions `stream::set`, `stream::get`, `stream::delete`,
+    `stream::list`, `stream::list_groups`, `stream::list_all`, `stream::send` and `stream::update`,
+    and its trigger types `stream`, `stream:join` and `stream:leave`.
+  - The dedicated Streams WebSocket listener (default port `3112`) and the `iii-stream`
+    `auth_function` setting.
+  - SDK helpers: Node and Browser `createStream` and `IStream`, Python `create_stream` and `IStream`,
+    and the Rust legacy stream helpers.
+  - The `pubsub` worker: function `publish`, trigger type `subscribe`, its `pubsub` configuration
+    entry, and the Rust SDK `SubscribeTriggerConfig` and `IIITrigger::Subscribe`.
+
+  Not deprecated: channels, channel readers and writers, `StreamChannelRef`, `StreamRequest` and
+  `StreamResponse`, the generic function and trigger registration APIs, the shared state types
+  (`UpdateOp`, `MergePath`, `StreamSetResult` and related), the `queue` worker, and the
+  `auth_function_id` of `iii-worker-manager` and `rbac-proxy`.
+
+  ## Deprecation warnings
+
+  - The engine logs a `warn` with target `iii::deprecation` when a caller uses a deprecated
+    function, binds a deprecated trigger type, connects to the Streams WebSocket, or starts
+    `iii-stream`. Function calls and bindings warn at most once every 10 minutes per entry point and
+    calling worker; WebSocket connections are keyed by client IP; startup warns once per process.
+    Logs name the entry point, the calling worker when known and the migration guide. They never
+    include payloads, ids or headers. Direct calls from any SDK version are covered.
+  - TypeScript declarations carry `@deprecated`. Python emits a `FutureWarning` at the call site of
+    `create_stream` and `IStream` subclasses (nothing is raised). Rust items carry `#[deprecated]`,
+    including `IIITrigger::Stream`, `IIITrigger::StreamJoin`, `IIITrigger::StreamLeave` and
+    `IIITrigger::Subscribe`.
+  - The `pubsub` worker warns once at startup, on `publish` at most once every 10 minutes per caller,
+    and on `subscribe` registration at most once every 10 minutes for the whole worker. Topic
+    `stream.events` (the engine's `iii-stream` bridge) never warns.
+  - Calling `stream::*` when `iii-stream` is not running still returns `function_not_found` (code
+    unchanged); the message now explains how to enable `iii-stream` and links the migration guide.
+
+  <Callout type="warning">
+    Support window: TBD. Removal version: TBD. Removal will ship in a separately announced
+    breaking release. Start moving producers and consumers to worker-owned trigger types, explicit
+    storage with queries, channels, or durable queue topics now.
+  </Callout>
+
+  See [Migrate from iii-stream and pubsub](/upgrading/migrate-from-streams) for the replacement
+  recipes, authorization changes and the pubsub mapping.
+</Update>
+
 <Update label="0.24.4" description="October 2026">
   ## Faster trace queries
 
