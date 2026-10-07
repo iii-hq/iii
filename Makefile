@@ -19,13 +19,13 @@ export III_TELEMETRY_ENABLED := false
         init-build-x86 init-build-aarch64 init-build-all \
         sandbox sandbox-debug \
         test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
-        lint-python lint-rust lint-console lint \
+        lint-python lint-rust lint \
         fmt-check fmt-check-rust fmt-check-all \
         typecheck-node typecheck-python typecheck \
-        build-node build-sdk-node build-console build \
+        build-node build-sdk-node build \
         fix fix-lint fix-fmt \
         check ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust \
-        ci-console ci-local cli-docs
+        ci-local cli-docs
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -157,10 +157,7 @@ lint-python:
 lint-rust:
 	cargo clippy -p iii-sdk -p iii-helpers -p iii-observability --all-targets --all-features -- -D warnings
 
-lint-console:
-	pnpm --filter console-frontend lint
-
-lint: lint-python lint-rust lint-console
+lint: lint-python lint-rust
 
 # ── Format Check ──────────────────────────────────────────────────────────────
 
@@ -184,15 +181,10 @@ typecheck: typecheck-node typecheck-python
 build-sdk-node:
 	pnpm --filter iii-sdk build
 
-build-console:
-	pnpm --filter console-frontend build
-	cargo build -p iii-console --release
-
-build: sandbox build-console ## Build everything: init + engine + worker + console
+build: sandbox ## Build everything: init + engine + worker
 	@echo ""
 	@echo "Build complete. Binaries:"
 	@echo "  engine:   $(CURDIR)/target/release/iii"
-	@echo "  console:  $(CURDIR)/target/release/iii-console"
 	@echo "  worker:   $(CURDIR)/target/$(WORKER_TARGET)/release/iii-worker"
 	@echo ""
 	@echo "Add them to your PATH:"
@@ -214,9 +206,6 @@ ci-sdk-rust: engine-up
 	@trap '$(MAKE) engine-down' EXIT; \
 	$(MAKE) fmt-check-rust lint-rust test-sdk-rust
 
-ci-console:
-	$(MAKE) lint-console build-console
-
 # ── Convenience ───────────────────────────────────────────────────────────────
 
 cli-docs: ## Regenerate docs/next/cli-reference/ from the clap CLI definitions
@@ -230,8 +219,7 @@ fix-fmt:
 fix-lint:
 	cd $(PYTHON_SDK_DIR) && uv run ruff check --fix --unsafe-fixes src && uv run ruff format src
 	cargo clippy -p iii-sdk --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings
-	pnpm --filter console-frontend run lint:fix
 
-check: lint fmt-check-all typecheck build-sdk-node build-console
+check: lint fmt-check-all typecheck build-sdk-node
 
-ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-console
+ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust

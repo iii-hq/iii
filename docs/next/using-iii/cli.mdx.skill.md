@@ -19,9 +19,11 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | `iii compose` | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
 | `iii trigger` | Invoke a registered function on a running engine. |
 | `iii project` | Scaffold projects and generate Docker assets. |
-| `iii console` | Launch the iii web console. |
 | `iii cloud` | Manage hosted iii deployments. |
 | `iii update` | Update iii and its managed support binaries. |
+
+`iii console` was removed: it now only prints a notice. The iii console ships as the ADE worker;
+see [Console](./console).
 
 `iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
 [Workers](./workers). The `worker::*` function surface was removed with it.

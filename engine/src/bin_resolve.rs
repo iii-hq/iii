@@ -6,7 +6,7 @@
 
 //! Single shared resolver for locating an `iii-*` helper binary to EXECUTE.
 //!
-//! Every place that spawns a sibling binary (`iii-worker`, `iii-console`, ...)
+//! Every place that spawns a sibling binary (`iii-worker`, `iii-cloud`, ...)
 //! routes through [`find_existing_binary`] so they can never disagree on which
 //! copy runs:
 //!

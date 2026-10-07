@@ -19,6 +19,16 @@ pub mod update;
 
 use colored::Colorize;
 
+/// Printed by the `iii console` stub. The legacy `iii-console` binary was
+/// removed in favour of the iii console in ADE; keep in sync with the
+/// tombstone binary (`console/packages/console-rust/src/main.rs`).
+// TODO(MOT-3619): remove the iii console stub in the next release.
+pub const CONSOLE_REMOVED_NOTICE: &str = "\
+iii-console has been removed. Use the iii console in ADE instead: from your iii project, \
+run `iii trigger compose::add worker=ade`, then open http://127.0.0.1:3113 \
+(docs: https://iii.dev/docs/using-iii/console).
+The `iii console` command will be removed in the next release.";
+
 /// Handle dispatching a command to a managed binary.
 pub async fn handle_dispatch(
     command: &str,

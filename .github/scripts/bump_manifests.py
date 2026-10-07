@@ -94,6 +94,8 @@ _CARGO_PACKAGE_FILES = (
     "sdk/packages/rust/iii/Cargo.toml",
     "sdk/packages/rust/observability/Cargo.toml",
     "sdk/packages/rust/helpers/Cargo.toml",
+    # iii-console tombstone (MOT-3619), still released.
+    # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
     "console/packages/console-rust/Cargo.toml",
 )
 _JSON_PACKAGE_FILES = (

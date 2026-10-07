@@ -48,10 +48,10 @@ For a project-backed setup, create `config.yaml` in your working directory, or r
 If you prefer a custom filename (for example `iii-config.yaml`), pass it explicitly:
 `iii --config /path/to/iii-config.yaml`.
 
-Open the console:
+Open the console: add the ADE worker to your project, then open `http://127.0.0.1:3113`:
 
 ```bash
-iii console
+iii trigger compose::add worker=ade
 ```
 
 Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.
@@ -160,7 +160,7 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 
 - [Documentation](https://iii.dev/docs)
 - [CLI & Engine](https://github.com/iii-hq/iii)
-- [Console](https://github.com/iii-hq/console)
+- [Console](https://iii.dev/docs/using-iii/console)
 - [Examples](https://github.com/iii-hq/iii-examples)
 - [SDKs](https://github.com/iii-hq/iii/tree/main/sdk)
 

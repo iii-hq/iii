@@ -55,6 +55,20 @@ type: "reference"
 
   See [Migrate from iii-stream and pubsub](/upgrading/migrate-from-streams) for the replacement
   recipes, authorization changes and the pubsub mapping.
+
+  ## The legacy iii-console is removed
+
+  - The legacy `iii-console` binary and its web UI were removed from the iii repository. Use the iii
+    console in ADE instead: run `iii trigger compose::add worker=ade` in your project, then open
+    `http://127.0.0.1:3113`. See [Console](/using-iii/console).
+  - `iii console` no longer downloads or starts anything. It prints a notice that points to ADE
+    and exits with a non-zero status. The command itself will be removed in the next release.
+  - `iii update` no longer installs or updates `iii-console`, and `iii update console` and
+    `iii update --list-targets` no longer accept or list it. An `iii-console` binary that is already
+    installed is left in place.
+  - Releases still ship an `iii-console` asset and Homebrew formula, so older `iii` CLIs keep
+    working with `iii update` and `iii console`. It is a placeholder that prints the same notice and
+    exits with a non-zero status. It will stop shipping in a future release (TBD).
 </Update>
 
 <Update label="0.24.4" description="October 2026">

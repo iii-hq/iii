@@ -5,7 +5,7 @@
 
 {/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
-Reference for the `iii` binary and the `iii console` runtime it dispatches to. Running `iii` with no subcommand starts the engine. The same information is available from the binaries themselves via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
+Reference for the `iii` binary. Running `iii` with no subcommand starts the engine. The same information is available from the binaries themselves via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
 
 ## `iii`
 
@@ -27,7 +27,6 @@ iii [OPTIONS] [COMMAND]
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
 | [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
-| [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
@@ -172,33 +171,11 @@ iii update [OPTIONS] [COMMAND]
 
 | Argument | Description |
 | -------- | ----------- |
-| `[COMMAND]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+| `[COMMAND]` | Specific command or binary to update (e.g., "worker", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
 
 | Option | Description |
 | ------ | ----------- |
 | `--list-targets` | List the targets you can pass to `iii update [COMMAND]` and exit |
-
-## `iii console`
-
-Developer console for the iii engine
-
-The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`.
-
-```text
-iii console [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `-p, --port <PORT>` | Port to run the console server on [default: 3113] |
-| `--host <HOST>` | Host to bind the console server to [default: 127.0.0.1] |
-| `--engine-host <ENGINE_HOST>` | Host where the iii engine is running [default: 127.0.0.1] |
-| `--engine-port <ENGINE_PORT>` | Port for the iii engine REST API [default: 3111] |
-| `--ws-port <WS_PORT>` | Port for the iii engine WebSocket [default: 3112] |
-| `--bridge-port <BRIDGE_PORT>` | Engine WebSocket port the console registers its worker functions on [default: 49134] |
-| `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
-| `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
-| `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |
 
 ## Telemetry
 
