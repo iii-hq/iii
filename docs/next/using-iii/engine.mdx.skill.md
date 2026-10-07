@@ -18,13 +18,19 @@ Only workers coupled to the engine lifecycle may be declared in this file:
 - `configuration`
 - `iii-worker-manager`
 - `iii-http-functions`
-- `iii-stream`
+- `iii-stream` (deprecated)
 - `iii-sandbox`
 
 The engine injects `iii-engine-functions`, `iii-telemetry`, and `iii-observability` automatically;
 do not declare them. Any other name makes initial startup or config reload fail with
 `UNSUPPORTED_CONFIG_WORKERS` and a link to the [manual migration
 guide](../upgrading/workers-to-compose).
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in a future release (version TBD).
+  Behavior is unchanged for now: the engine still accepts the configuration shown below. See
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 ```yaml
 workers:
@@ -52,8 +58,10 @@ stops the engine so it cannot continue with a configuration different from the f
 ## Project workers
 
 HTTP, cron, queue, state, pubsub, bridge, application workers, and other registry workers belong in
-`worker-compose.yaml`. For the normal managed lifecycle, move the five engine configs into its
-direct `engine.workers` map and start the single file:
+`worker-compose.yaml`. The `pubsub` worker is deprecated; see
+[Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams). For the normal managed
+lifecycle, move the five engine configs into its direct `engine.workers` map and start the single
+file:
 
 ```bash
 iii compose --namespace dev --up --file worker-compose.yaml
