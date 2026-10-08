@@ -18,8 +18,10 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
+import { once } from 'node:events'
+import { Writable } from 'node:stream'
 import { type IIIClient, registerWorker, TriggerAction } from 'iii-sdk'
-import type { ChannelWriter, StreamChannelRef } from 'iii-sdk/channel'
+import type { StreamChannelRef } from 'iii-sdk/channel'
 import { createChannel } from 'iii-sdk/helpers'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
@@ -44,6 +46,8 @@ type ExportRequest<TWriter> = {
   deadline_ms: number
   writer: TWriter
 }
+/** What the handler uses of the incoming ChannelWriter: its Writable (a plain holder works too). */
+type Writer = { stream: Writable }
 type ExportResult = {
   rows_written: number
   aborted: boolean
@@ -63,102 +67,109 @@ export function startReportsWorker(engineUrl = ENGINE_URL) {
   /** Live operations and their cancel flag. Bounded by MAX_ACTIVE_OPERATIONS. */
   const active = new Map<string, { cancelled: boolean }>()
 
-  iii.registerFunction(
-    'reports::export',
-    // The SDK turns the incoming writer ref into a live ChannelWriter before the handler runs.
-    async ({
-      operation_id,
-      report_id,
-      rows,
-      deadline_ms,
-      writer,
-    }: ExportRequest<ChannelWriter>): Promise<ExportResult> => {
-      const out = writer.stream
-      if (active.size >= MAX_ACTIVE_OPERATIONS || active.has(operation_id)) {
-        out.end()
-        throw new Error(
-          'reports::export: too many concurrent operations (or duplicate operation_id)',
-        )
-      }
-      const operation = { cancelled: false }
-      active.set(operation_id, operation)
-      const deadline = Date.now() + deadline_ms
-      let maxBuffered = 0
-      let written = 0
-      const stats = () => ({
-        max_buffered_bytes: maxBuffered,
-        high_water_mark: out.writableHighWaterMark,
+  // The SDK turns the incoming writer ref into a live ChannelWriter before the handler runs.
+  // Only its `stream` is used, which also lets the demo self-check call the handler directly.
+  const exportReport = async ({
+    operation_id,
+    report_id,
+    rows,
+    deadline_ms,
+    writer,
+  }: ExportRequest<Writer>): Promise<ExportResult> => {
+    const out = writer.stream
+    if (active.size >= MAX_ACTIVE_OPERATIONS || active.has(operation_id)) {
+      out.end()
+      throw new Error('reports::export: too many concurrent operations (or duplicate operation_id)')
+    }
+    const operation = { cancelled: false }
+    active.set(operation_id, operation)
+    const deadline = Date.now() + deadline_ms
+    let maxBuffered = 0
+    let written = 0
+    const stats = () => ({
+      max_buffered_bytes: maxBuffered,
+      high_water_mark: out.writableHighWaterMark,
+    })
+    out.on('error', () => undefined) // surfaced through out.destroyed and the result instead
+
+    /** The stream can no longer take writes (destroyed, ended or closed): never wait on it. */
+    const dead = () => out.destroyed || out.writableEnded || out.closed
+    /** Resolve on 'drain' (or when the stream dies), removing the listeners each time. */
+    const drained = () =>
+      new Promise<void>(resolve => {
+        // 'close' may already have fired: resolve now instead of waiting forever.
+        if (dead()) return resolve()
+        const done = () => {
+          out.off('drain', done)
+          out.off('close', done)
+          resolve()
+        }
+        out.on('drain', done)
+        out.on('close', done)
       })
-      out.on('error', () => undefined) // surfaced through out.destroyed and the result instead
+    /** Write one line; wait when the local buffer is full, so memory stays bounded. */
+    const writeLine = async (line: ExportLine) => {
+      if (dead()) return // the loop's stopReason() check reports why
+      const ok = out.write(`${JSON.stringify(line)}\n`)
+      maxBuffered = Math.max(maxBuffered, out.writableLength)
+      if (!ok) await drained()
+    }
+    const stopReason = () =>
+      operation.cancelled
+        ? 'cancelled by caller'
+        : out.destroyed
+          ? 'channel closed'
+          : Date.now() > deadline
+            ? 'deadline'
+            : undefined
 
-      /** Resolve on 'drain' (or when the stream dies), removing the listeners each time. */
-      const drained = () =>
-        new Promise<void>(resolve => {
-          const done = () => {
-            out.off('drain', done)
-            out.off('close', done)
-            resolve()
-          }
-          out.on('drain', done)
-          out.on('close', done)
-        })
-      /** Write one line; wait when the local buffer is full, so memory stays bounded. */
-      const writeLine = async (line: ExportLine) => {
-        const ok = out.write(`${JSON.stringify(line)}\n`)
-        maxBuffered = Math.max(maxBuffered, out.writableLength)
-        if (!ok) await drained()
+    try {
+      await writeLine({ type: 'header', report_id, rows })
+      if (stopReason()) return { rows_written: 0, aborted: true, reason: stopReason(), ...stats() }
+      for (let n = 0; n < rows; n++) {
+        const reason = stopReason()
+        if (reason) return { rows_written: written, aborted: true, reason, ...stats() }
+        await writeLine({ type: 'row', n, value: `${report_id}-row-${n}-${'x'.repeat(64)}` })
+        written++
+        // Yield to the event loop now and then: a loop whose writes never block would
+        // otherwise starve the socket and never see reports::cancel.
+        if (written % 64 === 0) await new Promise(resolve => setImmediate(resolve))
       }
-      const stopReason = () =>
-        operation.cancelled
-          ? 'cancelled by caller'
-          : out.destroyed
-            ? 'channel closed'
-            : Date.now() > deadline
-              ? 'deadline'
-              : undefined
-
-      try {
-        await writeLine({ type: 'header', report_id, rows })
-        for (let n = 0; n < rows; n++) {
-          const reason = stopReason()
-          if (reason) return { rows_written: written, aborted: true, reason, ...stats() }
-          await writeLine({ type: 'row', n, value: `${report_id}-row-${n}-${'x'.repeat(64)}` })
-          written++
-          // Yield to the event loop now and then: a loop whose writes never block would
-          // otherwise starve the socket and never see reports::cancel.
-          if (written % 64 === 0) await new Promise(resolve => setImmediate(resolve))
-        }
-        await writeLine({ type: 'end', rows_written: written })
-        return { rows_written: written, aborted: false, ...stats() }
-      } catch (error) {
-        // The other end went away mid-write: stop, do not retry.
-        return {
-          rows_written: written,
-          aborted: true,
-          reason: `channel error: ${(error as Error).message}`,
-          ...stats(),
-        }
-      } finally {
-        // Explicit end of life: always release the operation and close the writer.
-        active.delete(operation_id)
-        if (!out.destroyed) out.end()
+      // Re-check after the last row: a cancel or close during it must not write 'end'.
+      const reason = stopReason()
+      if (reason) return { rows_written: written, aborted: true, reason, ...stats() }
+      await writeLine({ type: 'end', rows_written: written })
+      return { rows_written: written, aborted: false, ...stats() }
+    } catch (error) {
+      // The other end went away mid-write: stop, do not retry.
+      return {
+        rows_written: written,
+        aborted: true,
+        reason: `channel error: ${(error as Error).message}`,
+        ...stats(),
       }
-    },
-    { description: 'Stream a report as NDJSON lines into the channel writer passed by the caller' },
-  )
+    } finally {
+      // Explicit end of life: always release the operation and close the writer.
+      active.delete(operation_id)
+      if (!out.destroyed) out.end()
+    }
+  }
 
   // Explicit cancel: the caller does not have to rely on the transport noticing a closed reader.
-  iii.registerFunction(
-    'reports::cancel',
-    async ({ operation_id }: { operation_id: string }) => {
-      const operation = active.get(operation_id)
-      if (operation) operation.cancelled = true
-      return { cancelled: operation !== undefined }
-    },
-    { description: 'Cancel a running reports::export by operation_id' },
-  )
+  const cancel = async ({ operation_id }: { operation_id: string }) => {
+    const operation = active.get(operation_id)
+    if (operation) operation.cancelled = true
+    return { cancelled: operation !== undefined }
+  }
 
-  return { iii }
+  iii.registerFunction('reports::export', exportReport, {
+    description: 'Stream a report as NDJSON lines into the channel writer passed by the caller',
+  })
+  iii.registerFunction('reports::cancel', cancel, {
+    description: 'Cancel a running reports::export by operation_id',
+  })
+
+  return { iii, exportReport, cancel, activeCount: () => active.size }
 }
 
 // ── Caller: owns the channel for the duration of one operation ──────────────
@@ -243,6 +254,18 @@ export async function runExport(
 
 // ── Demo ─────────────────────────────────────────────────────────────────────────
 
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<'timeout'>(resolve => {
+    timer = setTimeout(() => resolve('timeout'), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function check(condition: boolean, message: string): void {
   if (!condition) throw new Error(`check failed: ${message}`)
   console.log(`[demo] ok: ${message}`)
@@ -302,6 +325,54 @@ async function main(): Promise<void> {
       early.result.aborted === true && early.result.rows_written < 100_000,
       `producer stopped early (reason: ${early.result.reason}) instead of writing 1M rows`,
     )
+
+    // 3. Self-checks (review fix): the handler must return and release its slot even when the
+    //    writer is already destroyed, or when the caller cancels and closes during the last row.
+    const destroyedWriter = new Writable({ write: (_chunk, _encoding, callback) => callback() })
+    destroyedWriter.destroy()
+    await once(destroyedWriter, 'close')
+    const onDestroyed = await withTimeout(
+      reports.exportReport({
+        operation_id: 'self-check-destroyed',
+        report_id: 'r-3',
+        rows: 10,
+        deadline_ms: 5000,
+        writer: { stream: destroyedWriter },
+      }),
+      2000,
+    )
+    check(onDestroyed !== 'timeout', 'handler returned for an already destroyed writer')
+    check(reports.activeCount() === 0, 'active slot released (destroyed writer)')
+
+    const lastRow = 2
+    const closingWriter = new Writable({
+      highWaterMark: 1, // every write reports backpressure, so the last row waits for drain/close
+      write(chunk, _encoding, callback) {
+        if (String(chunk).includes(`"n":${lastRow},`)) {
+          void reports.cancel({ operation_id: 'self-check-last-row' })
+          this.destroy() // the caller closes its end during the last row
+          return
+        }
+        setImmediate(callback)
+      },
+    })
+    closingWriter.on('error', () => undefined)
+    const onLastRow = await withTimeout(
+      reports.exportReport({
+        operation_id: 'self-check-last-row',
+        report_id: 'r-4',
+        rows: lastRow + 1,
+        deadline_ms: 5000,
+        writer: { stream: closingWriter },
+      }),
+      2000,
+    )
+    check(onLastRow !== 'timeout', 'handler returned after a cancel/close during the last row')
+    check(
+      onLastRow !== 'timeout' && onLastRow.aborted === true,
+      `last-row cancel reported as aborted (${onLastRow === 'timeout' ? 'timeout' : onLastRow.reason})`,
+    )
+    check(reports.activeCount() === 0, 'active slot released (last-row cancel)')
 
     console.log('[demo] channel: PASS')
   } finally {

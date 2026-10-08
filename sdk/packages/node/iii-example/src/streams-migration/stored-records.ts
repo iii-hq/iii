@@ -198,21 +198,47 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
     { description: 'Delete a task, then fire tasks::changed' },
   )
 
-  iii.registerFunction('tasks::get', async (input: { id: string }) => store.get(input.id), {
-    description:
-      'Read one task: { task | null, revision } (revision of the tombstone when deleted)',
-  })
+  // Demo-only failure injection, used by the self-check at the end of main().
+  let failReads = 0
+  const maybeFail = () => {
+    if (failReads > 0) {
+      failReads--
+      throw new Error('injected read failure (demo)')
+    }
+  }
+
+  iii.registerFunction(
+    'tasks::get',
+    async (input: { id: string }) => {
+      maybeFail()
+      return store.get(input.id)
+    },
+    {
+      description:
+        'Read one task: { task | null, revision } (revision of the tombstone when deleted)',
+    },
+  )
 
   iii.registerFunction(
     'tasks::list',
-    async (input: { limit?: number; cursor?: string }) =>
-      store.list(Math.min(Math.max(input?.limit ?? 50, 1), MAX_PAGE), input?.cursor),
+    async (input: { limit?: number; cursor?: string }) => {
+      maybeFail()
+      return store.list(Math.min(Math.max(input?.limit ?? 50, 1), MAX_PAGE), input?.cursor)
+    },
     {
       description: `List tasks ordered by id; limit (default 50, max ${MAX_PAGE}) + opaque cursor`,
     },
   )
 
-  return { iii, store, bindingCount: () => bindings.size }
+  return {
+    iii,
+    store,
+    bindingCount: () => bindings.size,
+    /** Demo only: make the next tasks::get / tasks::list call fail. */
+    failNextRead: () => {
+      failReads = 1
+    },
+  }
 }
 
 // ── Consumer: a dashboard keeping a local view in sync ─────────────────────────
@@ -281,7 +307,13 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
 
   /** Single drain loop: at most one read in flight, a bounded dirty set, no task per event. */
   function drain(): Promise<void> {
-    draining ??= (async () => {
+    if (draining) return draining
+    // Nothing to do: never create (and never cache) an empty run.
+    if (!needsResync && dirty.size === 0) return Promise.resolve()
+    let run: Promise<void> | undefined
+    run = (async () => {
+      // Start asynchronously so `draining` is assigned before this run can finish.
+      await Promise.resolve()
       try {
         while (needsResync || dirty.size > 0) {
           if (needsResync) {
@@ -294,6 +326,10 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
           dirty.delete(id)
           await readOne(id)
         }
+        // Caught up: a retry scheduled by an earlier failure is no longer needed.
+        clearTimeout(retryTimer)
+        retryTimer = undefined
+        retryDelayMs = 0
       } catch (error) {
         // The owner may be unreachable (e.g. it has not re-registered yet after an engine
         // restart). Fall back to ONE full resync, retried with capped backoff: no spinning,
@@ -304,15 +340,18 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
           `[dashboard ${name}] read failed (${(error as Error).message}); retry in ${retryDelayMs}ms`,
         )
         clearTimeout(retryTimer)
-        retryTimer = setTimeout(() => void drain(), retryDelayMs)
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined
+          void drain()
+        }, retryDelayMs)
         retryTimer.unref()
-        return
       } finally {
-        draining = null
+        // Only clear the slot if it still belongs to this run.
+        if (draining === run) draining = null
       }
-      retryDelayMs = 0
     })()
-    return draining
+    draining = run
+    return run
   }
 
   iii.registerFunction(handlerId, async (change: TaskChange) => {
@@ -359,6 +398,8 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
       watching = true
     },
     idle: () => draining === null && dirty.size === 0 && !needsResync,
+    /** Demo introspection: a retry of a failed read is scheduled. */
+    retryPending: () => retryTimer !== undefined,
     async stop() {
       clearInterval(reconnectWatch)
       clearTimeout(retryTimer)
@@ -392,6 +433,19 @@ function liveRevisions(view: TaskView): string {
     .join(',')
 }
 
+async function untilCallable(caller: IIIClient, function_id: string, payload: unknown) {
+  const start = Date.now()
+  for (;;) {
+    try {
+      return await caller.trigger({ function_id, payload })
+    } catch (error) {
+      const notYet = String((error as Error).message).includes('function_not_found')
+      if (!notYet || Date.now() - start > 5000) throw error
+      await sleep(50)
+    }
+  }
+}
+
 const upsert = (caller: IIIClient, payload: { id: string; title?: string; done?: boolean }) =>
   caller.trigger<unknown, Task>({ function_id: 'tasks::upsert', payload })
 
@@ -401,6 +455,9 @@ async function main(): Promise<void> {
   let dashboard: ReturnType<typeof startDashboard> | undefined
 
   try {
+    // Registration is asynchronous: wait until the provider's functions are callable.
+    await untilCallable(tasks.iii, 'tasks::list', { limit: 1 })
+
     // Records committed before any consumer exists: only the initial read can show them.
     for (const id of ['task-a', 'task-b', 'task-c'])
       await upsert(tasks.iii, { id, title: `Title of ${id}` })
@@ -470,6 +527,25 @@ async function main(): Promise<void> {
       dashboard.view.get('task-d')?.task?.done === true,
       'live update after recovery (task-d r2)',
     )
+
+    // Self-check (review fix): a read fails and schedules a retry; a notification completes the
+    // resync before the retry timer fires; then the timer fires with nothing left to do. The
+    // consumer must stay live: later changes are applied and it goes idle.
+    tasks.failNextRead()
+    await upsert(tasks.iii, { id: 'task-e', title: 'retry path' }) // r1: tasks::get fails
+    await waitFor('retry scheduled after the failed read', () => dashboard?.retryPending() === true)
+    await upsert(tasks.iii, { id: 'task-e', done: true }) // r2: the notification drives the resync
+    await waitFor('task-e r2 via resync', () => dashboard?.view.get('task-e')?.revision === 2)
+    await sleep(800) // past the 500 ms retry delay
+    await upsert(tasks.iii, { id: 'task-e', title: 'after the retry timer' }) // r3
+    await waitFor(
+      'task-e r3 applied after the retry timer',
+      () => dashboard?.view.get('task-e')?.revision === 3,
+      3000,
+    )
+    await waitFor('consumer idle', () => dashboard?.idle() === true, 3000)
+    check(true, 'change after a stale retry timer was applied and the consumer went idle')
+    check(!dashboard.retryPending(), 'no retry left pending after a successful resync')
 
     console.log(`[demo] stats ${JSON.stringify(dashboard.stats)}`)
     console.log('[demo] stored-records: PASS')
