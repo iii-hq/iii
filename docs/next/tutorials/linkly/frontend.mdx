@@ -8,8 +8,8 @@ type: "tutorial"
 ---
 
 In this chapter the browser becomes a worker. It connects to the engine over WebSocket, calls
-`link::create` directly (no REST API Gateway), subscribes to the live click stream to update a
-counter, and registers a `user::confirm_destructive_op` function the server calls when a delete
+`link::create` directly (no REST API Gateway), binds to the live click feed from Chapter 5 to update
+a counter, and registers a `user::confirm_destructive_op` function the server calls when a delete
 needs a human's go-ahead.
 
 ## Add the workers
@@ -54,6 +54,7 @@ rbac-proxy:
       expose_functions:
         - match("link::create")
         - match("link::request_delete")
+        - match("link::click_summary")
 ```
 
 Restart Compose so it starts the proxy:
@@ -62,10 +63,11 @@ Restart Compose so it starts the proxy:
 iii trigger compose::restart
 ```
 
-`expose_functions` is an allowlist of which functions a browser session can call. The browser reads
-the live click stream through a `stream` trigger, not a function call, so no `stream::*` function is
-exposed. `auth_function_id` names a function `rbac-proxy` invokes on every connection to admit or
-reject it; you write that next.
+`expose_functions` is an allowlist of which functions a browser session can call. The browser hears
+about clicks through the `click-streamer::click` trigger type, not a function call, and reads the
+starting total with `link::click_summary`, so that query is on the list too. `auth_function_id`
+names a function `rbac-proxy` invokes on every connection to admit or reject it; you write that
+next.
 
 ## Gate connections with an auth function
 
@@ -105,6 +107,8 @@ worker.registerFunction(
     }
     return {
       allow_trigger_type_registration: false,
+      // The tab may listen to the live click feed and nothing else.
+      allowed_trigger_types: ["click-streamer::click"],
       allow_function_registration: true,
       namespaces: {
         [`browser-${session}`]: ["ui::on_click", "user::confirm_destructive_op"],
@@ -125,6 +129,8 @@ Each tab also sends a unique `session` id. The engine allows one function per id
 two tabs both registering `ui::on_click` in `default` would collide. `namespaces` gives each session
 its own `browser-<session>` namespace and permits registration only there: the tab's functions live
 in isolation, and it still calls `link::*` in `default` through the `expose_functions` allowlist.
+`allowed_trigger_types` does the same for bindings: the tab may bind the live click feed and no other
+trigger type.
 
 ## Add a server-initiated delete
 
@@ -224,17 +230,15 @@ samples below.
 
 #### Add imports
 
-First the imports and types: `Click` is one row from the `clicks` table, and `StreamEvent` is the
-wrapper `iii-stream` delivers to subscribers.
+First the imports and types: `Click` is the notification `click-streamer::click` delivers, and
+`Summary` is what `link::click_summary` returns.
 
 ```tsx src/App.tsx
 import { useEffect, useState } from "react";
 import { worker, SESSION } from "./iii.js";
 
-type Click = { code: string; clicked_at: string };
-type StreamEvent = {
-  event: { type: "create" | "update" | "delete"; data: Click };
-};
+type Click = { id: number; code: string; clicked_at: string };
+type Summary = { total: number; last_id: number };
 ```
 
 #### Add client-side state
@@ -251,34 +255,67 @@ export default function App() {
   const [latest, setLatest] = useState<Click | null>(null)
 ```
 
-#### Subscribe to `clicks`
+#### Count clicks live
 
-<Warning title="Deprecated">
-  The `stream` trigger type is deprecated (iii-stream) and will be removed in an upcoming release.
-  Behavior is unchanged for now. For new code, bind to a worker-owned trigger type and
-  read the initial state with a query, as in
-  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
-</Warning>
+Bind to the `click-streamer::click` trigger type from Chapter 5. The tab is a worker like any other,
+so it listens the same way `watch.ts` did: it registers a function (`ui::on_click`) and a trigger
+that routes every click to it, then reads the starting total with `link::click_summary`.
 
-Subscribe to the `clicks` stream we setup in Chapter 5. The `useEffect` registers a function the
-browser exposes (`ui::on_click`) and a `stream` trigger that routes every new row to it; the cleanup
-unregisters both on unmount:
+Two details keep the counter correct:
+
+- **Bind first, then read.** A click that lands between the two is still delivered. Clicks that
+  arrive before the read returns wait in `early`, and the click id tells the tab whether the total
+  already includes them, so nothing is counted twice.
+- **Read again after a reconnect.** Clicks sent while the tab was disconnected are not replayed, but
+  the stored total is always current.
+
+The cleanup unregisters everything on unmount:
 
 ```tsx src/App.tsx
 useEffect(() => {
-  const fn = worker.registerFunction("ui::on_click", async (event: StreamEvent) => {
+  let lastId = 0; // highest click id already counted
+  let ready = false; // false until the read lands
+  const early: Click[] = [];
+
+  function apply(click: Click) {
+    if (click.id <= lastId) return; // a duplicate, or already in the total
+    lastId = click.id;
     setClicks((n) => n + 1);
-    setLatest(event.event.data);
+    setLatest(click);
+  }
+
+  async function sync() {
+    ready = false;
+    const summary = await worker.trigger<Record<string, never>, Summary>({
+      function_id: "link::click_summary",
+      // This tab is in its own namespace; link::click_summary lives in the project's.
+      namespace: "default",
+      payload: {},
+    });
+    lastId = summary.last_id;
+    setClicks(summary.total);
+    ready = true;
+    early.splice(0).forEach(apply);
+  }
+
+  const fn = worker.registerFunction("ui::on_click", async (click: Click) => {
+    if (ready) apply(click);
+    else early.push(click);
     return null;
   });
   const trig = worker.registerTrigger({
-    type: "stream",
+    type: "click-streamer::click",
     function_id: "ui::on_click",
-    config: { stream_name: "clicks", group_id: "all" },
+    config: {},
     // ui::on_click lives in this tab's namespace, so the trigger resolves it
     // there. registerTrigger fills that in from the worker's namespace.
   });
+  sync();
+  const stopListening = worker.addConnectionStateListener((state) => {
+    if (state === "connected") sync();
+  });
   return () => {
+    stopListening();
     trig.unregister();
     fn.unregister();
   };
@@ -335,7 +372,7 @@ async function onSubmit(e: React.FormEvent) {
 
 #### Create the UI
 
-Finally, the UI: a link shortener form, the last-created link, and the live streaming click counter.
+Finally, the UI: a link shortener form, the last-created link, and the live click counter.
 
 ```tsx src/App.tsx
   return (
@@ -380,10 +417,11 @@ npm run dev
 Open your browser, Vite typically hosts local websites at
 [http://localhost:5173](http://localhost:5173).
 
-### Shorten a link, then see the visits streamed in realtime
+### Shorten a link, then watch the clicks arrive in real time
 
 Shorten a link from the form, then visit `http://localhost:3111/s/<code>` a few times. You'll see
-the "Live clicks" counter goes up in real time.
+the "Live clicks" counter go up in real time. Reload the tab and the counter starts from the stored
+total, not from zero.
 
 ### Request user confirmation directly from the backend
 
@@ -403,6 +441,6 @@ The client is a worker that is exactly the same as every other worker. We connec
 RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the browser isn't
 trusted like our other workers. However any other worker can be gated this same way.
 
-Once everything is set up our client calls server functions directly, subscribes to streams for live
+Once everything is set up our client calls server functions directly, binds a trigger type for live
 updates, and registers functions the server calls back, all on the same iii bus as the rest of
 Linkly.

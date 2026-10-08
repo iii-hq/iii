@@ -1,51 +1,138 @@
 ---
 title: "Ch. 5: Stream live clicks"
 description:
-  "Push clicks to subscribers in real time with a dedicated click-streamer worker and iii-stream."
+  "Push clicks to listeners in real time from a dedicated click-streamer worker that owns a trigger
+  type, and read the running total with a query."
 owner: "devrel"
 type: "tutorial"
 ---
 
-<Warning title="Deprecated">
-  This chapter uses `iii-stream` (`stream::set`, `stream::list`) and the `pubsub` worker. `iii-stream`
-  is deprecated (iii-stream) and `pubsub` is deprecated (pubsub); both will be removed in an
-  upcoming release. Behavior is unchanged for now, so the chapter still works. For new code, use
-  the stored records recipe in
-  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
-</Warning>
+Real-time delivery means pushing data to whoever is listening the moment it changes, like a live
+click counter on a dashboard. On iii there is no special channel for this: a worker declares its
+own **trigger type**, and anyone who wants to hear about clicks binds a function to it, the same way
+you bound functions to `http` and `durable:subscriber` in earlier chapters. You'll give that job to a
+dedicated `click-streamer` worker so the `link` worker stays focused on links.
 
-`iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
-like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
-back as well as receive them), but here you only need to broadcast clicks outward. You'll move the
-live-broadcast concern into its own `click-streamer` worker so the `link` worker stays focused on
-links.
+A notification is not storage. The clicks already live in the `clicks` table from Chapter 3, so a
+listener that joins late reads the current total with a query, then counts the notifications that
+follow.
 
-## Add the workers
+<Note>
+  Earlier versions of this chapter used `iii-stream` and `pubsub`. If your project still has them,
+  see [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
+</Note>
 
-`iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
-manages the streaming. `iii-stream` is an engine worker, so it runs from the start; you only enable
-the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
+## Add the worker
+
+The `click-streamer` worker owns the live click feed. Uncomment the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
 click-streamer:
   worker: path://./click-streamer
-  start_after: [pubsub]
 ```
 
-## Broadcast clicks in real time
+## Own a trigger type in `click-streamer`
 
-Have `link` announce each click with a `pubsub` event. Then, have `click-streamer` push the event
-onto the live feed.
+A trigger type has a provider: the worker that registered it. When another worker binds a function
+to the type, the engine calls the provider's `registerTrigger` with that binding, and calls
+`unregisterTrigger` when the binding goes away or its worker disconnects. The provider keeps its
+own table of bindings and invokes their functions when something happens.
 
-### Add a `link.clicked` event to the `link` worker
+Create `click-streamer/src/index.ts`:
 
-First, publish a `link.clicked` event from `link::record_click`:
+```typescript click-streamer/src/index.ts
+import { registerWorker, TriggerAction } from "iii-sdk";
+import type { TriggerConfig } from "iii-sdk/trigger";
+import { Logger } from "@iii-dev/helpers/observability";
 
-```typescript link/src/index.ts {12-16}
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "click-streamer",
+});
+const logger = new Logger();
+
+type Click = { id: number; code: string; clicked_at: string };
+type ClickFilter = { code?: string };
+
+// Every function bound to click-streamer::click, keyed by trigger id. The cap
+// keeps a flood of listeners from growing it without limit.
+const MAX_LISTENERS = 256;
+const listeners = new Map<string, TriggerConfig<ClickFilter>>();
+
+worker.registerTriggerType<ClickFilter>(
+  {
+    id: "click-streamer::click",
+    description: "Fires after a click is recorded. Config: { code? }. Payload: { id, code, clicked_at }.",
+  },
+  {
+    async registerTrigger(binding) {
+      // Throwing rejects the binding, and the worker that asked sees the error.
+      const code = binding.config?.code;
+      if (code !== undefined && typeof code !== "string") {
+        throw new Error("click-streamer::click: code must be a string");
+      }
+      if (!listeners.has(binding.id) && listeners.size >= MAX_LISTENERS) {
+        throw new Error("click-streamer::click: too many listeners");
+      }
+      listeners.set(binding.id, binding);
+    },
+    async unregisterTrigger(binding) {
+      // Also called when the listening worker disconnects.
+      listeners.delete(binding.id);
+    },
+  },
+);
+
+worker.registerFunction("click-streamer::broadcast", async (click: Click) => {
+  // Copy the fields: the engine stamps bookkeeping fields such as
+  // _caller_worker_id on every delivery.
+  const event: Click = { id: click.id, code: click.code, clicked_at: click.clicked_at };
+  let delivered = 0;
+  for (const binding of listeners.values()) {
+    if (binding.config?.code && binding.config.code !== event.code) continue;
+    try {
+      await worker.trigger({
+        function_id: binding.function_id,
+        // Deliver where the listener registered, with its metadata.
+        namespace: binding.namespace,
+        metadata: binding.metadata,
+        payload: event,
+        action: TriggerAction.Void(),
+      });
+      delivered++;
+    } catch (err) {
+      logger.warn("click delivery failed", { trigger: binding.id, error: String(err) });
+    }
+  }
+  return { delivered };
+});
+
+logger.info("click-streamer ready");
+```
+
+A few things in there are the provider's job, because nobody else can do them:
+
+- **Validate the filter.** A listener can pass `{ code }` to hear about one link only. Anything else
+  is rejected at bind time instead of failing later.
+- **Bound the fan-out.** The table has a cap, and each delivery uses `TriggerAction.Void()`, so a
+  slow listener never holds up the others.
+- **Deliver where the listener lives.** Passing `binding.namespace` matters in Chapter 7, when a
+  browser tab binds from its own namespace.
+
+## Announce clicks from `link`
+
+Now have `link::record_click` hand each click to `click-streamer::broadcast`, after the row is
+written. `database::execute` returns the new row's id as `last_insert_id`; it travels with the
+click so listeners can tell a new click from one they have already counted. Replace
+`link::record_click` in `link/src/index.ts`:
+
+```typescript link/src/index.ts {4-7,15-20}
 worker.registerFunction(
   "link::record_click",
   async (payload: { code: string; clicked_at: string }) => {
-    await worker.trigger({
+    const { last_insert_id } = await worker.trigger<
+      { db: string; sql: string; params: string[] },
+      { last_insert_id: string | null }
+    >({
       function_id: "database::execute",
       payload: {
         db: DB,
@@ -53,9 +140,10 @@ worker.registerFunction(
         params: [payload.code, payload.clicked_at],
       },
     });
+    // The row is committed. Announce it, without waiting on the listeners.
     worker.trigger({
-      function_id: "publish",
-      payload: { topic: "link.clicked", data: payload },
+      function_id: "click-streamer::broadcast",
+      payload: { id: Number(last_insert_id), code: payload.code, clicked_at: payload.clicked_at },
       action: TriggerAction.Void(),
     });
     return { recorded: true };
@@ -65,48 +153,29 @@ worker.registerFunction(
 
 <Info>
   In the new code above we didn't use `await` and set the `action` to `TriggerAction.Void()`. This
-  causes the function to return immediately before it completes. This is a simple performance
-  enhancement with things like pubsub where we don't need guaranteed execution.
+  causes the function to return immediately before the broadcast completes. A live counter is best
+  effort: if a notification is lost, the listener's next read of the total corrects it, so the click
+  write never waits on the listeners.
 </Info>
 
-### Setup the `click-streamer` worker
+## Read the current total
 
-Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
-a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
-WebSocket subscribed to that stream and group. Create `click-streamer/src/index.ts`:
+A listener that connects now has missed every earlier click, and notifications are never replayed.
+Give it a query to start from: add `link::click_summary` to `link/src/index.ts`. It returns the
+number of clicks and the highest click id, so a listener knows which notifications are already
+included in the total.
 
-```typescript click-streamer/src/index.ts
-import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/helpers/observability";
-
-const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
-  workerName: "click-streamer",
+```typescript link/src/index.ts
+worker.registerFunction("link::click_summary", async () => {
+  const { rows } = await worker.trigger<
+    { db: string; sql: string },
+    { rows: Array<{ total: number; last_id: number | null }> }
+  >({
+    function_id: "database::query",
+    payload: { db: DB, sql: "SELECT COUNT(*) AS total, MAX(id) AS last_id FROM clicks" },
+  });
+  return { total: rows[0]?.total ?? 0, last_id: rows[0]?.last_id ?? 0 };
 });
-const logger = new Logger();
-
-worker.registerFunction(
-  "click-streamer::broadcast",
-  async (data: { code: string; clicked_at: string }) => {
-    await worker.trigger({
-      function_id: "stream::set",
-      payload: {
-        stream_name: "clicks",
-        group_id: "all",
-        item_id: `${data.code}-${data.clicked_at}`,
-        data,
-      },
-    });
-    return { streamed: true };
-  },
-);
-
-worker.registerTrigger({
-  type: "subscribe",
-  function_id: "click-streamer::broadcast",
-  config: { topic: "link.clicked" },
-});
-
-logger.info("click-streamer ready");
 ```
 
 Restart Compose so it picks up the change:
@@ -115,11 +184,48 @@ Restart Compose so it picks up the change:
 iii trigger compose::restart
 ```
 
-The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.
+The browser you build in Chapter 7 binds to `click-streamer::click` and counts clicks live.
 
 ## See it work
 
-With the engine running, create a few links and follow each:
+A listener is any worker that binds a function to the trigger type. Create a small one that prints
+each click, in `click-streamer/watch.ts`:
+
+```typescript click-streamer/watch.ts
+import { registerWorker } from "iii-sdk";
+
+const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+  workerName: "click-watcher",
+});
+
+type Click = { id: number; code: string; clicked_at: string };
+
+worker.registerFunction("click-watcher::print", async (click: Click) => {
+  console.log(`click #${click.id}: ${click.code} at ${click.clicked_at}`);
+  return null;
+});
+
+// Bind first, then read the total, so no click falls between the two.
+worker.registerTrigger({
+  type: "click-streamer::click",
+  function_id: "click-watcher::print",
+  config: {},
+});
+
+const summary = await worker.trigger<Record<string, never>, { total: number; last_id: number }>({
+  function_id: "link::click_summary",
+  payload: {},
+});
+console.log(`watching clicks, ${summary.total} recorded so far`);
+```
+
+Run it from the `click-streamer` folder and leave it running:
+
+```bash
+cd click-streamer && npx tsx watch.ts
+```
+
+In a second terminal, create a few links and follow each:
 
 ```bash
 for n in $(seq 4 6); do
@@ -129,16 +235,32 @@ for n in $(seq 4 6); do
 done
 ```
 
-Then read the live `clicks` stream:
+Each redirect shows up in the watcher as soon as its click row is written:
 
-```bash
-iii trigger stream::list stream_name=clicks group_id=all
+```text
+watching clicks, 0 recorded so far
+click #1: iii-example-4 at 2026-05-27T10:15:02.114Z
+click #2: iii-example-5 at 2026-05-27T10:15:02.169Z
+click #3: iii-example-6 at 2026-05-27T10:15:02.221Z
 ```
 
-Each redirect lands in the stream as the `click-streamer` worker broadcasts it.
+The total is always one query away:
+
+```bash
+iii trigger link::click_summary
+```
+
+```json
+{ "total": 3, "last_id": 3 }
+```
+
+Stop the watcher with `Ctrl+C`. Its binding goes away with it, and `click-streamer` drops it from
+its table.
 
 ## Conclusion
 
-Linkly now streams every click to subscribers in real time through a dedicated `click-streamer`
-worker. Next, in [Ch. 6: Move bulk data with channels](/tutorials/linkly/channels), you bulk-load
-links from a CSV in a single streamed upload.
+Linkly now pushes every click to its listeners in real time through a dedicated `click-streamer`
+worker that owns the `click-streamer::click` trigger type, while the `clicks` table stays the
+source of truth behind `link::click_summary`. Next, in
+[Ch. 6: Move bulk data with channels](/tutorials/linkly/channels), you bulk-load links from a CSV in
+a single streamed upload.
