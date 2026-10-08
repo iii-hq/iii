@@ -1,0 +1,275 @@
+/* Extensibility: ask → answer → one command → a resolve tree that fills top to bottom. One accent: the joined check. */
+.preview {
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --indent: 22px;
+  margin-block-start: 0;
+}
+.count {
+  display: inline-block;
+  min-width: 2ch;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 16px;
+}
+
+/* 1 · Chat */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.message {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+.message[data-from="compose"] {
+  opacity: 0;
+  translate: 0 6px;
+  filter: blur(4px);
+}
+.message[data-from="compose"][data-visible="true"] {
+  opacity: 1;
+  translate: 0 0;
+  filter: blur(0);
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--muted-foreground);
+}
+.avatarIii {
+  font-family: var(--font-pixel);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--foreground);
+}
+.bubble {
+  display: grid;
+  padding: 9px 12px;
+  border-radius: 4px 12px 12px 12px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.message[data-from="compose"] .bubble {
+  color: var(--muted-foreground);
+}
+.sender {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.ghost,
+.typedText {
+  grid-area: 1 / 1;
+}
+.ghost {
+  visibility: hidden;
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--foreground);
+}
+
+/* 2 · Command */
+.run {
+  opacity: 0.4;
+}
+.run[data-visible="true"] {
+  opacity: 1;
+}
+.response {
+  margin-block-start: 6px;
+  padding-inline-start: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  opacity: 0;
+}
+.response[data-visible="true"] {
+  opacity: 1;
+}
+
+/* 3 · Resolve tree. Rows indent per depth; the connector is drawn with pseudo-elements so it scales with the row. */
+.tree {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 12px;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.row {
+  position: relative;
+  display: grid;
+  border-radius: 6px;
+  grid-template-columns: auto minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  padding-inline-start: calc(var(--depth, 0) * var(--indent));
+  font-size: 12.5px;
+  opacity: 0;
+  translate: 0 4px;
+}
+.row[data-joined="true"] {
+  opacity: 1;
+  translate: 0 0;
+}
+.row[data-depth="1"] {
+  --depth: 1;
+}
+.row[data-depth="2"] {
+  --depth: 2;
+}
+/* ├ or └: a vertical from the parent plus a short horizontal into the row. */
+.row[data-branch]::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: calc((var(--depth) - 1) * var(--indent) + 7px);
+  width: 9px;
+  height: 50%;
+  border-inline-start: 1px solid var(--line);
+  border-block-end: 1px solid var(--line);
+  border-end-start-radius: 4px;
+}
+.row[data-branch="mid"]::after,
+.row[data-rail="true"] > .name::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  border-inline-start: 1px solid var(--line);
+}
+.row[data-branch="mid"]::after {
+  inset-inline-start: calc((var(--depth) - 1) * var(--indent) + 7px);
+}
+/* A grandchild also carries its grandparent's line, which continues past it to the last branch. */
+.row[data-rail="true"] > .name::before {
+  inset-inline-start: 7px;
+}
+/* The rail is positioned against the row, not the name. */
+.name {
+  position: static;
+}
+.row[data-branch="last"][data-depth="1"] {
+  align-items: start;
+  padding-block: 6px;
+}
+.row[data-branch="last"][data-depth="1"]::before {
+  height: 22px;
+}
+.name {
+  color: var(--foreground);
+  white-space: nowrap;
+}
+.note {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.state {
+  display: grid;
+  place-items: center;
+  color: var(--hero-accent);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.row[data-joined="true"] .state {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  color: var(--foreground);
+  opacity: 0;
+  translate: 0 4px;
+}
+.chip[data-joined="true"] {
+  opacity: 1;
+  translate: 0 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* What just joined gets a brief highlight, so the eye knows where to look; it fades on its own. */
+  .row[data-joined="true"]:not(:has(.chips)) {
+    animation: joined 600ms var(--enter);
+  }
+  .chip[data-joined="true"] {
+    animation: joined-chip 600ms var(--enter);
+  }
+  @keyframes joined {
+    from {
+      background-color: oklch(1 0 0 / 0.06);
+    }
+  }
+  @keyframes joined-chip {
+    from {
+      background-color: oklch(1 0 0 / 0.14);
+    }
+  }
+  .message[data-from="compose"] {
+    transition-property: opacity, translate, filter;
+    transition-duration: 240ms;
+    transition-timing-function: var(--enter);
+  }
+  .run,
+  .response {
+    transition: opacity 200ms ease;
+  }
+  .row,
+  .chip {
+    transition-property: opacity, translate;
+    transition-duration: 260ms;
+    transition-timing-function: var(--enter);
+  }
+  .state {
+    transition-property: opacity, scale, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+    transition-delay: 60ms;
+  }
+}
+@media (max-width: 540px) {
+  .body {
+    padding: 16px 14px;
+  }
+  .note {
+    display: none;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) 16px;
+  }
+}

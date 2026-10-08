@@ -41,6 +41,11 @@ use crate::{
     workers::{traits::Worker, worker::ws_handler::channel_ws_upgrade},
 };
 
+/// Main worker JSON frame: 16 MiB (16,777,216 bytes), not channel transport.
+pub(crate) const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Main worker JSON message: 64 MiB (67,108,864 bytes), not channel transport.
+pub(crate) const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 pub const DEFAULT_PORT: u16 = 49134;
 
 /// Default deadline for an accepted TCP connection to complete its HTTP
@@ -332,14 +337,16 @@ async fn ws_handler(
     let engine = state.engine.clone();
     let config = state.config.clone();
 
-    ws.on_upgrade(move |socket| async move {
-        if let Err(err) = engine
-            .handle_worker(socket, addr, uri, headers, config, state.shutdown_rx)
-            .await
-        {
-            tracing::error!(addr = %addr, error = ?err, "worker error");
-        }
-    })
+    ws.max_frame_size(MAX_JSON_FRAME_BYTES)
+        .max_message_size(MAX_JSON_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(err) = engine
+                .handle_worker(socket, addr, uri, headers, config, state.shutdown_rx)
+                .await
+            {
+                tracing::error!(addr = %addr, error = ?err, "worker error");
+            }
+        })
 }
 
 /// WS upgrade handler for the OTEL-only endpoint (`/otel`).

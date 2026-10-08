@@ -9,7 +9,7 @@
 # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
 [package]
 name = "iii-console"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 edition = "2021"
 description = "Removed: placeholder that points to the iii console in ADE"
 license = "Apache-2.0"

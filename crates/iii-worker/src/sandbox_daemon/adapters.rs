@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -43,12 +44,119 @@ const OUTPUT_CAP: usize = 1_048_576;
 /// every call.
 static PROVISION_DONE: AtomicBool = AtomicBool::new(false);
 
+/// Refuse to boot a sandbox unless this binary carries an embedded iii-init.
+///
+/// Only an embedded init is guaranteed to understand the overlay boot
+/// (`III_BLOCK_ROOT_*`); a downloaded `~/.iii/lib/iii-init` may predate it
+/// (see `cli::overlay`). Without one the isolated overlay root cannot be
+/// assembled, and the sandbox has no other isolated boot shape, so fail
+/// closed.
+pub(crate) fn require_overlay_capable(has_embedded_init: bool) -> Result<(), SandboxError> {
+    if has_embedded_init {
+        return Ok(());
+    }
+    Err(SandboxError::BootFailed(
+        "sandbox isolation requires an iii-worker built with an embedded iii-init \
+         (official release builds, or `make sandbox-debug` locally); without it the \
+         sandbox root cannot be isolated from the shared image cache"
+            .to_string(),
+    ))
+}
+
+/// Build (or reuse) the read-only erofs image of `base_rootfs`, the guest's
+/// overlay lower. Written next to the cache dir (`<dir>.erofs`) and shared
+/// with managed workers on the same image; see `cli::erofs::ensure_base_erofs`.
+pub(crate) async fn prepare_overlay_lower(base_rootfs: &Path) -> Result<PathBuf, SandboxError> {
+    require_overlay_capable(iii_filesystem::init::has_init())?;
+    let base = base_rootfs.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&base))
+        .await
+        .map_err(|e| SandboxError::BootFailed(format!("erofs build task failed: {e}")))?
+        .map_err(|e| SandboxError::BootFailed(format!("build read-only base erofs: {e}")))
+}
+
+/// `__vm-boot` arguments for one sandbox.
+///
+/// Boot shape: `--rootfs` is the per-sandbox trampoline, served
+/// read-only (`--rootfs-readonly`); the image arrives as the read-only erofs
+/// `--rootfs-lower` under `--rootfs-mode overlay`. There is no
+/// `--rootfs-upper`, so iii-init uses an in-guest tmpfs upper that dies with
+/// the VM. The shared cache directory itself is never passed.
+///
+/// Mirrors `worker_manager::libkrun::run_dev` arg surface. Flag-name
+/// alignment is not cosmetic: VmBootArgs declares `vcpus` / `ram` / `exec`,
+/// so the older `--cpus` / `--memory-mb` and missing `--exec` caused clap to
+/// reject the args, the child to exit instantly, and a 30s `shell.sock` wait
+/// that ended in an opaque S300.
+pub(crate) fn vm_boot_args(
+    params: &BootParams,
+    rootfs_lower: &Path,
+    control_sock: &Path,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "--rootfs".into(),
+        params.rootfs.clone().into(),
+        "--rootfs-readonly".into(),
+        "--rootfs-mode".into(),
+        "overlay".into(),
+        "--rootfs-lower".into(),
+        rootfs_lower.into(),
+        "--exec".into(),
+        "/bin/sh".into(),
+        // Keep PID 1 alive; iii-init supervisor serves every
+        // `sb.exec()` through `shell.sock` independently of PID 1's
+        // foreground command.
+        "--arg".into(),
+        "-c".into(),
+        "--arg".into(),
+        "exec sleep infinity".into(),
+        // `params.workdir` is a host path (the sandbox's overlay
+        // merged dir) and does NOT exist inside the VM. iii-init's
+        // supervisor chdir's here before spawning PID-1, producing
+        // `spawn_initial: No such file or directory (os error 2)`.
+        // The VM's rootfs defines its own semantics; pass `/` as a
+        // universally-valid cwd and let sandbox::exec requests carry
+        // their own `cwd` when callers care.
+        "--workdir".into(),
+        "/".into(),
+        "--vcpus".into(),
+        params.cpus.to_string().into(),
+        "--ram".into(),
+        params.memory_mb.to_string().into(),
+        "--shell-sock".into(),
+        params.shell_sock.clone().into(),
+        "--control-sock".into(),
+        control_sock.into(),
+    ];
+    if params.network {
+        args.push("--network".into());
+        // Idle-reaper beacon: the smoltcp stack lives in the child
+        // spawned here, and this file's mtime is its only channel back
+        // to the daemon. Without it a sandbox serving pure network
+        // traffic reads as idle and is reaped mid-service.
+        args.push("--net-activity-file".into());
+        args.push(crate::sandbox_daemon::registry::net_activity_path(&params.shell_sock).into());
+    }
+    for e in &params.env {
+        args.push("--env".into());
+        args.push(e.into());
+    }
+    args
+}
+
 pub struct IiiWorkerLauncher;
 
 #[async_trait::async_trait]
 impl VmLauncher for IiiWorkerLauncher {
+    fn preflight(&self) -> Result<(), SandboxError> {
+        require_overlay_capable(iii_filesystem::init::has_init())
+    }
+
     async fn boot(&self, params: &BootParams) -> Result<BootHandle, SandboxError> {
         let t_boot_start = Instant::now();
+        // Defense in depth: `handle_create` already ran `preflight`;
+        // re-check before libkrunfw provisioning for any other caller.
+        require_overlay_capable(iii_filesystem::init::has_init())?;
         // We're running inside the iii-worker binary ourselves, so the
         // path to fork+exec for __vm-boot is our own executable. More
         // reliable than a PATH lookup: current_exe() is guaranteed to
@@ -136,29 +244,20 @@ impl VmLauncher for IiiWorkerLauncher {
             tracing::debug!("boot_phase: ensure_libkrunfw (skipped, cached)");
         }
 
-        // Self-heal `init.krun` on disk. For iii-worker built WITHOUT
-        // --features embed-init, iii-filesystem's virtual passthrough
-        // serves nothing for /init.krun, and vm_boot's pre-boot check
-        // demands the file exist on the rootfs. For embed-init builds,
-        // has_init() returns true and this block is a no-op.
-        if !iii_filesystem::init::has_init() {
-            let dest = params.rootfs.join("init.krun");
-            if !dest.exists() {
-                let src = crate::cli::firmware::download::ensure_init_binary()
-                    .await
-                    .map_err(|e| {
-                        SandboxError::BootFailed(format!("ensure_init_binary failed: {e}"))
-                    })?;
-                std::fs::copy(&src, &dest).map_err(|e| {
-                    SandboxError::BootFailed(format!("copy init.krun to {}: {e}", dest.display()))
-                })?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
-                }
-            }
-        }
+        // The guest root is this sandbox's read-only trampoline
+        // (`params.rootfs`) plus the cached image as a read-only erofs
+        // lower; the shared cache itself is never handed to the guest, and
+        // nothing is written into it (the embedded init serves /init.krun
+        // from memory). Deliberately does NOT consult `III_ROOTFS_MODE`:
+        // the managed-worker legacy opt-out would re-open the shared
+        // writable root.
+        let t_erofs = Instant::now();
+        let rootfs_lower = prepare_overlay_lower(&params.base_rootfs).await?;
+        tracing::info!(
+            ms = t_erofs.elapsed().as_millis() as u64,
+            lower = %rootfs_lower.display(),
+            "boot_phase: read-only base erofs"
+        );
 
         // `--control-sock` is what flips the in-VM iii-init into
         // supervisor mode so it binds `shell.sock`. Pairing the control
@@ -168,49 +267,7 @@ impl VmLauncher for IiiWorkerLauncher {
 
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("__vm-boot")
-            .arg("--rootfs")
-            .arg(&params.rootfs)
-            .arg("--exec")
-            .arg("/bin/sh")
-            // Keep PID 1 alive; iii-init supervisor serves every
-            // `sb.exec()` through `shell.sock` independently of PID 1's
-            // foreground command.
-            .arg("--arg")
-            .arg("-c")
-            .arg("--arg")
-            .arg("exec sleep infinity")
-            // `params.workdir` is a host path (the sandbox's overlay
-            // merged dir) and does NOT exist inside the VM. iii-init's
-            // supervisor chdir's here before spawning PID-1, producing
-            // `spawn_initial: No such file or directory (os error 2)`.
-            // The VM's rootfs defines its own semantics; pass `/` as a
-            // universally-valid cwd and let sandbox::exec requests carry
-            // their own `cwd` when callers care.
-            .arg("--workdir")
-            .arg("/")
-            .arg("--vcpus")
-            .arg(params.cpus.to_string())
-            .arg("--ram")
-            .arg(params.memory_mb.to_string())
-            .arg("--shell-sock")
-            .arg(&params.shell_sock)
-            .arg("--control-sock")
-            .arg(&control_sock);
-
-        if params.network {
-            cmd.arg("--network");
-            // Idle-reaper beacon: the smoltcp stack lives in the child
-            // spawned here, and this file's mtime is its only channel back
-            // to the daemon. Without it a sandbox serving pure network
-            // traffic reads as idle and is reaped mid-service.
-            cmd.arg("--net-activity-file")
-                .arg(crate::sandbox_daemon::registry::net_activity_path(
-                    &params.shell_sock,
-                ));
-        }
-        for e in &params.env {
-            cmd.arg("--env").arg(e);
-        }
+            .args(vm_boot_args(params, &rootfs_lower, &control_sock));
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
@@ -784,5 +841,231 @@ mod tests {
     #[test]
     fn classify_empty_message_returns_none() {
         assert!(classify_dispatcher_spawn_error("", "/bin/true", 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod sandbox_boot_shape_tests {
+    use super::*;
+
+    const TRAMPOLINE: &str = "/tmp/iii-sandbox/sb/root";
+    const CACHE: &str = "/home/u/.iii/cache/img";
+    const LOWER: &str = "/home/u/.iii/cache/img.erofs";
+
+    fn params(network: bool) -> BootParams {
+        BootParams {
+            rootfs: PathBuf::from(TRAMPOLINE),
+            base_rootfs: PathBuf::from(CACHE),
+            workdir: PathBuf::from("/tmp/iii-sandbox/sb/merged"),
+            shell_sock: PathBuf::from("/tmp/iii-sandbox/sb/shell.sock"),
+            cpus: 1,
+            memory_mb: 512,
+            env: vec!["A=1".into()],
+            network,
+        }
+    }
+
+    fn args(network: bool) -> Vec<String> {
+        vm_boot_args(
+            &params(network),
+            Path::new(LOWER),
+            Path::new("/tmp/iii-sandbox/sb/control.sock"),
+        )
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+    }
+
+    fn value_of(args: &[String], flag: &str) -> Option<String> {
+        let i = args.iter().position(|a| a == flag)?;
+        args.get(i + 1).cloned()
+    }
+
+    #[test]
+    fn sandbox_boots_on_read_only_trampoline_with_erofs_lower() {
+        let a = args(false);
+        assert_eq!(value_of(&a, "--rootfs").as_deref(), Some(TRAMPOLINE));
+        assert!(a.iter().any(|x| x == "--rootfs-readonly"));
+        assert_eq!(value_of(&a, "--rootfs-mode").as_deref(), Some("overlay"));
+        assert_eq!(value_of(&a, "--rootfs-lower").as_deref(), Some(LOWER));
+        assert!(
+            !a.iter().any(|x| x == "--rootfs-upper"),
+            "the upper must be the in-guest tmpfs"
+        );
+        assert!(
+            !a.iter().any(|x| x == CACHE),
+            "the shared cache dir must never be passed to the guest"
+        );
+        assert_eq!(value_of(&a, "--env").as_deref(), Some("A=1"));
+        assert!(!a.iter().any(|x| x == "--network"));
+    }
+
+    #[test]
+    fn network_flag_adds_activity_beacon() {
+        let a = args(true);
+        assert!(a.iter().any(|x| x == "--network"));
+        assert_eq!(
+            value_of(&a, "--net-activity-file").as_deref(),
+            Some("/tmp/iii-sandbox/sb/net-activity")
+        );
+    }
+
+    #[test]
+    fn sandbox_args_parse_as_vm_boot_args() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: crate::cli::vm_boot::VmBootArgs,
+        }
+
+        let mut argv = vec![OsString::from("test")];
+        argv.extend(vm_boot_args(
+            &params(true),
+            Path::new(LOWER),
+            Path::new("/c.sock"),
+        ));
+        let parsed = Wrapper::try_parse_from(argv)
+            .expect("__vm-boot must accept the sandbox args")
+            .args;
+        assert!(parsed.rootfs_readonly);
+        assert_eq!(parsed.rootfs, TRAMPOLINE);
+        assert_eq!(parsed.rootfs_mode, "overlay");
+        assert_eq!(parsed.rootfs_lower.as_deref(), Some(LOWER));
+        assert!(parsed.rootfs_upper.is_none());
+    }
+
+    #[test]
+    fn refuses_to_boot_without_embedded_init() {
+        assert!(matches!(
+            require_overlay_capable(false),
+            Err(SandboxError::BootFailed(m)) if m.contains("embedded iii-init")
+        ));
+        assert!(require_overlay_capable(true).is_ok());
+    }
+
+    fn fake_cache(dir: &Path) -> PathBuf {
+        let cache = dir.join("img");
+        std::fs::create_dir_all(cache.join("bin")).unwrap();
+        std::fs::write(cache.join("bin/sh"), b"#!fake").unwrap();
+        cache
+    }
+
+    #[cfg(not(feature = "embed-init"))]
+    #[tokio::test]
+    async fn non_embedded_build_refuses_before_touching_the_cache() {
+        let td = tempfile::tempdir().unwrap();
+        let cache = fake_cache(td.path());
+        assert!(prepare_overlay_lower(&cache).await.is_err());
+        assert!(!cache.with_file_name("img.erofs").exists());
+    }
+
+    #[cfg(feature = "embed-init")]
+    #[tokio::test]
+    async fn embedded_build_prepares_erofs_lower_next_to_cache() {
+        assert!(
+            iii_filesystem::init::has_init(),
+            "embed-init build embedded only the 1-byte placeholder: build iii-init \
+             for x86_64-unknown-linux-musl --release first"
+        );
+        let td = tempfile::tempdir().unwrap();
+        let cache = fake_cache(td.path());
+        let lower = prepare_overlay_lower(&cache).await.unwrap();
+        assert_eq!(lower, cache.with_file_name("img.erofs"));
+        assert!(std::fs::metadata(&lower).unwrap().len() > 0);
+        // Nothing was written inside the shared cache dir.
+        let entries: Vec<OsString> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![OsString::from("bin")]);
+    }
+
+    #[cfg(not(feature = "embed-init"))]
+    #[test]
+    fn launcher_preflight_refuses_without_embedded_init() {
+        assert!(matches!(
+            IiiWorkerLauncher.preflight(),
+            Err(SandboxError::BootFailed(_))
+        ));
+    }
+
+    #[cfg(feature = "embed-init")]
+    #[test]
+    fn launcher_preflight_accepts_embedded_init() {
+        assert!(IiiWorkerLauncher.preflight().is_ok());
+    }
+
+    /// The joint the shape tests above cannot see: the sandbox args, through
+    /// the real `__vm-boot` parser and `root_share`, must yield a share that
+    /// refuses guest writes and leaves the host trampoline untouched.
+    #[test]
+    fn parsed_sandbox_args_serve_a_read_only_root() {
+        use clap::Parser;
+        use iii_filesystem::{Context, DynFileSystem, Extensions, FsOptions};
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: crate::cli::vm_boot::VmBootArgs,
+        }
+
+        let td = tempfile::tempdir().unwrap();
+        let mut p = params(false);
+        p.rootfs = td.path().to_path_buf();
+        let mut argv = vec![OsString::from("test")];
+        argv.extend(vm_boot_args(&p, Path::new(LOWER), Path::new("/c.sock")));
+        let parsed = Wrapper::try_parse_from(argv).unwrap().args;
+
+        let fs = crate::cli::vm_boot::root_share(&parsed).unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let name = std::ffi::CString::new("planted").unwrap();
+        let err = fs
+            .mkdir(ctx, 1, &name, 0o755, 0, Extensions::default())
+            .err()
+            .expect("mkdir on the sandbox root must fail");
+        assert_eq!(err.raw_os_error(), Some(30), "expected EROFS, got {err:?}");
+        assert!(std::fs::read_dir(td.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn read_only_rootfs_skips_the_managed_layout_migration() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: crate::cli::vm_boot::VmBootArgs,
+        }
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut p = params(false);
+        p.rootfs = sandbox.path().to_path_buf();
+        let mut argv = vec![OsString::from("test")];
+        argv.extend(vm_boot_args(&p, Path::new(LOWER), Path::new("/c.sock")));
+        let mut parsed = Wrapper::try_parse_from(argv).unwrap().args;
+
+        crate::cli::vm_boot::migrate_rootfs_layout(&parsed);
+        assert!(
+            std::fs::read_dir(sandbox.path()).unwrap().next().is_none(),
+            "the sandbox trampoline must stay untouched"
+        );
+
+        // Control: without --rootfs-readonly (a managed worker dir) the
+        // migration still runs and stamps the layout marker.
+        let managed = tempfile::tempdir().unwrap();
+        parsed.rootfs = managed.path().display().to_string();
+        parsed.rootfs_readonly = false;
+        crate::cli::vm_boot::migrate_rootfs_layout(&parsed);
+        assert_eq!(
+            crate::cli::overlay::read_layout(managed.path()).as_deref(),
+            Some(crate::cli::overlay::LAYOUT_OVERLAY)
+        );
     }
 }

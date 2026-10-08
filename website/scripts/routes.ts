@@ -1,6 +1,6 @@
 // Top-level marketing routes, served extensionless from dist/*.html via the
 // CloudFront KVS route map (see routes-kvs.ts). Page titles, descriptions,
-// and OG meta live in each page's `metadata` export under src/app/(site)/ —
+// and OG meta live in each page's `metadata` export under app/(site)/ —
 // this registry only feeds the sitemap generator.
 export interface RouteMeta {
   path: string

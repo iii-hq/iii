@@ -3,7 +3,7 @@ import { loadDeck } from "../generated/decks"
 
 /**
  * The one client entry for every /roadmap/<slug>/deck/ page (mounted, browser
- * only, by website/src/app/(deck)/roadmap/[slug]/deck/). Decks stay
+ * only, by website/app/(deck)/roadmap/[slug]/deck/). Decks stay
  * code-split: `loadDeck` (roadmap/generated/decks.ts, written before every
  * dev/build) is a switch of static `import()`s, so a page only downloads its
  * own deck's chunk — the same per-deck isolation the standalone per-deck Vite

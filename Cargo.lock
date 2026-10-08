@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2752,7 +2752,6 @@ dependencies = [
  "chrono",
  "clap",
  "clap-help",
- "cliclack",
  "colored",
  "console 0.15.11",
  "criterion",
@@ -2873,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "iii-console"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 
 [[package]]
 name = "iii-example"
@@ -2901,7 +2900,7 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -2954,14 +2953,14 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "iii-helpers",
 ]
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "async-trait",
  "ctor",
@@ -3023,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3809,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -5533,7 +5532,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 dependencies = [
  "anyhow",
  "cliclack",

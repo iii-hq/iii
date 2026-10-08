@@ -1,0 +1,339 @@
+/* Reactivity: PR → stem → iii hub → fan-out → handlers. Lines light with transforms (scale), never width or height. */
+.preview {
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --move: cubic-bezier(0.77, 0, 0.175, 1);
+  margin-block-start: 0;
+}
+.fn {
+  margin-inline-start: auto;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 28px 20px 30px;
+}
+
+/* 1 · Source */
+.source {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--muted-foreground);
+}
+.source[data-opened="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--foreground);
+}
+.sourceTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.sourceMeta {
+  margin-block-start: 2px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.badge {
+  margin-inline-start: auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.badge[data-opened="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--foreground);
+}
+
+/* 2 · Stem and hub */
+.stem {
+  position: relative;
+  align-self: center;
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+}
+.stem > span,
+.fanStem::after,
+.drop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--foreground);
+  transform: scaleY(0);
+  transform-origin: top;
+}
+.stem[data-lit="true"] > span {
+  transform: scaleY(1);
+}
+.hub {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 10px;
+  padding: 7px 14px 7px 8px;
+  border-radius: 999px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.hub[data-lit="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.hub code {
+  color: var(--foreground);
+}
+.hubMark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-family: var(--font-pixel);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--foreground);
+}
+.hubNote {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 3 · Fan-out: a stem from the hub, a rail across the columns, and one drop per handler. */
+.fan {
+  position: relative;
+  height: 34px;
+}
+.fanStem {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+.rail,
+.railNext,
+.railLit {
+  position: absolute;
+  top: 14px;
+  height: 1px;
+}
+.rail {
+  left: 12.5%;
+  right: 37.5%;
+  background: var(--line);
+}
+/* The rail out to the empty fourth slot is dashed until a handler subscribes there. */
+.railNext {
+  left: 62.5%;
+  right: 12.5%;
+  background-image: linear-gradient(to right, var(--line) 50%, transparent 50%);
+  background-size: 6px 1px;
+}
+.fan[data-added="true"] .railNext {
+  background: var(--line);
+}
+.railLit {
+  background: var(--foreground);
+  transform: scaleX(0);
+}
+.railLeft {
+  left: 12.5%;
+  right: 50%;
+  transform-origin: right;
+}
+.railRight {
+  left: 50%;
+  right: 37.5%;
+  transform-origin: left;
+}
+.railLit[data-lit="true"] {
+  transform: scaleX(1);
+}
+.drop {
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.drop[data-subscribed="false"] {
+  background-image: linear-gradient(to bottom, var(--line) 50%, transparent 50%);
+  background-color: transparent;
+  background-size: 1px 6px;
+}
+.fanStem[data-lit="true"]::after,
+.drop[data-lit="true"]::after {
+  transform: scaleY(1);
+}
+
+/* 4 · Handlers */
+.handlers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.handler {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 150px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.handler[data-subscribed="false"] {
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed var(--line);
+  outline-offset: -1px;
+}
+.handler[data-reacted="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.handlerName {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.handlerFn {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.handlerState {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-block-start: auto;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.handler[data-reacted="true"] .handlerState {
+  color: var(--foreground);
+}
+.stateIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.listening {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+.check {
+  position: absolute;
+  inset: 0;
+  color: var(--hero-accent);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.handler[data-reacted="true"] .listening {
+  opacity: 0;
+}
+.handler[data-reacted="true"] .check {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.empty {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .source,
+  .badge,
+  .hub,
+  .handler {
+    transition-property: box-shadow, color;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
+  }
+  /* The event travels: stem (220ms) → rail out both ways (240ms) → drops (200ms), each starting as the last lands. */
+  .stem > span {
+    transition: transform 220ms var(--move);
+  }
+  .fanStem::after {
+    transition: transform 160ms var(--move);
+  }
+  .railLit {
+    transition: transform 240ms var(--move) 140ms;
+  }
+  .drop::after {
+    transition: transform 200ms var(--move) 360ms;
+  }
+  .handler[data-subscribed="true"] {
+    animation: handler-in 300ms var(--enter) both;
+  }
+  .check {
+    transition-property: opacity, scale, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+    transition-delay: inherit;
+  }
+  .listening {
+    transition: opacity 150ms ease;
+    animation: listen 1.6s ease-in-out infinite;
+  }
+  .handler[data-reacted="true"] .listening {
+    animation: none;
+  }
+  @keyframes handler-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+  @keyframes listen {
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+@media (max-width: 540px) {
+  .body {
+    padding: 16px 14px;
+  }
+  .handlers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .fan {
+    display: none;
+  }
+  .hub {
+    margin-block-end: 14px;
+  }
+}
+/* When the loop starts over, the lit path snaps off instead of rewinding through its delays. */
+.preview[data-beat="0"] .stem > span,
+.preview[data-beat="0"] .fanStem::after,
+.preview[data-beat="0"] .railLit,
+.preview[data-beat="0"] .drop::after {
+  transition: none;
+}

@@ -312,6 +312,107 @@ fn extract_layer_handles_whiteout_files() {
     );
 }
 
+/// Build a tar.gz from (path, `Some(content)` for a file / `None` for a
+/// directory, mode) entries.
+#[cfg(unix)]
+fn make_layer_with_dirs(entries: &[(&str, Option<&[u8]>, u32)]) -> Vec<u8> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    {
+        let mut archive = tar::Builder::new(&mut encoder);
+        for (path, content, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(path).unwrap();
+            header.set_mode(*mode);
+            let data: &[u8] = match content {
+                Some(c) => {
+                    header.set_entry_type(tar::EntryType::Regular);
+                    c
+                }
+                None => {
+                    header.set_entry_type(tar::EntryType::Directory);
+                    &[]
+                }
+            };
+            header.set_size(data.len() as u64);
+            header.set_cksum();
+            archive.append(&header, data).unwrap();
+        }
+        archive.finish().unwrap();
+    }
+    encoder.finish().unwrap()
+}
+
+/// Red Hat images ship directories without owner write bits (UBI 9:
+/// `/usr/bin`, `/usr/lib`, `/usr/sbin` and ca-trust's `directory-hash` are
+/// 0555, `/root` is 0550), each followed by its own entries. An
+/// unprivileged puller must still extract those entries, apply a later
+/// layer's files and whiteouts inside them, and be able to delete the tree
+/// (failed staging dir, stale cache). Only the owner bits may change: a
+/// 0000 directory gains exactly u+rwx, and special bits (sticky) are kept.
+#[cfg(unix)]
+#[test]
+fn extract_layer_handles_directories_without_owner_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let rootfs = dir.path().join("rootfs");
+    std::fs::create_dir(&rootfs).unwrap();
+
+    let layer1 = make_layer_with_dirs(&[
+        ("usr/", None, 0o755),
+        ("usr/bin/", None, 0o555),
+        ("usr/bin/tool", Some(b"v1"), 0o755),
+        ("usr/bin/old", Some(b"old"), 0o755),
+        ("root/", None, 0o550),
+        ("root/.bashrc", Some(b"rc"), 0o644),
+        ("etc/", None, 0o755),
+        ("etc/shadow", Some(b"root:!::"), 0o000),
+        ("locked/", None, 0o000),
+        ("locked/f", Some(b"x"), 0o644),
+        ("spool/", None, 0o1555),
+    ]);
+    let layer2 = make_layer_with_dirs(&[
+        ("usr/bin/", None, 0o555),
+        ("usr/bin/tool", Some(b"v2"), 0o755),
+        ("usr/bin/.wh.old", Some(b""), 0o644),
+    ]);
+
+    let mut total_size = 0u64;
+    extract_layer_with_limits(&layer1, &rootfs, 0, 2, &mut total_size)
+        .expect("layer 1: entries inside a 0555 directory must extract");
+    extract_layer_with_limits(&layer2, &rootfs, 1, 2, &mut total_size)
+        .expect("layer 2: files and whiteouts inside a 0555 directory must apply");
+
+    assert_eq!(std::fs::read(rootfs.join("usr/bin/tool")).unwrap(), b"v2");
+    assert!(
+        !rootfs.join("usr/bin/old").exists(),
+        "whiteout inside a 0555 directory must delete"
+    );
+    assert_eq!(std::fs::read(rootfs.join("root/.bashrc")).unwrap(), b"rc");
+
+    let mode = |p: &str| {
+        std::fs::symlink_metadata(rootfs.join(p))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    assert_eq!(mode("usr/bin"), 0o755, "owner gains rwx, group/other kept");
+    assert_eq!(mode("root"), 0o750, "owner gains rwx, group/other kept");
+    assert_eq!(
+        mode("locked"),
+        0o700,
+        "a 0000 directory gains exactly u+rwx"
+    );
+    assert_eq!(std::fs::read(rootfs.join("locked/f")).unwrap(), b"x");
+    assert_eq!(mode("spool"), 0o1755, "special bits are kept");
+    assert_eq!(mode("etc/shadow"), 0o000, "file modes are not touched");
+
+    std::fs::remove_dir_all(&rootfs).expect("an extracted tree must stay deletable");
+}
+
 // =============================================================================
 // Group 3: Architecture detection (OCI-05)
 // =============================================================================

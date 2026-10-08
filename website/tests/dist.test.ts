@@ -68,6 +68,7 @@ test("the KVS route map covers exactly the extensionless marketing pages", () =>
     .filter((d) => d.isFile())
     .map((d) => d.name)
   assert.deepEqual(desiredRoutes(topLevel), [
+    { Key: "/a", Value: "/a.html" },
     { Key: "/manifesto", Value: "/manifesto.html" },
     { Key: "/privacy-policy", Value: "/privacy-policy.html" },
   ])
@@ -99,18 +100,43 @@ test("console demo entry uses absolute asset paths that exist", async () => {
 
 test("landing page keeps its section anchors, llms hooks and structured data", async () => {
   const html = await read("index.html")
-  for (const id of ["hero", "console-live", "harness", "experience", "hello", "workers", "nutshell", "footer"]) {
-    assert.match(html, new RegExp(`id="${id}"`), `#${id} section missing`)
+  const sections = [
+    "hero",
+    "overview",
+    "ownership",
+    "demo",
+    "coder",
+    "proof",
+    "use-cases",
+    "numbers",
+    "faq",
+    "final-cta",
+  ]
+  for (const id of sections) {
+    assert.match(html, new RegExp(`<section id="${id}"`), `#${id} section missing`)
   }
-  assert.match(html, /data-llms="hero"/, "hero copy hook missing (scripts/generate-llms-agents.ts)")
-  assert.match(html, /data-llms="intro"/, "section intro hook missing (scripts/generate-llms-agents.ts)")
-  assert.match(html, /class="nw-cta-row/, "#workers CTA row missing (scripts/generate-llms-agents.ts)")
+  assert.match(html, /<h1[^>]*id="hero-title"/, "hero h1 missing (scripts/generate-llms-agents.ts)")
   assert.match(html, /<script type="application\/ld\+json">/, "JSON-LD block missing")
   assert.match(html, /"@type":"Organization"/, "Organization JSON-LD missing")
   assert.match(html, /"@type":"WebSite"/, "WebSite JSON-LD missing")
   assert.match(html, /"@type":"SoftwareApplication"/, "SoftwareApplication JSON-LD missing")
-  assert.match(html, /<title>iii — Three primitives\. Zero integration cost\.<\/title>/)
+  assert.match(
+    html,
+    /"@type":"FAQPage"/,
+    "FAQPage JSON-LD missing (scripts/generate-llms-agents.ts reads the FAQ from it)",
+  )
+  assert.match(html, /<title>iii: More application\. Less infrastructure\.<\/title>/)
+  assert.match(
+    html,
+    /<link rel="canonical" href="https:\/\/iii\.dev"\/>|<link rel="canonical" href="https:\/\/iii\.dev\/"\/>/,
+  )
   assert.match(html, /property="og:type" content="website"/)
+})
+
+test("/a, the retired test variant, refreshes to the homepage and stays out of the index", async () => {
+  const html = await read("a.html")
+  assert.match(html, /http-equiv="refresh" content="[^"]*url=\/"/, "/a should refresh to /")
+  assert.match(html, /<meta name="robots" content="noindex/)
 })
 
 // --- canonical URL shapes --------------------------------------------------
@@ -195,7 +221,7 @@ test("rss feed exists and references the blog home and the sample post", async (
 // Analytics + consent — the same DOM and localStorage contract on every
 // surface, so the visitor's decision travels across iii.dev, /blog, and the
 // marketing pages. Production builds load the trackers by default
-// (src/lib/analytics.ts), gated on the shared consent key.
+// (lib/analytics.ts), gated on the shared consent key.
 async function assertAnalyticsAndConsent(html: string, where: string) {
   assert.match(html, /GTM-N8DCTFB8/, `${where}: GTM container ID missing`)
   assert.match(html, /googletagmanager\.com\/ns\.html\?id=GTM-N8DCTFB8/, `${where}: GTM <noscript> iframe missing`)
@@ -223,23 +249,20 @@ for (const page of SHARED_PAGES) {
   })
 }
 
-test("every page shares the iii_theme key and applies the dark class before paint", async () => {
+test("every page is dark-first", async () => {
   for (const page of SHARED_PAGES) {
-    const html = await read(page)
-    assert.match(html, /"iii_theme"/, `${page}: theme storage key missing — would desync across pages`)
-    assert.match(html, /classList\.toggle\("dark",/, `${page}: dark class application missing`)
-    assert.match(html, /<html lang="en" class="[^"]*\bdark\b/, `${page}: dark-first <html> class missing`)
+    assert.match(await read(page), /<html lang="en" class="[^"]*\bdark\b/, `${page}: dark-first <html> class missing`)
   }
 })
 
 test("the shared header and footer are on every surface, roadmap included", async () => {
   for (const page of [...SHARED_PAGES, "roadmap/index.html"]) {
     const html = await read(page)
-    assert.match(html, /<header class="fixed/, `${page}: shared site header missing`)
+    assert.match(html, /<header class="[^"]*\bfixed\b/, `${page}: shared site header missing`)
     assert.match(html, /href="\/roadmap"/, `${page}: roadmap link missing from header`)
     assert.match(html, /<footer/, `${page}: shared site footer missing`)
-    assert.match(html, /Pronounced “three eye”\./, `${page}: footer tagline missing`)
-    assert.match(html, /viewBox="0 0 1075\.74 1075\.74"/, `${page}: iii logo SVG viewBox missing`)
+    assert.match(html, /Pronounced <span[^>]*>&quot;three eye&quot;<\/span>/, `${page}: footer tagline missing`)
+    assert.match(html, /viewBox="0 0 933\.61 1050\.31"/, `${page}: iii logo SVG viewBox missing`)
   }
 })
 
@@ -292,11 +315,10 @@ test("llms.txt and AGENTS.md are generated from the built homepage and read as p
   assert.match(llms, /## Homepage copy \(extracted from iii\.dev HTML\)/, "homepage extract missing from llms.txt")
   assert.match(
     llms,
-    /### Hero\n\*\*Stop integrating services\. Start adding them\.\*\*\n/,
+    /### Hero\n\*\*More application\. Less infrastructure\.\*\*\n/,
     "hero headline should read as one sentence pair",
   )
-  assert.match(llms, /### iii in a nutshell\n/)
-  assert.match(llms, /^- Durable orchestration: /m, "nutshell cards should be bullets")
+  assert.match(llms, /### Questions\n\*\*What is iii\?\*\*\n/, "FAQ should read as question / answer pairs")
   assert.match(llms, /### Footer \/ links\n/)
   assert.match(llms, /https:\/\/iii\.dev\/blog\/index\.md/, "llms.txt should link the markdown blog index")
   assert.doesNotMatch(llms, /```/, "no code fences from the demos")
@@ -325,7 +347,7 @@ test("roadmap gallery and spec pages emit under /roadmap/ from the index.json fe
       new RegExp(`<link rel="canonical" href="https://iii\\.dev/roadmap/${spec.slug}/"/>`),
       `${page}: canonical should be the trailing-slash directory URL`,
     )
-    assert.match(html, /<header class="fixed/, `${page}: shared site header missing`)
+    assert.match(html, /<header class="[^"]*\bfixed\b/, `${page}: shared site header missing`)
     assert.match(html, /<footer/, `${page}: shared site footer missing`)
   }
 })

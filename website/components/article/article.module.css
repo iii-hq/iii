@@ -1,0 +1,137 @@
+/* Long-form pages (blog, tech specs, privacy) in the landing's system: wide container, pixel page title, Inter for
+   reading, a sticky contents list that marks the section being read the same way the manifesto's index does. */
+
+.page {
+  padding-block: clamp(112px, 12vw, 152px) clamp(64px, 8vw, 104px);
+}
+
+.eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+a.eyebrow {
+  border-radius: 4px;
+  transition: color var(--motion-fast) var(--motion-ease-out);
+}
+a.eyebrow:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+
+.title {
+  margin-block-start: 20px;
+  font-size: clamp(30px, 3.6vw, 52px);
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  margin-block-start: 24px;
+  max-width: 60ch;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-block-start: 20px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Article beside its contents list. The list only shows where there is room for it. */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: clamp(48px, 6vw, 96px);
+}
+.main {
+  min-width: 0;
+  max-width: 720px;
+}
+.aside {
+  min-width: 0;
+}
+
+/* ---------- Contents ---------- */
+.toc {
+  position: sticky;
+  top: 112px;
+  max-height: calc(100vh - 144px);
+  overflow-y: auto;
+}
+.tocTitle {
+  margin-block-end: 12px;
+  padding-inline-start: 16px;
+}
+.tocGroupLabel {
+  margin-block: 20px 6px;
+  padding-inline-start: 16px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  opacity: 0.8;
+}
+.toc ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tocLink {
+  position: relative;
+  display: block;
+  padding: 7px 12px 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  opacity: 0.7;
+  text-wrap: pretty;
+}
+.tocLink[data-depth="3"] {
+  padding-inline-start: 28px;
+}
+.tocLink[aria-current] {
+  color: var(--foreground);
+  opacity: 1;
+}
+.tocLink:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+.tocMarker {
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--hero-accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  a.eyebrow:hover {
+    color: var(--foreground);
+  }
+  .tocLink:hover {
+    color: var(--foreground);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1023px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .aside {
+    display: none;
+  }
+}

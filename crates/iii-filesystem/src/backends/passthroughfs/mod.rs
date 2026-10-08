@@ -81,6 +81,13 @@ pub struct PassthroughConfig {
 
     /// Whether to enable writeback caching.
     pub writeback: bool,
+
+    /// Serve the share read-only: every mutating request (create, write,
+    /// open for writing or with `O_TRUNC`, setattr, mkdir, unlink, rmdir,
+    /// rename, symlink, link) fails with `EROFS` before it reaches the host
+    /// filesystem. Reads are unaffected. Ops the backend does not implement
+    /// (mknod, fallocate, xattr, copyfilerange) already return `ENOSYS`.
+    pub read_only: bool,
 }
 
 /// Passthrough filesystem backend.
@@ -204,6 +211,14 @@ impl PassthroughFs {
 }
 
 impl PassthroughFs {
+    /// `EROFS` when the share is read-only (see [`PassthroughConfig::read_only`]).
+    pub(crate) fn deny_if_read_only(&self) -> io::Result<()> {
+        if self.cfg.read_only {
+            return Err(platform::erofs());
+        }
+        Ok(())
+    }
+
     /// Register root inode (inode 1) in the inode table.
     ///
     /// Called during `init()`. The guest kernel sends GETATTR on the root inode
@@ -292,6 +307,7 @@ impl Default for PassthroughConfig {
             attr_timeout: Duration::from_secs(5),
             cache_policy: CachePolicy::Auto,
             writeback: false,
+            read_only: false,
         }
     }
 }
@@ -335,7 +351,9 @@ impl DynFileSystem for PassthroughFs {
         }
 
         // Enable writeback cache if requested and supported.
-        if self.cfg.writeback && capable.contains(FsOptions::WRITEBACK_CACHE) {
+        // Never on a read-only share: there is nothing to write back.
+        if self.cfg.writeback && !self.cfg.read_only && capable.contains(FsOptions::WRITEBACK_CACHE)
+        {
             opts |= FsOptions::WRITEBACK_CACHE;
             self.writeback.store(true, Ordering::Relaxed);
         }
@@ -412,6 +430,7 @@ impl DynFileSystem for PassthroughFs {
         handle: Option<u64>,
         valid: SetattrValid,
     ) -> io::Result<(stat64, Duration)> {
+        self.deny_if_read_only()?;
         metadata::do_setattr(self, ctx, ino, attr, handle, valid)
     }
 
@@ -424,14 +443,17 @@ impl DynFileSystem for PassthroughFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        self.deny_if_read_only()?;
         create_ops::do_mkdir(self, ctx, parent, name, mode, umask, extensions)
     }
 
     fn unlink(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        self.deny_if_read_only()?;
         remove_ops::do_unlink(self, ctx, parent, name)
     }
 
     fn rmdir(&self, ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
+        self.deny_if_read_only()?;
         remove_ops::do_rmdir(self, ctx, parent, name)
     }
 
@@ -444,6 +466,7 @@ impl DynFileSystem for PassthroughFs {
         newname: &CStr,
         flags: u32,
     ) -> io::Result<()> {
+        self.deny_if_read_only()?;
         remove_ops::do_rename(self, ctx, olddir, oldname, newdir, newname, flags)
     }
 
@@ -469,6 +492,7 @@ impl DynFileSystem for PassthroughFs {
         umask: u32,
         extensions: Extensions,
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
+        self.deny_if_read_only()?;
         create_ops::do_create(
             self, ctx, parent, name, mode, kill_priv, flags, umask, extensions,
         )
@@ -503,6 +527,7 @@ impl DynFileSystem for PassthroughFs {
         kill_priv: bool,
         _flags: u32,
     ) -> io::Result<usize> {
+        self.deny_if_read_only()?;
         file_ops::do_write(self, ctx, ino, handle, r, size, offset, kill_priv)
     }
 
@@ -617,15 +642,18 @@ impl DynFileSystem for PassthroughFs {
         name: &CStr,
         extensions: Extensions,
     ) -> io::Result<Entry> {
+        self.deny_if_read_only()?;
         create_ops::do_symlink(self, ctx, linkname, parent, name, extensions)
     }
 
     fn link(&self, ctx: Context, inode: u64, newparent: u64, newname: &CStr) -> io::Result<Entry> {
+        self.deny_if_read_only()?;
         create_ops::do_link(self, ctx, inode, newparent, newname)
     }
 
     // Skipped in v1 (D-11): mknod, fallocate, lseek,
-    // xattr ops, copyfilerange -- all use the default ENOSYS from the trait.
+    // xattr ops, copyfilerange -- all use the default ENOSYS from the trait,
+    // which also keeps them from mutating a read-only share.
 }
 
 //--------------------------------------------------------------------------------------------------

@@ -1,18 +1,34 @@
-//! Per-sandbox overlayfs layout. A sandbox mounts tmpfs upper over the
-//! shared read-only rootfs lower, giving each VM its own ephemeral FS view.
+//! Per-sandbox host directory layout.
+//!
+//! Isolation model: a sandbox never boots on the shared image
+//! cache. `__vm-boot` gets this sandbox's `root/` trampoline, served
+//! read-only (`--rootfs-readonly`) so no guest write can reach the host, plus
+//! the cached image as a read-only erofs lower. iii-init assembles `/` as
+//! overlayfs with an in-guest tmpfs upper, so every write is private to the
+//! VM and vanishes with it.
 //!
 //! Directory layout per sandbox (ID = UUID):
-//!   /tmp/iii-sandbox/<uuid>/upper/     (writable, tmpfs-backed in practice)
-//!   /tmp/iii-sandbox/<uuid>/work/      (overlayfs work dir)
-//!   /tmp/iii-sandbox/<uuid>/merged/    (the unified view libkrun mounts)
+//!   /tmp/iii-sandbox/<uuid>/root/      (read-only virtiofs trampoline: `/dev/root`)
+//!   /tmp/iii-sandbox/<uuid>/upper/     (reserved; the live upper is an in-guest tmpfs)
+//!   /tmp/iii-sandbox/<uuid>/work/      (reserved)
+//!   /tmp/iii-sandbox/<uuid>/merged/    (host-side workdir placeholder)
 
 use std::path::PathBuf;
 use uuid::Uuid;
+
+/// Directories iii-init's `overlay_root` creates on the virtiofs root before
+/// it pivots (`/dev`, `/overlay-lower`, `/overlay-upperfs`, `/new-root`; see
+/// `crates/iii-init/src/root_pivot.rs`). The sandbox trampoline is served
+/// read-only, so they are pre-created host-side: the guest `mkdir` then gets
+/// `EEXIST`, which iii-init tolerates, instead of `EROFS`.
+pub const TRAMPOLINE_STAGING_DIRS: &[&str] =
+    &["dev", "overlay-lower", "overlay-upperfs", "new-root"];
 
 pub struct OverlayLayout {
     pub upper: PathBuf,
     pub work: PathBuf,
     pub merged: PathBuf,
+    pub root: PathBuf,
 }
 
 impl OverlayLayout {
@@ -22,6 +38,7 @@ impl OverlayLayout {
             upper: base.join("upper"),
             work: base.join("work"),
             merged: base.join("merged"),
+            root: base.join("root"),
         }
     }
 
@@ -29,16 +46,16 @@ impl OverlayLayout {
         self.upper.parent().expect("upper has parent").to_path_buf()
     }
 
-    /// Create the directory structure; does NOT mount. On macOS we skip the
-    /// real overlay mount (libkrun handles the VM's root FS differently),
-    /// and on Linux the actual mount() happens elsewhere if we need it —
-    /// for v1 we hand libkrun the lower rootfs directly plus a tmpfs
-    /// workspace. This helper exists so the layout is deterministic and
-    /// easily reaped.
+    /// Create the directory structure, including the trampoline's
+    /// [`TRAMPOLINE_STAGING_DIRS`]; does NOT mount anything. This helper
+    /// exists so the layout is deterministic and easily reaped.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.upper)?;
         std::fs::create_dir_all(&self.work)?;
         std::fs::create_dir_all(&self.merged)?;
+        for dir in TRAMPOLINE_STAGING_DIRS {
+            std::fs::create_dir_all(self.root.join(dir))?;
+        }
         Ok(())
     }
 
@@ -69,5 +86,21 @@ mod tests {
         assert!(l.upper.exists());
         l.cleanup().unwrap();
         assert!(!l.base().exists());
+    }
+
+    #[test]
+    fn ensure_dirs_prepares_read_only_trampoline() {
+        let l = OverlayLayout::for_sandbox(Uuid::new_v4());
+        l.ensure_dirs().unwrap();
+        assert!(l.root.starts_with(l.base()));
+        for dir in TRAMPOLINE_STAGING_DIRS {
+            assert!(l.root.join(dir).is_dir(), "missing trampoline dir {dir}");
+        }
+        // Nothing else: the trampoline must not carry image content.
+        assert_eq!(
+            std::fs::read_dir(&l.root).unwrap().count(),
+            TRAMPOLINE_STAGING_DIRS.len()
+        );
+        l.cleanup().unwrap();
     }
 }

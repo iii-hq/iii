@@ -1,0 +1,82 @@
+/* Observability: three plain numbers, then the request trace. No charts (2026-10-07 sync). */
+.dashboard {
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+}
+.dashboard[data-stage="observe"] {
+  margin-block-start: 0;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block-end: 1px solid var(--border);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 26px 24px;
+  opacity: 0;
+  translate: 0 4px;
+}
+.stats[data-on="true"] .stat {
+  opacity: 1;
+  translate: 0 0;
+}
+.stat + .stat {
+  border-inline-start: 1px solid var(--border);
+}
+.stat dt {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.stat dd {
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.trace {
+  padding-block: 22px 0;
+}
+/* The wider column gives the trace room: taller rows read as a real trace view, not a list. */
+.trace li {
+  min-height: 52px;
+}
+.requestStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.requestStatus code {
+  color: var(--foreground);
+}
+.traceSummary {
+  margin: 16px -24px 0;
+  padding: 14px 24px;
+  border-block-start: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .stat {
+    transition-property: opacity, translate;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+  }
+}
+@media (max-width: 640px) {
+  .stat {
+    padding: 14px 12px;
+  }
+  .stat dd {
+    font-size: 20px;
+  }
+  .traceSummary {
+    margin-inline: -16px;
+    padding-inline: 16px;
+  }
+}

@@ -654,6 +654,110 @@ jobs:
           retention-days: 7
 
   # ──────────────────────────────────────────────────────────────
+  # Sandbox rootfs isolation — a sandbox must never write into
+  # the shared image cache. Linux boots real microVMs from a real Red Hat
+  # (UBI 9) image through the production daemon; macOS covers the macOS
+  # host side (read-only root share, erofs lower, embedded init). Both
+  # build the guest init the way releases do, so the sandbox path runs.
+  # ──────────────────────────────────────────────────────────────
+
+  sandbox-isolation-linux:
+    name: Sandbox Isolation (RHEL UBI 9, KVM) - linux
+    needs: engine-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sandbox-isolation-linux
+
+      - name: Enable KVM
+        run: |
+          test -e /dev/kvm || { echo "::error::/dev/kvm missing on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+          path: ${{ runner.temp }}/engine
+
+      - name: Build the guest init and a release-shaped iii-worker
+        run: |
+          cargo build --locked -p iii-init --release --target x86_64-unknown-linux-musl
+          cargo build --locked -p iii-worker --features embed-init,embed-libkrunfw
+
+      - name: Sandbox unit and integration tests with the embedded init
+        run: |
+          cargo test --locked -p iii-worker --features embed-init,embed-libkrunfw --lib \
+            -- sandbox_daemon vm_boot overlay erofs
+          cargo test --locked -p iii-worker --features embed-init,embed-libkrunfw \
+            --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
+
+      - name: Sandbox isolation end to end (UBI 9 image, real microVMs)
+        env:
+          III_BIN: ${{ runner.temp }}/engine/iii
+          WORKER_BIN: target/debug/iii-worker
+          IMAGE_REF: registry.access.redhat.com/ubi9/ubi:latest
+          WORK: ${{ runner.temp }}/sandbox-isolation
+        run: |
+          chmod +x "$III_BIN"
+          bash scripts/sandbox-isolation-e2e.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sandbox-isolation-linux-logs
+          path: ${{ runner.temp }}/sandbox-isolation/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sandbox-isolation-macos:
+    name: Sandbox Isolation - macos
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sandbox-isolation-macos
+
+      # macOS hosts boot the same Linux guest; releases embed this init.
+      - name: Build the guest init (aarch64-unknown-linux-musl)
+        run: cargo build --locked -p iii-init --release --target aarch64-unknown-linux-musl
+
+      - name: Read-only root share on a macOS host (PassthroughFs)
+        run: |
+          cargo test --locked -p iii-filesystem \
+            --test passthrough_read_only --test sandbox_shared_rootfs_guest_writes
+
+      - name: Sandbox boot shape and erofs lower with the embedded init
+        run: |
+          cargo test --locked -p iii-worker --features embed-init --lib \
+            -- sandbox_daemon vm_boot overlay erofs
+          cargo test --locked -p iii-worker --features embed-init \
+            --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Node
   # ──────────────────────────────────────────────────────────────
 

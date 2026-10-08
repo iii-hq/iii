@@ -8,8 +8,8 @@ exists) at `/roadmap/<slug>/deck/`, the raw `.md` linkable beside it, and
 
 There is no separate build here: the decks are **routes of the iii-website
 Next.js static export**. The spec pages live at
-[`../src/app/(site)/roadmap/`](../src/app/(site)/roadmap/); the deck pages at
-[`../src/app/(deck)/roadmap/`](../src/app/(deck)/roadmap/) are their own root
+[`../app/(site)/roadmap/`](../app/(site)/roadmap/); the deck pages at
+[`../app/(deck)/roadmap/`](../app/(deck)/roadmap/) are their own root
 layout (so the decks keep their own Tailwind theme, [`src/index.css`](./src/index.css))
 and mount each deck's `src/App.tsx` browser-only, code-split per deck
 ([`src/DeckHost.tsx`](./src/DeckHost.tsx)). Spec discovery is
@@ -38,7 +38,7 @@ rename after publishing.
 ```
 SHARED / HOT — never edited when adding a spec or deck:
   src/**  scripts/manifest.mjs
-  website/src/app/(site)/roadmap/**  website/src/app/(deck)/**
+  website/app/(site)/roadmap/**  website/app/(deck)/**
   website/scripts/validate-roadmap.ts  website/scripts/generate-roadmap-manifest.ts
   (COMPONENTS.md: append-only, component promotions only)
 
@@ -99,7 +99,7 @@ the path the old deck-side glob produced — the depth encodes the two-tree layo
 ## c. add or promote a shared component
 
 Default is **deck-local**: `website/roadmap/<slug>/src/diagrams/<Name>.tsx`.
-Promote into `src/components/` only when all three hold: props-driven with zero
+Promote into `components/` only when all three hold: props-driven with zero
 spec data inside; maps to a recurring spec shape (a lifecycle, a tree, a
 timeline, a fan-out…); passes the standards checklist (design tokens only,
 reduced-motion gate, keyboard operable, aria-label, container queries,

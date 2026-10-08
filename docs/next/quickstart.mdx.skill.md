@@ -13,7 +13,7 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
 
 <Note>
   The Quickstart is our original tutorial. If you want a guided, agentic learning experience that
-  can be completed in a few minutes then run the [install script](./install) and press "y" when
+  can be completed in a few minutes then run the [install script](./install) and press Enter when
   prompted.
 </Note>
 

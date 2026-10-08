@@ -12,7 +12,7 @@ export interface BlogPost {
   draft: boolean
 }
 
-export const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/content/blog")
+export const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../content/blog")
 
 // Minimal frontmatter reader sized to our schema (title, pubDate, updatedDate,
 // draft). We pull the YAML block between leading `---` fences and parse only

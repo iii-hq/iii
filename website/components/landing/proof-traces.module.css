@@ -1,0 +1,345 @@
+/* The inspector: ADE's traces pane, quieter. Inter for every label, Geist Mono for ids and the bars' names. */
+.pane {
+  --row: 30px;
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --move: cubic-bezier(0.77, 0, 0.175, 1);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding-inline: 16px;
+  border-block-end: 1px solid var(--border);
+  font-size: 13px;
+}
+.title {
+  font-weight: 500;
+  color: var(--foreground);
+}
+.traceId {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spanCount {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.spanCount > span:nth-child(2) {
+  color: var(--foreground);
+}
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.liveDot[data-live="true"] {
+  background: var(--foreground);
+}
+
+/* Live strip */
+.strip {
+  position: relative;
+  height: 64px;
+  border-block-end: 1px solid var(--border);
+  background-image: linear-gradient(to right, var(--border) 1px, transparent 1px);
+  background-size: 25% 100%;
+  overflow: hidden;
+}
+.clock {
+  position: absolute;
+  top: 8px;
+  padding-inline-start: 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.minimap {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  width: 22%;
+  height: 28px;
+}
+.miniBar {
+  position: absolute;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* Stats */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block-end: 1px solid var(--border);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+.stat + .stat {
+  border-inline-start: 1px solid var(--border);
+}
+.stat > span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.stat > strong {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stat[data-on="true"] > strong {
+  color: var(--foreground);
+}
+
+/* View switch: a segmented control whose pill slides between the two options. */
+.views {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 4px;
+}
+.switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.switchPill {
+  position: absolute;
+  inset-block: 3px;
+  inset-inline-start: 3px;
+  width: calc(50% - 3px);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 1px 2px oklch(0 0 0 / 0.3);
+}
+.switch[data-view="waterfall"] .switchPill {
+  translate: 100% 0;
+}
+.switchOption {
+  position: relative;
+  min-height: 30px;
+  padding-inline: 14px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.switchOption[aria-selected="true"] {
+  color: var(--foreground);
+}
+.switchOption:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 1px;
+}
+.viewNote {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+/* Timeline */
+.body {
+  flex: 1;
+  min-height: 0;
+}
+.timeline {
+  padding: 8px 16px 16px;
+}
+.axis {
+  display: flex;
+  justify-content: space-between;
+  margin-block-end: 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.rows {
+  position: relative;
+  background-image: linear-gradient(to right, var(--border) 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+.row {
+  position: absolute;
+  inset-inline: 0;
+  height: var(--row);
+  opacity: 0;
+  translate: 0 3px;
+}
+.row[data-on="true"] {
+  opacity: 1;
+  translate: 0 0;
+}
+/* Elbow from the parent's start down to this span's start. */
+.connector {
+  position: absolute;
+  bottom: 50%;
+  border-inline-start: 1px solid var(--line-strong);
+  border-block-end: 1px solid var(--line-strong);
+  border-end-start-radius: 5px;
+  pointer-events: none;
+}
+.bar {
+  position: absolute;
+  top: 5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding-inline: 4px 8px;
+  border-radius: 5px;
+  background: var(--bar);
+  color: oklch(0.16 0 0);
+  overflow: hidden;
+}
+.row[data-active="true"] .bar {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--bar) 35%, transparent);
+}
+.fnIcon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.barName,
+.outsideName {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.barName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outsideName {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  color: var(--foreground);
+}
+
+/* Waterfall: the shared trace view, without its own heading chrome competing with the pane's. */
+.waterfall {
+  padding-block-start: 8px;
+}
+
+/* Footer */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-start: auto;
+  min-height: 44px;
+  padding-inline: 14px 16px;
+  border-block-start: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.workers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+}
+.workerCount {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.percentiles {
+  display: inline-flex;
+  gap: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.percentiles b {
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bar,
+  .miniBar {
+    transition-property: clip-path;
+    transition-timing-function: linear;
+  }
+  .row {
+    transition-property: opacity, translate;
+    transition-duration: 220ms;
+    transition-timing-function: var(--enter);
+  }
+  .switchPill {
+    transition: translate 240ms var(--move);
+  }
+  .switchOption {
+    transition: color 150ms ease;
+  }
+  .liveDot[data-live="true"] {
+    animation: live 1.6s ease-in-out infinite;
+  }
+  @keyframes live {
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .switchOption:hover {
+    color: var(--foreground);
+  }
+}
+@media (max-width: 600px) {
+  .traceId,
+  .viewNote {
+    display: none;
+  }
+  .stat {
+    padding: 10px 12px;
+  }
+  .stat > strong {
+    font-size: 14px;
+  }
+  .percentiles {
+    gap: 10px;
+  }
+}
+/* Press feedback on the view switch (Emil: 0.97 on :active, 160ms ease-out). */
+@media (prefers-reduced-motion: no-preference) {
+  .switchOption {
+    transition-property: color, scale;
+    transition-duration: 150ms, 160ms;
+    transition-timing-function: ease, var(--motion-ease-out);
+  }
+  .switchOption:active {
+    scale: 0.97;
+  }
+}

@@ -79,6 +79,10 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
 		return handler(ctx, req)
 	}
 
+	if _, err := prepareJSON(msg); err != nil {
+		return err
+	}
+
 	c.mu.Lock()
 	c.functions[id] = registeredFunction{message: msg, handler: raw}
 	c.mu.Unlock()
