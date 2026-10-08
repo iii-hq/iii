@@ -1314,7 +1314,7 @@ fn prompt_provider_key(dir: &Path) {
     let Ok(Some(var)) = select.interact() else {
         return;
     };
-    let Ok(key) = cliclack::password(var).mask('•').interact() else {
+    let Ok(key) = read_secret(var) else {
         return;
     };
     // Terminals and password managers pad pasted keys; a stray space breaks auth.
@@ -1366,7 +1366,7 @@ fn prompt_extra_env_keys(dir: &Path, vars: &[String]) -> Vec<(String, String)> {
         if var.is_empty() {
             continue;
         }
-        let Ok(key) = cliclack::password(var).mask('•').interact() else {
+        let Ok(key) = read_secret(var) else {
             return collected;
         };
         // Terminals and password managers pad pasted keys; a stray space breaks auth.
@@ -1383,6 +1383,50 @@ fn prompt_extra_env_keys(dir: &Path, vars: &[String]) -> Vec<(String, String)> {
         let _ = cliclack::log::success(format!("{var} written to {}", env_path.display()));
     }
     collected
+}
+
+/// Masked prompt for a secret. The prompt library switches the terminal into
+/// raw mode for each key and back out between keys, so pasted bytes that land
+/// in that gap are echoed by the terminal in plain text. Echo stays off for
+/// the whole prompt, and any bytes still queued when it ends are dropped so
+/// they reach neither the screen nor the next prompt.
+fn read_secret(prompt: &str) -> std::io::Result<String> {
+    #[cfg(unix)]
+    let _echo_off = EchoOff::new();
+    cliclack::password(prompt).mask('•').interact()
+}
+
+#[cfg(unix)]
+struct EchoOff(Option<nix::sys::termios::Termios>);
+
+#[cfg(unix)]
+impl EchoOff {
+    fn new() -> Self {
+        use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
+        let stdin = std::io::stdin();
+        let Ok(original) = tcgetattr(&stdin) else {
+            return Self(None);
+        };
+        let mut quiet = original.clone();
+        quiet.local_flags.remove(LocalFlags::ECHO);
+        if tcsetattr(&stdin, SetArg::TCSANOW, &quiet).is_err() {
+            return Self(None);
+        }
+        Self(Some(original))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EchoOff {
+    fn drop(&mut self) {
+        if let Some(original) = &self.0 {
+            let _ = nix::sys::termios::tcsetattr(
+                std::io::stdin(),
+                nix::sys::termios::SetArg::TCSAFLUSH,
+                original,
+            );
+        }
+    }
 }
 
 /// Set `var` in a `.env` file, replacing the existing line even when the
