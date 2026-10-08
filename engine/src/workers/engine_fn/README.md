@@ -87,7 +87,7 @@ stdout and stderr, or `iii compose logs state --follow --namespace dev` for a li
 
 | Trigger type | Description |
 |---|---|
-| `engine::functions-available` | Fires when the function registry changes (polled every 5s). Payload includes `event: "functions_changed"` and the current function list. |
+| `engine::functions-available` | Fires when functions are registered/unregistered, driven by the registry itself (no polling); a burst is coalesced over ~100ms into one event. Payload includes `event: "functions_changed"` and the current function list. |
 | `engine::workers-available` | Fires when worker metadata is updated via `engine::workers::register`. |
 
 ## Before you build

@@ -24,6 +24,10 @@ use crate::{
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
+
+/// Window after the first registry change during which further changes are
+/// folded into the same `engine::functions-available` event.
+const FUNCTIONS_CHANGED_COALESCE: std::time::Duration = std::time::Duration::from_millis(100);
 pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 
 /// Maximum length of `config_summary` strings produced by
@@ -1530,6 +1534,52 @@ impl Worker for EngineFunctionsWorker {
         );
         let _ = self.engine.register_trigger_type(functions_trigger).await;
 
+        // Fire `engine::functions-available` from the registry itself, with no
+        // polling task. A burst of changes (a worker registering its whole
+        // surface on connect) is coalesced into one event: the first change
+        // schedules a one-shot send, later ones ride along until it runs.
+        // Weak: the registry lives inside the engine, so a strong handle here
+        // would keep the engine alive forever.
+        let engine = Arc::downgrade(&self.engine);
+        let scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.engine.functions.set_change_listener(Arc::new(
+            move |_change: crate::function::FunctionChange,
+                  _namespace: &str,
+                  _function_id: &str| {
+                use std::sync::atomic::Ordering;
+                if scheduled.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                    scheduled.store(false, Ordering::Release);
+                    return;
+                };
+                let engine = engine.clone();
+                let scheduled = scheduled.clone();
+                runtime.spawn(async move {
+                    tokio::time::sleep(FUNCTIONS_CHANGED_COALESCE).await;
+                    // Clear before snapshotting: a change landing from here on
+                    // schedules its own event, so none is lost.
+                    scheduled.store(false, Ordering::Release);
+                    let Some(engine) = engine.upgrade() else {
+                        return;
+                    };
+                    let functions = EngineFunctionsWorker::new(engine.clone())
+                        .list_function_summaries()
+                        .await;
+                    engine
+                        .fire_triggers(
+                            TRIGGER_FUNCTIONS_AVAILABLE,
+                            serde_json::json!({
+                                "event": "functions_changed",
+                                "functions": functions,
+                            }),
+                        )
+                        .await;
+                });
+            },
+        ));
+
         let workers_trigger = TriggerType::new(
             TRIGGER_WORKERS_AVAILABLE,
             "Triggered when workers connect/disconnect",
@@ -1537,72 +1587,6 @@ impl Worker for EngineFunctionsWorker {
             None,
         );
         let _ = self.engine.register_trigger_type(workers_trigger).await;
-
-        Ok(())
-    }
-
-    async fn start_background_tasks(
-        &self,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-        mut _shutdown_tx: tokio::sync::watch::Sender<bool>,
-    ) -> anyhow::Result<()> {
-        let engine = self.engine.clone();
-        let triggers = self.triggers.clone();
-        let worker_module = self.clone();
-        let duration_secs = 5u64;
-
-        tokio::spawn(async move {
-            let mut current_functions_hash = engine.functions.functions_hash();
-
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
-                        let new_functions_hash = engine.functions.functions_hash();
-                        if new_functions_hash != current_functions_hash {
-                            tracing::info!("New functions detected, firing functions-available trigger");
-                            current_functions_hash = new_functions_hash;
-
-                            let functions = worker_module.list_function_summaries().await;
-
-                            let functions_data = serde_json::json!({
-                                "event": "functions_changed",
-                                "functions": functions,
-                            });
-
-                            let triggers_to_fire: Vec<Trigger> = triggers
-                                .iter()
-                                .filter(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
-                                .map(|entry| entry.value().clone())
-                                .collect();
-
-                            for trigger in triggers_to_fire {
-                                let engine = engine.clone();
-                                let function_id = trigger.function_id.clone();
-                                let namespace = trigger.namespace.clone();
-                                let metadata = trigger.metadata.clone();
-                                let data = functions_data.clone();
-                                tokio::spawn(async move {
-                                    let _ = engine
-                                        .call_with_metadata_ns(
-                                            &namespace,
-                                            &function_id,
-                                            data,
-                                            metadata,
-                                        )
-                                        .await;
-                                });
-                            }
-                        }
-                    }
-                    changed = shutdown_rx.changed() => {
-                        if changed.is_err() || *shutdown_rx.borrow() {
-                            tracing::info!("EngineFunctionsWorker background tasks shutting down");
-                            break;
-                        }
-                    }
-                }
-            }
-        });
 
         Ok(())
     }
@@ -3239,17 +3223,96 @@ mod tests {
         );
     }
 
+    /// `engine::functions-available` fires from the registry itself (no
+    /// polling task), keeps its original payload (`functions_changed` + the
+    /// full list), and folds a burst of registrations into one event.
     #[tokio::test]
-    async fn start_background_tasks_shutdown_is_clean() {
-        let (_engine, module) = setup_engine_and_module();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    async fn functions_available_fires_on_change_with_full_list() {
+        let (engine, module) = setup_engine_and_module();
+        module.initialize().await.unwrap();
 
-        module
-            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "test::on_fns".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |input: Value| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+        engine.trigger_registry.triggers.insert(
+            "trig-fns".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-fns".to_string(),
+                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+                function_id: "test::on_fns".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+                metadata: None,
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
+            },
+        );
+
+        fn ids(event: &Value) -> Vec<String> {
+            event["functions"]
+                .as_array()
+                .expect("functions array")
+                .iter()
+                .filter_map(|f| f["function_id"].as_str().map(str::to_string))
+                .collect()
+        }
+        // The handler's own registration also schedules an event; wait for
+        // the one whose list matches `want`.
+        async fn next_matching(
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
+            want: impl Fn(&[String]) -> bool,
+        ) -> Value {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let event = rx.recv().await.expect("channel closed");
+                    if want(&ids(&event)) {
+                        return event;
+                    }
+                }
+            })
             .await
-            .unwrap();
-        let _ = shutdown_tx.send(true);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            .expect("functions-available must fire")
+        }
+
+        for id in ["burst::a", "burst::b", "burst::c"] {
+            register_simple_function(&engine, id, None);
+        }
+        let registered = next_matching(&mut rx, |ids| {
+            ["burst::a", "burst::b", "burst::c"]
+                .iter()
+                .all(|id| ids.iter().any(|i| i == id))
+        })
+        .await;
+        assert_eq!(registered["event"], "functions_changed");
+        // The burst was folded into that single event.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv())
+                .await
+                .is_err(),
+            "a burst of registrations must yield a single event"
+        );
+
+        engine
+            .functions
+            .remove(crate::protocol::DEFAULT_NAMESPACE, "burst::b");
+        let removed = next_matching(&mut rx, |ids| !ids.iter().any(|i| i == "burst::b")).await;
+        assert_eq!(removed["event"], "functions_changed");
     }
 
     // ── create_channel test ─────────────────────────────────────────────

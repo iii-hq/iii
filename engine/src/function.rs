@@ -4,7 +4,10 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashSet, pin::Pin, sync::Arc};
+use std::{
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use colored::Colorize;
 use dashmap::DashMap;
@@ -71,6 +74,17 @@ pub trait FunctionHandler {
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
 }
 
+/// What happened to a function in the registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionChange {
+    Registered,
+    Unregistered,
+}
+
+/// Called synchronously on every register/remove with
+/// `(change, namespace, function_id)`. Must not block.
+pub type FunctionChangeListener = dyn Fn(FunctionChange, &str, &str) + Send + Sync;
+
 #[derive(Default)]
 pub struct FunctionsRegistry {
     /// Keyed by `(namespace, function_id)`. The same function id may be
@@ -78,6 +92,7 @@ pub struct FunctionsRegistry {
     /// the caller is scoped to (see [`DEFAULT_NAMESPACE`]).
     pub functions: Arc<DashMap<(String, String), Function>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
+    change_listener: Arc<RwLock<Option<Arc<FunctionChangeListener>>>>,
 }
 
 impl FunctionsRegistry {
@@ -100,30 +115,26 @@ impl FunctionsRegistry {
         Self {
             functions: Arc::new(DashMap::new()),
             active_scope: scope,
+            change_listener: Arc::new(RwLock::new(None)),
         }
     }
 
-    pub fn functions_hash(&self) -> String {
-        let functions: HashSet<String> = self
-            .functions
-            .iter()
-            .map(|entry| Self::qualified_id(&entry.key().0, &entry.key().1))
-            .collect();
-
-        let mut function_hash = functions.iter().cloned().collect::<Vec<String>>();
-        function_hash.sort();
-        format!("{:?}", function_hash)
+    /// Installs the listener told about every register/remove (replacing any
+    /// previous one). The engine uses it to fire `engine::functions-available`.
+    pub fn set_change_listener(&self, listener: Arc<FunctionChangeListener>) {
+        if let Ok(mut slot) = self.change_listener.write() {
+            *slot = Some(listener);
+        }
     }
 
-    /// Namespace-qualified display form used where a single flat string must
-    /// stand in for a `(namespace, function_id)` key. Functions in
-    /// [`DEFAULT_NAMESPACE`] keep their bare id so the hash — and anything
-    /// derived from it — stays stable for existing single-namespace engines.
-    fn qualified_id(namespace: &str, function_id: &str) -> String {
-        if namespace == DEFAULT_NAMESPACE {
-            function_id.to_string()
-        } else {
-            format!("{namespace}/{function_id}")
+    fn notify_change(&self, change: FunctionChange, namespace: &str, function_id: &str) {
+        let listener = self
+            .change_listener
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(listener) = listener {
+            listener(change, namespace, function_id);
         }
     }
 
@@ -151,6 +162,7 @@ impl FunctionsRegistry {
             );
         }
         self.functions.insert(key, function);
+        self.notify_change(FunctionChange::Registered, namespace, &function_id);
 
         // `function_ids` holds bare ids, not `(ns, id)`. Scopes only ever
         // capture in-process/builtin workers, which register into
@@ -169,8 +181,13 @@ impl FunctionsRegistry {
     }
 
     pub fn remove(&self, namespace: &str, function_id: &str) {
-        self.functions
-            .remove(&(namespace.to_string(), function_id.to_string()));
+        let removed = self
+            .functions
+            .remove(&(namespace.to_string(), function_id.to_string()))
+            .is_some();
+        if removed {
+            self.notify_change(FunctionChange::Unregistered, namespace, function_id);
+        }
         // Prunes by bare id across namespaces — see the note in
         // `register_function_ns`; the scope only holds default-ns builtin ids
         // outside the documented race.
@@ -363,38 +380,37 @@ mod tests {
     }
 
     #[test]
-    fn registry_functions_hash_deterministic() {
+    fn registry_notifies_listener_on_register_and_effective_remove() {
         let reg = FunctionsRegistry::new();
-        reg.register_function("b".to_string(), make_function("b"));
-        reg.register_function("a".to_string(), make_function("a"));
+        let seen: Arc<std::sync::Mutex<Vec<(FunctionChange, String, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        reg.set_change_listener(Arc::new(move |change, ns: &str, id: &str| {
+            sink.lock()
+                .unwrap()
+                .push((change, ns.to_string(), id.to_string()));
+        }));
 
-        let hash1 = reg.functions_hash();
-        let hash2 = reg.functions_hash();
-        assert_eq!(hash1, hash2, "hash should be deterministic");
-    }
-
-    #[test]
-    fn registry_functions_hash_changes_on_add() {
-        let reg = FunctionsRegistry::new();
-        let hash_empty = reg.functions_hash();
         reg.register_function("fn1".to_string(), make_function("fn1"));
-        let hash_one = reg.functions_hash();
-        assert_ne!(hash_empty, hash_one);
-    }
+        reg.remove(DEFAULT_NAMESPACE, "fn1");
+        // Removing an id that is not registered is not a change.
+        reg.remove(DEFAULT_NAMESPACE, "fn1");
 
-    #[test]
-    fn registry_functions_hash_sorted() {
-        let reg = FunctionsRegistry::new();
-        reg.register_function("z_func".to_string(), make_function("z_func"));
-        reg.register_function("a_func".to_string(), make_function("a_func"));
-        let hash = reg.functions_hash();
-        // The hash is a debug representation of a sorted vec
-        assert!(hash.contains("a_func"));
-        assert!(hash.contains("z_func"));
-        // 'a_func' should appear before 'z_func' since it's sorted
-        let a_pos = hash.find("a_func").unwrap();
-        let z_pos = hash.find("z_func").unwrap();
-        assert!(a_pos < z_pos, "functions should be sorted alphabetically");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (
+                    FunctionChange::Registered,
+                    DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ),
+                (
+                    FunctionChange::Unregistered,
+                    DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
