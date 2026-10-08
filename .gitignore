@@ -95,3 +95,6 @@ CLAUDE.md
 /crates/iii-worker/config.yaml
 /crates/iii-worker/iii.lock
 .iii-worker.lock
+
+# Playwright CLI session logs and snapshots
+.playwright-cli/

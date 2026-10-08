@@ -1,0 +1,1020 @@
+.story {
+  padding-block: 80px 0;
+}
+.intro {
+  max-width: 720px;
+  padding-block-end: 32px;
+}
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.introTitle {
+  margin-block-start: 20px;
+  font-size: clamp(32px, 3.4vw, 48px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.introCopy {
+  margin-block-start: 18px;
+  max-width: 580px;
+  color: var(--muted-foreground);
+  font-size: 17px;
+  line-height: 1.65;
+}
+.layout {
+  display: grid;
+  /* The animation takes about two thirds (2026-10-07 sync, Anthony); the text column stays a readable measure. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.85fr);
+  gap: clamp(36px, 4vw, 64px);
+}
+.chapters {
+  min-width: 0;
+}
+.chapter {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: max(740px, 88svh);
+  padding-block: 64px;
+  scroll-margin-block-start: 90px;
+}
+.chapterLetter {
+  font-family: var(--font-pixel);
+  font-size: 30px;
+  line-height: 1;
+  color: var(--hero-accent);
+  text-transform: none;
+  /* The pixel face has one weight; a hairline stroke in its own colour reads as bold (2026-10-07: bolder CODER). */
+  -webkit-text-stroke: 0.045em currentColor;
+}
+.chapterTitle {
+  margin-block-start: 22px;
+  max-width: 540px;
+  font-size: clamp(28px, 2.5vw, 38px);
+  line-height: 1.15;
+  letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+.description {
+  margin-block-start: 20px;
+  max-width: 540px;
+  font-size: 16px;
+  color: var(--muted-foreground);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+.desktopGraph {
+  min-width: 0;
+}
+.stickyGraph {
+  position: sticky;
+  top: 100px;
+  padding-block-start: 28px;
+}
+.chapterNav {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block-end: 16px;
+  border-block-end: 1px solid var(--border);
+}
+.chapterNav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 4px 10px 12px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  font-weight: 500;
+}
+.navLetter {
+  font-family: var(--font-pixel);
+  font-size: 24px;
+  line-height: 1;
+  -webkit-text-stroke: 0.045em currentColor;
+}
+.chapterNav a[aria-current] {
+  color: var(--foreground);
+}
+.chapterNav a[aria-current] .navLetter {
+  color: var(--hero-accent);
+}
+.navIndicator {
+  position: absolute;
+  inset-inline: 6px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--hero-accent);
+}
+.chapterNav a:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.navName {
+  display: none;
+}
+.graph {
+  min-width: 0;
+}
+.graphHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 4px 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.graphHeading > span:first-child {
+  color: var(--foreground);
+  font-weight: 500;
+}
+.graphHeading > span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+.canvas {
+  position: relative;
+  height: clamp(300px, calc(100svh - 425px), 530px);
+  margin-block: 12px 18px;
+  isolation: isolate;
+}
+.canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(var(--line) 0.7px, transparent 0.7px);
+  background-size: 18px 18px;
+  mask-image: radial-gradient(ellipse, black 20%, transparent 72%);
+  opacity: 0.65;
+}
+.edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.edge {
+  stroke: var(--line);
+  stroke-width: 1;
+  fill: none;
+}
+.edgeActive {
+  stroke: var(--hero-accent);
+  opacity: 0.6;
+}
+.route {
+  fill: none;
+  stroke: var(--hero-accent);
+  stroke-width: 1.5;
+}
+.packet {
+  fill: var(--hero-accent);
+}
+.engine,
+.node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+.engine {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 84px;
+  height: 84px;
+  border: 1px solid var(--line-strong);
+  border-radius: 23px;
+  background: var(--background);
+  box-shadow:
+    0 0 0 8px var(--background),
+    0 0 0 9px var(--border);
+}
+.engineWord {
+  font-family: var(--font-pixel);
+  font-size: 40px;
+  line-height: 0.9;
+  letter-spacing: -0.06em;
+}
+.engine > span:last-child {
+  margin-block-start: 8px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.node {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 5px 7px;
+  align-items: center;
+  width: 28%;
+  max-width: 170px;
+  min-height: 59px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--background);
+  box-shadow: 0 2px 5px -3px var(--line);
+}
+.node > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted-foreground);
+  stroke-width: 1.5;
+}
+.nodeLabel {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.nodeDetail {
+  grid-column: 2;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+}
+.nodeActive {
+  border-color: var(--hero-accent);
+  background: color-mix(in oklch, var(--hero-accent) 5%, var(--background));
+}
+.nodeActive > svg {
+  color: var(--hero-accent);
+}
+.graphEmpty {
+  position: absolute;
+  top: 65%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.graphCaption {
+  min-height: 48px;
+  padding-inline: 4px;
+  max-width: 550px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+.graphFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border-block-start: 1px solid var(--border);
+  padding-block-start: 6px;
+}
+.controls {
+  display: flex;
+  width: 100%;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+}
+/* How far the chapter has played: a hairline that fills beat by beat, in place of "3 / 7". */
+.progress {
+  flex: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--muted-foreground);
+  transform-origin: left;
+}
+.controls[data-playback="holding"] .progress > span {
+  background: var(--foreground);
+}
+/* Holds the chapters while they crossfade; the exiting one is popped out of flow on top of the entering one. */
+.previewFrame {
+  position: relative;
+  min-height: 590px;
+}
+.graph[data-stage="compose"] .node {
+  width: 30%;
+  max-width: 200px;
+  min-height: 74px;
+}
+.graph[data-stage="compose"] .nodeLabel {
+  font-size: 13px;
+}
+.graph[data-stage="compose"] .nodeDetail {
+  font-size: 12px;
+}
+.composeRequest {
+  position: absolute;
+  inset-inline: 4px;
+  inset-block-end: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+.requestHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.requestHeading > span {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.composeRequest[data-complete="true"] .requestHeading > span {
+  color: var(--hero-accent);
+}
+.requestCalls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-block: 12px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.requestCalls li {
+  display: grid;
+  grid-template-columns: 32px 16px 24px 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+}
+.requestCalls b {
+  font-weight: 500;
+}
+.requestCalls code {
+  overflow-wrap: anywhere;
+}
+.requestCalls li[data-active="true"] {
+  color: var(--foreground);
+}
+.requestCalls li[data-active="true"] b {
+  color: var(--hero-accent);
+}
+.composeRequest > p {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.mobileGraph {
+  display: none;
+}
+/* ---------- Activity cards (Compose, Extend, Triggers): a quiet terminal surface with one accent. ---------- */
+.activity {
+  --code-value: oklch(0.86 0.09 60);
+  --activity-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  margin-block-start: 32px;
+  min-width: 0;
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 2px oklch(0 0 0 / 0.2),
+    0 12px 32px -16px oklch(0 0 0 / 0.5);
+  overflow: hidden;
+}
+.activityHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-block-end: 1px solid var(--border);
+}
+.activityIcon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--muted-foreground);
+}
+.activityLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.activityStatus {
+  margin-inline-start: auto;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.engineStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.engineDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--hero-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--hero-accent) 18%, transparent);
+}
+.activityBody {
+  padding: 20px 16px 18px;
+}
+.activityFooter {
+  min-height: 42px;
+  padding: 12px 16px;
+  border-block-start: 1px solid var(--border);
+  background: var(--faint);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* Stepper: a numbered marker on a hairline rail, the step's command and the workers it starts. */
+.steps {
+  display: flex;
+  flex-direction: column;
+}
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 14px;
+  padding-block-end: 22px;
+}
+.step:last-child {
+  padding-block-end: 0;
+}
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  inset-block: 28px 4px;
+  inset-inline-start: 10.5px;
+  width: 1px;
+  background: var(--border);
+}
+.stepMarker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+.stepNumber {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.step[data-state="active"] .stepNumber {
+  box-shadow: inset 0 0 0 1px var(--foreground);
+  color: var(--foreground);
+}
+.stepCheck {
+  position: absolute;
+  inset: 0;
+  color: var(--hero-accent);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.step[data-state="done"] .stepNumber {
+  opacity: 0;
+}
+.step[data-state="done"] .stepCheck {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.stepBody {
+  min-width: 0;
+}
+.stepTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 22px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--muted-foreground);
+}
+.step[data-state="active"] .stepTitle,
+.step[data-state="done"] .stepTitle {
+  color: var(--foreground);
+}
+.stepAside {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+
+/* A recessed code block holding one shell line. */
+.command {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  margin-block-start: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.prompt {
+  color: var(--muted-foreground);
+  user-select: none;
+}
+.commandText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cmdBinary {
+  color: var(--foreground);
+}
+.cmdMuted {
+  color: var(--muted-foreground);
+}
+.cmdValue {
+  color: var(--code-value);
+}
+/* Rides the end of a line while it types; blinks after the prompt while the line is still empty. */
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-inline-start: 1px;
+  vertical-align: -3px;
+  border-radius: 1px;
+  background: var(--muted-foreground);
+}
+
+/* Workers a command starts: dimmed and waiting, then full strength with a check once registered. */
+.workerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-block-start: 8px;
+}
+.workerRow {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding-inline: 2px;
+  font-size: 12.5px;
+  opacity: 0.5;
+}
+.workerRow[data-ready="true"] {
+  opacity: 1;
+}
+.workerState {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+.workerPending {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.workerCheck {
+  position: absolute;
+  inset: 0;
+  color: var(--hero-accent);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.workerRow[data-ready="true"] .workerPending {
+  opacity: 0;
+}
+.workerRow[data-ready="true"] .workerCheck {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.workerName {
+  color: var(--foreground);
+  font-size: 12.5px;
+}
+.workerDetail {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workerMeta {
+  padding: 2px 8px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .caret[data-idle="true"] {
+    animation: caret-blink 1.1s steps(1, end) infinite;
+  }
+  .workerRow {
+    transition: opacity 220ms var(--activity-ease);
+  }
+  .workerPending {
+    transition: opacity 150ms ease;
+  }
+  .workerCheck,
+  .stepCheck {
+    transition-property: opacity, scale, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--activity-ease);
+  }
+  .stepCheck {
+    transition-delay: 120ms;
+  }
+  .stepNumber,
+  .stepTitle {
+    transition-property: opacity, color, box-shadow;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
+  }
+  @keyframes caret-blink {
+    50% {
+      background: transparent;
+    }
+  }
+}
+/* Recap: the line and the way onward on one row, then the five chapters as quiet links. */
+.summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 28px 40px;
+  padding-block: 48px 72px;
+  border-block-start: 1px solid var(--border);
+}
+.summaryHead {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.summaryLine {
+  max-width: 620px;
+  font-size: 22px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+.summaryLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 16px 0 18px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+.summaryArrow {
+  width: 15px;
+  height: 15px;
+}
+.recap {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.recap > li + li {
+  border-inline-start: 1px solid var(--border);
+}
+.recap a {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 18px 18px 20px;
+}
+.recapTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-block-end: 12px;
+}
+.recapLetter {
+  font-family: var(--font-pixel);
+  font-size: 32px;
+  line-height: 1;
+  color: var(--foreground);
+  -webkit-text-stroke: 0.045em currentColor;
+}
+.recapName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.recapTitle {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+.recap a:focus-visible,
+.summaryLink:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: -2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .recap a:hover {
+    background: var(--faint);
+  }
+  .recap a:hover .recapLetter {
+    color: var(--hero-accent);
+  }
+  .summaryLink:hover {
+    background: var(--faint);
+  }
+  .summaryLink:hover .summaryArrow {
+    translate: 2px 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .recap a,
+  .summaryLink {
+    transition: background-color 150ms ease;
+  }
+  .recapLetter {
+    transition: color 150ms ease;
+  }
+  .summaryArrow {
+    transition: translate 150ms var(--motion-ease-out);
+  }
+}
+@media (max-width: 900px) {
+  .recap {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .recap > li {
+    border-block-start: 1px solid var(--border);
+  }
+  .recap > li:nth-child(-n + 2) {
+    border-block-start: 0;
+  }
+  .recap > li:nth-child(odd) {
+    border-inline-start: 0;
+  }
+  .recap > li:last-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .progress > span {
+    transition: transform 360ms var(--motion-ease-out), background-color 200ms ease;
+  }
+  .chapterNav a {
+    transition: color 150ms ease;
+  }
+  .node {
+    transition:
+      border-color 180ms ease-out,
+      background-color 180ms ease-out;
+    animation: node-enter 280ms ease-out both;
+  }
+  @keyframes node-enter {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .packet {
+    display: none;
+  }
+}
+@media (min-width: 1280px) {
+  .navName {
+    display: inline;
+  }
+}
+@media (max-width: 1100px) {
+  .layout {
+    gap: 32px;
+    /* Still the wider animation on small laptops (about 60%), just less than the two thirds above. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  }
+  .node {
+    padding: 9px 8px;
+    gap: 4px 5px;
+  }
+  .nodeLabel {
+    font-size: 10px;
+  }
+  .nodeDetail {
+    font-size: 9px;
+  }
+  .engine {
+    width: 70px;
+    height: 70px;
+    border-radius: 18px;
+  }
+  .engineWord {
+    font-size: 34px;
+  }
+}
+@media (max-width: 959px), (max-height: 740px) {
+  .layout {
+    display: block;
+  }
+  .desktopGraph {
+    display: none;
+  }
+  .mobileGraph {
+    display: block;
+    margin-block-start: 32px;
+  }
+  .chapter {
+    min-height: 0;
+    padding-block: 48px;
+    max-width: 680px;
+    margin-inline: auto;
+  }
+  .chapter + .chapter {
+    border-block-start: 1px solid var(--border);
+  }
+  .chapterTitle {
+    font-size: clamp(30px, 5vw, 40px);
+  }
+  .intro {
+    padding-block-end: 0;
+  }
+  .canvas {
+    height: clamp(370px, 76vw, 490px);
+  }
+  .node {
+    font-size: 11px;
+  }
+  .graphCaption {
+    min-height: 0;
+  }
+  .controls {
+    border-block-start: 1px solid var(--border);
+    margin-block-start: 12px;
+  }
+}
+@media (max-width: 540px) {
+  .requestCalls li {
+    grid-template-columns: 28px 12px 20px 12px minmax(0, 1fr);
+    gap: 6px;
+  }
+  .requestCalls {
+    font-size: 10px;
+  }
+  .composeRequest {
+    padding-inline: 12px;
+  }
+  .graph[data-stage="compose"] .nodeLabel {
+    font-size: 12px;
+  }
+  .graph[data-stage="compose"] .nodeDetail {
+    font-size: 10px;
+  }
+  .story {
+    padding-block-start: 56px;
+  }
+  .introCopy {
+    font-size: 15px;
+  }
+  .chapter {
+    padding-block: 40px;
+    scroll-margin-block-start: 80px;
+  }
+  .chapterTitle {
+    font-size: 30px;
+  }
+  .description {
+    font-size: 15px;
+  }
+  .activityBody {
+    padding: 18px 14px;
+  }
+  .activityHeader,
+  .activityFooter {
+    padding-inline: 14px;
+  }
+  .workerRow {
+    grid-template-columns: 16px auto minmax(0, 1fr);
+  }
+  .workerMeta {
+    display: none;
+  }
+  .node {
+    width: 30%;
+    padding: 8px 7px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    text-align: center;
+    min-height: 50px;
+  }
+  .node > svg {
+    display: none;
+  }
+  .nodeLabel {
+    font-size: 10px;
+  }
+  .nodeDetail {
+    grid-column: 1;
+    font-size: 9px;
+  }
+  .engine {
+    width: 64px;
+    height: 64px;
+    border-radius: 17px;
+  }
+  .engineWord {
+    font-size: 31px;
+  }
+  .engine > span:last-child {
+    font-size: 8px;
+  }
+  .graphHeading {
+    font-size: 10px;
+  }
+  .summary {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding-block: 32px 48px;
+  }
+  .summaryLine {
+    font-size: 19px;
+  }
+  .summaryLink {
+    justify-self: start;
+  }
+}
+
+@media (min-width: 960px) and (min-height: 741px) and (max-height: 900px) {
+  .stickyGraph {
+    top: 80px;
+    padding-block-start: 12px;
+  }
+  .node {
+    min-height: 49px;
+    padding-block: 8px;
+  }
+  .engine {
+    width: 64px;
+    height: 64px;
+    border-radius: 17px;
+  }
+  .engineWord {
+    font-size: 31px;
+  }
+  .engine > span:last-child {
+    font-size: 8px;
+  }
+}
+/* Press feedback (Emil: pressable things scale 0.97 on :active, 160ms ease-out). */
+@media (prefers-reduced-motion: no-preference) {
+  .summaryLink {
+    transition-property: background-color, scale;
+    transition-duration: 150ms, 160ms;
+    transition-timing-function: ease, var(--motion-ease-out);
+  }
+  .summaryLink:active {
+    scale: 0.97;
+  }
+}

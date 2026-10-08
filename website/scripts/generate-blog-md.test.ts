@@ -205,7 +205,7 @@ MDX body
 })
 
 test("every real post's images exist under public/blog/", async () => {
-  const contentDir = path.resolve(import.meta.dirname, "../src/content/blog")
+  const contentDir = path.resolve(import.meta.dirname, "../content/blog")
   const publicDir = path.resolve(import.meta.dirname, "../public/blog")
   const files = (await fs.readdir(contentDir)).filter((f) => /\.mdx?$/.test(f))
   assert.ok(files.length > 0)

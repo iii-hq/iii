@@ -4,7 +4,7 @@
 // (the apex default root object, served without a rewrite), 404.html (the
 // export's not-found document; the edge answers unknown paths itself) and
 // Next's underscore-prefixed internals (_not-found.html). Adding a page is
-// therefore a content-only change: add src/app/(site)/foo/page.tsx, link to
+// therefore a content-only change: add app/(site)/foo/page.tsx, link to
 // /foo, and the next deploy makes the clean URL resolve — no `terraform apply`
 // (MOT-3669). See infra/terraform/website/README.md.
 //

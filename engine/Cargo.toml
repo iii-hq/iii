@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.24.5-rc.2"
+version = "0.24.6-rc.2"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -81,7 +81,6 @@ iii-sdk = { workspace = true }
 iii-helpers = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
-cliclack = { workspace = true }
 open = { workspace = true }
 ctrlc = { workspace = true }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }

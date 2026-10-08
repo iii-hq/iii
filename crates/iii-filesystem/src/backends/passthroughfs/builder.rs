@@ -35,6 +35,7 @@ pub struct PassthroughFsBuilder {
     attr_timeout: Duration,
     cache_policy: CachePolicy,
     writeback: bool,
+    read_only: bool,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -50,6 +51,7 @@ impl PassthroughFsBuilder {
             attr_timeout: Duration::from_secs(5),
             cache_policy: CachePolicy::Auto,
             writeback: false,
+            read_only: false,
         }
     }
 
@@ -80,6 +82,16 @@ impl PassthroughFsBuilder {
     /// Enable or disable writeback caching.
     pub fn writeback(mut self, enabled: bool) -> Self {
         self.writeback = enabled;
+        self
+    }
+
+    /// Serve the share read-only: mutating requests fail with `EROFS`.
+    ///
+    /// The sandbox daemon boots every sandbox on a per-sandbox trampoline
+    /// served this way (`__vm-boot --rootfs-readonly`), so no guest write
+    /// can reach a host directory through `/dev/root`.
+    pub fn read_only(mut self, enabled: bool) -> Self {
+        self.read_only = enabled;
         self
     }
 
@@ -129,6 +141,7 @@ impl PassthroughFsBuilder {
             attr_timeout: self.attr_timeout,
             cache_policy: self.cache_policy,
             writeback: self.writeback,
+            read_only: self.read_only,
         };
 
         // When init is embedded: inode 2 = init, handle 0 = init handle.

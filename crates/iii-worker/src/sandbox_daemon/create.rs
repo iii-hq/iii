@@ -66,11 +66,23 @@ pub struct CreateResponse {
 
 #[async_trait::async_trait]
 pub trait VmLauncher: Send + Sync + 'static {
+    /// Cheap capability check `handle_create` runs before resolving or
+    /// pulling the image, so an unbootable host fails fast. Default: OK.
+    fn preflight(&self) -> Result<(), SandboxError> {
+        Ok(())
+    }
+
     async fn boot(&self, params: &BootParams) -> Result<BootHandle, SandboxError>;
 }
 
 pub struct BootParams {
+    /// Per-sandbox trampoline served read-only as the guest's `/dev/root`.
+    /// Never the shared image cache.
     pub rootfs: PathBuf,
+    /// The cached image rootfs (`rootfs_cache::resolve_cached`), shared by
+    /// every sandbox of the image. Only ever exposed to the guest as a
+    /// read-only erofs lower built from it.
+    pub base_rootfs: PathBuf,
     pub workdir: PathBuf,
     pub shell_sock: PathBuf,
     pub cpus: u32,
@@ -126,6 +138,10 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             )));
         }
     }
+
+    // Refuse before resolving or pulling the image when the
+    // launcher cannot boot an isolated root (no embedded iii-init).
+    launcher.preflight()?;
 
     // Rootfs path may come from the unified cache
     // (`~/.iii/cache/<slug>/`) or a legacy sandbox path
@@ -185,7 +201,8 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     on_event(SandboxCreateEvent::BootingVm);
     let boot = launcher
         .boot(&BootParams {
-            rootfs: rootfs.clone(),
+            rootfs: layout.root.clone(),
+            base_rootfs: rootfs.clone(),
             workdir: workdir.clone(),
             shell_sock: shell_sock.clone(),
             cpus,
@@ -193,7 +210,11 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
             env: env_vec,
             network: req.network.unwrap_or(false),
         })
-        .await?;
+        .await
+        .inspect_err(|_| {
+            // Don't leak the per-sandbox dirs of a sandbox that never booted.
+            let _ = layout.cleanup();
+        })?;
 
     let state = SandboxState {
         id,

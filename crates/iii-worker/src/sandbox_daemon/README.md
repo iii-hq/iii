@@ -101,6 +101,9 @@ Sandboxes run as libkrun microVMs and need hardware virtualization on the host:
 - **macOS:** Apple Silicon (M-series). Intel Macs can't boot sandboxes.
 - **Linux:** `/dev/kvm` readable by the engine process.
 - **Windows:** unsupported.
+- **iii-worker build:** the embedded guest init (`--features embed-init`). Every official release build has it; `make sandbox-debug` reproduces it locally. Without it `sandbox::create` fails with `S300` rather than boot a sandbox without filesystem isolation.
+
+**Filesystem isolation.** Every sandbox boots from a read-only image of the cached rootfs (an erofs built once per image and stored next to the cached rootfs, e.g. `~/.iii/cache/<slug>.erofs`) plus a private, in-memory writable layer. Guest writes never reach the shared image cache, are invisible to other sandboxes, and vanish on stop; they are bounded by the sandbox's memory. The first `sandbox::create` of an image builds that erofs, which can take seconds for a large image; later creates reuse it.
 
 Hosts without hardware virtualization will fail `sandbox::create` with error `S300` and a stderr tail from the failed VM process. See `S300` in `docs/api-reference/sandbox.mdx` for the full diagnostic flow.
 

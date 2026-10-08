@@ -19,18 +19,19 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"],
+      "@/*": ["./*"],
       "@lib/*": ["./roadmap/src/*"],
       "virtual:spec-manifest": ["./roadmap/generated/spec-manifest.ts"]
     }
   },
   "include": [
     "next-env.d.ts",
+    "next.config.ts",
     "**/*.ts",
     "**/*.tsx",
+    "**/*.mts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts",
     "dist/types/**/*.ts",
     "dist/dev/types/**/*.ts"
   ],

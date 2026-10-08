@@ -1,0 +1,532 @@
+/* Proof: the ADE app. Every row is laid out from the start (hidden until its beat) so nothing shifts as the session
+   fills. Type follows the Compose card: Inter labels, Geist Mono only for ids, nothing under 11px, accent for done. */
+.stage {
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  margin-block-start: 40px;
+  min-width: 0;
+}
+.app {
+  /* ADE's own dark palette (workers/ade/web/src/index.css), so the replica reads like the product. */
+  --ade-panel: #111111;
+  --ade-raised: #171717;
+  --ade-surface: rgba(255, 255, 255, 0.055);
+  --ade-surface-hover: rgba(255, 255, 255, 0.085);
+  --ade-ink: #ededed;
+  --ade-faint: #a6a6a6;
+  --ade-ghost: #6f6f6f;
+  --ade-lift:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05), inset 0 0 0 1px rgba(255, 255, 255, 0.02), 0 0 0 1px rgba(0, 0, 0, 0.12),
+    0 1px 1px -0.5px rgba(0, 0, 0, 0.18), 0 3px 3px -1.5px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ade-panel);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 2px oklch(0 0 0 / 0.2),
+    0 24px 60px -30px oklch(0 0 0 / 0.6);
+}
+
+/* Title bar */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding-inline: 14px 8px;
+  border-block-end: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.appMark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.appName {
+  font-weight: 500;
+  color: var(--foreground);
+}
+.slash {
+  color: var(--line-strong);
+}
+.sessionName {
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 78px;
+  margin-inline-start: auto;
+  font-size: 12.5px;
+}
+.status > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.status[data-state="working"] {
+  color: var(--foreground);
+}
+.status[data-state="working"] > span {
+  background: var(--foreground);
+}
+.status[data-state="done"] {
+  color: var(--foreground);
+}
+.status[data-state="done"] > span {
+  background: var(--hero-accent);
+}
+
+/* Three panes */
+.grid {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1.3fr) minmax(0, 1fr);
+  min-height: 600px;
+}
+
+/* Conversations */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 10px;
+  border-inline-end: 1px solid var(--border);
+}
+.newChat {
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 13px;
+  color: var(--foreground);
+}
+.sideLabel {
+  margin-block: 14px 2px;
+  padding-inline: 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conversations > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.conversations > li[data-active] {
+  background: var(--faint);
+  color: var(--foreground);
+}
+.live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.live[data-on="true"] {
+  background: var(--foreground);
+}
+
+/* Session */
+.session {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-inline-end: 1px solid var(--border);
+}
+.thread {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 20px 16px;
+}
+.userMessage {
+  align-self: flex-end;
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--ade-surface);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--foreground);
+  opacity: 0;
+  translate: 0 6px;
+  filter: blur(4px);
+}
+.userMessage[data-visible="true"] {
+  opacity: 1;
+  translate: 0 0;
+  filter: blur(0);
+}
+
+/* Search and calls share one row grammar: state icon, title, timing, then a second line. */
+.step,
+.call {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  opacity: 0;
+  translate: 0 4px;
+}
+.step:not([data-state="waiting"]),
+.call:not([data-state="waiting"]) {
+  opacity: 1;
+  translate: 0 0;
+}
+.stepIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+.spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--foreground);
+  opacity: 0;
+}
+[data-state="running"] > .stepIcon > .spinner {
+  opacity: 1;
+}
+.stepDone {
+  position: absolute;
+  color: var(--muted-foreground);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.callCheck {
+  color: var(--hero-accent);
+}
+[data-state="done"] > .stepIcon > .stepDone {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.stepTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--foreground);
+}
+.stepTitle code {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stepMs {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.found {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-block-start: 4px;
+}
+.found > li {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  color: var(--foreground);
+  opacity: 0;
+  translate: 0 3px;
+}
+.found[data-visible="true"] > li {
+  opacity: 1;
+  translate: 0 0;
+}
+.calls {
+  display: flex;
+  flex-direction: column;
+  border-block-start: 1px solid transparent;
+}
+.calls[data-visible="true"] {
+  border-block-start-color: var(--border);
+}
+.call {
+  min-height: 52px;
+  padding-block: 7px;
+}
+.call {
+  border-block-end: 1px solid transparent;
+}
+.call:not([data-state="waiting"]) {
+  border-block-end-color: var(--border);
+}
+.callHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13px;
+}
+.callHead code {
+  color: var(--foreground);
+  white-space: nowrap;
+}
+.callHead span {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.callResult {
+  grid-column: 2 / -1;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  opacity: 0;
+}
+.call[data-state="done"] .callResult {
+  opacity: 1;
+}
+.reply {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--foreground);
+  opacity: 0;
+}
+.reply[data-visible="true"] {
+  opacity: 1;
+}
+.replyMark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--muted-foreground);
+}
+.reply > p {
+  display: grid;
+}
+.replyGhost,
+.replyText {
+  grid-area: 1 / 1;
+}
+.replyGhost {
+  visibility: hidden;
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--foreground);
+}
+
+/* Composer: ADE's card. A raised rounded surface with the lift shadow, the text on top, then the toolbar. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  margin: 0 16px 16px;
+  border-radius: 12px;
+  background: var(--ade-raised);
+  box-shadow: var(--ade-lift), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.composerText {
+  min-height: 76px;
+  padding: 14px 16px 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ade-ink);
+}
+.composerText[data-empty="true"] {
+  color: var(--ade-ghost);
+}
+.composerBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+.modelPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--ade-ink);
+  white-space: nowrap;
+}
+.effort {
+  color: var(--ade-faint);
+}
+.modelPicker > svg {
+  color: var(--ade-faint);
+}
+.composerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.toolButton {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  color: var(--ade-faint);
+}
+.send {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-inline-start: 4px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--ade-faint);
+}
+.send[data-ready="true"] {
+  background: var(--ade-ink);
+  color: #0a0a0a;
+}
+
+/* Inspector */
+.inspector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Under the app: the doc's solution line and the CTA. */
+.after {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px 40px;
+  margin-block-start: 32px;
+}
+.after > p {
+  max-width: 720px;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .userMessage {
+    transition-property: opacity, translate, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+  }
+  .step,
+  .call,
+  .found > li {
+    transition-property: opacity, translate;
+    transition-duration: 260ms;
+    transition-timing-function: var(--enter);
+  }
+  .spinner {
+    animation: spin 800ms linear infinite;
+  }
+  .spinner,
+  .callResult,
+  .reply {
+    transition: opacity 180ms ease;
+  }
+  .stepDone {
+    transition-property: opacity, scale, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+  }
+  .calls {
+    transition: border-color 200ms ease;
+  }
+  .call {
+    transition-property: opacity, translate, border-color;
+  }
+  .status > span,
+  .live,
+  .send {
+    transition-property: background-color, color;
+    transition-duration: 200ms;
+  }
+  @keyframes spin {
+    to {
+      rotate: 360deg;
+    }
+  }
+}
+/* The loop starts over by snapping rows away, not fading them out one by one. */
+.app:has(.composerText:not([data-empty="true"])) :is(.step, .call, .found > li, .userMessage, .reply) {
+  transition: none;
+}
+@media (max-width: 1180px) {
+  .grid {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+  .sidebar {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .session {
+    border-inline-end: 0;
+    border-block-end: 1px solid var(--border);
+  }
+}
+@media (max-width: 600px) {
+  .slash,
+  .sessionName {
+    display: none;
+  }
+  .thread {
+    padding: 16px 14px;
+  }
+  .callHead {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stepTitle code {
+    display: none;
+  }
+}

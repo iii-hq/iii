@@ -335,6 +335,12 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      cn:
+        specifier: ^0.4.0
+        version: 0.4.0
+      geist:
+        specifier: ^1.7.2
+        version: 1.7.2(next@16.3.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -342,8 +348,8 @@ importers:
         specifier: ^2.3.6
         version: 2.3.6
       lucide-react:
-        specifier: ^0.563.0
-        version: 0.563.0(react@19.2.8)
+        specifier: ^1.48.0
+        version: 1.49.0(@types/react@19.2.14)(react@19.2.8)
       marked:
         specifier: ^18.0.5
         version: 18.0.5
@@ -351,11 +357,14 @@ importers:
         specifier: ^11.16.0
         version: 11.16.0
       motion:
-        specifier: ^13.4.2
-        version: 13.4.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^13.4.6
+        version: 13.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       next:
         specifier: 16.3.6
         version: 16.3.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      next-themes:
+        specifier: ^0.4.6
+        version: 0.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react:
         specifier: 19.2.8
         version: 19.2.8
@@ -377,6 +386,9 @@ importers:
       remark-rehype:
         specifier: ^11.1.2
         version: 11.1.2
+      server-only:
+        specifier: ^0.0.1
+        version: 0.0.1
       shadcn:
         specifier: ^4.21.0
         version: 4.21.0(typescript@5.9.3)
@@ -408,9 +420,6 @@ importers:
       node-html-parser:
         specifier: ^7.0.1
         version: 7.1.0
-      server-only:
-        specifier: ^0.0.1
-        version: 0.0.1
       tailwindcss:
         specifier: ^4
         version: 4.3.2
@@ -1110,9 +1119,6 @@ packages:
     peerDependencies:
       react: '>=16.8.0'
       react-dom: '>=16.8.0'
-
-  '@floating-ui/utils@0.2.10':
-    resolution: {integrity: sha512-aGTxbpbg8/b5JfU1HXSrbH3wXZuLPJcNEcZQFMxLs3oSzgtVu6nFPkbbGGUvBcUjKV2YyB9Wxxabo+HEH9tcRQ==}
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
@@ -2796,6 +2802,11 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  cn@0.4.0:
+    resolution: {integrity: sha512-qOAeUhPwPzBxx6jaeQdo646XIKliKHc2j1ZF7Ngb1o0pJZKH5gq8FkA0aVdUdPFUDXNXyUCXpCtoJISo6dhizg==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   code-block-writer@13.0.3:
     resolution: {integrity: sha512-Oofo0pq3IKnsFtuHqSF7TqBfr71aeyZDVJ0HpmqB7FBM2qEigL0iPONSCZSO9pE9dZTAxANe5XHG9Uy0YMv8cg==}
 
@@ -3347,8 +3358,8 @@ packages:
   fraction.js@5.3.4:
     resolution: {integrity: sha512-1X1NTtiJphryn/uLQz3whtY6jK3fTqoE3ohKs0tT+Ujr1W59oopxmoEh7Lu5p6vBaPbgoM0bzveAW4Qi5RyWDQ==}
 
-  framer-motion@13.4.2:
-    resolution: {integrity: sha512-yrC5GJqlGbuZEz2DFaH+VUCrBwlA6mM5v/Sfazd83/IRpWdOdVqgZmsAZWoS30YTuA3PCbGNL2JIWyGVmeimsA==}
+  framer-motion@13.5.0:
+    resolution: {integrity: sha512-5KDKvhGTKKEQPWl8xg2mZRC+pGsenooz9v+ar6BpoXcD1mae4wdhvjxLaK+3jvFbge0jk4C8JeIjIC8m98z7hg==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -3376,6 +3387,11 @@ packages:
 
   fuzzysort@3.1.0:
     resolution: {integrity: sha512-sR9BNCjBg6LNgwvxlBd0sBABvQitkLzoVY9MYYROQVX/FvfJ4Mai9LsGhDgd8qYdds0bY77VzYd5iuB+v5rwQQ==}
+
+  geist@1.7.2:
+    resolution: {integrity: sha512-Gu5lDFa3pLRyoBlBPf0QIFHVdWAnpco7fS1bJm41jyLPFoguBgiubseUN2oLXMgqZ7uxAxDoXcHMhCY/fOTTgg==}
+    peerDependencies:
+      next: '>=13.2.0'
 
   gensync@1.0.0-beta.2:
     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
@@ -3940,6 +3956,15 @@ packages:
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
+  lucide-react@1.49.0:
+    resolution: {integrity: sha512-ApfaNM4/7jBrVopqLJ84Jz8TMQ1Q1JeZ1PmKh25aeS3E1FTVcMkSh1bEQB7dfzdIrwXRP8p3z4AJjTIHHb5IIA==}
+    peerDependencies:
+      '@types/react': '*'
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+
   lunr@2.3.9:
     resolution: {integrity: sha512-zTU3DaZaF3Rt9rhN3uBMGQD3dD2/vFQqnvZCDv4dl5iOzq2IZQqTxu90r4E5J+nP70J3ilqVCrbho2eWaeW8Ow==}
 
@@ -4158,14 +4183,14 @@ packages:
   module-details-from-path@1.0.4:
     resolution: {integrity: sha512-EGWKgxALGMgzvxYF1UyGTy0HXX/2vHLkw6+NvDKW2jypWbHpjQuj4UMcqQWXHERJhVGKikolT06G3bcKe4fi7w==}
 
-  motion-dom@13.4.2:
-    resolution: {integrity: sha512-mY293Iyj4rOQo5sDxUwPYLOKiveLQrJoK1tKfG8V1H3MMGMfan3s2i7NBW18WnD39DD79ogyiL/1fmy22GLG5w==}
+  motion-dom@13.5.0:
+    resolution: {integrity: sha512-mSdelbdqc1LDi3m7RkYgnMgdys0qSDsNFpdf0Hjyf8U5Ln0AcjSeApKD4Q4Er3sBPFDzdLehDj4SLgwBf39poQ==}
 
-  motion-utils@13.3.0:
-    resolution: {integrity: sha512-sgSschQp7EseHInIlR7hBbMuvet3RA0bs28KPZAXJcGKGdxHGvh1ogpYDilY3bOMtl73EqPNmp75sAKHYPU5sg==}
+  motion-utils@13.5.0:
+    resolution: {integrity: sha512-Hqe/sqjIKliPZg8sVjWAkdySDPJNIeKH+euVkDOG8ri3DUUU7ZjndmHsGqEPz2iHpiyVaV5I22iguCMHU2he+Q==}
 
-  motion@13.4.2:
-    resolution: {integrity: sha512-PlwVlwO7Ibhv2gZMX9ZqE7eGfSmbeU9Yf+mqkvJFdDSyTK7inlKRCry7IpofrcIU8JY7++83614eG7TJ7ORC2w==}
+  motion@13.5.0:
+    resolution: {integrity: sha512-W/Vj6RDg9f9yJoaS+ohRYtl1j3Rb86fOCCjzn3M3M10Dg7ap3M7sMUeQs9wTsLQwHHmhioYsJLRRRTXxvhtHDA==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -4186,6 +4211,12 @@ packages:
   negotiator@1.1.0:
     resolution: {integrity: sha512-NMPBRMJgiQHjbd8phG3Vebdx4kZ1H121rbl5IkMqeOsahptB9BKo/d7oJ3zTXqTgagn2bWlNSXkh0QUGM31RYg==}
     engines: {node: '>=18'}
+
+  next-themes@0.4.6:
+    resolution: {integrity: sha512-pZvgD5L0IEvX5/9GWyHMf3m8BKiVQwsCMHfoFosXtXBMnaS0ZnIJ9ST4b4NqLVKDEm8QBxoNNGNaBv2JNF6XNA==}
+    peerDependencies:
+      react: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+      react-dom: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
 
   next@16.3.6:
     resolution: {integrity: sha512-L+otWM/aQbYTx98aZhgEoMb4bZAXx1YVW4UMA/vuCyCoWG5HJyZUili8QAkqzrcC+5///tsz3s0M+SlyB5bLMw==}
@@ -5956,7 +5987,7 @@ snapshots:
 
   '@floating-ui/core@1.7.4':
     dependencies:
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.12
 
   '@floating-ui/core@1.8.0':
     dependencies:
@@ -5965,7 +5996,7 @@ snapshots:
   '@floating-ui/dom@1.7.5':
     dependencies:
       '@floating-ui/core': 1.7.4
-      '@floating-ui/utils': 0.2.10
+      '@floating-ui/utils': 0.2.12
 
   '@floating-ui/dom@1.8.0':
     dependencies:
@@ -5983,8 +6014,6 @@ snapshots:
       '@floating-ui/dom': 1.8.0
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
-
-  '@floating-ui/utils@0.2.10': {}
 
   '@floating-ui/utils@0.2.12': {}
 
@@ -7244,7 +7273,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 25.3.3
+      '@types/node': 25.9.4
 
   '@ungap/structured-clone@1.3.1': {}
 
@@ -7611,6 +7640,8 @@ snapshots:
       - '@types/react-dom'
 
   cn@0.2.6: {}
+
+  cn@0.4.0: {}
 
   code-block-writer@13.0.3: {}
 
@@ -8225,10 +8256,10 @@ snapshots:
 
   fraction.js@5.3.4: {}
 
-  framer-motion@13.4.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  framer-motion@13.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
-      motion-dom: 13.4.2
-      motion-utils: 13.3.0
+      motion-dom: 13.5.0
+      motion-utils: 13.5.0
       tslib: 2.8.1
     optionalDependencies:
       react: 19.2.8
@@ -8248,6 +8279,10 @@ snapshots:
   function-bind@1.1.2: {}
 
   fuzzysort@3.1.0: {}
+
+  geist@1.7.2(next@16.3.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)):
+    dependencies:
+      next: 16.3.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 
   gensync@1.0.0-beta.2: {}
 
@@ -8761,9 +8796,11 @@ snapshots:
     dependencies:
       react: 19.2.4
 
-  lucide-react@0.563.0(react@19.2.8):
+  lucide-react@1.49.0(@types/react@19.2.14)(react@19.2.8):
     dependencies:
       react: 19.2.8
+    optionalDependencies:
+      '@types/react': 19.2.14
 
   lunr@2.3.9: {}
 
@@ -9201,15 +9238,15 @@ snapshots:
 
   module-details-from-path@1.0.4: {}
 
-  motion-dom@13.4.2:
+  motion-dom@13.5.0:
     dependencies:
-      motion-utils: 13.3.0
+      motion-utils: 13.5.0
 
-  motion-utils@13.3.0: {}
+  motion-utils@13.5.0: {}
 
-  motion@13.4.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  motion@13.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
-      framer-motion: 13.4.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      framer-motion: 13.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       tslib: 2.8.1
     optionalDependencies:
       react: 19.2.8
@@ -9222,6 +9259,11 @@ snapshots:
   negotiator@1.1.0:
     dependencies:
       content-type: 2.1.0
+
+  next-themes@0.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   next@16.3.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:

@@ -64,13 +64,12 @@
       capture_pageview: true,
       capture_pageleave: true,
       session_recording: {
-        // Several sections mutate the DOM every frame: the hero graph's packet
-        // and call layers, the two harness-race transcripts, the workers ticker
-        // and the console demo iframe. Recording those pegs CPU and grows the
-        // replay buffer without bound, so they are blocked from session replay.
-        // The live page is unaffected.
-        blockSelector:
-          '#hv-packets, #hv-edges-ephemeral, #harness figure, #workers [role="img"], #console-live iframe',
+        // The landing's graphics mutate the DOM every frame: the growing iii
+        // graph in the overview, ownership, live demo, story, proof and
+        // use-case sections. Recording those pegs CPU and grows the replay
+        // buffer without bound, so their SVGs are blocked from session
+        // replay. The live page is unaffected.
+        blockSelector: '#overview svg, #ownership svg, #demo svg, #coder svg, #proof svg, #use-cases svg',
       },
     });
   };

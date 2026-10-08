@@ -39,27 +39,32 @@ function collapseWhitespace(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Homepage extraction. Landing sections are `<section id=...>`; each opens with
-// a SectionIntro (`[data-llms="intro"]`: eyebrow <p>, <h2>, one <p>) and the
-// hero's copy column is `[data-llms="hero"]`. Everything else on the page is
-// animation, code and controls, which is why the selectors stay this narrow.
+// Homepage extraction. Every landing section is a `<section aria-labelledby>`
+// whose head is an eyebrow <p>, the section's <h2> and an optional lede, all
+// children of one element (the Section component's <header>). The hero is the
+// one <h1> and the paragraph under it; the FAQ comes from the page's FAQPage
+// JSON-LD (the answers live in collapsed panels). Everything else on the page
+// is animation, code and controls, which is why the selectors stay this narrow.
 // ---------------------------------------------------------------------------
 
 const SR_ONLY = ".sr-only"
+
+/** Sections read by their own rules rather than the generic section head. */
+const SPECIAL_SECTIONS = new Set(["hero", "faq", "final-cta"])
 
 function isElement(node: Node): node is HTMLElement {
   return node.nodeType === 1
 }
 
 /**
- * Visible text of an element. Direct children are joined with a space so
- * `<h1><span class="block">A.</span><span class="block">B.</span></h1>` reads
- * "A. B."; screen-reader-only spans (e.g. "(opens in a new tab)") are dropped.
+ * Visible text of an element. Lines set as stacked blocks (`<span class="block">More application.</span><span
+ * class="block">Less infrastructure.</span>`) get the space the layout implied; screen-reader-only spans (e.g.
+ * "(opens in a new tab)") are dropped.
  */
 function textOf(el: HTMLElement): string {
   const copy = parse(el.outerHTML).firstChild as HTMLElement
   for (const n of copy.querySelectorAll(SR_ONLY)) n.remove()
-  return collapseWhitespace(copy.childNodes.map((n) => n.text).join(" "))
+  return collapseWhitespace(copy.text).replace(/([.!?])(?=[A-Z][a-z])/g, "$1 ")
 }
 
 function must<T>(value: T | null | undefined, what: string): T {
@@ -67,17 +72,33 @@ function must<T>(value: T | null | undefined, what: string): T {
   return value
 }
 
-/** The section's heading and one-paragraph intro, as two lines of prose. */
-function sectionIntro(root: HTMLElement, sectionId: string): string[] {
-  const section = must(root.querySelector(`#${sectionId}`), `#${sectionId}`)
-  const intro = must(section.querySelector('[data-llms="intro"]'), `#${sectionId} [data-llms="intro"]`)
-  const title = must(intro.querySelector("h2"), `#${sectionId} intro h2`)
-  const children = intro.childNodes.filter(isElement)
-  const titleIndex = children.indexOf(title)
-  const body = children.slice(titleIndex + 1).find((c) => c.tagName === "P")
-  const lines = [`**${textOf(title)}**`]
-  if (body) lines.push(textOf(body))
-  return lines
+/** Inside an element hidden from assistive tech (the graphics), so not copy. */
+function isDecorative(el: HTMLElement): boolean {
+  for (let n: HTMLElement | null = el; n; n = n.parentNode as HTMLElement | null) {
+    if (n.getAttribute?.("aria-hidden") === "true") return true
+  }
+  return false
+}
+
+/** The section's eyebrow, heading and lede: the heading's siblings in the section head. */
+function sectionHead(section: HTMLElement): { eyebrow?: string; title: string; lede?: string } {
+  const id = section.getAttribute("id") ?? "section"
+  const heading = must(section.querySelector("h1, h2"), `#${id} heading`)
+  const head = heading.parentNode as HTMLElement
+  const children = head.childNodes.filter(isElement)
+  // The heading may be wrapped (a Reveal); find the child of the head that holds it.
+  const index = children.findIndex((c) => c === heading || c.querySelector("h1, h2") === heading)
+  const eyebrow = children
+    .slice(0, index)
+    .map(textOf)
+    .find((t) => t)
+  const lede = children
+    .slice(index + 1)
+    .filter((c) => !c.querySelector("form, button, input") && !isDecorative(c))
+    .map(textOf)
+    .filter(Boolean)
+    .join(" ")
+  return { eyebrow: eyebrow || undefined, title: textOf(heading), lede: lede || undefined }
 }
 
 function absoluteUrl(href: string): string {
@@ -85,74 +106,66 @@ function absoluteUrl(href: string): string {
 }
 
 function heroLines(root: HTMLElement): string[] {
-  const hero = must(root.querySelector('#hero [data-llms="hero"]'), '#hero [data-llms="hero"]')
+  const hero = must(root.querySelector("#hero"), "#hero")
   const h1 = must(hero.querySelector("h1"), "#hero h1")
-  // Only the copy column's own paragraphs: the actions block below them holds buttons and a form.
-  const lead = hero.childNodes.filter(isElement).find((c) => c.tagName === "P")
+  // The first visible paragraph is the hero copy; the install card's notes and the email row come after it.
+  const lead = hero.querySelectorAll("p").find((p) => !isDecorative(p) && textOf(p))
   const lines = [`**${textOf(h1)}**`]
   if (lead) lines.push(textOf(lead))
   return lines
 }
 
-/** The `#workers` "view the registry" link, as a markdown link line. */
-function workersCtaLine(root: HTMLElement): string | null {
-  const link = root.querySelector("#workers .nw-cta-row a")
-  if (!link) return null
-  const href = link.getAttribute("href")
-  const label = textOf(link)
-  return href ? `[${label}](${absoluteUrl(href)})` : label
-}
-
-/** One bullet per worker card in `#hello` (`<article aria-label="Node.js worker, orchestrator">`), deduped. */
-function helloWorkerLines(root: HTMLElement): string[] {
-  const labels = new Set<string>()
-  for (const card of root.querySelectorAll("#hello article[aria-label]")) {
-    const label = collapseWhitespace(card.getAttribute("aria-label") ?? "")
-    if (label) labels.add(label)
+/** One block per landing section between the hero and the FAQ, in page order. */
+function sectionChunks(root: HTMLElement): string[] {
+  const main = must(root.querySelector("main"), "<main>")
+  const chunks: string[] = []
+  for (const section of main.querySelectorAll("section[aria-labelledby]")) {
+    const id = section.getAttribute("id")
+    if (!id || SPECIAL_SECTIONS.has(id) || section.parentNode !== main) continue
+    const { eyebrow, title, lede } = sectionHead(section)
+    chunks.push(`### ${eyebrow ?? title}`, `**${title}**`)
+    if (lede) chunks.push(lede)
+    chunks.push("")
   }
-  return [...labels].map((l) => `- ${l}`)
+  return chunks
 }
 
-/** `#nutshell`: each trait group (h3 + tagline) followed by its cards (h4: p). */
-function nutshellLines(root: HTMLElement): string[] {
-  const section = must(root.querySelector("#nutshell"), "#nutshell")
-  const lines: string[] = []
-  for (const group of section.querySelectorAll("h3")) {
-    const tagline = group.parentNode.childNodes.filter(isElement).find((c) => c.tagName === "P")
-    lines.push("", `**${textOf(group)}**${tagline ? ` ${textOf(tagline)}` : ""}`)
-    // The cards are the <ul> that follows the group's heading block.
-    const block = group.parentNode
-    const siblings = block.parentNode.childNodes.filter(isElement)
-    const list = siblings.slice(siblings.indexOf(block) + 1).find((c) => c.tagName === "UL")
-    for (const li of list?.querySelectorAll("li") ?? []) {
-      const t = li.querySelector("h4")
-      const p = li.querySelector("p")
-      if (t && p) lines.push(`- ${textOf(t)}: ${textOf(p)}`)
+/** The FAQ as question / answer pairs, from the FAQPage JSON-LD the page ships. */
+function faqLines(root: HTMLElement): string[] {
+  for (const script of root.querySelectorAll('script[type="application/ld+json"]')) {
+    let data: { "@type"?: string; mainEntity?: { name: string; acceptedAnswer: { text: string } }[] }
+    try {
+      data = JSON.parse(script.text)
+    } catch {
+      continue
     }
+    if (data["@type"] !== "FAQPage" || !data.mainEntity) continue
+    return data.mainEntity.flatMap((q) => [`**${q.name}**`, collapseWhitespace(q.acceptedAnswer.text), ""])
   }
-  return lines
+  throw new Error("generate-llms-agents: FAQPage JSON-LD not found in dist/index.html")
 }
 
 /** The site footer: what iii is, the link columns, the small print. */
 function footerLines(root: HTMLElement): string[] {
   const footer = must(root.querySelector("footer"), "<footer>")
   const lines: string[] = []
-  // The brand column and the copyright are the footer's only paragraphs; the link columns are <nav>s.
   const paragraphs = footer.querySelectorAll("p").map(textOf).filter(Boolean)
   const about = paragraphs.filter((p) => !p.startsWith("©"))
   if (about.length) lines.push(about.join(" "))
-  for (const nav of footer.querySelectorAll("nav")) {
-    const title = nav.querySelector("h2")
-    const links = nav.querySelectorAll("a").map((a) => {
+  for (const column of footer.querySelectorAll("nav h3")) {
+    const title = textOf(column)
+    // The assistant links carry a long prefilled prompt; they are actions, not pages.
+    if (title.startsWith("Ask")) continue
+    const list = (column.parentNode as HTMLElement).querySelector("ul")
+    const links = (list?.querySelectorAll("a") ?? []).map((a) => {
       const href = a.getAttribute("href")
       const label = textOf(a)
       return href ? `[${label}](${absoluteUrl(href)})` : label
     })
-    if (!links.length) continue
-    lines.push(`- ${title ? `${textOf(title)}: ` : ""}${links.join(", ")}`)
+    if (links.length) lines.push(`- ${title}: ${links.join(", ")}`)
   }
   const copyright = paragraphs.find((p) => p.startsWith("©"))
-  if (copyright) lines.push(copyright)
+  if (copyright) lines.push(copyright.replace(/\s*·.*$/, ""))
   return lines
 }
 
@@ -162,24 +175,15 @@ export function buildHomepageExtractFromHtml(html: string): string {
   const chunks: string[] = ["## Homepage copy (extracted from iii.dev HTML)", ""]
 
   chunks.push("### Hero", ...heroLines(root), "")
-  chunks.push("### Experience", ...sectionIntro(root, "experience"), "")
+  chunks.push(...sectionChunks(root))
+  chunks.push("### Questions", ...faqLines(root))
 
-  chunks.push("### Workers", ...sectionIntro(root, "workers"))
-  const cta = workersCtaLine(root)
-  if (cta) chunks.push(cta)
-  chunks.push("")
-
-  chunks.push("### Languages / protocol", ...sectionIntro(root, "hello"), ...helloWorkerLines(root), "")
-  chunks.push("### Agents / console", ...sectionIntro(root, "console-live"), "")
-  chunks.push("### Harness race", ...sectionIntro(root, "harness"), "")
-  chunks.push("### iii in a nutshell", ...sectionIntro(root, "nutshell"), ...nutshellLines(root), "")
-
-  // The roadmap preview renders only when the spec feed was reachable at build time.
-  if (root.querySelector('#tech-specs [data-llms="intro"]')) {
-    chunks.push("### Roadmap", ...sectionIntro(root, "tech-specs"), "")
+  const cta = root.querySelector("#final-cta")
+  if (cta) {
+    const { title, lede } = sectionHead(cta)
+    chunks.push("### Get started", `**${title}**`, ...(lede ? [lede] : []), "")
   }
 
-  chunks.push("### Get started", ...sectionIntro(root, "footer"), "")
   chunks.push("### Footer / links", ...footerLines(root), "")
 
   return `${chunks.join("\n").trimEnd()}\n`

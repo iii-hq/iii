@@ -1,6 +1,6 @@
 {
   "name": "iii-sdk",
-  "version": "0.24.5-rc.2",
+  "version": "0.24.6-rc.2",
   "private": false,
   "publishConfig": {
     "access": "public"

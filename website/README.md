@@ -1,18 +1,25 @@
 # iii.dev website
 
-One [Next.js](https://nextjs.org) app (App Router, static export) that builds **all of iii.dev** into `dist/`:
-prerendered HTML, nothing rendered at request time. Deployed to S3 + CloudFront by
+One [Next.js](https://nextjs.org) 16 app (App Router, static export) on Tailwind CSS v4 and
+[shadcn/ui](https://ui.shadcn.com) over [Base UI](https://base-ui.com) (`base-nova` style) that builds **all of
+iii.dev** into `dist/`: prerendered HTML, nothing rendered at request time. Deployed to S3 + CloudFront by
 `.github/workflows/deploy-website.yml`; Vercel builds previews from the same `pnpm build`.
 
 | URL | Source |
 | --- | --- |
-| `/` | `src/app/(site)/page.tsx` and `src/components/landing/` |
-| `/manifesto`, `/privacy-policy` | `src/app/(site)/{manifesto,privacy-policy}/` (copy in the sibling `*-data.ts`) |
-| `/blog/`, `/blog/<slug>/`, `/blog/rss.xml`, `/blog/<slug>.md`, `/blog/index.md` | markdown posts in `src/content/blog/`; the `.md` twins are written by `scripts/generate-blog-md.ts` |
+| `/` | `app/(site)/page.tsx` and `components/landing/` (copy in `components/landing/content.ts`) |
+| `/manifesto` | `app/(site)/manifesto/` and `components/manifesto/` |
+| `/privacy-policy` | `app/(site)/privacy-policy/` (copy in `privacy-data.ts`) |
+| `/blog/`, `/blog/<slug>/`, `/blog/rss.xml`, `/blog/<slug>.md`, `/blog/index.md` | markdown posts in `content/blog/`; the `.md` twins are written by `scripts/generate-blog-md.ts` |
 | `/roadmap/`, `/roadmap/<slug>/`, `/roadmap/<slug>/<file>.md`, `/roadmap/index.json` | tech specs read from `../tech-specs/` (markdown only, frontmatter in each `README.md`) |
 | `/roadmap/<slug>/deck/` | the interactive presentation for a spec, from `roadmap/<slug>/src/App.tsx` ([roadmap/README.md](./roadmap/README.md)) |
+| `/a` | the retired A/B test route; refreshes to `/` |
 | `/sitemap.xml`, `/llms.txt`, `/AGENTS.md` | generated into `dist/` by `scripts/` after the Next build |
 | `/robots.txt`, `/favicon.svg`, `/og-image.png`, `/posthog-consent.js`, `/blog/<slug>/*`, `/console-demo/*`, `/fonts/*` | `public/` (copied verbatim) |
+
+`app/(site)` and `app/(deck)` are two root layouts: the site (fonts, analytics, cookie banner) and the decks (their
+own Tailwind theme, `roadmap/src/index.css`). `app/not-found.tsx` carries its own document for the export's
+`404.html`.
 
 ## Local development
 
@@ -39,9 +46,13 @@ trailing-slash canonical URLs. Top-level pages stay `manifesto.html`, `privacy-p
 `/<page>` → `/<page>.html` map into a CloudFront KeyValueStore from `scripts/routes-kvs.ts`. Adding a page is a
 content-only change. Do not change these shapes; they are the site's canonical URLs.
 
+`scripts/generate-llms-agents.ts` reads the homepage copy from the built `dist/index.html`: the hero `<h1>` and its
+paragraph, each section's head (eyebrow, `<h2>`, lede), the FAQ from the page's FAQPage JSON-LD, and the footer.
+Keep those shapes when editing the landing; `pnpm test` checks the extractor against the built page.
+
 ## Writing a blog post
 
-Add a markdown file at `src/content/blog/<slug>.md`; the filename is the URL (`/blog/<slug>/`). Frontmatter:
+Add a markdown file at `content/blog/<slug>.md`; the filename is the URL (`/blog/<slug>/`). Frontmatter:
 
 ```yaml
 ---
@@ -66,17 +77,21 @@ page links to `/roadmap/<slug>/deck/`.
 
 ## Design system
 
-Black and white, dark first. Inter (UI) and Geist Mono (code) through `next/font`; Shiki with Vesper and Min Light
-for code. Tokens are the `--gray-1…12` scale in `src/app/(site)/globals.css` (light follows shadcn neutral). Dark mode is
-the `.dark` class on `<html>`, set before first paint from the `iii_theme` localStorage key. Motion runs through
-`LazyMotion` (`m.*` components only). shadcn/ui components live in `src/components/ui/`; add one with
-`pnpm dlx shadcn@latest add <component>` from this directory.
+Dark only. Geist Pixel for page and section headings (`components/site/pixel-heading.tsx`), Inter for every label and
+sentence, Geist Mono only for code, commands and ids, all through `next/font` and `geist`. Shiki with Vesper and
+Vitesse Light for code (`lib/highlight.ts`; markdown uses the same pair). Tokens are the shadcn variables plus
+`--line`, `--hero-accent` and the `--motion-*` scale in `app/(site)/globals.css`; the JS twin of the motion scale is
+`lib/motion.ts`. Long-form pages (blog, specs, privacy) share `components/article/` and the `.prose` styles.
+
+Add a shadcn component with `pnpm dlx shadcn@latest add <component>` from this directory; it lands in
+`components/ui/`.
 
 ## Environment
 
 See [`.env.example`](./.env.example). Production builds load GTM, PostHog and Common Room (after cookie consent) and
-post email signups to Mailmodo by default, as the previous site did. Set `NEXT_PUBLIC_ENABLE_ANALYTICS=false` and
-`NEXT_PUBLIC_MAILMODO_FORM_URL=` on preview or demo projects to keep their traffic and test signups out.
+post email signups to Mailmodo by default. Set `NEXT_PUBLIC_ENABLE_ANALYTICS=false` and
+`NEXT_PUBLIC_MAILMODO_FORM_URL=` on preview or demo projects to keep their traffic and test signups out. Live GitHub
+and Discord counts need no keys; they are read at build time from public endpoints.
 
 ## Deploy
 

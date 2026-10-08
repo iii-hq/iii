@@ -1,0 +1,183 @@
+/*
+ * The Ownership move. Three environments side by side from `lg` (stacked below it, so the card stays legible
+ * on a phone), and one card carrying the system between them. The card travels on `transform` only: it stays
+ * on the compositor and a CSS transition retargets cleanly if a hop is interrupted.
+ */
+
+.track {
+  --gap: 1rem;
+  --slot-h: 13rem;
+  /* Room under the card for the environment's name. */
+  --label-h: 3.75rem;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--gap);
+}
+
+@media (min-width: 1024px) {
+  .track {
+    --slot-h: 16rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1440px) {
+  .track {
+    --slot-h: 17.5rem;
+  }
+}
+
+.slot {
+  display: flex;
+  height: var(--slot-h);
+  flex-direction: column;
+  justify-content: flex-end;
+  border: 1px dashed var(--border);
+  border-radius: 0.75rem;
+  padding: 0 1rem 1rem;
+  /* Leaving: dim at once. */
+  transition: border-color var(--motion-fast) var(--motion-ease-out);
+}
+
+.name,
+.icon {
+  color: var(--muted-foreground);
+  transition: color var(--motion-fast) var(--motion-ease-out);
+}
+
+/* Arriving: light up as the card lands, not as it sets off. */
+.slot[data-here='true'] {
+  border-color: var(--line-strong);
+  transition: border-color var(--motion-slow) var(--motion-ease-out) 450ms;
+}
+
+.slot[data-here='true'] .name,
+.slot[data-here='true'] .icon {
+  color: var(--foreground);
+  transition: color var(--motion-slow) var(--motion-ease-out) 450ms;
+}
+
+.carrier {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--slot-h);
+  padding: 0.5rem 0.5rem var(--label-h);
+  pointer-events: none;
+  transform: translateY(calc(var(--at) * (100% + var(--gap))));
+  transition: transform 700ms var(--motion-ease-in-out);
+}
+
+@media (min-width: 1024px) {
+  .carrier {
+    width: calc((100% - 2 * var(--gap)) / 3);
+    transform: translateX(calc(var(--at) * (100% + var(--gap))));
+  }
+}
+
+.card {
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--card);
+  box-shadow: 0 16px 40px -20px rgb(0 0 0 / 0.75);
+}
+
+/* The system inside the card: the engine, one bus, and the workers on it. */
+.graph {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  --wire: color-mix(in oklab, var(--line-strong) 70%, transparent);
+}
+
+.engine {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.5rem;
+  background: var(--background);
+  padding: 0.5rem 0.875rem;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--foreground);
+}
+
+.engine::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  height: 1rem;
+  border-left: 1px solid var(--wire);
+}
+
+.workers {
+  display: flex;
+  width: 100%;
+  max-width: 26rem;
+  margin-top: 2rem;
+}
+
+.worker {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  justify-content: center;
+  padding: 0 0.1875rem;
+}
+
+/* Each worker draws its stub up to the bus and its share of the bus; the ends stop at the outer stubs. */
+.worker::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  height: 1rem;
+  border-left: 1px solid var(--wire);
+}
+
+.worker::after {
+  content: '';
+  position: absolute;
+  top: -1rem;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--wire);
+}
+
+.worker:first-child::after {
+  left: 50%;
+}
+
+.worker:last-child::after {
+  right: 50%;
+}
+
+.chip {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--background);
+  padding: 0.375rem 0.625rem;
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slot,
+  .slot[data-here='true'],
+  .name,
+  .icon,
+  .carrier {
+    transition: none;
+  }
+}

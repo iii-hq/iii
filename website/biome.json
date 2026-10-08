@@ -3,13 +3,18 @@
   "root": false,
   "extends": "//",
   "files": {
-    "includes": ["**", "!.next", "!public/console-demo", "!public/posthog-consent.js"]
-  },
-  "javascript": {
-    "formatter": {
-      "quoteStyle": "double",
-      "semicolons": "asNeeded"
-    }
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.js",
+      "**/*.jsx",
+      "**/*.json",
+      "**/*.jsonc",
+      "!.next",
+      "!dist",
+      "!public/console-demo",
+      "!public/posthog-consent.js"
+    ]
   },
   "css": {
     "parser": {
@@ -18,6 +23,14 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["roadmap/**", "scripts/**", "tests/**"],
+      "javascript": {
+        "formatter": {
+          "quoteStyle": "double"
+        }
+      }
+    },
     {
       "includes": ["roadmap/**"],
       "linter": {

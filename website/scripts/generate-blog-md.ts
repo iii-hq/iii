@@ -9,7 +9,7 @@ const WEBSITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 // .md twins land next to the built /blog pages, dist/blog/<slug>/index.html.
 const BLOG_DIST = path.join(WEBSITE_ROOT, "dist", "blog")
 // Post images are written as `../../assets/blog/<slug>/<file>` (the historical
-// path) and served verbatim from public/blog/<slug>/<file>; see src/lib/blog.ts.
+// path) and served verbatim from public/blog/<slug>/<file>; see lib/blog.ts.
 const BLOG_PUBLIC_DIR = path.join(WEBSITE_ROOT, "public", "blog")
 
 // Every `../../assets/blog/<slug>/<file>` reference: inline images, the

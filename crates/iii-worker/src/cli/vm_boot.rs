@@ -36,6 +36,12 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub rootfs_upper: Option<String>,
 
+    /// Serve `--rootfs` read-only over virtio-fs: every guest write through
+    /// `/dev/root` fails with EROFS. The sandbox daemon sets this for its
+    /// per-sandbox trampoline; managed workers leave it off.
+    #[arg(long)]
+    pub rootfs_readonly: bool,
+
     /// Executable path inside the guest
     #[arg(long)]
     pub exec: String,
@@ -260,6 +266,26 @@ fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
                 .to_string(),
         ),
         Err(e) => Err(format!("KVM check failed: {}", e)),
+    }
+}
+
+/// The guest's `/dev/root` share: `--rootfs` served by PassthroughFs,
+/// read-only under `--rootfs-readonly` (the sandbox trampoline).
+pub(crate) fn root_share(args: &VmBootArgs) -> Result<iii_filesystem::PassthroughFs, String> {
+    iii_filesystem::PassthroughFs::builder()
+        .root_dir(&args.rootfs)
+        .read_only(args.rootfs_readonly)
+        .build()
+        .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))
+}
+
+/// Overlay mode, host side: migrate a managed worker's on-disk layout (GC of
+/// orphaned legacy clone artifacts, then the layout marker). A read-only
+/// rootfs is a sandbox trampoline, not a managed worker dir: there is nothing
+/// to migrate and nothing may be written there.
+pub(crate) fn migrate_rootfs_layout(args: &VmBootArgs) {
+    if !args.rootfs_readonly {
+        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
     }
 }
 
@@ -670,7 +696,6 @@ pub fn run(args: &VmBootArgs) -> ! {
 }
 
 fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
-    use iii_filesystem::PassthroughFs;
     use msb_krun::VmBuilder;
 
     #[cfg(target_os = "linux")]
@@ -704,10 +729,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         ));
     }
 
-    let passthrough_fs = PassthroughFs::builder()
-        .root_dir(&args.rootfs)
-        .build()
-        .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))?;
+    let passthrough_fs = root_share(args)?;
 
     let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
 
@@ -759,9 +781,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             .rootfs_lower
             .clone()
             .expect("overlay_mode implies --rootfs-lower");
-        // Migrate this worker's on-disk layout to overlay: GC orphaned legacy
-        // clone artifacts (dep cache + prepared marker) and stamp the marker.
-        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
+        migrate_rootfs_layout(args);
         eprintln!("iii: overlay base erofs -> /dev/vda: {lower_img}");
         // Disk attach ORDER is the guest device order: the lower MUST be the
         // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init

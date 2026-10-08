@@ -16,6 +16,13 @@ use crate::error::Error;
 #[deprecated(
     note = "IStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
+// async_trait injects #[must_use] on boxed Future-returning trait methods.
+// Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
+// compatibility exception on the affected trait, not the crate or its impls.
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait generates redundant must_use on boxed futures"
+)]
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {
     async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, Error>;

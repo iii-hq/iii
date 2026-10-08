@@ -88,7 +88,7 @@ description: 'd'
 
 test("readBlogPosts reads the real blog content directory", async () => {
   const posts = await readBlogPosts()
-  assert.ok(posts.length > 0, "expected at least one post in src/content/blog")
+  assert.ok(posts.length > 0, "expected at least one post in content/blog")
   for (const post of posts) {
     assert.ok(post.slug.length > 0, "every post derives a slug from its filename")
     assert.ok(post.title.length > 0, `${post.slug}: title missing`)

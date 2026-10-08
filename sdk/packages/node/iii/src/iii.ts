@@ -14,6 +14,11 @@ import {
   WS_IDLE_TIMEOUT_MS,
   WS_PING_INTERVAL_MS,
 } from './iii-constants'
+
+// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+// Main JSON inbound message: 64 MiB (67,108,864 bytes).
+const MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
   type IIIMessage,
@@ -316,21 +321,25 @@ class Sdk implements IIIClient {
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
-    this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
-    this.triggerTypes.set(triggerType.id, {
-      message: { ...triggerType, message_type: MessageType.RegisterTriggerType },
+    const message = this.snapshotRegistration<RegisterTriggerTypeMessage>({
+      ...triggerType,
+      message_type: MessageType.RegisterTriggerType,
+    })
+    this.sendMessage(MessageType.RegisterTriggerType, message, true)
+    this.triggerTypes.set(message.id, {
+      message,
       handler,
     })
 
     return {
-      id: triggerType.id,
+      id: message.id,
       // This typed helper pairs a function with its trigger, so it defaults the
       // trigger's namespace to this worker's — otherwise the function would land
       // in the worker's namespace and the trigger in `default`, and never resolve
       // it. The low-level `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig, metadata?: Record<string, unknown>) => {
         return this.registerTrigger({
-          type: triggerType.id,
+          type: message.id,
           function_id: functionId,
           config,
           metadata,
@@ -340,7 +349,7 @@ class Sdk implements IIIClient {
       registerFunction: (functionId, handler, config, metadata?) => {
         const ref = this.registerFunction(functionId, handler)
         this.registerTrigger({
-          type: triggerType.id,
+          type: message.id,
           function_id: functionId,
           config,
           metadata,
@@ -349,7 +358,7 @@ class Sdk implements IIIClient {
         return ref
       },
       unregister: () => {
-        this.unregisterTriggerType(triggerType)
+        this.unregisterTriggerType(message)
       },
     }
   }
@@ -388,7 +397,7 @@ class Sdk implements IIIClient {
    */
   registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
     const id = crypto.randomUUID()
-    const fullTrigger: RegisterTriggerMessage = {
+    const fullTrigger: RegisterTriggerMessage = this.snapshotRegistration({
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
@@ -405,7 +414,7 @@ class Sdk implements IIIClient {
         )
         return namespace !== undefined ? { namespace } : {}
       })(),
-    }
+    })
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
 
@@ -458,20 +467,22 @@ class Sdk implements IIIClient {
 
     const isHandler = typeof handlerOrInvocation === 'function'
 
-    const fullMessage: RegisterFunctionMessage = isHandler
-      ? { ...options, id: functionId, message_type: MessageType.RegisterFunction }
-      : {
-          ...options,
-          id: functionId,
-          message_type: MessageType.RegisterFunction,
-          invocation: {
-            url: handlerOrInvocation.url,
-            method: handlerOrInvocation.method ?? 'POST',
-            timeout_ms: handlerOrInvocation.timeout_ms,
-            headers: handlerOrInvocation.headers,
-            auth: handlerOrInvocation.auth,
+    const fullMessage: RegisterFunctionMessage = this.snapshotRegistration(
+      isHandler
+        ? { ...options, id: functionId, message_type: MessageType.RegisterFunction }
+        : {
+            ...options,
+            id: functionId,
+            message_type: MessageType.RegisterFunction,
+            invocation: {
+              url: handlerOrInvocation.url,
+              method: handlerOrInvocation.method ?? 'POST',
+              timeout_ms: handlerOrInvocation.timeout_ms,
+              headers: handlerOrInvocation.headers,
+              auth: handlerOrInvocation.auth,
+            },
           },
-        }
+    )
 
     this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
 
@@ -822,6 +833,8 @@ class Sdk implements IIIClient {
 
     this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address, {
+      // Match the engine's message bound; outbound single frames use 16 MiB.
+      maxPayload: MAX_JSON_MESSAGE_BYTES,
       headers: this.options?.headers,
       handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
     })
@@ -973,13 +986,13 @@ class Sdk implements IIIClient {
 
 
     this.triggerTypes.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterTriggerType, message, true)
+      this.replayRegistration(MessageType.RegisterTriggerType, message)
     })
     this.functions.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterFunction, message, true)
+      this.replayRegistration(MessageType.RegisterFunction, message)
     })
     this.triggers.forEach((trigger) => {
-      this.sendMessage(MessageType.RegisterTrigger, trigger, true)
+      this.replayRegistration(MessageType.RegisterTrigger, trigger)
     })
 
     // Optimized: swap with empty array instead of splice
@@ -993,7 +1006,30 @@ class Sdk implements IIIClient {
       ) {
         continue
       }
-      this.sendMessageRaw(JSON.stringify(message))
+      try {
+        this.sendMessageRaw(JSON.stringify(message))
+      } catch (error) {
+        if (!(error instanceof InvocationError) || error.code !== 'payload_too_large') throw error
+        this.logError('Queued JSON envelope rejected', error)
+      }
+    }
+  }
+
+  private snapshotRegistration<T extends object>(message: T): T {
+    // Match JSON.stringify's existing wire semantics (toJSON, undefined, etc.),
+    // while retaining no caller-owned nested objects and never copying handlers.
+    return JSON.parse(JSON.stringify(message)) as T
+  }
+
+  private replayRegistration(
+    type: MessageType,
+    message: Omit<IIIMessage, 'message_type'>,
+  ): void {
+    try {
+      this.sendMessage(type, message, true)
+    } catch (error) {
+      if (!(error instanceof InvocationError) || error.code !== 'payload_too_large') throw error
+      this.logError('Registration JSON envelope rejected', error)
     }
   }
 
@@ -1001,7 +1037,37 @@ class Sdk implements IIIClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
+  // Main protocol JSON uses one frame, with an inclusive 16 MiB limit.
+  private prepareJson(message: Record<string, unknown>): string {
+    const data = JSON.stringify(message)
+    const size = Buffer.byteLength(data, 'utf8')
+    if (size <= MAX_JSON_FRAME_BYTES) return data
+    const error = new InvocationError({
+      code: 'payload_too_large',
+      message: `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for large data.`,
+    })
+    if (message.type === MessageType.InvocationResult) {
+      const fallback = JSON.stringify({
+        type: MessageType.InvocationResult,
+        invocation_id: message.invocation_id,
+        function_id: message.function_id,
+        error: { code: error.code, message: error.message },
+      })
+      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_FRAME_BYTES) return fallback
+    }
+    if (typeof message.invocation_id === 'string') {
+      const pending = this.invocations.get(message.invocation_id)
+      this.invocations.delete(message.invocation_id)
+      pending?.reject(error)
+    }
+    throw error
+  }
+
   private sendMessageRaw(data: string): void {
+    // Reattach and queue flush bypass sendMessage.
+    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_FRAME_BYTES) {
+      data = this.prepareJson(JSON.parse(data))
+    }
     if (this.ws && this.isOpen()) {
       try {
         this.ws.send(data, (err) => {
@@ -1034,10 +1100,11 @@ class Sdk implements IIIClient {
 
   private sendMessage(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>, skipIfClosed = false): void {
     const wireMessage = this.toWireFormat(messageType, message)
+    const data = this.prepareJson(wireMessage)
     if (this.isOpen()) {
-      this.sendMessageRaw(JSON.stringify(wireMessage))
+      this.sendMessageRaw(data)
     } else if (!skipIfClosed) {
-      this.messagesToSend.push(wireMessage)
+      this.messagesToSend.push(JSON.parse(data))
     }
   }
 
