@@ -11,7 +11,7 @@ cargo build --release            # Rust workspace
 
 # Build
 pnpm build                       # all JS/TS packages (Turborepo)
-cargo build --release             # engine + Rust SDK + console
+cargo build --release             # engine + Rust SDK
 
 # Test
 pnpm test                        # all JS/TS tests
@@ -29,7 +29,6 @@ cargo clippy --workspace          # lint Rust
 
 # Run
 cargo run --release               # start engine (reads engine/config.yaml)
-pnpm dev:console                  # console frontend dev server
 pnpm dev:docs                     # docs dev server (Mintlify)
 pnpm dev:website                  # website dev server
 
@@ -48,7 +47,7 @@ sdk/packages/node/iii/           TypeScript SDK (npm: iii-sdk)
 sdk/packages/node/iii-browser/   Browser SDK (npm: iii-browser-sdk)
 sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
 sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
-console/                         Developer console (React + Rust)
+console/                         Placeholder for the removed legacy iii-console (prints a notice; console is now the ADE worker)
 skills/                          26 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website

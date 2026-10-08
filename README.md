@@ -161,9 +161,12 @@ Compose workers. Install an engine skill with
 
 ## Console
 
-The [iii-console](console/) is a developer and operations console for inspecting workers, functions,
-triggers, queues, traces, logs, and real-time state. See the
-[Console docs](https://iii.dev/docs/using-iii/console) for setup and usage.
+The iii console is the web UI for a running iii system: chat with agents, inspect workers, functions,
+and triggers, and explore traces and logs. It ships as the ADE worker from
+[iii-hq/workers](https://github.com/iii-hq/workers/tree/main/ade); add it to a project with
+`iii trigger compose::add worker=ade` and open `http://127.0.0.1:3113`. See the
+[Console docs](https://iii.dev/docs/using-iii/console) for setup and usage. The legacy `iii-console`
+binary has been removed; `console/` only keeps a placeholder that prints a removal notice.
 
 ## Repository Structure
 
@@ -171,7 +174,7 @@ triggers, queues, traces, logs, and real-time state. See the
 | ---------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
 | `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)         |
-| `console/` | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
+| `console/` | Placeholder for the removed legacy `iii-console`        | [console/README.md](console/README.md) |
 | `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii website                                             | [website/](website/)                   |
 | `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
@@ -182,7 +185,7 @@ See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain,
 
 - [Documentation](https://iii.dev/docs)
 - [CLI & Engine](https://github.com/iii-hq/iii)
-- [Console](console/)
+- [Console](https://iii.dev/docs/using-iii/console)
 - [Examples](https://github.com/iii-hq/iii-examples)
 - [Contributing](CONTRIBUTING.md)
 

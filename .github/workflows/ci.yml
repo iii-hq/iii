@@ -1035,32 +1035,18 @@ jobs:
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
 
   # ──────────────────────────────────────────────────────────────
-  # Console
+  # iii-console tombstone
+  # The legacy console was removed (MOT-3619). The release still ships a
+  # placeholder `iii-console` binary for older CLIs; check that it builds,
+  # prints the removal notice and exits non-zero.
+  # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
   # ──────────────────────────────────────────────────────────────
 
-  console-ci:
-    name: Console Build
+  console-tombstone:
+    name: iii-console tombstone
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint frontend
-        run: pnpm --filter console-frontend lint
-
-      - name: Build frontend
-        run: pnpm --filter console-frontend build
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1068,5 +1054,16 @@ jobs:
         with:
           shared-key: console
 
-      - name: Build console binary
-        run: cargo build --locked -p iii-console --release
+      - name: Build and run the tombstone binary
+        run: |
+          cargo build --locked -p iii-console
+          set +e
+          ./target/debug/iii-console --port 3113 2> notice.txt
+          status=$?
+          set -e
+          cat notice.txt
+          if [ "$status" -eq 0 ]; then
+            echo "::error::iii-console tombstone must exit non-zero"
+            exit 1
+          fi
+          grep -q "iii-console has been removed" notice.txt

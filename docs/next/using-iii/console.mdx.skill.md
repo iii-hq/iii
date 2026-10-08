@@ -3,162 +3,92 @@
 # Console
 
 
-{/* TODO: Re-link worker references to https://workers.iii.dev/workers/<name> once the Worker Docs migration ships. */}
-
 <Note>
-  The console is the visual UI for iii systems. It lists workers, functions, and triggers, and shows
-  traces, logs, and metrics from the iii-observability worker. For scripting or agent integration,
-  call worker functions directly.
+  The iii console ships as the **ADE** worker. It is a single binary that serves a web UI and proxies
+  the engine WebSocket on one port (`3113` by default). Use it to chat with agents, follow traces
+  and logs, manage the workers in your Compose project, and edit worker configuration. For
+  scripting or agent integration, call worker functions directly.
 </Note>
 
-## Launch the console
+<Warning title="The iii-console binary was removed">
+  The legacy `iii-console` binary and the `iii console` command were removed. `iii console` now only
+  prints a notice that points here, and the `iii-console` release asset is a placeholder that prints
+  the same notice. Use the ADE worker described on this page instead.
+</Warning>
 
-The console connects to a running iii engine, so start the engine first, then launch the console in
-a second terminal:
+## Open the console
 
-```bash
-iii console
-```
+The console is a worker in your Compose project, so it runs next to the engine.
 
-Open `http://127.0.0.1:3113` in your browser.
-
-<Note>
-  Naming review: `iii console` is verb-shaped (launches the console) but doesn't follow the `iii
-  noun verb` convention used elsewhere in the CLI. Flagged for naming review per
-  `project-rules/cli.md`.
-</Note>
-
-## Workers page
-
-Lists every worker process currently connected to the engine. Each row shows the worker's name (or
-short ID), the project / framework / language it reported, a runtime badge with SDK version, an
-optional isolation badge (`libkrun`, `docker`, etc. as reported by the worker), IP, PID, the number
-of functions it has registered, in-flight invocations, and how long it has been connected.
-
-Selecting a worker opens a detail panel with full metadata, the project / framework / language
-fields the worker reported, live metrics (memory breakdown, CPU, event-loop lag, uptime), and the
-list of functions the worker has registered.
-
-<Info title="Isolation badge">
-  The isolation badge reflects what the worker self-reports via the `III_ISOLATION` environment
-  variable. The libkrun launcher injects `III_ISOLATION=libkrun` automatically; for container or
-  Kubernetes deployments, set `III_ISOLATION=docker` (or similar) yourself. Workers that don't set
-  the variable show no badge.
-</Info>
-
-## Functions page
-
-Lists every registered function, grouped by namespace prefix (the part before `::`). A toggle in the
-header includes or excludes system functions.
-
-Select a function to open its detail panel. The panel includes:
-
-- A description (pulled from the function's request schema, if present).
-- A request-body editor pre-filled from the request schema as a template.
-- An **Invoke** button that calls the function with the editor's payload.
-- A result view that shows the response (or error) with the call duration.
-
-## Triggers page
-
-Lists every registered trigger with **All / HTTP / Cron / Event / Other** filter tabs that show
-counts per type. Each row shows a summary (HTTP method and path, the readable cron expression, or
-the event topic), a type badge, the `function_id` it routes to, and the function's description.
-
-Selecting a trigger opens a detail panel with type-specific testing tools:
-
-- **HTTP**. Method dropdown (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`), path parameter inputs, a
-  query-parameter builder, a JSON body editor for write methods, and a **Send Request** button.
-- **Cron**. Schedule (human-readable + raw expression), next-run preview, status, and a **Run Now**
-  button that fires the bound function immediately.
-- **Event**. Event topic display, a JSON payload editor, and an **Emit Event** button.
-
-State-bound triggers don't have a dedicated tester on this page; fire them by editing the relevant
-entry on the [States page](#states-page).
-
-## States page
-
-Browser for the engine's key-value state store. The layout is groups list (left), items table
-(center, sortable on Key / Type), and a detail panel (right) that opens on row click.
-
-Supported operations:
-
-- **Add**. Open the Add Item modal to write a new entry; persisted via `state::set`.
-- **Edit**. Update the value inline from the detail panel; fires any registered `state:updated`
-  triggers.
-- **Delete**. Remove an entry from the detail panel; fires any registered `state:deleted` triggers.
-
-Use the search bar to filter items by key; pagination handles large groups. The page does not push
-live updates over WebSocket; use the refresh control after external writes.
-
-## Streams page
-
-Live WebSocket monitor for the messages flowing through the engine's stream connections. The header
-surfaces inbound / outbound counters, total bytes, and latency. A subscriptions bar lists the
-streams you're currently watching (subscribe and unsubscribe through the modal).
-
-Message rows show timestamp, stream name, event type, a truncated data preview, and message size. A
-direction filter and pause/resume controls let you isolate flows; selected messages open a detail
-panel with the full payload. The filtered set can be exported to JSON.
-
-## Queues page
-
-Lists durable queue topics with **Topic**, **Broker**, a **DLQ** badge (when dead-lettered messages
-exist), and **Subscribers** columns. Selecting a topic opens a resizable detail panel with two tabs:
-
-- **Overview**. Live topic stats and a JSON publisher for sending test messages.
-- **Dead Letters**. Failed messages with retry and delete actions.
-
-Counts and stats refresh by polling. Keyboard shortcuts: `j` / `k` to move through the list, `Enter`
-to select, `1` / `2` to switch tabs.
-
-## Traces page
-
-OpenTelemetry trace visualization across four view modes:
-
-- **Waterfall**. Timeline view with spans laid out by start time and duration. Default.
-- **Flame Graph**. Stack-based view; wider bars mean longer-running spans.
-- **Trace Map**. Topology graph showing service-to-service edges via parent-child spans.
-- **Flow**. Node-based execution flow of parent-child span relationships.
-
-Filter controls cover trace ID, service name, span / operation name, status (`ok` / `error` /
-`unset`), duration range, time range, and arbitrary span attributes; results can be sorted by start
-time, duration, or service. The selected span's detail panel includes its name, service, duration,
-status, IDs, tags, logs, errors, and baggage.
-
-<Info title="Observability worker required">
-  Trace collection requires the iii-observability worker with traces enabled. The Traces page reads
-  local in-memory trace storage, so configure traces with `exporter: memory` or `exporter: both`.
-  Use `exporter: both` when you also export traces to an external OTLP collector.
-</Info>
-
-## Logs page
-
-Structured OpenTelemetry log viewer. Each row shows timestamp, severity badge
-(`DEBUG`/`INFO`/`WARN`/`ERROR`), a truncated trace ID, the source function / service, the message,
-and a context-field count badge. Expanding a row reveals the full attributes, resource metadata, and
-trace context.
-
-Filters cover severity, time range, and full-text search across message / trace ID / source. The
-trace ID on each row is clickable: it pivots the view to show only logs from that trace, which also
-lets you jump to the corresponding entry on the [Traces page](#traces-page).
-
-<Info title="Observability worker required">
-  Log collection requires the iii-observability worker with logs enabled. Use `logs_exporter:
-  memory` or `logs_exporter: both` when you want logs visible in the console; `both` also exports
-  them to the configured OTLP collector.
-</Info>
-
-## Configuration
-
-The console reads engine and observability settings from CLI flags and environment variables.
-
-To list every flag the binary accepts (with its default), run:
+- Projects created by the installer or by `iii project init` (see [Install](../install)) already
+  open the console at `http://127.0.0.1:3113` once `iii compose --up` is running.
+- In any other project, start the project, then add the ADE worker from a second terminal in the
+  same folder:
 
 ```bash
-iii console --help
+iii compose --up
 ```
 
-The corresponding environment variables share the same set; each flag's help text names the env var
-that overrides it. The **Config** page in the sidebar shows the resolved values at runtime (the
-engine endpoints, ports, OpenTelemetry settings, and version the console is currently using), so you
-can confirm what is in effect without re-reading the flags.
+```bash
+iii trigger compose::add worker=ade
+```
+
+`compose::add` resolves the worker from the registry, declares it in `worker-compose.yaml`, and
+starts it. Then open `http://127.0.0.1:3113` in your browser.
+
+If you run more than one Compose daemon, pass its namespace, for example
+`iii trigger -n dev compose::add worker=ade`.
+
+## What you can do in it
+
+The console is a workspace of tabs and panes. Built-in screens are **Chat**, **Traces**, and
+**Workers**; workers you install can add their own pages to it.
+
+### Chat
+
+Chat with an agent running on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness)
+worker. Add the agent stack with:
+
+```bash
+iii trigger compose::add worker=harness
+```
+
+The first time you open the console on a machine, a setup wizard helps you connect a model
+provider. In the composer you can pick a model, mention any registered function or a file in the
+working directory with `@`, and approve or deny function calls that need approval. Each
+conversation links to its traces.
+
+### Traces
+
+An OpenTelemetry explorer for the engine's traces and logs. Spans stream in live. You can filter by
+status, time, duration, and attributes, group results, and open a trace as a timeline or a
+waterfall. A span's detail shows its attributes, events, errors, logs, and context.
+
+<Info title="Observability worker required">
+  Traces and logs come from the iii-observability worker. The console reads the engine's local
+  storage, so configure traces with `exporter: memory` or `exporter: both`, and logs with
+  `logs_exporter: memory` or `logs_exporter: both`. Use `both` when you also export to an external
+  OTLP collector. See [Observability](../creating-workers/observability).
+</Info>
+
+### Workers
+
+Lists every worker that the Compose daemon runs, and every worker connected to the engine outside
+Compose. For a Compose worker you can follow its logs, change its version or source, edit its
+settings (run script, start order, environment), and see the functions it registered. **Add
+worker** declares a new worker from the registry or a local directory. Changes go through the
+daemon's own `compose::*` functions; see [Compose](./compose).
+
+### Settings
+
+**Settings** lists the configuration entries of your workers and lets you edit and save them. See
+[Configuration](./configuration).
+
+## Configure the console
+
+The console registers its own `console` entry with the configuration worker. Its `http_port`
+setting (default `3113`) moves the listener without a restart. You can edit the entry under
+**Settings**, or set it like any other configuration entry.
+
+For every option, see the [ADE worker
+README](https://github.com/iii-hq/workers/tree/main/ade#configuration).

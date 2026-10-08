@@ -132,7 +132,7 @@ list changes).
 
 If you have questions about contributing, licensing, or anything else, feel free to open
 an issue for discussion.
-This is a unified monorepo containing the iii Engine, SDKs, Console, documentation, and website.
+This is a unified monorepo containing the iii Engine, SDKs, documentation, and website.
 
 ## Prerequisites
 
@@ -149,7 +149,7 @@ pnpm install
 # Build everything (JS/TS via Turborepo)
 pnpm build
 
-# Build Rust workspace (engine + SDK + console)
+# Build Rust workspace (engine + SDK)
 cargo build --release
 
 # Install the pre-commit hook (runs `cargo fmt --check` before each commit
@@ -179,7 +179,6 @@ make install-hooks
 | `cargo test -p iii-sdk` | Test Rust SDK only                                   |
 | `pnpm dev:docs`         | Start iii docs dev server from `docs/` with Mintlify |
 | `pnpm dev:website`      | Start website dev server                             |
-| `pnpm dev:console`      | Start console frontend dev server                    |
 
 ### Python
 
@@ -204,7 +203,7 @@ This resolves to the local `sdk/packages/node/iii` during development. When publ
 
 ### Rust (Cargo workspace)
 
-The engine and console depend on `iii-sdk` as a workspace dependency:
+The engine depends on `iii-sdk` as a workspace dependency:
 
 ```toml
 iii-sdk = { workspace = true, features = ["otel"] }
@@ -231,11 +230,11 @@ All CI/CD runs from `.github/workflows/`.
 
 Runs on every push/PR to `main`. Change detection determines which jobs to run:
 
-- **Engine changes** trigger: engine tests, all SDK tests, console build
+- **Engine changes** trigger: engine tests, all SDK tests
 - **SDK Node changes** trigger: SDK Node tests
 - **SDK Python changes** trigger: SDK Python tests
-- **SDK Rust changes** trigger: SDK Rust tests, engine tests, console build
-- **Console/Docs/Website changes** trigger only their own tests/builds
+- **SDK Rust changes** trigger: SDK Rust tests, engine tests
+- **Docs/Website changes** trigger only their own tests/builds
 
 The engine is built from source in CI (not downloaded as a release binary), so SDK tests always validate against the current engine code.
 
@@ -246,7 +245,7 @@ Triggered by pushing a `release/v*` tag. Executes sequentially:
 1. Run all tests
 2. Build and release engine binaries (GitHub Release)
 3. Publish SDKs (npm, PyPI, crates.io)
-4. Build and release console binaries
+4. Build and release the `iii-console` placeholder binary (the legacy console was removed; it only prints a removal notice)
 5. Trigger package manager workflows (Homebrew, etc.)
 
 ### Creating a Release

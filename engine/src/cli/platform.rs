@@ -82,7 +82,7 @@ pub fn archive_extension() -> &'static str {
 }
 
 /// Constructs the expected asset filename for a binary on the current platform.
-/// e.g., "iii-console-aarch64-apple-darwin.tar.gz"
+/// e.g., "iii-cloud-aarch64-apple-darwin.tar.gz"
 pub fn asset_name(binary_name: &str) -> String {
     format!(
         "{}-{}.{}",
@@ -209,7 +209,7 @@ pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
 }
 
 /// Constructs the expected checksum asset filename for a binary.
-/// e.g., "iii-console-aarch64-apple-darwin.sha256"
+/// e.g., "iii-cloud-aarch64-apple-darwin.sha256"
 /// Note: taiki-e produces checksums as separate assets WITHOUT the archive extension.
 pub fn checksum_asset_name(binary_name: &str) -> String {
     format!("{}-{}.sha256", binary_name, binary_target(binary_name))
@@ -279,7 +279,7 @@ mod tests {
     fn other_binaries_keep_the_portable_engine_target() {
         assert_eq!(binary_target("iii"), current_target());
         assert_eq!(binary_target("iii-init"), current_target());
-        assert_eq!(binary_target("iii-console"), current_target());
+        assert_eq!(binary_target("iii-cloud"), current_target());
     }
 
     #[test]
@@ -295,8 +295,8 @@ mod tests {
 
     #[test]
     fn test_asset_name_format() {
-        let name = asset_name("iii-console");
-        assert!(name.starts_with("iii-console-"));
+        let name = asset_name("iii-cloud");
+        assert!(name.starts_with("iii-cloud-"));
         assert!(name.ends_with(archive_extension()));
     }
 
@@ -368,16 +368,19 @@ mod tests {
 
     #[test]
     fn test_binary_path_format() {
-        let path = binary_path("iii-console").unwrap();
-        assert!(path.to_str().unwrap().contains("iii-console"));
+        let path = binary_path("iii-cloud").unwrap();
+        assert!(path.to_str().unwrap().contains("iii-cloud"));
     }
 
     #[test]
     fn test_platform_support_check() {
         use crate::cli::registry::REGISTRY;
-        // iii-console supports all major platforms
-        let console = &REGISTRY[0];
-        let result = check_platform_support(console);
+        // iii-cloud supports all major platforms
+        let cloud = REGISTRY
+            .iter()
+            .find(|spec| spec.name == "iii-cloud")
+            .expect("iii-cloud is a managed binary");
+        let result = check_platform_support(cloud);
         assert!(result.is_ok());
     }
 

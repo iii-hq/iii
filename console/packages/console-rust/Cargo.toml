@@ -1,46 +1,18 @@
+# Tombstone for the removed legacy iii-console (MOT-3619).
+#
+# The real console (an axum server embedding a React SPA) was removed in favour
+# of the iii console in ADE (`iii trigger compose::add worker=ade`). This crate
+# only builds a placeholder `iii-console` binary that prints a removal notice and
+# exits non-zero, so older `iii` CLIs that still run `iii update` or
+# `iii console` find an `iii-console` release asset instead of failing.
+#
+# TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
 [package]
 name = "iii-console"
 version = "0.24.6-rc.2"
 edition = "2021"
-description = "Developer console for the iii engine"
+description = "Removed: placeholder that points to the iii console in ADE"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/iii"
 
 [dependencies]
-# Web framework
-axum = { version = "0.8.8", features = ["ws"] }
-
-# HTTP client for reverse proxy
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-
-# WebSocket proxy (must match workspace: engine uses 0.28)
-tokio-tungstenite = "0.28"
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-tower-http = { version = "0.6.8", features = ["cors"] }
-iii-sdk = { workspace = true }
-iii-helpers = { workspace = true }
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Static file embedding
-rust-embed = "8"
-
-# CLI argument parsing
-clap = { version = "4", features = ["derive", "env"] }
-
-# MDX CLI reference generation for the hidden `gen-cli-docs` subcommand.
-iii-clap-docs = { path = "../../../crates/iii-clap-docs" }
-
-# Serialization
-serde_json = "1"
-
-# MIME type detection
-mime_guess = "2"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Error handling
-anyhow = "1"

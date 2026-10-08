@@ -165,9 +165,9 @@ mod tests {
     fn test_save_and_load_roundtrip() {
         let mut state = AppState::default();
         state.record_install(
-            "iii-console",
+            "iii-cloud",
             Version::new(0, 2, 4),
-            "iii-console-aarch64-apple-darwin.tar.gz".to_string(),
+            "iii-cloud-aarch64-apple-darwin.tar.gz".to_string(),
         );
         state.mark_update_checked();
 
@@ -181,7 +181,7 @@ mod tests {
 
         assert_eq!(loaded.binaries.len(), 1);
         assert_eq!(
-            loaded.installed_version("iii-console"),
+            loaded.installed_version("iii-cloud"),
             Some(&Version::new(0, 2, 4))
         );
         assert!(loaded.last_update_check.is_some());

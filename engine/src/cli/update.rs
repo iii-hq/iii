@@ -111,7 +111,7 @@ pub fn print_targets() {
     println!("{}", "Examples:".bold());
     println!("  iii update              # update everything");
     println!("  iii update self         # update only iii");
-    println!("  iii update console      # update only console");
+    println!("  iii update worker       # update only iii-worker");
 }
 
 /// Get the CLI command name for a binary name.
@@ -650,8 +650,14 @@ mod tests {
     // ── cli_command_for_binary tests ────────────────────────────────
 
     #[test]
-    fn cli_command_for_binary_resolves_console() {
-        assert_eq!(cli_command_for_binary("iii-console"), Some("console"));
+    fn cli_command_for_binary_resolves_worker() {
+        assert_eq!(cli_command_for_binary("iii-worker"), Some("worker"));
+    }
+
+    #[test]
+    fn cli_command_for_binary_no_longer_knows_console() {
+        // The legacy iii-console was removed from the registry (MOT-3619).
+        assert!(cli_command_for_binary("iii-console").is_none());
     }
 
     #[test]
@@ -669,7 +675,7 @@ mod tests {
     #[test]
     fn print_update_notifications_with_updates_does_not_panic() {
         let updates = vec![UpdateInfo {
-            binary_name: "iii-console".to_string(),
+            binary_name: "iii-worker".to_string(),
             current_version: Version::new(0, 8, 0),
             latest_version: Version::new(0, 9, 0),
         }];

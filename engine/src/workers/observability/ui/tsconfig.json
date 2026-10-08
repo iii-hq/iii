@@ -13,15 +13,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "allowImportingTsExtensions": true,
-    "baseUrl": ".",
-    "paths": {
-      "react": ["../../../../../console/packages/console-frontend/node_modules/@types/react"],
-      "react/*": ["../../../../../console/packages/console-frontend/node_modules/@types/react/*"]
-    },
-    "typeRoots": [
-      "../../../../../console/packages/console-frontend/node_modules/@types",
-      "../../../../../node_modules/@types"
-    ],
+    "typeRoots": ["./node_modules/@types"],
     "types": ["react"]
   },
   "include": ["./page.tsx", "./types.ts", "./styles.d.ts"]
