@@ -1,0 +1,124 @@
+/* The page's one trace view. Grid: name | track | duration, shared by the ruler and every row so ticks line up. */
+.trace {
+  --trace-columns: 240px minmax(0, 1fr) 64px;
+  padding: 18px 24px 22px;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.meta {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.ruler {
+  display: grid;
+  grid-template-columns: var(--trace-columns);
+  gap: 16px;
+  margin-bottom: 5px;
+}
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.row {
+  display: grid;
+  grid-template-columns: var(--trace-columns);
+  align-items: center;
+  gap: 16px;
+  min-height: 36px;
+  padding: 5px 0;
+}
+.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-inline-start: calc(var(--span-depth) * 12px);
+  font-size: 12px;
+}
+.fn {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.spanMeta {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.track {
+  position: relative;
+  height: 16px;
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+.bar {
+  position: absolute;
+  top: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+.row[data-active="true"] .bar {
+  background: var(--hero-accent);
+}
+.duration {
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+/* Progress is constant motion, so linear; the duration (one step) is set inline. */
+@media (prefers-reduced-motion: no-preference) {
+  .bar {
+    transition-property: clip-path, background-color;
+    transition-timing-function: linear, ease;
+  }
+}
+/* A narrower card (the Observability chapter) keeps the same grid with a shorter name column. */
+.compact {
+  --trace-columns: minmax(0, 1fr) minmax(0, 1.1fr) 52px;
+  padding: 14px 16px 16px;
+}
+.compact .row {
+  min-height: 34px;
+}
+@media (max-width: 640px) {
+  .trace {
+    padding: 16px;
+  }
+  .rulerSpacer {
+    display: none;
+  }
+  .ruler {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) 52px;
+    gap: 5px 10px;
+    padding: 8px 0;
+  }
+  .name {
+    padding-inline-start: calc(var(--span-depth) * 5px);
+  }
+  .track {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+}

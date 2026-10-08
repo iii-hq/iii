@@ -1,0 +1,359 @@
+/* The manifesto, in the /a landing's system: wide container, pixel headings, Inter for reading, Geist Mono only for
+   code and worker names, hairline rules, green only on the one thing that is ready. */
+
+/* ---------- Hero ---------- */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+  align-items: center;
+  gap: clamp(32px, 5vw, 80px);
+  padding-block: clamp(112px, 14vw, 168px) clamp(64px, 8vw, 104px);
+}
+.heroCopy {
+  min-width: 0;
+}
+.eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.heroTitle {
+  margin-block-start: 20px;
+  font-size: clamp(30px, 3.6vw, 52px);
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+}
+.heroLede {
+  margin-block-start: 24px;
+  max-width: 52ch;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+.heroFigure {
+  min-width: 0;
+}
+
+/* ---------- The collapse animation ---------- */
+.collapse {
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --move: cubic-bezier(0.77, 0, 0.175, 1);
+  padding: 8px;
+  border-radius: 20px;
+  background: var(--card);
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 24px 60px -32px oklch(0 0 0 / 0.7);
+}
+.collapseSvg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  background:
+    radial-gradient(70% 60% at 50% 48%, oklch(1 0 0 / 0.04), transparent 70%),
+    #0b0b0b;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.06);
+}
+.mesh line,
+.spokes line {
+  fill: none;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.mesh line {
+  stroke: oklch(1 0 0 / 0.28);
+}
+.mesh line[data-on="true"] {
+  stroke-dashoffset: 0;
+}
+/* "remove it.": the mesh winds back into the services and fades. */
+.mesh[data-unwound="true"] line {
+  stroke-dashoffset: 1;
+  opacity: 0;
+}
+.spokes line {
+  stroke: oklch(1 0 0 / 0.7);
+}
+.spokes line[data-on="true"] {
+  stroke-dashoffset: 0;
+}
+.spokes line[data-new="true"] {
+  stroke: var(--hero-accent);
+}
+.engine {
+  opacity: 0;
+  transform: scale(0.94);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.engine[data-on="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+.engine > rect {
+  fill: #141414;
+  stroke: oklch(1 0 0 / 0.5);
+  stroke-width: 1;
+}
+.mark rect {
+  fill: var(--foreground);
+}
+.engineLabel {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  fill: var(--foreground);
+}
+.node {
+  opacity: 0;
+  transform: scale(0.96);
+}
+.node[data-on="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+.node > rect {
+  fill: #121212;
+  stroke: oklch(1 0 0 / 0.16);
+  stroke-width: 1;
+}
+.node[data-new="true"] > rect {
+  stroke: color-mix(in oklch, var(--hero-accent) 60%, transparent);
+}
+.nodeLabel {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-anchor: middle;
+  fill: var(--foreground);
+}
+.ready {
+  fill: var(--hero-accent);
+}
+.collapseSvg[data-leaving="true"] {
+  opacity: 0;
+}
+.collapseFoot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 52px;
+  padding: 6px 4px 0 14px;
+}
+.collapseCaption {
+  font-size: 15px;
+  color: var(--foreground);
+}
+.collapseCount {
+  margin-inline-start: auto;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.collapseCount > span {
+  display: inline-block;
+  color: var(--foreground);
+}
+
+/* ---------- Statements ---------- */
+.body {
+  display: grid;
+  grid-template-columns: minmax(220px, 3fr) minmax(0, 8fr);
+  gap: clamp(32px, 5vw, 96px);
+  padding-block: clamp(64px, 8vw, 104px);
+}
+.indexColumn {
+  min-width: 0;
+}
+.index {
+  position: sticky;
+  top: 112px;
+}
+.index ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.indexLink {
+  position: relative;
+  display: block;
+  padding: 7px 12px 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+.indexLink[data-read="true"] {
+  opacity: 0.85;
+}
+.indexLink[aria-current] {
+  color: var(--foreground);
+  opacity: 1;
+}
+.indexLink code {
+  font-size: 12px;
+}
+.indexText {
+  position: relative;
+}
+.indexMarker {
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--hero-accent);
+}
+.indexLink:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+.statements {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.statement {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: clamp(20px, 3vw, 40px);
+  padding-block: clamp(40px, 5vw, 56px);
+  border-block-start: 1px solid var(--border);
+  scroll-margin-block-start: 96px;
+}
+.statement:first-child {
+  border-block-start: 0;
+  padding-block-start: 0;
+}
+.statementMotif {
+  width: 88px;
+  height: 88px;
+  color: var(--foreground);
+  overflow: visible;
+}
+.statementText {
+  min-width: 0;
+}
+.statementTitle {
+  max-width: 28ch;
+  font-size: clamp(24px, 2.4vw, 32px);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+  text-wrap: balance;
+}
+.accent {
+  color: var(--muted-foreground);
+}
+code.accent {
+  font-size: 0.86em;
+  letter-spacing: -0.01em;
+}
+.ghost {
+  color: oklch(1 0 0 / 0.28);
+}
+.statementBody {
+  margin-block-start: 16px;
+  max-width: 62ch;
+  font-size: 16.5px;
+  line-height: 1.75;
+  color: var(--muted-foreground);
+  text-wrap: pretty;
+}
+
+/* Drawings: every stroke at pathLength 1, hidden until its statement arrives. */
+.motif :is(path, circle, rect) {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.motif .motifDot {
+  stroke-dasharray: none;
+  fill: currentColor;
+  opacity: 0;
+}
+.motif[data-drawn="true"] :is(path, circle, rect) {
+  stroke-dashoffset: 0;
+}
+.motif[data-drawn="true"] .motifDot {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mesh line {
+    transition:
+      stroke-dashoffset 420ms var(--move),
+      opacity 260ms ease;
+  }
+  .spokes line {
+    transition: stroke-dashoffset 380ms var(--move);
+  }
+  .engine,
+  .node {
+    transition-property: opacity, transform;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+  }
+  .collapseSvg {
+    transition: opacity 360ms var(--enter);
+  }
+  .motif :is(path, circle, rect) {
+    transition: stroke-dashoffset 700ms var(--motion-ease-in-out) var(--d, 0ms);
+  }
+  .motif .motifDot {
+    transition: opacity 240ms ease var(--d, 0ms);
+  }
+  .indexLink {
+    transition:
+      color 150ms ease,
+      opacity 150ms ease;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .indexLink:hover {
+    color: var(--foreground);
+    opacity: 1;
+  }
+}
+
+/* ---------- Narrow ---------- */
+@media (max-width: 1023px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    padding-block-start: 120px;
+  }
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .indexColumn {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .statement {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .statementMotif {
+    width: 64px;
+    height: 64px;
+  }
+  /* The drawing scales to ~63% here; larger SVG type keeps the worker names at ~11px on screen. */
+  .nodeLabel,
+  .engineLabel {
+    font-size: 17px;
+  }
+  .collapseFoot {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .collapseCount {
+    margin-inline-start: 0;
+  }
+}

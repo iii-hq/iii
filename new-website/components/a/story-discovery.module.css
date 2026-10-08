@@ -1,0 +1,366 @@
+/* Discoverability: request → needs → search (system, then registry) → plan. Neutral throughout; accent marks ready. */
+.preview {
+  --row-h: 40px;
+  --move: cubic-bezier(0.77, 0, 0.175, 1);
+  --enter: cubic-bezier(0.23, 1, 0.32, 1);
+  margin-block-start: 0;
+}
+.fn {
+  margin-inline-start: auto;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 16px;
+}
+.label {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+/* 1 · Request */
+.prompt {
+  display: grid;
+  margin-block-start: 6px;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+.promptGhost,
+.promptTyped {
+  grid-area: 1 / 1;
+}
+.promptGhost {
+  visibility: hidden;
+}
+/* A typing caret: a slim bar that blinks only while text is arriving. */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  border-radius: 1px;
+  background: var(--foreground);
+}
+.needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 12px;
+}
+.needs > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 10px 0 5px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  opacity: 0;
+  translate: 0 4px;
+}
+.needs[data-visible="true"] > li {
+  opacity: 1;
+  translate: 0 0;
+}
+.needs > li[data-current="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--foreground);
+}
+.needIndex {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 2 · Search */
+.search {
+  border-radius: 10px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px 6px 6px 12px;
+  border-block-end: 1px solid var(--border);
+}
+.query {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.query[data-idle="true"] {
+  color: var(--muted-foreground);
+}
+/* Where the search is looking: a two-option switch with a sliding pill. */
+.scopes {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex-shrink: 0;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--faint);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+}
+.scopes > span[data-on] {
+  position: relative;
+  padding: 4px 10px;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+.scopes > span[data-on="true"] {
+  color: var(--foreground);
+}
+.scopes[data-idle="true"] > span[data-on] {
+  color: var(--muted-foreground);
+}
+.scopePill {
+  position: absolute;
+  inset-block: 3px;
+  inset-inline-start: 3px;
+  width: calc(50% - 3px);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 1px 2px oklch(0 0 0 / 0.3);
+}
+.scopes[data-scope="registry"] .scopePill {
+  translate: 100% 0;
+}
+.scopes[data-idle="true"] .scopePill {
+  opacity: 0;
+}
+.results {
+  position: relative;
+  padding: 6px;
+}
+.rowsFrame {
+  position: relative;
+}
+.rows {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+/* The highlight that walks the rows; it settles with a hairline once it lands on a match. */
+.cursor {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: var(--row-h);
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--foreground) 6%, transparent);
+  opacity: 0;
+}
+.cursor[data-visible="true"] {
+  opacity: 1;
+}
+.cursor[data-matched="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  height: var(--row-h);
+  padding-inline: 10px;
+  font-size: 12.5px;
+}
+.row[data-dim="true"] {
+  opacity: 0.45;
+}
+.rowId {
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowDetail {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowOwner {
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.matchTag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--foreground);
+}
+.noMatch {
+  position: absolute;
+  inset-inline: 6px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  height: var(--row-h);
+  border-radius: 7px;
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+  opacity: 0;
+  translate: 0 4px;
+  pointer-events: none;
+}
+.noMatch[data-visible="true"] {
+  opacity: 1;
+  translate: 0 0;
+}
+
+/* 3 · Plan */
+.plan {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.plan > li {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.plan > li + li {
+  border-block-start: 1px solid var(--border);
+}
+.planState {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+.planIcon {
+  position: absolute;
+  inset: 0;
+  color: var(--foreground);
+  opacity: 0;
+  scale: 0.25;
+  filter: blur(4px);
+}
+.planIconReady {
+  color: var(--hero-accent);
+}
+.plan > li[data-ready="true"] .needIndex {
+  opacity: 0;
+}
+.plan > li[data-ready="true"] .planIcon {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.planWhat {
+  min-width: 0;
+  color: var(--muted-foreground);
+}
+.plan > li[data-ready="true"] .planWhat {
+  color: var(--foreground);
+}
+.planNote {
+  min-width: 0;
+  overflow: hidden;
+  text-align: end;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .needs > li {
+    transition-property: opacity, translate, color, box-shadow;
+    transition-duration: 260ms, 260ms, 200ms, 200ms;
+    transition-timing-function: var(--enter);
+  }
+  .scopePill {
+    transition:
+      translate 320ms var(--move),
+      opacity 200ms ease;
+  }
+  .scopes > span[data-on] {
+    transition: color 200ms ease;
+  }
+  .cursor {
+    transition:
+      transform 240ms var(--move),
+      opacity 160ms ease,
+      box-shadow 200ms ease;
+  }
+  .row {
+    transition: opacity 200ms ease;
+  }
+  .noMatch {
+    transition-property: opacity, translate;
+    transition-duration: 220ms;
+    transition-timing-function: var(--enter);
+  }
+  .planIcon {
+    transition-property: opacity, scale, filter;
+    transition-duration: 300ms;
+    transition-timing-function: var(--enter);
+  }
+  .needIndex {
+    transition: opacity 150ms ease;
+  }
+}
+@media (max-width: 540px) {
+  .body {
+    padding: 16px 14px;
+  }
+  .prompt {
+    font-size: 15px;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .rowDetail {
+    display: none;
+  }
+  .scopes > span[data-on] {
+    padding-inline: 8px;
+  }
+  .plan > li {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  .planNote {
+    grid-column: 2;
+    text-align: start;
+  }
+}

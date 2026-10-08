@@ -1,0 +1,53 @@
+.packet,
+.pulse {
+  pointer-events: none;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .packet {
+    stroke-dasharray: 8 100;
+    stroke-dashoffset: 10;
+    animation: request-flow 7.2s var(--motion-ease-in-out) infinite;
+    animation-play-state: paused;
+  }
+
+  .pulse {
+    animation: arrival 7.2s var(--motion-ease-out) infinite;
+    animation-play-state: paused;
+  }
+
+  .stage[data-running="true"] :is(.packet, .pulse) {
+    animation-play-state: running;
+  }
+}
+
+@keyframes request-flow {
+  0% {
+    stroke-dashoffset: 10;
+    opacity: 0;
+  }
+  4% {
+    opacity: 0.9;
+  }
+  22% {
+    stroke-dashoffset: -100;
+    opacity: 0.9;
+  }
+  24%,
+  100% {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
+
+@keyframes arrival {
+  0%,
+  16%,
+  100% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 0.55;
+  }
+}
