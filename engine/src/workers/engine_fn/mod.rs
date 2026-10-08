@@ -1541,6 +1541,11 @@ impl Worker for EngineFunctionsWorker {
         // Weak: the registry lives inside the engine, so a strong handle here
         // would keep the engine alive forever.
         let engine = Arc::downgrade(&self.engine);
+        // Captured here (initialize always runs inside the runtime) rather than
+        // looked up per change: the registry's register/remove are synchronous
+        // and public, so a change can come from a thread with no current
+        // runtime, and it must still produce an event.
+        let runtime = tokio::runtime::Handle::current();
         let scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.engine.functions.set_change_listener(Arc::new(
             move |_change: crate::function::FunctionChange,
@@ -1550,10 +1555,6 @@ impl Worker for EngineFunctionsWorker {
                 if scheduled.swap(true, Ordering::AcqRel) {
                     return;
                 }
-                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                    scheduled.store(false, Ordering::Release);
-                    return;
-                };
                 let engine = engine.clone();
                 let scheduled = scheduled.clone();
                 runtime.spawn(async move {
@@ -3313,6 +3314,75 @@ mod tests {
             .remove(crate::protocol::DEFAULT_NAMESPACE, "burst::b");
         let removed = next_matching(&mut rx, |ids| !ids.iter().any(|i| i == "burst::b")).await;
         assert_eq!(removed["event"], "functions_changed");
+    }
+
+    /// A registry change made from a thread with no current Tokio runtime
+    /// (register/remove are synchronous and public) must still produce an
+    /// `engine::functions-available` event: the listener spawns on the handle
+    /// captured at `initialize`, not on a per-change lookup.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn functions_available_fires_for_changes_outside_the_runtime() {
+        let (engine, module) = setup_engine_and_module();
+        module.initialize().await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "test::on_fns".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |input: Value| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(input);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+        engine.trigger_registry.triggers.insert(
+            "trig-fns".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-fns".to_string(),
+                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+                function_id: "test::on_fns".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+                metadata: None,
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
+            },
+        );
+
+        let off_runtime = engine.clone();
+        std::thread::spawn(move || {
+            assert!(
+                tokio::runtime::Handle::try_current().is_err(),
+                "the change must come from a thread without a runtime"
+            );
+            register_simple_function(&off_runtime, "offrt::fn", None);
+        })
+        .join()
+        .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = rx.recv().await.expect("channel closed");
+                let has = event["functions"]
+                    .as_array()
+                    .is_some_and(|fs| fs.iter().any(|f| f["function_id"] == "offrt::fn"));
+                if has {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("a change made off the runtime must still fire functions-available");
+        assert_eq!(event["event"], "functions_changed");
     }
 
     // ── create_channel test ─────────────────────────────────────────────
