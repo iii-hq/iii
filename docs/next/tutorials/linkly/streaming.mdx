@@ -115,7 +115,7 @@ A few things in there are the provider's job, because nobody else can do them:
   is rejected at bind time instead of failing later.
 - **Bound the fan-out.** The table has a cap, and each delivery uses `TriggerAction.Void()`, so a
   slow listener never holds up the others.
-- **Deliver where the listener lives.** Passing `binding.namespace` matters in Chapter 7, when a
+- **Deliver to the listener's namespace.** Passing `binding.namespace` matters in Chapter 7, when a
   browser tab binds from its own namespace.
 
 ## Announce clicks from `link`
