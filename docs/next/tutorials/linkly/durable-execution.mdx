@@ -6,6 +6,13 @@ owner: "devrel"
 type: "tutorial"
 ---
 
+<Warning title="Deprecated">
+  This chapter uses the `pubsub` worker (`publish` and `subscribe`). `pubsub` is deprecated (pubsub)
+  and will be removed in an upcoming release. Behavior is unchanged for now, so the
+  chapter still works. The durable `queue` parts are not deprecated. See
+  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#migrate-from-pubsub).
+</Warning>
+
 In Chapter 3 every redirect triggers `link::record_click` directly, so the database write runs on
 the redirect's hot path and a slow write slows the redirect. In this chapter you move that work onto
 a **queue** so redirects return immediately, then use **pub/sub** to broadcast link events to
@@ -97,7 +104,7 @@ When you need a publish and subscribe flow to be guaranteed to succeed (or fail 
 `queue`s `iii::durable::publish` and `durable:subscriber`.
 
 When you don't need a publish and subscribe flow to be guaranteed then use `pubsub`s `publish` and
-`subscribe`.
+`subscribe` (deprecated; see the [migration guide](../../upgrading/migrate-from-streams#migrate-from-pubsub)).
 
 </Info>
 

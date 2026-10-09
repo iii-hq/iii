@@ -8,6 +8,7 @@ pub mod bin_resolve;
 pub mod builtins;
 pub mod condition;
 pub mod config;
+pub(crate) mod deprecation;
 pub mod engine;
 pub mod function;
 pub mod invocation;

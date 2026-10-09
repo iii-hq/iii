@@ -741,6 +741,8 @@ class Sdk implements IIIClient {
    * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
    * not registered; atomic updates are handled by the engine's built-in
    * stream update logic.
+   *
+   * @deprecated __helpers_create_stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
    */
   __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
     this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))

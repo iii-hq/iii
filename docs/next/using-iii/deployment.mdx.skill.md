@@ -41,7 +41,13 @@ The generated `docker-compose.yml` exposes:
 | ----- | ---------------------------------- |
 | 49134 | SDK WebSocket (worker connections) |
 | 3111  | REST API                           |
-| 3112  | Stream API                         |
+| 3112  | Stream API (deprecated)            |
+
+<Warning title="Deprecated">
+  The dedicated Streams WebSocket on port 3112 is deprecated (iii-stream) and will be removed in an
+  upcoming release. Behavior is unchanged for now. Expose it only for legacy clients.
+  See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 The Dockerfile builds against `iiidev/iii:latest` (distroless, non-root). The compose file ships
 commented-out Redis and RabbitMQ services that can be uncommented when workers need external
@@ -51,6 +57,11 @@ adapters.
 
 The engine does not terminate TLS. Place a reverse proxy in front of it to handle TLS and route the
 three transport surfaces (`/api/*`, `/stream/*`, `/ws`) to the right ports.
+
+<Note>
+  The `/stream/*` route only serves legacy clients of the deprecated Streams WebSocket. Drop it once
+  those clients are migrated.
+</Note>
 
 ### Caddy
 

@@ -1,3 +1,5 @@
+#![allow(deprecated)] // exercises the deprecated legacy IStream provider surface
+
 use async_trait::async_trait;
 use iii_helpers::stream::{
     StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,

@@ -85,6 +85,13 @@ pub struct StreamSetInput {
     pub item_id: String,
     /// JSON value to store at the given location.
     pub data: Value,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -95,6 +102,13 @@ pub struct StreamGetInput {
     pub group_id: String,
     /// Identifier of the item to fetch.
     pub item_id: String,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -105,6 +119,13 @@ pub struct StreamDeleteInput {
     pub group_id: String,
     /// Identifier of the item to delete.
     pub item_id: String,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -113,12 +134,26 @@ pub struct StreamListInput {
     pub stream_name: String,
     /// Group within the stream whose items should be listed.
     pub group_id: String,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamListGroupsInput {
     /// Name of the stream whose groups should be listed.
     pub stream_name: String,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,11 +194,23 @@ pub struct StreamUpdateInput {
     pub item_id: String,
     /// Ordered list of update operations applied atomically to the existing value.
     pub ops: Vec<UpdateOp>,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 /// Input for stream.listAll (empty struct)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamListAllInput {}
+pub struct StreamListAllInput {
+    // See `StreamSetInput::caller_worker_id`.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSendInput {
@@ -178,6 +225,13 @@ pub struct StreamSendInput {
     pub event_type: String,
     /// JSON payload delivered to subscribers.
     pub data: Value,
+    // Engine-injected id of the calling worker connection, used only to
+    // attribute deprecation warnings. Never serialized, so payloads forwarded
+    // to custom `stream::<op>(<name>)` functions stay unchanged, and skipped
+    // in the published request format.
+    #[serde(default, rename = "_caller_worker_id", skip_serializing)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
 }
 
 /// Metadata for a stream (used by stream.listAll)
@@ -328,6 +382,42 @@ mod tests {
         assert_eq!(input.event_type, "custom");
         let back = serde_json::to_value(&input).unwrap();
         assert_eq!(back["type"], "custom");
+    }
+
+    #[test]
+    fn caller_worker_id_is_accepted_but_never_serialized_or_published() {
+        let caller = "6f1c2d6e-0f0e-4d5e-9a43-2a1f3c0b9e11";
+        let input: StreamSetInput = serde_json::from_value(json!({
+            "stream_name": "s",
+            "group_id": "g",
+            "item_id": "i",
+            "data": {"x": 1},
+            "_caller_worker_id": caller,
+        }))
+        .unwrap();
+        assert_eq!(input.caller_worker_id.as_deref(), Some(caller));
+        assert_eq!(
+            serde_json::to_value(&input).unwrap(),
+            json!({"stream_name": "s", "group_id": "g", "item_id": "i", "data": {"x": 1}})
+        );
+
+        let all: StreamListAllInput = serde_json::from_value(json!({})).unwrap();
+        assert!(all.caller_worker_id.is_none());
+        assert_eq!(serde_json::to_value(&all).unwrap(), json!({}));
+
+        let schemas = [
+            serde_json::to_string(&schemars::schema_for!(StreamSetInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamGetInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamDeleteInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamListInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamListGroupsInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamListAllInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamSendInput)).unwrap(),
+            serde_json::to_string(&schemars::schema_for!(StreamUpdateInput)).unwrap(),
+        ];
+        for schema in schemas {
+            assert!(!schema.contains("caller_worker_id"), "{schema}");
+        }
     }
 
     #[test]

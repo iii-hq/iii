@@ -207,10 +207,11 @@ impl SocketStreamConnection {
                 if let Some(id) = id {
                     let data = self
                         .stream_module
-                        .get(StreamGetInput {
+                        .get_item(StreamGetInput {
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
                             item_id: id.clone(),
+                            caller_worker_id: None,
                         })
                         .await;
 
@@ -244,9 +245,10 @@ impl SocketStreamConnection {
                 } else {
                     let data = self
                         .stream_module
-                        .list(StreamListInput {
+                        .list_items(StreamListInput {
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
+                            caller_worker_id: None,
                         })
                         .await;
 
@@ -710,6 +712,7 @@ mod tests {
                 group_id: "group-a".to_string(),
                 item_id: "item-1".to_string(),
                 data: json!({ "status": "open" }),
+                caller_worker_id: None,
             })
             .await;
         assert!(matches!(set_result, FunctionResult::Success(_)));
@@ -769,6 +772,7 @@ mod tests {
                 group_id: "group-a".to_string(),
                 item_id: "item-1".to_string(),
                 data: json!({ "status": "open" }),
+                caller_worker_id: None,
             })
             .await;
         assert!(matches!(set_result, FunctionResult::Success(_)));
@@ -854,6 +858,7 @@ mod tests {
                 group_id: "group-a".to_string(),
                 item_id: "item-1".to_string(),
                 data: json!({ "status": "open" }),
+                caller_worker_id: None,
             })
             .await;
         assert!(matches!(set_result, FunctionResult::Success(_)));

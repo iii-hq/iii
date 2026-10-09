@@ -1,3 +1,11 @@
+/**
+ * LEGACY EXAMPLE, kept for reference. It uses `createStream` and calls `stream::*` directly.
+ *
+ * stream::* is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+ *
+ * For replacements built on SDK primitives (owned trigger type, stored records with
+ * get/list + change trigger, channels), see ./streams-migration/README.md.
+ */
 import { createStream } from 'iii-sdk/helpers'
 import { iii } from './iii'
 import type { Todo } from './types'

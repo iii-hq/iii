@@ -78,6 +78,7 @@ impl StreamAdapter for BridgeAdapter {
             group_id: group_id.to_string(),
             item_id: item_id.to_string(),
             ops,
+            caller_worker_id: None,
         };
 
         let result = self
@@ -133,6 +134,7 @@ impl StreamAdapter for BridgeAdapter {
             group_id: group_id.to_string(),
             item_id: item_id.to_string(),
             data,
+            caller_worker_id: None,
         };
         let result = self
             .bridge
@@ -159,6 +161,7 @@ impl StreamAdapter for BridgeAdapter {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
             item_id: item_id.to_string(),
+            caller_worker_id: None,
         };
         let result = self
             .bridge
@@ -185,6 +188,7 @@ impl StreamAdapter for BridgeAdapter {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
             item_id: item_id.to_string(),
+            caller_worker_id: None,
         };
         let result = self
             .bridge
@@ -205,6 +209,7 @@ impl StreamAdapter for BridgeAdapter {
         let data = StreamListInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
+            caller_worker_id: None,
         };
 
         let result = self
@@ -225,6 +230,7 @@ impl StreamAdapter for BridgeAdapter {
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
         let data = StreamListGroupsInput {
             stream_name: stream_name.to_string(),
+            caller_worker_id: None,
         };
         let result = self
             .bridge

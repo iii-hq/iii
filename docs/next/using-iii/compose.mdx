@@ -643,11 +643,18 @@ containers:
 | `registration_namespace_grace_ms` | integer | engine default         | Namespace-registration grace passed to the engine.                                       |
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
 
-Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`
+(deprecated; still accepted),
 and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
 `iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
 usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
 these workers.
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
+  Behavior is unchanged for now. See
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 <Note>
   Changes to these worker configurations take effect only after the engine restarts.

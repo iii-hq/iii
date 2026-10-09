@@ -10,6 +10,7 @@ Mirrors the Rust ``iii_sdk::helpers`` module and the Node
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Protocol, TypeVar
 
 from .channels import ChannelDirection, ChannelItem
@@ -17,6 +18,11 @@ from .stream import IStream
 from .types import Channel, IIIClient, extract_channel_refs, is_channel_ref
 
 TData = TypeVar("TData")
+
+_CREATE_STREAM_DEPRECATION = (
+    "create_stream is deprecated (iii-stream) and will be removed in an upcoming release. "
+    "Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)
 
 __all__ = [
     "ChannelDirection",
@@ -75,6 +81,13 @@ def create_stream(iii: IIIClient, stream_name: str, stream: IStream[TData]) -> N
     Free-function form of the former ``III.create_stream`` instance method.
     The ``IStream`` generic ``TData`` is preserved so type checkers can
     validate the implementor's get/set/delete/list signatures.
+
+    .. deprecated::
+        create_stream is deprecated (iii-stream) and will be removed in an upcoming release.
+        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
+    Emits a :class:`FutureWarning` attributed to the caller's line on every call.
     """
+    warnings.warn(_CREATE_STREAM_DEPRECATION, FutureWarning, stacklevel=2)
     shim: _IIIWithHelperShims = iii  # type: ignore[assignment]
     shim._helpers_create_stream(stream_name, stream)

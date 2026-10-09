@@ -50,6 +50,14 @@ workers:
             namespace: browser
 ```
 
+<Warning title="Deprecated">
+  The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream) and
+  will be removed in an upcoming release. Behavior is unchanged for now. Expose your own
+  domain functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only the
+  separate `auth_function` setting of `iii-stream` is.
+</Warning>
+
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
 to connect (or reject it if authorization fails). That is covered in the next section.
 

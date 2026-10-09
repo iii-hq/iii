@@ -8,6 +8,7 @@ pub use crate::channels::{ChannelDirection, ChannelItem, extract_channel_refs, i
 
 use std::sync::Arc;
 
+#[allow(deprecated)]
 use iii_helpers::stream::{
     StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
 };
@@ -15,6 +16,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::iii::{IIIClient, RegisterFunction};
+#[allow(deprecated)]
 use crate::stream_provider::IStream;
 use crate::types::Channel;
 
@@ -30,6 +32,10 @@ pub async fn create_channel(iii: &IIIClient, buffer_size: Option<usize>) -> Resu
 /// Wires the 5 callable `stream::*` functions (`get`, `set`, `delete`, `list`,
 /// `list_groups`) on the engine through the supplied [`IStream`] implementor.
 /// `update` is **not** registered, atomic updates remain engine-side.
+#[deprecated(
+    note = "create_stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
+#[allow(deprecated)]
 pub fn create_stream<S>(iii: &IIIClient, stream_name: impl Into<String>, stream: S)
 where
     S: IStream,

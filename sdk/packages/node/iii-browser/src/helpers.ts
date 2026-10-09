@@ -30,6 +30,8 @@ export function createChannel(iii: ISdk, bufferSize?: number): Promise<Channel> 
  * to `stream::get/set/delete/list/list_groups`.
  *
  * Free-function form of the previous `ISdk.createStream` instance method.
+ *
+ * @deprecated createStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
 export function createStream<TData>(iii: ISdk, streamName: string, stream: IStream<TData>): void {
   ;(iii as IIIWithHelperShims).__helpers_create_stream(streamName, stream)
