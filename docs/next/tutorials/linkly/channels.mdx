@@ -7,11 +7,11 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-Where a stream is for a live trickle of events, a **channel** is for **moving a large amount of data
-at once**: a direct streaming pipe between two endpoints, rather than one request and response.
-Channels are bidirectional (each end has both a reader and a writer), but here you'll stream in one
-direction, uploading a CSV of links. You'll give this its own `bulk-importer` worker so the `link`
-worker stays focused on single links.
+A stream carries a live trickle of events. A **channel** moves **a large amount of data at once**. A
+channel is a direct pipe between two endpoints. Data goes in one direction, from the writer end to
+the reader end. In this chapter you upload a CSV of links over a channel. A dedicated
+`bulk-importer` worker does the import, so the `link` worker stays focused on single links. For the
+channel API, see [Create a channel](../../creating-workers/channels#create-a-channel).
 
 ## Add the worker
 
@@ -26,8 +26,8 @@ bulk-importer:
 ## Import a CSV over a channel
 
 The `bulk-importer` worker exposes one function that receives the read end of a channel, streams the
-CSV in, and triggers `link::create` from the `link` worker for each row. Create
-`bulk-importer/src/index.ts`:
+CSV in, and triggers `link::create` from the `link` worker for each row. Uncomment the Ch. 6 block
+in `bulk-importer/src/index.ts`:
 
 ```typescript bulk-importer/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -89,24 +89,24 @@ iii trigger compose::restart
 With the engine running, let's bulk-load some links.
 
 <Note>
-  Unlike previous chapters this section and Chapter 7 require that you have [node and npm
-  installed](https://nodejs.org/en/download/current) locally. This is because we're now creating
-  client side code that runs outside of workers.
+  This section and Chapter 7 need [node and npm](https://nodejs.org/en/download/current) on your
+  machine. The uploader script in this section runs on your machine, outside Compose. Earlier
+  chapters do not need node or npm locally.
 </Note>
 
 ### Upload a CSV
 
-The uploader is a small standalone script that creates the channel, writes the CSV to the writer
-end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` (from
-`iii-sdk/helpers`) returns serializable `readerRef`/`writerRef` handles you can pass through a
-normal trigger payload. It is not a worker, so `channel-client/` holds it, outside
-`worker-compose.yaml`:
+The uploader is a short script. It creates the channel, writes the CSV to the writer end, and sends
+the reader end to `bulk-importer::import_csv`. `createChannel` (from `iii-sdk/helpers`) returns
+`readerRef` and `writerRef`. These refs are small JSON values, so a normal trigger payload can carry
+them. The script connects to the engine with `registerWorker`, runs once, and exits. Compose does
+not run it, so it is in `channel-client/`, outside `worker-compose.yaml`. Install its dependencies:
 
 ```bash
 cd channel-client && npm install
 ```
 
-Write this into `channel-client/import-links.js`:
+Uncomment the Ch. 6 block in `channel-client/import-links.js`:
 
 ```javascript import-links.js
 import { registerWorker } from "iii-sdk";
@@ -135,15 +135,15 @@ await worker.shutdown();
 node import-links.js
 ```
 
-```json
-{ "imported": 2, "skipped": 0 }
+```text
+{ imported: 2, skipped: 0 }
 ```
 
 The SDK prints a few `[iii]` / `[OTel]` connection lines around that object; the
 `{ imported, skipped }` line is the importer's answer.
 
-Run it again and it reports `{ "imported": 0, "skipped": 2 }`: the codes are already taken, so the
-importer skips those rows instead of aborting the batch.
+Run it again and it reports `{ imported: 0, skipped: 2 }`. The codes are already taken, so the
+importer skips those rows and continues with the batch.
 
 Both new links resolve immediately:
 
@@ -164,5 +164,5 @@ iii trigger link::resolve code=mydocslink
 ## Conclusion
 
 Linkly can now ingest a file's worth of links in a single streamed upload through a dedicated
-`bulk-importer` worker. Next, in [Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn
-a browser tab into a worker that creates links and subscribes to the live click stream.
+`bulk-importer` worker. Next, in [Ch. 7: Bring in the browser](./frontend), you turn a browser tab
+into a worker that creates links and subscribes to the live click stream.

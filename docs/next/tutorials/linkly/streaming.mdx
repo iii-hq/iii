@@ -6,17 +6,25 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-`iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
-like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
-back as well as receive them), but here you only need to broadcast clicks outward. You'll move the
-live-broadcast concern into its own `click-streamer` worker so the `link` worker stays focused on
-links.
+`iii-stream` is for **real-time data transmission**. It pushes data to a client the moment the data
+changes, for example a live feed of clicks for a dashboard. Subscribers receive each change. Workers
+write to a stream with `stream::set`. In this chapter you move the live broadcast into its own
+`click-streamer` worker, so the `link` worker stays focused on links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7, and the `click-streamer` worker
-manages the streaming. `iii-stream` is an engine worker, so it runs from the start; you only enable
-the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
+`iii-stream` sends clicks to clients in Chapter 7. The `click-streamer` worker writes the clicks to
+the stream. `iii-stream` ships with the engine. The scaffold's `worker-compose.yaml` already lists
+it under `engine.workers`, so it runs from the start:
+
+```yaml worker-compose.yaml
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    iii-stream: {}
+```
+
+You only enable the `click-streamer` container here. Uncomment the Ch. 5 block under `containers`:
 
 ```yaml worker-compose.yaml
 click-streamer:
@@ -31,7 +39,10 @@ onto the live feed.
 
 ### Add a `link.clicked` event to the `link` worker
 
-First, publish a `link.clicked` event from `link::record_click`:
+First, publish a `link.clicked` event from `link::record_click`. In `link/src/index.ts`, comment out
+the `Ch. 3 | link::record_click` block. Then uncomment the `Ch. 5 | link::record_click` block that
+replaces it. For more information, see
+[The worker entry point](./foundations#the-worker-entry-point).
 
 ```typescript link/src/index.ts {12-16}
 worker.registerFunction(
@@ -56,16 +67,18 @@ worker.registerFunction(
 ```
 
 <Info>
-  In the new code above we didn't use `await` and set the `action` to `TriggerAction.Void()`. This
-  causes the function to return immediately before it completes. This is a simple performance
-  enhancement with things like pubsub where we don't need guaranteed execution.
+  The new `publish` call has no `await`, and its `action` is `TriggerAction.Void()`. The SDK sends
+  the call and does not wait for a result. Use this for calls such as `publish`, where you do not
+  need a result or a confirmation that the call ran.
 </Info>
 
-### Setup the `click-streamer` worker
+### Set up the `click-streamer` worker
 
-Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
-a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
-WebSocket subscribed to that stream and group. Create `click-streamer/src/index.ts`:
+Now set up the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
+a `clicks` stream with `stream::set`. A `stream::set` call stores the item. It also pushes the item
+to each WebSocket subscriber of that stream and group. It also runs each `stream` trigger that
+matches the stream and group. Chapter 7 uses a `stream` trigger. Uncomment the Ch. 5 block in
+`click-streamer/src/index.ts`:
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -127,10 +140,29 @@ Then read the live `clicks` stream:
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 
+The output lists one item for each click. Your `clicked_at` values differ:
+
+```json
+[
+  {
+    "clicked_at": "2026-05-27T10:00:00.000Z",
+    "code": "iii-example-4"
+  },
+  {
+    "clicked_at": "2026-05-27T10:00:00.120Z",
+    "code": "iii-example-5"
+  },
+  {
+    "clicked_at": "2026-05-27T10:00:00.240Z",
+    "code": "iii-example-6"
+  }
+]
+```
+
 Each redirect lands in the stream as the `click-streamer` worker broadcasts it.
 
 ## Conclusion
 
 Linkly now streams every click to subscribers in real time through a dedicated `click-streamer`
-worker. Next, in [Ch. 6: Move bulk data with channels](/tutorials/linkly/channels), you bulk-load
-links from a CSV in a single streamed upload.
+worker. Next, in [Ch. 6: Move bulk data with channels](./channels), you bulk-load links from a CSV
+in a single streamed upload.

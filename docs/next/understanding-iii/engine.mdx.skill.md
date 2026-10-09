@@ -5,68 +5,88 @@
 
 ## Startup flow
 
-When the Engine starts it does a few things:
+When the Engine starts, it does the following, in order:
 
-1. It parses its command-line arguments.
-1. Loads its configuration file (typically `config.yaml`).
-1. Applies the worker declarations from the config (starting each declared worker process).
-1. Begins serving connections.
+1. It reads its command-line arguments.
+1. It reads its configuration file. This is `config.yaml` in the current directory or the file that
+   `--config` names. A managed engine reads the file that Compose writes for it.
+1. It makes sure that the file declares only the five engine-owned Workers that you can configure.
+   Any other Worker stops the start with `UNSUPPORTED_CONFIG_WORKERS` (see
+   [Common errors](../upgrading/workers-to-compose#common-errors)).
+1. It runs the Workers that the file declares. It also runs `configuration`, `iii-worker-manager`,
+   `iii-engine-functions`, `iii-telemetry`, and `iii-observability`. These five always run. The
+   Engine injects the last three itself, so the configuration file does not declare them.
+1. It starts to watch the configuration file for changes.
 
-After this sequence the Engine is ready to accept WebSocket connections from Workers and route
-invocations between them.
+After startup, `iii-worker-manager` accepts WebSocket connections from Workers, and the Engine
+routes invocations between them. Project Workers have their own lifecycle.
+[Compose](../using-iii/compose) or another supervisor starts them, and they connect like any other
+Worker. For a missing file, see [Engine configuration](../using-iii/engine#engine-configuration).
+For the list of engine-owned Workers, see
+[Configure the engine-owned workers](../using-iii/engine#configure-the-engine-owned-workers).
 
 ## Engine responsibilities
 
-The Engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
-connections from Workers and maintains the live registry of which Workers are currently connected.
-Second, it tracks the Functions and Triggers each connected Worker has registered, exposing them as
-a unified system-wide surface. Third, it routes invocations: when a Trigger fires or a Function is
-called, the Engine finds a Worker that provides the target Function and dispatches the call.
+At runtime the Engine has three jobs. It keeps the live registry of connected Workers. It tracks the
+Triggers and Functions that each Worker registers. It routes invocations. When a Trigger fires or a
+caller invokes a Function, the Engine finds the Worker that provides the target Function in the
+target namespace. Then it sends the call to that Worker. The registry identifies each Function by
+its namespace and its function id, so the same function id can exist in more than one namespace. See
+[Namespaces](./namespaces).
 
 ## Worker disconnect cleanup
 
 When a Worker disconnects, the Engine cleans up the Worker's footprint in the live registry: its
-Functions and Triggers are removed, in-flight invocations of those Functions are cancelled, and the
+Triggers and Functions are removed, in-flight invocations of those Functions are canceled, and the
 rest of the system keeps serving.
 
 <Note>
   See [Creating Workers / Workers / Handling Worker
-  disconnects](../creating-workers/workers#handling-worker-disconnects) for the cancellation error code
-  and the discovery events that fire (with their consistency semantics).
+  disconnects](../creating-workers/workers#handling-worker-disconnects) for the cancellation error
+  code and the discovery events that fire (with their consistency semantics).
 </Note>
 
 ## Config hot-reload
 
-`config.yaml` is watched at runtime. When the file changes, the Engine parses, diffs, validates, and
-commits the new config. Workers that did not change in the diff stay running through the reload, so
-only added, removed, or changed Workers are restarted. An invalid `config.yaml` (parse error or
-validation failure) causes the Engine to exit rather than enter an indeterminate state.
+The Engine watches its configuration file at runtime. When the file changes, the Engine reads and
+validates it. Then it compares the file with the running engine-owned Workers and applies the
+difference. It starts added Workers, stops removed Workers, and restarts changed Workers. Workers
+that did not change keep running. If the new file is invalid, the Engine stops. This keeps the
+running Workers in step with the file on disk. For a managed engine, Compose writes the file only
+when Compose starts. A change to the `engine:` section of `worker-compose.yaml` takes effect after
+you restart Compose. See
+[Configure the engine-owned workers](../using-iii/engine#configure-the-engine-owned-workers).
 
-Worker *settings* are a separate layer. A Worker that registers a configuration schema reads its
-`config:` block once, at first boot, to bootstrap its entry in the
-[configuration worker](../using-iii/configuration); from then on its settings are managed there and
-updated dynamically, without an engine reload. Settings changes are validated against the Worker's
-schema: an invalid change is rejected and the previous value stays in effect, so a bad settings edit
-never takes the Engine down.
+Worker _settings_ are a separate layer. The [configuration worker](../using-iii/configuration) holds
+them. Each Worker that registers a settings schema reads its settings there and receives changes
+while it runs, without an Engine reload. For a project Worker, Compose sends the merged settings to
+the configuration worker before the Worker starts (see
+[Configuration precedence](../using-iii/compose#configuration-precedence)). For `iii-stream`
+settings, see the [iii-stream worker docs](https://workers.iii.dev/workers/iii-stream). When the
+schema is registered, the configuration worker validates each change against it. It rejects an
+invalid change and keeps the previous value, so a bad settings edit does not stop the Engine.
 
 ## Architecture-agnostic routing
 
-Routing is independent of language, runtime, and location. The Engine applies the same routing path
-whether a Function is hosted by a Python Agent on a laptop, a TypeScript Worker in a browser tab, a
-Rust binary in a microVM, or an OCI image on Kubernetes. This is what
-makes "any language, any runtime" a concrete property of iii rather than an aspiration.
+Routing does not depend on language, runtime, or location. The Engine uses the same routing path for
+a Python Worker on a laptop, a TypeScript Worker in a browser tab, a Rust binary in a VM, or a
+container on Kubernetes. For an example from the Quickstart, see
+[The Quickstart](../understanding-iii#the-quickstart).
 
 ## Discovery and the live registry
 
-The Engine maintains a registry of every connected Worker, the Functions each Worker has registered,
-and the Triggers bound to those Functions. Other Workers and tooling can read the registry on demand
-or subscribe to changes as it evolves.
+Other Workers and tooling can read the registry on demand or subscribe to changes.
 
 <Note>
-  See [Creating Workers / Workers / Inspecting the live
-  registry](../creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
-  snapshot calls and the `engine::workers-available` / `engine::functions-available` subscription
-  events.
+  To list Workers, Triggers, and Functions, see the [iii-engine-functions worker
+  docs](https://workers.iii.dev/workers/iii-engine-functions). For the `engine::*::list` snapshot
+  calls and the `engine::workers-available` / `engine::functions-available` subscription events, see
+  [Creating Workers / Workers / Inspecting the live
+  registry](../creating-workers/workers#inspecting-the-live-registry).
 </Note>
 
-<Note>Querying traces, logs, and metrics is documented with the iii-observability Worker.</Note>
+<Note>
+  To query traces, logs, and metrics, see the [iii-observability worker
+  docs](https://workers.iii.dev/workers/iii-observability) and
+  [Observability](../creating-workers/observability).
+</Note>

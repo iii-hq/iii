@@ -2,26 +2,30 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the engine-owned `iii-sandbox`
-worker. Enable it in the managed Compose file before starting the engine:
+for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox` worker. Enable
+it in the managed Compose file before starting the engine:
 
 ```yaml worker-compose.yaml
 engine:
   workers:
     iii-sandbox:
-      auto_install: true
       image_allowlist: [python, node]
 ```
 
+On Linux, the microVM needs access to `/dev/kvm`. See
+[Troubleshooting](../troubleshooting#kvm-not-accessible).
+
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
-  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  This page shows how to run code in sandboxes with the `sandbox::*` functions. For the complete
+  configuration and the full list of functions, see the [iii-sandbox worker
+  docs](https://workers.iii.dev/workers/iii-sandbox).
 </Note>
 
-You drive sandboxes by invoking the worker's `sandbox::*` triggers, the same way you call any
+You drive sandboxes by invoking the worker's `sandbox::*` functions, the same way you call any
 function (see [Triggering functions](../using-iii/functions#triggering-invoking-functions)). Images
-are catalog names such as `python` or `node`, not arbitrary OCI references. The examples below
-capture the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
+are catalog names such as `python` or `node`. To add other images, see the
+[iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox). The examples below capture
+the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
@@ -38,8 +42,9 @@ the VM running afterwards (then stop it yourself with `sandbox::stop`).
 
 ## Lifecycle
 
-For multi-step work, create a sandbox, operate on it with its id, then stop it. Most triggers take
-flat `key=value` arguments; only nested payloads need `--json`.
+For work that spans several calls, create a sandbox, operate on it with its id, then stop it. With
+`iii trigger`, pass each field as a `key=value` argument. A value that is valid JSON, such as an
+object or an array, goes to the function as JSON.
 
 ```bash
 # boot a sandbox and capture its id
@@ -49,7 +54,7 @@ SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
 iii trigger sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
 
 # list the active sandbox ids
-iii trigger sandbox::list | jq -r '.[].sandbox_id'
+iii trigger sandbox::list | jq -r '.sandboxes[].sandbox_id'
 
 # stop when done
 iii trigger sandbox::stop sandbox_id=$SB
@@ -58,76 +63,44 @@ iii trigger sandbox::stop sandbox_id=$SB
 A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
 does not expand variables or chain commands; use `sandbox::run` with `lang=shell` for that.
 
-## Concurrency and idle cleanup
+## Stop idle sandboxes
 
-A sandbox accepts up to `max_concurrent_exec_per_sandbox` simultaneous `sandbox::exec` calls (four
-by default). Concurrent execs share the guest filesystem and process table without mutual
-exclusion, so coordinate commands that mutate shared state. `sandbox::list` reports
-`exec_in_flight` and `exec_slots_free`; `exec_in_progress` only indicates whether at least one exec
-is running and does not mean the next call will be rejected.
-
-Idle cleanup treats an active exec or relayed TCP, UDP, or DNS payload as activity, so a sandbox
-serving network traffic is not automatically stopped while it is handling requests. Bare
-acknowledgements and keepalive probes do not count as activity. Each exec remains bounded by
-`max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer needed.
+Call `sandbox::stop` when you no longer need a sandbox. For exec concurrency limits and idle
+cleanup, see the [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 
 ## Catalog
 
-`sandbox::catalog::list` reports the images this engine can boot (presets plus any
-operator-registered images). Call it when you do not already know what is available. It does not
-boot a sandbox, so there is nothing to stop.
+`sandbox::catalog::list` reports the known images: the presets (`python` and `node`) plus any images
+that the operator registers. A sandbox can boot only an image that is also in `image_allowlist`.
+Call it when you do not already know what is available. The call does not boot a sandbox, so there
+is nothing to stop.
 
 ```bash
-# list bootable image names (e.g. python, node)
+# list known image names (for example, python, node)
 iii trigger sandbox::catalog::list | jq -r '.images[].name'
 ```
 
 ## Filesystem
 
-The `sandbox::fs::*` triggers manipulate files inside a running sandbox. Each takes a `sandbox_id`
-plus operation-specific fields.
+The `sandbox::fs::*` functions operate on files inside a running sandbox. Each function takes a
+`sandbox_id` plus fields for its operation.
 
 ```bash
 # boot a sandbox and capture its id
 SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
 
-# reuse a directory and file path across the calls
-D=/work; F=$D/main.py
-
 # create the directory
-iii trigger sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
+iii trigger sandbox::fs::mkdir sandbox_id=$SB path=/work parents=true
 
 # write a file
-iii trigger sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
-
-# list the directory
-iii trigger sandbox::fs::ls sandbox_id=$SB path=$D | jq -r '.entries[].name'
-
-# stat the file
-iii trigger sandbox::fs::stat sandbox_id=$SB path=$F
+iii trigger sandbox::fs::write sandbox_id=$SB path=/work/main.py content='print(1)'
 
 # read the file contents
-iii trigger sandbox::fs::read sandbox_id=$SB path=$F | jq -r .body
-
-# change permissions
-iii trigger sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
-
-# search for a pattern
-iii trigger sandbox::fs::grep sandbox_id=$SB path=$D pattern=print
-
-# find and replace across files
-iii trigger sandbox::fs::sed sandbox_id=$SB path=$D pattern=print replacement=log
-
-# move the file
-iii trigger sandbox::fs::mv sandbox_id=$SB src=$F dst=$D/app.py
-
-# remove the file
-iii trigger sandbox::fs::rm sandbox_id=$SB path=$D/app.py
+iii trigger sandbox::fs::read sandbox_id=$SB path=/work/main.py | jq -r .body
 
 # stop the sandbox
 iii trigger sandbox::stop sandbox_id=$SB
 ```
 
-For programmatic file transfer, use `sandbox::fs::write` and `sandbox::fs::read` from the previous
-section. Both operations stream through iii data channels, so they are also suitable for binary or
-larger payloads when called through an SDK.
+For the full set of `sandbox::fs::*` functions and for large or binary file transfer, see the
+[iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).

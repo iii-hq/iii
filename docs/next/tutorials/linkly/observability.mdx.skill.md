@@ -9,12 +9,13 @@ directly from the engine.
 
 ## Open the console
 
-iii has a console worker that provides an easy to use web interface for monitoring and interacting
-with your iii application. Add it to your project with:
+The console is a web interface to monitor and use your iii application. Add it to your project with:
 
 ```bash
 iii trigger compose::add worker=console
 ```
+
+Compose prints a warning that `console` is an alias of `ade`. You can ignore this warning.
 
 Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"
 and then take a look at what happens in the Traces window within the console when you run the
@@ -32,25 +33,21 @@ Click any redirect to see a full waterfall of timed spans crossing from `http` i
 
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
 
-You didn't add a tracing library or thread a request ID between services to get this. The engine
-injects `iii-observability` automatically. Every request gets a trace and every `Logger` line is
-collected automatically across workers. In iii, end-to-end observability is an inherent property of
-the system.
+The engine injects `iii-observability`, so every request gets a trace. Every `Logger` line is
+collected across workers. In iii, end-to-end observability is an inherent property of the system.
 
 <Info>
   **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
-  you aren't locked into the console. You can point the worker at Honeycomb, Grafana, Datadog, or
-  any other OTel-compatible backend. See the worker's configuration on
+  the worker can export them to Honeycomb, Grafana, Datadog, or any other OTel-compatible backend.
+  See the worker's configuration on
   [workers.iii.dev/workers/iii-observability](https://workers.iii.dev/workers/iii-observability);
-  its settings are managed at runtime through the [configuration worker](/using-iii/configuration).
+  its settings are managed at runtime through the [configuration
+  worker](../../using-iii/configuration).
 </Info>
-
-For most teams the console (or your own OTel backend) is all you need day to day.
 
 <Note>
   The rest of this chapter is an optional deep dive on how to read the same logs and traces directly
-  from the engine. You can jump to [Ch. 3: Persist everything](/tutorials/linkly/persistence) if you
-  prefer.
+  from the engine. To skip it, go to [Ch. 3: Persist everything](./persistence).
 </Note>
 
 ## Read the logs
@@ -79,9 +76,11 @@ iii trigger engine::logs::list limit=500 \
 ```
 
 <Info>
-  The `jq` pipe filters the response down to the `link resolved` entries and keeps the parts that
-  matter for this tutorial, try removing it to see all the information the iii engine can provide.
+  The `jq` filter keeps only the `link resolved` entries and the fields that this tutorial uses.
+  Remove the filter to see all of the data that `engine::logs::list` returns.
 </Info>
+
+The output has one object for each `link resolved` entry, newest first. One object looks like this:
 
 ```json
 {
@@ -97,9 +96,9 @@ iii trigger engine::logs::list limit=500 \
 }
 ```
 
-`data` is exactly what you passed to `logger.info`; the engine stores those fields as individual log
-attributes, so the `jq` above gathers everything except the OTel metadata keys. The `trace_id` ties
-the log to the trace it came from, which is where you look next.
+`log.data` holds the object that you passed to `logger.info`. The `Logger` sends that object as one
+log attribute, `log.data`. The `jq` filter keeps every attribute except the OpenTelemetry metadata
+keys. The `trace_id` connects the log to the trace it came from. You look at that trace next.
 
 ## Follow a redirect across workers
 
@@ -108,7 +107,7 @@ full execution context of the request. Grab the most recent redirect's `trace_id
 request as a tree. Capturing the id into a shell variable keeps this a single paste:
 
 ```bash
-trace_id=$(iii trigger engine::traces::list name="GET /s/:code" limit=1 | jq -r '.traces[0].trace_id')
+trace_id=$(iii trigger engine::traces::list name="GET /s/:code" sort_order=desc limit=1 | jq -r '.traces[0].trace_id')
 iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
   def walk(depth):
     ("  " * depth // "") + .name + " (" + .service_name + ") "
@@ -120,9 +119,10 @@ iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
 
 <Info>
   The `jq` pipe walks the nested `roots` tree, indenting each span by depth and printing its
-  `service_name` and duration in milliseconds. You get the full path of one redirect, across three
-  workers:
+  `service_name` and duration in milliseconds.
 </Info>
+
+The output shows the full path of one redirect across three workers:
 
 ```text
 GET /s/:code (http) 6.686 ms
@@ -169,5 +169,5 @@ which hop is responsible.
 
 Linkly is now observable: the console shows every worker, trace, and log as it happens, and you can
 read the same data from the engine with `iii trigger`. The links are still kept only in memory,
-though, so restarting the engine clears them. Next, in
-[Ch. 3: Persist everything](/tutorials/linkly/persistence), you move them into durable storage.
+though, so a project restart clears them. Next, in [Ch. 3: Persist everything](./persistence), you
+move them into durable storage.

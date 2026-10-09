@@ -8,36 +8,35 @@ function that turns `/s/abc` into a redirect, and finish with a multi-tenant lin
 durable execution, storage, analytics, a live click stream, bulk imports, and permission gated
 untrusted browser workers that have all the same functionality and observability as the base system.
 
-Each chapter adds one capability by adding a worker to your existing system. The point is not the
-link shortener itself, but the pattern: a real system on iii is a set of small workers that invoke
-each other's functions and triggers. You add capability without needing to refactor existing
-functionality.
+Each chapter adds one capability with a new worker. The link shortener shows the pattern: a real
+system on iii is a set of small workers that use each other's triggers and functions. You add a
+capability without a refactor of existing functionality.
 
-<Note>New to iii? [Install](/install) it before you begin.</Note>
+<Note>New to iii? [Install](../../install) it before you begin.</Note>
 
 ## Choose your path
 
-Both paths will build the same system.
+Both paths build Linkly with the same chapters and the same Linkly workers. Some details differ,
+such as function payload fields, file names, and the way each path creates the `clicks` queue. The
+agentic path also adds the workers that the coding agent needs.
 
-- [Agentic](/tutorials/linkly/agentic) gives an AI agent one prompt per chapter and reviews what it
-  writes.
-- [Exploration](/tutorials/linkly/foundations) writes each chapter by hand, with the reasoning
-  behind every step.
+- [Agentic](./agentic) gives an AI agent one prompt per chapter and reviews what it writes.
+- [Exploration](./foundations) writes each chapter by hand, with the reasoning behind every step.
 
 ## An overview of the chapters
 
-The agentic path contains all of these chapters on a single page while the exploration path divides
-them into separate sections.
+The agentic path has all of these chapters on one page. The exploration path has one page for each
+chapter.
 
 ### Ch. 1: Foundations
 
-Build a custom `link` worker with `link::create` and `link::resolve`, store links in memory, then
-expose them over HTTP with `http` as `POST /links` and `GET /s/:code`.
+Build a custom `link` worker with `link::create` and `link::resolve`, store links in memory with the
+`state` worker, then expose them over HTTP with `http` as `POST /links` and `GET /s/:code`.
 
 ### Ch. 2: Observe everything
 
 Use the engine-injected `iii-observability` functions for logs and traces, and open the `console` to
-inspect functions, triggers, and live invocations.
+inspect triggers, functions, and live invocations.
 
 ### Ch. 3: Persist everything
 
@@ -46,8 +45,8 @@ with `state` kept in front as a fast read cache.
 
 ### Ch. 4: Make it durable
 
-Push click events onto `queue` so redirects stay fast, and publish `link.created` events with
-`pubsub` that a cache and an analytics function each subscribe to.
+Push click events onto `queue` so redirects stay fast. Publish `link.created` with `pubsub` for an
+analytics worker. Publish `link.updated` with durable pub/sub for a cache refresher.
 
 ### Ch. 5: Stream live clicks
 

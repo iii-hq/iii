@@ -8,33 +8,33 @@ type: "how-to"
 ## Browsing the registry
 
 The iii Worker Registry at [workers.iii.dev](https://workers.iii.dev/) is the index of installable
-workers. Each worker page lists the functions and trigger types it provides, its configuration
+workers. Each worker page lists the trigger types and functions it provides, its configuration
 schema, supported platforms, and agent skills. Use that information to locate a worker that fulfills
 a capability your project needs.
 
 {/* TODO: Add a llm-only note here on how an llm can browse the registry once that surface is stable in the skills worker */}
 
-Workers can also be found on Docker and OCI-compatible registries.
-
 ## Adding a worker
 
-`compose::add` accepts a registry name (optionally pinned with `@version`) or a local project path.
-It writes the resolved worker and dependency graph to `worker-compose.yaml`, then restarts the
-project. Its settings are managed through the [configuration worker](./configuration).
+`compose::add` adds a registry worker to the running project. Compose writes the worker and its
+registry dependencies to `worker-compose.yaml` and starts them. Workers that did not change continue
+to run.
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::add worker=state@0.22.2
-iii trigger -n dev compose::add worker=./workers/my_worker
+iii trigger compose::add worker=state
 ```
 
 <Note>
-  Replace `dev` with the running Compose daemon's namespace. For project lifecycle, status, updates,
-  and removal by editing the file, see [Workers](./workers) and [Compose](./compose).
+  If the Compose daemon runs in a namespace other than `default`, add `-n <namespace>`. For version
+  selectors and the full steps, see [Add a registry worker](./workers#add-a-registry-worker). To add
+  a worker from a local directory, see [Adding workers](./compose#adding-workers). For the settings
+  of each worker, see [Configuration](./configuration). To check status, update, or remove a worker,
+  see [Workers](./workers) and [Compose](./compose).
 </Note>
 
 ## Artifact types
 
-Compose currently runs registry workers published as native binaries or bundles. Engine-kind roots
-are rejected because the engine already supplies them; image workers require an OCI runtime and are
-not yet supported by Compose.
+Compose runs `binary` registry workers as processes on the host and `bundle` registry workers in a
+VM. Compose rejects `engine` and `image` registry workers. `engine` workers ship with the engine.
+`image` workers need an OCI runtime. For platform limits, see
+[Worker kinds](./compose#worker-kinds).

@@ -7,18 +7,11 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
+In this tutorial, you build a project with a Python worker and a TypeScript worker. Then you add
+state and an HTTP endpoint to the running project.
 
-<Tip title="Install iii before proceeding">
-  Make sure you have installed iii before proceeding. If you haven't then visit the
-  [Install](./install) guide first. There you can also learn how to [set up iii for agentic
-  development](./install#start-a-project).
-</Tip>
-
-<Note>
-  The Quickstart is our original tutorial. If you want a guided, agentic learning experience that
-  can be completed in a few minutes then run the [install script](./install) and press Enter when
-  prompted.
+<Note title="Install iii before you start">
+  This tutorial needs iii. If you do not have it, follow the [Install](./install) guide.
 </Note>
 
 ## 1. Create the project
@@ -28,11 +21,12 @@ iii project init quickstart --template quickstart
 cd quickstart
 ```
 
-This creates the two workers that you'll run: a Python worker that adds two numbers and stores the
-sum in state, and a TypeScript worker that exposes an http endpoint and calls the Python worker
-through the iii engine.
+This creates two workers. `math-worker` is a Python worker that adds two numbers. `caller-worker` is
+a TypeScript worker that registers `math::add_two_numbers`. That function calls `math::add` through
+the iii engine. Later steps add state and an HTTP endpoint.
 
 ```
+worker-compose.yaml
 workers/
   math-worker/
     src/math_worker.py  # Python worker
@@ -46,22 +40,20 @@ workers/
 iii compose --up
 ```
 
-Compose starts the engine and its daemon. The engine is now listening on `ws://localhost:49134`.
-Keep this terminal open. Run the remaining commands from a second terminal in the same directory.
-All commands in this tutorial use the `default` namespace.
+This command runs the Compose daemon in this terminal. The Compose daemon starts the engine and the
+workers that you add to `worker-compose.yaml`. The project has no workers yet. The engine listens on
+`ws://localhost:49134`. Keep this terminal open. Run the remaining commands from a second terminal
+in the same directory. All commands in this tutorial use the `default` namespace.
 
 ## 3. Start the Python worker
-
-<Info title="Workers can run anywhere">
-  Workers only need a WebSocket connection to the iii engine. They can run locally, in the cloud,
-  replicated in kubernetes, or anywhere else.
-</Info>
 
 ```bash
 iii trigger compose::add worker=./workers/math-worker
 ```
 
-The Compose daemon terminal reports the worker becoming ready:
+`iii trigger` returns at once with `"status": "accepted"`. The first terminal, where
+`iii compose --up` runs, shows the worker start. The first start downloads the base image for the
+worker, so it takes longer than later starts:
 
 ```text
 → math-worker starting
@@ -69,26 +61,24 @@ The Compose daemon terminal reports the worker becoming ready:
 up: 1 of 1 changed in 2.1s
 ```
 
-<Warning title="Linux: `KVM not accessible`">
-  Workers boot in a microVM that needs access to `/dev/kvm`. If the worker fails with `KVM not
-  accessible`, see [Troubleshooting](./troubleshooting#kvm-not-accessible).
+<Warning title="These workers run in a VM">
+  Both workers in this project run in a VM, which needs a [supported
+  platform](./install#start-a-project). If a worker fails with `KVM not accessible`, see
+  [Troubleshooting](./troubleshooting#kvm-not-accessible).
 </Warning>
 
-This worker registered the function `math::add` with the engine. You could call this function right
-now using the command below.
+This worker registered the function `math::add` with the engine. Call the function:
 
 ```bash
 iii trigger math::add a=2 b=3
 ```
 
-However this is not much different than running an equivalent script on its own. The utility of iii
-comes from being able to place any functionality into a worker and then compose that worker with
-other workers through the engine, regardless of where each one runs or what language it's written
-in.
+Any worker that connects to the engine can call `math::add`. That worker can use a different
+language. In the next step, you add a TypeScript worker that calls `math::add`.
 
 <Tip>
-  Workers need a moment to install their runtime dependencies after being added. If you see
-  `"message": "Function math::add not found"`, wait a few seconds and try again.
+  Workers need a moment to install their runtime dependencies after you add them. If you see
+  `"code": "function_not_found"`, wait a few seconds and try again.
 </Tip>
 
 ## 4. Start the TypeScript worker
@@ -97,12 +87,13 @@ in.
 iii trigger compose::add worker=./workers/caller-worker
 ```
 
-The Compose daemon reports:
+The first terminal shows:
 
 ```text
+· math-worker already running
 → caller-worker starting
 ✓ caller-worker ready (2.1s)
-up: 2 of 2 changed in 2.1s
+up: 1 of 2 changed in 2.1s
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
@@ -116,7 +107,10 @@ iii trigger math::add_two_numbers a=10 b=20
 ```
 
 ```json
-{ "c": 30 }
+{
+  "c": 30,
+  "success": "You've connected two workers and they're interoperating seamlessly, now let's add a few more workers to expand this project's functionality."
+}
 ```
 
 ## 6. Add state
@@ -133,7 +127,7 @@ iii trigger compose::add worker=state
 Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
 so the handler looks like this:
 
-```python
+```python workers/math-worker/src/math_worker.py {7-20}
 def add_handler(payload: dict) -> dict:
     a = payload.get("a", 0)
     b = payload.get("b", 0)
@@ -179,9 +173,9 @@ iii trigger math::add a=10 b=20
 The running total persists across every call, including calls that arrive through
 `math::add_two_numbers`.
 
-## 7. Add HTTP endpoints
+## 7. Add an HTTP endpoint
 
-Now let's add an HTTP worker to expose your functions as REST endpoints.
+Add the HTTP worker. Then you can call `math::add_two_numbers` through an HTTP endpoint.
 
 From the folder containing `worker-compose.yaml`, run:
 
@@ -191,7 +185,7 @@ iii trigger compose::add worker=http
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:
 
-```typescript
+```typescript workers/caller-worker/src/worker.ts
 worker.registerFunction(
   "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
@@ -229,17 +223,18 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 { "c": 300, "running_total": 335 }
 ```
 
-The same functions that respond to `iii trigger` now also respond to HTTP requests with no code
-changes to the handlers themselves.
+The HTTP trigger invokes `http::add_two_numbers`. That function calls `math::add_two_numbers`, so
+the endpoint and `iii trigger` use the same logic. `math::add` and `math::add_two_numbers` stay the
+same in this step.
 
 ## How it works
 
-For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together,
+For a walkthrough of how the engine, workers, triggers, and functions in this project fit together,
 see [Understanding iii](./understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
   Open the iii Console with `iii console` in a new terminal: an interactive UI for workers,
-  functions, triggers, logs, traces, and state. See the full [Console
+  triggers, functions, logs, traces, and state. See the full [Console
   documentation](./using-iii/console) for details.
 </Tip>
 
@@ -247,18 +242,26 @@ see [Understanding iii](./understanding-iii). It uses this project as the worked
 
 ## Next Steps
 
-You scaffolded a project, started two workers in different languages, called functions across them,
-added persistent state, and exposed everything over HTTP, all by incrementally adding workers to a
-running system.
+You created a project, started two workers in different languages, and called a function across
+them. Then you added persistent state and exposed a function over HTTP. You did all of this by
+adding workers to a running project.
 
 <CardGroup cols={2}>
   <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
-    Go beyond the basics and explore the full power of iii by building a real-world application.
+    Build a real-world application with iii.
   </Card>
-  <Card title="Use iii" href="./using-iii" icon="table-layout">
+  <Card title="Use iii" href="./using-iii/workers" icon="table-layout">
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
     Understand workers, triggers, and functions from a conceptual point of view.
+  </Card>
+  <Card
+    title="Guided tour"
+    href="./install#run-the-setup-against-an-installed-engine"
+    icon="compass"
+  >
+    Run `iii project init --learn-iii` for a guided tour that uses an LLM. You need an API key for
+    one AI provider.
   </Card>
 </CardGroup>

@@ -10,7 +10,15 @@
 The recipe below installs the engine and starts a project. Once started you can explore the project
 via http://127.0.0.1:3113.
 
-Select **llm** to let the installer set up the harness for you, or select **no llm**.
+The installer runs on macOS and Linux. On Windows, run it inside WSL2. On an Intel Mac, the
+installer does not install `iii-worker`, so
+[workers that run in a VM](./using-iii/compose#worker-kinds) do not run. The installer needs `curl`,
+`jq`, and `tar`. `iii project init` needs `git` to download project templates.
+
+Select **llm** to create a project from the `harness` template. The harness runs AI agents that you
+chat with in your browser. You need an API key for one AI provider, such as Anthropic, OpenAI, or
+DeepSeek. The setup wizard in the browser asks for the key. Select **no llm** to create a project
+without the harness.
 
 <div className="iii-qs" role="group" aria-label="quickstart recipe">
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llm" defaultChecked />
@@ -36,9 +44,9 @@ Select **llm** to let the installer set up the harness for you, or select **no l
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-slot" data-qs="llm">
       {/* prettier-ignore */}
-      <div className="iii-qs-comment">{`# The installer prompts you to set up your first iii project. Press Enter.`}</div>
+      <div className="iii-qs-comment">{`# The installer prompts you to set up your first iii project. Press Enter. The iii CLI creates the project in ./learn-iii and starts it.`}</div>
       <div className="iii-qs-gap" aria-hidden="true" />
-      <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
+      <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113, or press b.</div>
     </div>
     <div className="iii-qs-slot" data-qs="none">
       {/* prettier-ignore */}
@@ -64,11 +72,11 @@ Select **llm** to let the installer set up the harness for you, or select **no l
   </div>
 </div>
 
-The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then prompts you to set up your first iii project. Press Enter and the installer scaffolds and starts the harness for you. Press Ctrl+C for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser.
+The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then prompts you to set up your first iii project. Press Enter and the iii CLI creates the project in ./learn-iii and starts the harness. Have an API key for one AI provider ready. The setup wizard in the browser asks for it. Press Ctrl+C for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser.
 
-{/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
+{/* TODO: re-add an optional "Install the VS Code Extension" section for iii-lsp when the extension is tested across VS Code, Cursor, Windsurf, and VSCodium and `/images/lsp.mp4` is captured. Move the capability description to an explanation page for the extension and link to it in one sentence. The earlier section text is in docs/0-23-0/install.mdx. */}
 
-{/* TODO: re-add a "## 4. Add Agent Skills (Optional)" section with `npx skills add iii-hq/iii/skills` once the iii skills worker ships (owned by Sergio). */}
+{/* TODO: re-add a "## 4. Add Agent Skills (Optional)" section with `npx skills add iii-hq/iii/skills` once the iii skills worker ships. */}
 
 ## Installer options
 
@@ -80,11 +88,17 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --help
 
 ### Run the setup against an installed engine
 
-When iii is already on the machine, in `BIN_DIR` or on your `PATH`, the installer upgrades it and
-does not prompt for the setup.
+When iii is already on the machine, in `BIN_DIR` or on your `PATH`, the installer does not offer the
+setup. It installs the new version into `BIN_DIR`. A copy of iii in a different directory on your
+`PATH` stays as it is. When `BIN_DIR` already has the version to install, the installer stops and
+changes nothing.
 
-`--skip-bin-download` skips the download and the install, and runs the setup against the iii that is
-on the machine already. Use it to repeat the setup, or when you build the engine yourself:
+To repeat the setup, run `iii project init --learn-iii`. The command creates a project in
+`./learn-iii`, or in `./learn-iii-1` (and so on) when that folder exists. Then it starts the project
+with `iii compose --up`.
+
+When you build the engine yourself, use `--skip-bin-download`. It skips the download and the
+install. Then it offers the setup with the iii that is already on the machine:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --skip-bin-download
@@ -92,7 +106,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --skip-bin-dow
 
 ### Install a pre-release
 
-Use `--next` for the latest `next` pre-release, or `--rc` for the latest release candidate:
+Use `--rc` to install the latest release candidate:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
@@ -104,16 +118,19 @@ To install one exact version, give the version as the last argument:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
 ```
 
+To install an exact release candidate, also give `--rc`. Without `--rc`, the installer stops with an
+error.
+
 ### Install without a prompt
 
-The installer does not prompt when no terminal is attached. A `docker build` step, a CI job, and a
-plain `curl ... | sh` in a script are already non-interactive, and they do the install and then
-print the setup command.
+The installer does not prompt when no terminal is attached. `docker build` and CI jobs have no
+terminal. In these runs, the installer installs iii and then prints the setup command,
+`iii project init --learn-iii`.
 
-`--non-interactive` makes that behavior explicit, and keeps it when a terminal is attached: the
-installer does the install, does not run the setup, and prints the setup command. Use it when a terminal is attached but you want the install
-only, for example `docker run -it`, `docker compose run`, or a wrapper that gives the command a
-terminal:
+`--non-interactive` gives the same behavior when a terminal is attached. The installer installs iii,
+does not run the setup, and prints the setup command. Use it when you want the install only. For
+example, use it in a script that you run from a terminal, with `docker run -it`, with
+`docker compose run`, or in a wrapper that gives the command a terminal:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
@@ -127,15 +144,15 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 s
 
 ### Control the install with environment variables
 
-| Variable              | Effect                                                                              |
-| --------------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`             | Engine version to install, for example `0.23.1`.                                    |
-| `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
-| `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
-| `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
-| `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
-| `GITHUB_TOKEN`        | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
-| `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                           |
+| Variable              | Effect                                                                                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VERSION`             | Engine version to install, for example `0.23.1`.                                                                                                                           |
+| `BIN_DIR`             | Directory for the `iii`, `iii-worker`, and `iii-init` binaries. Defaults to `$PREFIX/bin` when `PREFIX` is set, else `$HOME/.local/bin`.                                   |
+| `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                                                                                                                |
+| `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                                                                                                         |
+| `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl. The glibc build needs glibc 2.35 or later. With an older glibc, the installer uses musl. |
+| `GITHUB_TOKEN`        | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr.                                                                                        |
+| `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                                                                                                                  |
 
 ## Next Steps
 
@@ -143,7 +160,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 s
   <Card title="Quickstart" href="./quickstart" icon="terminal">
     Follow the Quickstart and explore a live iii application.
   </Card>
-  <Card title="Use iii" href="./using-iii" icon="table-layout">
-    Learn how to use iii in production.
+  <Card title="Use iii" href="./using-iii/workers" icon="table-layout">
+    Learn how to run and manage a iii project.
   </Card>
 </CardGroup>

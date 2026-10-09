@@ -5,53 +5,60 @@
 
 ## Two configuration layers
 
-iii splits configuration across two layers:
+Change each setting in the layer that holds it. For how the two layers work, see
+[Config hot-reload](../understanding-iii/engine#config-hot-reload).
 
-- **`config.yaml`** declares _which workers run_ and provides bootstrap values for their settings.
-  It is the file the engine reads at startup; see
+- To change which workers run, edit the declarations. Declare the project workers in
+  `worker-compose.yaml`. Declare the engine-owned workers in the `engine.workers` map of
+  `worker-compose.yaml`. For an engine that Compose does not start, declare them in `config.yaml`.
+  See [Configure the engine-owned workers](./engine#configure-the-engine-owned-workers).
+- To change the runtime settings of a worker, change its entry in the `configuration` worker. Use
+  one of the [three ways to change a setting](#three-ways-to-change-a-setting).
+- To change `iii-stream` settings, change its stored entry. Its `config:` block sets the entry only
+  at a start when no entry exists. At that start, iii removes the block from `config.yaml` and
+  writes a one-line comment that names the entry. See
   [Engine configuration](./engine#engine-configuration).
-- **The `configuration` worker** manages _each worker's runtime settings_. It is a schema-validated,
-  reactive registry that ships enabled by default: every worker registers its settings schema under
-  its own entry (`http`, `state`, `queue`, ...), and every change is validated against that schema
-  and applied to the running worker. Most settings apply immediately; a few take effect at the next
-  engine start (see [How changes apply](#how-changes-apply)).
-
-The `config:` block under a worker in `config.yaml` is a **bootstrap seed**: it is read once, on the
-first boot after the worker registers its schema, to create the worker's configuration entry. From
-then on the entry is the source of truth. On the next boot the engine removes the consumed block
-from `config.yaml` and leaves a one-line comment pointing at the entry's new location; the `- name:`
-line and everything else in the file are preserved as written.
+- To change the settings of `configuration`, `iii-worker-manager`, `iii-http-functions`, or
+  `iii-sandbox`, edit their `config:` block in `config.yaml` or their value under `engine.workers`.
+  The engine reads these blocks at each start.
+- To set the settings of a project worker in `worker-compose.yaml`, use `config_override`. See
+  [Configuration precedence](./compose#configuration-precedence).
 
 <Note>
-  This applies to workers that register a configuration schema. A worker that doesn't register one
-  (for example `iii-worker-manager`) keeps reading its `config.yaml` block directly.
+  In 0.20.0 and earlier, the configuration store defaulted to `./data/configuration`. When
+  `directory` is `./config` or not set, the configuration worker moves the entries from
+  `./data/configuration` to `./config` once, at start. If `./config` already has a file with the
+  same name, the worker skips that file, keeps the old copy, and logs a warning. Another `directory`
+  value turns off this move. See the 0.21.3 entry in the [changelog](/changelog).
 </Note>
 
-<Note>
-  In earlier versions of iii, all worker settings stayed in `config.yaml` and the configuration
-  store defaulted to `./data/configuration`. When running on the default location, the engine
-  performs a one-time migration on boot and moves any entries it finds there into `./config`; an
-  explicit `directory:` override skips the migration. See the [0.21.0 changelog](/changelog) for
-  details.
-</Note>
+## One file per entry
 
-## One file per worker
-
-With the default `fs` adapter, every configuration entry is one YAML file named after the worker, in
-`./config` at your project root:
+With the default `fs` adapter, each configuration entry is one YAML file in `./config`. The file
+name is the entry id. Compose names the entry of a project worker `<namespace>-<container-key>`,
+unless the container sets `config_name`. Workers that ship with the engine use their own names, for
+example `iii-stream` and `iii-observability`. See
+[Readable configuration names and migration](./compose#readable-configuration-names-and-migration).
 
 ```
 config/
-  http.yaml
-  queue.yaml
-  state.yaml
+  default-http.yaml
+  default-queue.yaml
+  default-state.yaml
+  iii-observability.yaml
   ...
 ```
 
-Each file carries the entry's identity plus its current value:
+To see the entry ids of a running project, run:
 
-```yaml config/http.yaml
-id: http
+```bash
+iii trigger configuration::list
+```
+
+Each file holds the identity of the entry and its saved value:
+
+```yaml config/default-http.yaml
+id: default-http
 name: HTTP
 description: >
   HTTP server settings: host/port binding, CORS, request timeout, concurrency limit, and global
@@ -59,12 +66,22 @@ description: >
 value:
   port: 3111
   host: 127.0.0.1
+metadata:
+  ui_form: http
 ```
 
 The directory is created on boot and watched from then on. The registered JSON Schema is not part of
 the file; the worker re-registers it on every boot.
 
 ## Three ways to change a setting
+
+<Note>
+  If `config_override` in `worker-compose.yaml` sets a field, Compose applies that value again each
+  time the worker starts. A change to the same field by one of the three ways below lasts only until
+  the next start of the worker. An edit to the entry file also removes the `config_override` values
+  of all fields until the next start of the worker. To keep the change, edit `config_override`. See
+  [Configuration precedence](./compose#configuration-precedence).
+</Note>
 
 ### Edit the file
 
@@ -73,19 +90,21 @@ validated against the worker's registered schema and applied through exactly the
 `configuration::set`. An edit that fails validation is rejected with a warning in the engine logs
 and the previous good value stays in effect, so a typo can't take a worker down.
 
-### Use the console
+### Use the `ade` web UI
 
-The [console worker](https://workers.iii.dev/workers/console)'s **Configuration** page lists every
-registered entry and renders an editing form generated from its JSON Schema: typed fields,
-per-adapter variants, and validation before save. `${VAR:default}` templates are shown and saved
-verbatim, so a console edit does not overwrite an environment-driven value. Saving applies
-immediately.
+The [`ade` worker](https://workers.iii.dev/workers/ade) gives a web UI for iii. It is a separate app
+from the iii Console. For the iii Console, see [Console](./console). The settings view of `ade`
+lists the registered entries. Each worker supplies the form for its own entry. The UI validates each
+edit against the JSON Schema of the entry before it saves the edit. The form shows `${VAR:default}`
+templates as written and saves them as written, so an edit keeps a value that comes from an
+environment variable. A save applies immediately.
 
 ```bash
-iii trigger -n dev compose::add worker=console
+iii trigger compose::add worker=ade
 ```
 
-Replace `dev` with the namespace of the running Compose daemon.
+If the Compose daemon runs in a namespace other than `default`, add `-n <namespace>` to each
+`compose::*` command on this page.
 
 ### Call `configuration::set`
 
@@ -96,87 +115,93 @@ own automation:
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger configuration::get --json '{"id": "http"}'
-    iii trigger configuration::set --json '{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}}'
+    iii trigger configuration::get id=default-http raw=true
+    iii trigger configuration::set id=default-http value='{"port": 8080, "host": "127.0.0.1"}'
     ```
   </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     await worker.trigger({
       function_id: "configuration::set",
-      payload: { id: "http", value: { port: 8080, host: "127.0.0.1" } },
+      payload: { id: "default-http", value: { port: 8080, host: "127.0.0.1" } },
     });
     ```
   </Tab>
 </Tabs>
 
-`flush` defaults to `true`: `configuration::set` persists the complete submitted object and
-notifies consumers. To update only the active in-memory value, pass `flush: false`:
+Replace `default-http` with an entry id from `configuration::list`.
 
-```json
-{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}, "flush": false}
+`configuration::set` replaces the whole value. To change one field, read the active value with
+`configuration::get` and `raw: true`, change the field, and send the complete object. `raw: true`
+keeps `${VAR:default}` templates in the value. A field that you leave out is removed from the value.
+For a worker that Compose runs, the active value includes the configuration that its package ships
+and the `config_override` values. A save with `flush: true` writes them to the file.
+
+By default, `configuration::set` saves the value to the store (`flush: true`). To change only the
+active value in memory, pass `flush: false`:
+
+```bash
+iii trigger configuration::set id=default-http value='{"port": 8080, "host": "127.0.0.1"}' flush=false
 ```
 
-This does not schedule a later disk write. It can precede worker registration; validation uses
-the schema when available, and ordinary reads validate again after registration. The worker decides
-how to apply update notifications. `ensure` does not persist or discard this memory-only value.
-Unsaved values remain until replaced, deleted, or the configuration service restarts.
+A memory-only value stays active until a later `configuration::set`, a change to the entry file, or
+an engine restart. Compose uses `flush: false` to apply `config_override`.
 
-`configuration::get` reads the current active entry, `configuration::list` enumerates every entry (schemas only;
-values are never included in the list), and `configuration::schema` returns the schema for one id.
-See the [configuration worker docs](https://workers.iii.dev/workers/configuration) for the full
-function reference and error codes.
+For the full function reference and error codes, see the
+[configuration worker docs](https://workers.iii.dev/workers/configuration).
 
 ## Environment variables in values
 
-Values support the same `${VAR:default}` syntax as `config.yaml`. Templates are stored verbatim and
-expanded against the current process environment on every read, so changing an env var propagates
-without rewriting the stored value. A field that consists of a single placeholder is coerced to the
-schema's scalar type after expansion: `port: ${HTTP_PORT:3111}` validates as the integer `3111`, not
-a string. Pass `raw: true` to `configuration::get` to read the stored template form.
-
-## Registration namespace timeout
-
-When a WebSocket connection opens, the engine starts a namespace resolution timer. Until
-`engine::workers::register` resolves the connection namespace, the engine holds registration-related
-messages from that connection. If the worker registration arrives before the timeout, the engine
-assigns its `namespace` value, or `default` when the value is absent, and processes the held messages.
-If the timeout expires first, the engine assigns `default`. A later worker registration cannot change
-the assigned namespace.
-
-`registration_namespace_grace_ms` is a global engine setting. Set it at the root of `config.yaml`.
-The engine reads it when it starts:
-
-```yaml config.yaml
-registration_namespace_grace_ms: 10000
-```
-
-The default is `5000 ms`. Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a
-worker environment. It applies to namespace resolution for all new worker connections and overrides
-`registration_namespace_grace_ms`.
+Values support the same `${VAR:default}` syntax as `config.yaml`. The configuration worker stores
+templates as written. It expands them on every read, from the environment of the engine process. A
+variable that is set only for one worker, for example in its `env_file`, is not visible to this
+expansion. When a field holds only one placeholder, the expanded text is read as a YAML scalar. Thus
+`port: ${HTTP_PORT:3111}` gives the integer `3111`, and `${FLAG:true}` gives a boolean. If a
+variable has no value and no default, the read fails. For the error code, see the
+[configuration worker docs](https://workers.iii.dev/workers/configuration). To read the stored
+template, pass `raw: true` to `configuration::get`.
 
 ## How changes apply
 
-Most settings apply the moment they change such as `http`'s CORS, timeout, and port changes. A few
-fields are restart-tier: the change is recorded, logged, and takes effect at the next engine start
-(for example `state`'s storage adapter). Each worker's page on
-[workers.iii.dev](https://workers.iii.dev/) documents its settings and how they apply.
+Most settings apply when they change, for example the CORS, timeout, and port settings of `http`.
+Some fields are restart-tier. The worker records and logs the change, and the change applies at the
+next start of the worker. An example is the storage adapter of `state`. To apply such a change now,
+restart the worker:
+
+```bash
+iii trigger compose::restart worker=state
+```
+
+For a worker that ships with the engine, such as `iii-observability`, restart the engine. For a
+managed engine, stop `iii compose --up` and run it again.
+
+The page of each worker on [workers.iii.dev](https://workers.iii.dev/) documents its settings and
+when they apply.
 
 ## Changing where configuration is stored
 
-The configuration worker itself is the one exception to the seed lifecycle: it cannot store its own
-settings in itself, so its `config:` block stays in `config.yaml` and is read directly on every
-boot. To store the per-worker files somewhere else, set the `fs` adapter's `directory`:
+The configuration worker cannot store its own settings in itself. The engine reads its block
+directly at each start. To store the entry files in another directory, set `directory` on the `fs`
+adapter:
 
-```yaml config.yaml
-workers:
-  - name: configuration
-    config:
-      adapter:
-        name: fs
-        config:
-          directory: ./config
-```
+1. Stop the engine. For a managed engine, stop `iii compose --up`.
+2. Set `directory`. For a managed engine, set it under `engine.workers` in `worker-compose.yaml`:
+
+   ```yaml worker-compose.yaml
+   engine:
+     workers:
+       configuration:
+         adapter:
+           name: fs
+           config:
+             directory: ./settings
+   ```
+
+   For an engine that reads `config.yaml` directly, put the same `adapter:` block under `config:` in
+   `- name: configuration`.
+
+3. Move the files from `./config` to the new directory. The configuration worker does not move them.
+4. Start the engine again. For a managed engine, run `iii compose --up`.
 
 <Note>
   The configuration worker also provides a `bridge` adapter for cases where multiple iii engines
@@ -187,8 +212,8 @@ workers:
 
 ## Reacting to configuration changes
 
-Workers subscribe to changes by binding a `configuration` trigger instead of polling: the bound
-function fires on every register, set, and delete, including file edits. This is the same mechanism
-workers use to hot-apply their own settings. See the
-[configuration worker docs](https://workers.iii.dev/workers/configuration) for the trigger's config
-fields and event types.
+To react to changes, a worker binds a `configuration` trigger. The bound function runs on every
+register, set, and delete, including file edits. Workers use the same trigger to apply their own
+settings while they run. See the
+[configuration worker docs](https://workers.iii.dev/workers/configuration) for the config fields and
+event types of the trigger.

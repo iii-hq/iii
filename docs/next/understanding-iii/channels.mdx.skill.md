@@ -9,6 +9,8 @@ Channels are stream pipes between iii workers. They let one function write bytes
 function reads those bytes in real time, even when the functions run in different processes or
 languages.
 
+For the steps in each SDK, see [Channels](../creating-workers/channels).
+
 ## The model
 
 | Concept | What it does                                                    |
@@ -23,15 +25,15 @@ the channel.
 
 ## Why channels exist
 
-Function invocations are JSON messages. That is perfect for structured events and command payloads,
-but it is the wrong approach for large files, media, streaming responses (agents, chats), and
-long-running partial output.
+Function invocations are JSON messages. They suit structured events and command payloads. Each JSON
+message has a size limit (see [Payload size](../creating-workers/channels#payload-size)). A channel
+carries large files, media, streamed responses (agents, chats), and long-running partial output.
 
 Channels split coordination from data transfer:
 
 - A function call coordinates the work.
 - A channel carries the stream.
-- The engine tracks tracing and routing.
+- The engine routes the function call and relays the channel bytes.
 
 ## Runtime flow
 
@@ -41,8 +43,9 @@ sequenceDiagram
     participant Engine
     participant B as Consumer function
 
-    A->>Engine: createChannel()
-    Engine-->>A: writer, reader, writerRef, readerRef
+    A->>Engine: trigger engine::channels::create
+    Engine-->>A: writer ref, reader ref
+    Note over A: The SDK wraps the refs in a local writer and reader
     A->>Engine: trigger B with readerRef
     Engine->>B: invoke B with reader ref
     A->>Engine: writer sends chunks
@@ -59,16 +62,19 @@ those chunks from its local reader.
 ## Backpressure and lifecycle
 
 Channel streams connect lazily. Creating a channel allocates refs, but the WebSocket stream connects
-when one side starts reading or writing. Backpressure is handled by the SDK stream implementation so
-writers can pause when readers cannot keep up.
+when one side starts reading or writing.
 
-When the writer closes, the reader receives the stream end. When a worker disconnects, its channel
-connections close with it.
+The engine keeps a bounded buffer for each channel. The default size is 64 messages, and the maximum
+is 1024. The SDK helper that creates a channel takes an optional buffer size. When the buffer is
+full, the engine stops reading from the writer. The writer then waits until the reader takes data.
+
+When the writer closes, the reader receives the stream end.
 
 ### Channel ownership
 
-A channel belongs to the worker that called `engine::channels::create` (for example through
-`worker.createChannel()`). When that worker disconnects, the engine releases the channel:
+A channel belongs to the worker that called `engine::channels::create` (for example through the
+[`createChannel(worker)` helper](../creating-workers/channels#create-a-channel) from
+`iii-sdk/helpers`). When that worker disconnects, the engine releases the channel:
 
 - Ends that no worker has attached yet are dropped. A later attempt to attach with that ref fails
   with HTTP `404`.
@@ -78,13 +84,20 @@ A channel belongs to the worker that called `engine::channels::create` (for exam
 If a worker creates a channel and hands a `writerRef` or `readerRef` to another worker, the creating
 worker must stay connected until the other worker attaches to its end.
 
+Both ends must also attach within 5 minutes after the worker creates the channel. Every 60 seconds,
+the engine removes each channel that is older than 5 minutes and has an end that no worker attached.
+A later attempt to attach with that ref fails with HTTP `404`.
+
 ### Releasing a channel
 
-The engine releases a channel as soon as either side leaves:
+Apart from the owner and 5-minute cases above, the reader controls when the engine removes a
+channel:
 
-- When the reader finishes or disconnects, the engine removes the channel. An end that was never
+- When the reader finishes or disconnects, the engine removes the channel. An end that no worker
   attached goes with it.
-- When the reader is gone, the engine closes an attached writer right away, even if the writer is
-  idle, instead of waiting for its next write.
+- When the reader is gone, the engine closes an attached writer at once. This also applies to an
+  idle writer.
+- When the writer closes first, the engine keeps the channel. The reader receives the buffered data
+  and then the end of the stream.
 
 For bidirectional communication, create two channels: one for each direction.

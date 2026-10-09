@@ -14,41 +14,25 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 
 ## Subcommands
 
-| Subcommand | What it does |
-| --- | --- |
-| `iii compose` | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
-| `iii trigger` | Invoke a registered function on a running engine. |
-| `iii project` | Scaffold projects and generate Docker assets. |
-| `iii console` | Launch the iii web console. |
-| `iii cloud` | Manage hosted iii deployments. |
-| `iii update` | Update iii and its managed support binaries. |
+| Subcommand    | What it does                                                                                                                                                                      |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iii compose` | Run the Compose daemon, start a project with `--up`, download registry packages with `build`, or read worker output with `logs`.                                                  |
+| `iii trigger` | Invoke a registered function on a running engine.                                                                                                                                 |
+| `iii project` | Scaffold projects and generate Docker assets.                                                                                                                                     |
+| `iii console` | Launch the iii web console.                                                                                                                                                       |
+| `iii cloud`   | Manage hosted iii deployments with the separate `iii-cloud` binary. Run `iii cloud --help` to list its commands. See [iii Cloud deployments](./deployment#iii-cloud-deployments). |
+| `iii update`  | Update iii and its managed support binaries.                                                                                                                                      |
 
 `iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
 [Workers](./workers). The `worker::*` function surface was removed with it.
 
-Running `iii` with no subcommand starts only the engine from `./config.yaml` or `--config`. Use
-`iii compose --up` for the normal project lifecycle:
-
-```bash
-iii compose build --file worker-compose.yaml
-iii compose --namespace dev --up --file worker-compose.yaml
-```
-
-## Managing iii Cloud deployments
-
-The `iii cloud` command group manages hosted deployments. See
-[Deployment](./deployment#iii-cloud-deployments).
-
-<Note>iii Cloud availability may vary by account and release.</Note>
+Running `iii` with no subcommand starts only the engine, from `./config.yaml` or the file that
+`--config` names. To start a project, use `iii compose --up`. See
+[Declare workers with Compose](./workers#declare-workers-with-compose).
 
 ## Updating iii
 
-`iii update` updates iii and support binaries installed with it. Worker package versions are pinned
-inside `worker-compose.yaml`; update one with `compose::update`:
-
-```bash
-iii trigger -n dev compose::update worker=state
-iii trigger -n dev compose::update worker=state@0.22.2
-```
+`iii update` updates iii and the support binaries installed with it. It does not change worker
+packages. To update a worker, see [Updating workers](./compose#updating-workers).
 
 Run `iii update --list-targets` to list the binaries the installer can update.

@@ -23,9 +23,11 @@ cd linkly
 
 ## Take a look at `worker-compose.yaml`
 
-The project ships with a prebuilt worker-compose.yaml so at this point you don't need to make any
-edits to it. When you do make edits they will largely be programmatic and use `compose::*`
-functions.
+The project ships with a complete `worker-compose.yaml`. You do not edit it in this chapter.
+Chapters 3 to 7 each have a commented block in this file. Each of those chapters tells you to
+uncomment its block and restart the project with `iii trigger compose::restart`. Chapter 2 adds the
+console with `iii trigger compose::add worker=console`, which writes the entry into the file for
+you.
 
 Later in this chapter you'll serve the `link` worker over HTTP (provided by `http`) and stash
 short-code → URL mappings in a key-value store (provided by `state`). `worker-compose.yaml` declares
@@ -33,8 +35,11 @@ both, along with the `link` worker you write next:
 
 ```yaml worker-compose.yaml
 namespace: default
+startup_timeout: 360s
 engine:
   url: ws://127.0.0.1:49134
+  workers:
+    iii-stream: {}
 containers:
   http:
     worker: package://http
@@ -55,26 +60,27 @@ containers:
     worker: path://./link
 ```
 
-The `engine:` section is where the engine can be configured, this is useful for when starting a
-compose project and the engine with `iii compose --up`.
+The `engine:` section configures the engine that `iii compose --up` starts for this project. `url`
+is the address where workers connect to the engine.
 
-`containers` store one entry for each worker. Workers can exist as remote packages or local paths.
-For example `http` comes from a remote package, while `linkly` will be a path from your project
-directory to the local worker.
+The `engine.workers` entry turns on `iii-stream`, which Chapter 5 uses. Declare entries under
+`engine.workers` before the engine starts.
 
-`state` uses an in-memory store by default, so every restart starts clean. That's what we want for
-this chapter. The `config_override` block declares that default explicitly.
-[Ch. 3: Persist everything](/tutorials/linkly/persistence) will swap this approach for durable
-storage.
+`containers` holds one entry for each worker. A worker comes from a remote package or from a local
+path. For example, `http` comes from a remote package, and `link` comes from the `link` directory in
+your project.
+
+`state` stores data in files by default. The `config_override` block sets `store_method: in_memory`,
+so every restart starts clean. That is what this chapter needs.
+[Ch. 3: Persist everything](./persistence) adds durable storage.
 
 ## Explore the link worker
 
 The `link` directory holds the worker that stores and retrieves short links.
 
-### The worker entrypoints
+### The manifest and package file
 
-A worker is a self-contained service. Here, the `link` worker is a Node package but it could be any
-language or runtime.
+A worker is a self-contained service. Here, the `link` worker is a Node package.
 
 `link/iii.worker.yaml` is the manifest that describes how the worker runs itself:
 
@@ -89,11 +95,8 @@ scripts:
 ```
 
 <Info>
-  Compose runs the worker from `scripts.start`, but a worker can also be an ordinary service. Any
-  process that uses a iii SDK and calls `registerWorker()` is a worker.
-  <p>
-    Learn more about the [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
-  </p>
+  Compose runs the worker from `scripts.start`.
+  <p>Learn more about the [`iii.worker.yaml` manifest](../../creating-workers/worker-manifest).</p>
 </Info>
 
 `link/package.json` declares the dependencies. Its `start` script uses `tsx watch`, which runs the
@@ -122,8 +125,11 @@ TypeScript source directly and reloads the worker whenever you save a change.
 
 ### The worker entry point
 
-`link/src/index.ts` is the worker's entry point. You'll build it up in a few small steps. All of the
-code below is contained within `index.ts`, you can uncomment it rather than copy and pasting.
+`link/src/index.ts` is the worker's entry point. You'll build it up in a few small steps.
+`link/src/index.ts` already contains all of the code below as commented blocks. A tag line, such as
+`// --- Ch. 1 | link::create ---`, starts each block. Uncomment the `Ch. 1` blocks as you read.
+Leave the blocks for later chapters commented. When a later chapter replaces a block, comment out
+the earlier version again.
 
 <Info>
   Pay attention to code blocks that note they will be replaced by future codeblocks. We are building
@@ -159,7 +165,7 @@ function makeCode(): string {
 `registerFunction` publishes a function under a name like `link::create` that anything else on the
 engine can call. This one stores the mapping by calling `state::set` on the `state` worker through
 `worker.trigger`. Worker-to-worker calls always flow through the engine, so the `link` worker
-doesn't import anything from `state`; it knows the function name. Append it:
+reaches `state` by function name alone. Append it:
 
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -219,14 +225,15 @@ with the engine. `--up` is a `iii compose` flag that starts the engine along wit
 iii compose --up
 ```
 
-## Register the worker
+## Check the engine log
 
 `worker-compose.yaml` declares `link` as a `path://` container, so Compose starts it with the rest
-of the project. On the Compose/engine output you will see the `link` worker register `link::create`
-and `link::resolve`. You can see engine logs by tailing the engine log file with:
+of the project. Compose writes the engine log to `.iii/compose/default/engine.log` in the project
+directory. `iii compose --up` prints this path and a `tail -f` command for it. To see the `link`
+worker register `link::create` and `link::resolve`, run this command from the project root:
 
 ```bash
-tail -30 $HOME/.iii/compose/default/engine.log
+tail -30 .iii/compose/default/engine.log
 ```
 
 The output will look something like this:
@@ -281,18 +288,14 @@ iii trigger link::resolve code=nope
 
 <Check>
   You have a working domain worker. `link::create` and `link::resolve` are registered with the
-  engine and callable from anywhere within your iii system. Next let's put them behind HTTP so that
-  external 3rd party systems could use them.
+  engine and callable from anywhere within your iii system. Next, you put them behind HTTP so that
+  external systems can call them.
 </Check>
-<Info>
-  As you'll see later, unless you're supporting 3rd party systems it isn't necessary to expose
-  services over http since iii can even run browser tabs as workers.
-</Info>
 
 ## Expose your functions over HTTP
 
-A function becomes an HTTP endpoint when you bind it to an `http` trigger. That trigger type is
-served by the `http` worker you added at the start of the chapter.
+The `http` worker that `worker-compose.yaml` declares provides the `http` trigger type. An `http`
+trigger turns a function into an HTTP endpoint.
 
 ### Create a function to handle new links
 
@@ -334,11 +337,11 @@ worker.registerFunction("http::create", async (req) => {
 });
 ```
 
-### Bind your create function to a Trigger
+### Add a Trigger for your create function
 
-In the same file (`link/src/index.ts`) at the end bind `http::create` to `POST /links` with a new
-trigger. This Trigger has the `http` worker listen for `POST` requests to `/links` and when it
-receives one it will run the function specified by `function_id`.
+At the end of the same file (`link/src/index.ts`), add a new Trigger for `POST /links` that runs
+`http::create`. Through this Trigger, the `http` worker listens for `POST` requests to `/links` and
+runs the function named in `function_id`.
 
 ```typescript src/index.ts
 worker.registerTrigger({
@@ -351,18 +354,19 @@ worker.registerTrigger({
 <Check>
   This is the first Trigger you've registered yourself. In iii, Triggers control what causes
   something to happen. In this case an http request causes a function to run. Learn more about
-  [Using iii / Triggers](/using-iii/triggers).
+  [Using iii / Triggers](../../using-iii/triggers).
 </Check>
 
 <Info>
-  Every function registered comes with its own Trigger which is why `worker.trigger` worked earlier
-  without a declaration.
+  You can call every registered function directly with `worker.trigger` or `iii trigger`. A direct
+  call needs no Trigger registration. That is why `worker.trigger` worked earlier. Other event
+  sources, such as `http`, need a registered Trigger.
 </Info>
 
 ### Mint a link over HTTP
 
-Save the file and the worker reloads with the new route registered. The `http` container listens on
-`127.0.0.1:3111` and owns the route below. Now try out your new Trigger:
+Save the file. The worker reloads and registers the new route. The `http` worker listens on port
+`3111` and owns the route below. Now try your new Trigger:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \
@@ -403,9 +407,9 @@ worker.registerFunction("http::redirect", async (req) => {
 });
 ```
 
-### Bind your redirect function to a Trigger
+### Add a Trigger for your redirect function
 
-Like before, bind `http::redirect` to `GET /s/:code` with a new Trigger:
+Like before, add a new Trigger for `GET /s/:code` that runs `http::redirect`:
 
 ```typescript src/index.ts
 worker.registerTrigger({
@@ -417,8 +421,7 @@ worker.registerTrigger({
 
 ### Follow the short code
 
-`state` is in-memory in this chapter, so each time the engine restarts the previous link is gone.
-Chapter 3 swaps in durable storage. For now create a fresh link and try it out:
+Create a link to the iii docs:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \
@@ -450,9 +453,9 @@ HTTP/1.1 404 Not Found
 ## Conclusion
 
 You have built a real link shortener: a domain worker exposed over HTTP, where the same
-`link::create` and `link::resolve` functions serve both the command line and the web. Restarting the
-engine still clears every link, though: `state` is in-memory until Chapter 3 swaps it for durable
-storage.
+`link::create` and `link::resolve` functions serve both the command line and the web. A project
+restart still clears every link, though. `state` keeps its data in memory. Chapter 3 adds a
+`database` worker that keeps links across restarts.
 
-Next, in [Ch. 2: Observe everything](/tutorials/linkly/observability), you will add logs and traces
-and watch invocations flow through the engine in the console.
+Next, in [Ch. 2: Observe everything](./observability), you will add logs and traces and watch
+invocations flow through the engine in the console.

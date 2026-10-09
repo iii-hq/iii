@@ -9,42 +9,41 @@ type: "how-to"
 
 The `iii-worker-manager` worker owns the connections between workers and the engine. It always runs
 a **trusted listener** (on `49134` by default) that your own workers connect to through `III_URL`.
-To let an **untrusted** client connect, a browser tab, a third-party process, anything you do not
-run yourself, you add an **RBAC-gated listener**: a second port where every connection is
-authenticated by a function you write and every call is checked against an allowlist.
+To let an **untrusted** client connect, add an **RBAC-gated listener**. Untrusted clients include
+browser tabs, third-party processes, and other processes that you do not run. On an RBAC listener, a
+function that you write authenticates each connection, and an allowlist checks each call.
 
 <Note>
-  `iii-worker-manager` is always running, so there is nothing to add; you configure it directly in
-  `config.yaml`. This page is a quick tour of RBAC listeners. For the full configuration see the
+  `iii-worker-manager` always runs, so you do not add it. You configure its listeners in the engine
+  configuration. With `iii compose --up`, put them under `engine.workers` in `worker-compose.yaml`.
+  When you start the engine with `iii` yourself, or another supervisor starts it, declare the
+  listeners as a `workers:` list in `config.yaml`. See [Engine
+  configuration](../using-iii/engine#engine-configuration). For the full configuration, see the
   [iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
 </Note>
 
 ## Trusted and RBAC listeners
 
 The default `49134` listener is **trusted**: any worker that reaches it can register functions and
-call anything. That is fine for workers you run yourself, but not for a browser or other untrusted
-worker. An RBAC listener runs on its own port, gates every connection through an `auth` function,
-and restricts each session to an allowlist of functions.
+call anything. Use it only for workers that you run yourself. Connect a browser or other untrusted
+worker through an RBAC listener. An RBAC listener runs on its own port, gates every connection
+through an `auth` function, and restricts each session to an allowlist of functions.
 
 <Warning>
-  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the default `49134`
-  trusted listener. You must also declare the trusted `49134` listener yourself alongside
-  the RBAC one, otherwise your own workers lose the port they connect through.
+  A `iii-worker-manager#<instance>` key adds a listener. The trusted listener keeps running. A bare
+  `iii-worker-manager` key replaces the trusted listener. If you declare it, set `host`, because it
+  defaults to `0.0.0.0`. Under Compose, its port must also match the port in `engine.url`. Changes
+  to `engine.workers` take effect only after the engine restarts.
 </Warning>
 
-Declare both listeners: the trusted one your own workers keep using on `49134`, and an RBAC-gated
-one on a separate port (here `3110`, for browsers and other untrusted connections):
+Add an RBAC-gated listener on a separate port (here `3110`). The trusted listener on `49134` keeps
+running.
 
-```yaml config.yaml
-workers:
-  # ...
-  # Trusted listener for your own workers. Replaces the default 49134.
-  - name: iii-worker-manager
-    config:
-      port: 49134
-  # Browser-facing, RBAC-gated listener on a separate port.
-  - name: iii-worker-manager
-    config:
+```yaml worker-compose.yaml
+engine:
+  workers:
+    # Browser-facing, RBAC-gated listener on a separate port.
+    "iii-worker-manager#rbac":
       host: 127.0.0.1
       port: 3110
       rbac:
@@ -52,21 +51,21 @@ workers:
         expose_functions:
           - match: "link::create"
             namespace: browser
-          - match: "stream::*"
-            namespace: browser
 ```
 
-`auth_function_id` names a function the worker invokes once per connection to authorize the worker
-to connect (or reject it if authorization fails). That is covered in the next section.
+For each new connection, `iii-worker-manager` calls the function that `auth_function_id` names. The
+function accepts or rejects the connection. The next section shows how to write it.
 
 <Warning>
   `auth_function_id` resolves in the `default` namespace. Register the auth worker there. An auth
   worker in another namespace makes the listener reject every connection.
 </Warning>
 
-`expose_functions` is the allowlist of function IDs a session may call. Each entry is either a glob
-`match("...")` on the function ID or a `metadata:` selector that matches any function registered
-with that metadata:
+`expose_functions` is the allowlist of function IDs a session can call. A `match` value is a glob on
+the function ID. A `metadata` value matches the functions whose
+[`metadata`](./functions#attach-metadata) has those fields, for example `{ public: true }`,
+`{ tier: "premium" }`, or `{ scopes: ["read"] }`. For all entry forms, see the
+[iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
 
 ```yaml
 expose_functions:
@@ -76,10 +75,18 @@ expose_functions:
       public: true # any function whose metadata.public is true
 ```
 
+<Warning>
+  Gate access on facts that only trusted workers control. A function's metadata comes from the
+  worker that registers it. A session that can register functions can set `metadata.public = true`
+  on its own functions. Use `metadata` rules only for functions that your trusted workers register.
+  For untrusted sessions, set `allow_function_registration` to `false` (it defaults to `true`), or
+  set `on_function_registration_function_id` to a hook that rewrites the metadata.
+</Warning>
+
 ### Namespace-scoped function rules
 
-An `expose_functions` rule without a namespace applies to `default` only. Add `namespace` when the
-session must call a function in another namespace:
+An `expose_functions` rule without a namespace applies to `default` only. To let the session call a
+function in another namespace, write the rule as a map and add `namespace`:
 
 ```yaml
 expose_functions:
@@ -93,17 +100,6 @@ expose_functions:
 The `match` value supports `*` wildcards for the function id. The `namespace` value is an exact
 match and does not support wildcards. Add one rule for each namespace that the session can access.
 
-A function's [`metadata`](./functions#attach-metadata) is an arbitrary JSON object set when the
-function is registered, so you can shape it however your access model needs and gate on exactly the
-fields you choose, for example `{ public: true }`, `{ tier: "premium" }`, or `{ scopes: ["read"] }`.
-
-<Warning>
-  All access should be gated system-side. You should never rely on an untrusted worker to define
-  what they can or can't have access to. For example `metadata.public = true` in the above example
-  is defined and managed by the trusted `iii-worker-manager` and is not part of a payload sent by
-  the worker.
-</Warning>
-
 ## Write the auth function
 
 The auth function runs during the WebSocket upgrade, before the client is connected. It receives the
@@ -111,10 +107,9 @@ request's headers, query parameters, and client IP, and returns the session's pe
 to reject the connection.**
 
 <Note>
-  The auth function can grant multiple authorizations so a single function can be used to authorize
-  multiple types of workers. In practice this is a balance between authorizing similar workers and
-  separating dissimilar workers to separate `iii-worker-manager` definitions. You can define any
-  number of `iii-worker-manager`s in iii's configuration.
+  One auth function can authorize more than one type of worker. Use one auth function for workers
+  that need the same permissions. Declare a separate `iii-worker-manager#<instance>` listener for each
+  group of workers that needs different permissions. You can declare any number of listeners.
 </Note>
 
 <Tabs>
@@ -147,6 +142,7 @@ to reject the connection.**
       },
     );
     ```
+
   </Tab>
   <Tab title="Python">
     ```python src/main.py
@@ -172,6 +168,7 @@ to reject the connection.**
 
     worker.register_function("auth::browser", browser)
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust src/main.rs
@@ -205,18 +202,8 @@ to reject the connection.**
 The auth worker itself connects to the **trusted** `49134` port; it is one of your own workers. Only
 the untrusted client connects through `3110`.
 
-The returned object is an `AuthResult`:
-
-| Field                             | Meaning                                                          |
-| --------------------------------- | ---------------------------------------------------------------- |
-| `namespaces`                      | Grants per namespace: `{ "orders": ["svc::*"] }`. See below.     |
-| `allowed_functions`               | Function IDs to allow in addition to `expose_functions`, in `default` only. |
-| `forbidden_functions`             | Function IDs to deny even if they match. Takes precedence.       |
-| `allowed_trigger_types`           | Trigger types the session may bind. Omit to allow all.           |
-| `allow_trigger_type_registration` | Whether the session may register new trigger types.              |
-| `allow_function_registration`     | Whether the session may register functions (defaults to `true`). |
-| `context`                         | Arbitrary object forwarded to the middleware on every call.      |
-| `function_registration_prefix`    | Optional prefix applied to every function the session registers. |
+The returned object is an `AuthResult`. For its full schema, see the
+[iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
 
 ### Scope a session to namespaces
 
@@ -233,22 +220,22 @@ uses:
 }
 ```
 
-The keys carry a second meaning: they are the namespaces the session may declare on
-`engine::workers::register`. A session holding this result registers in `orders` or `analytics`;
-declaring `default`, or any other namespace, is refused with `FORBIDDEN`. An entry with an empty
-list, like `analytics` above, grants the namespace and no functions inside it -- the session may
-register there and reaches only what `expose_functions` exposes.
+The keys also limit the namespaces that the session can register in. With this result, the session
+can register only in `orders` and `analytics`. An entry with an empty list, like `analytics`, grants
+the namespace and no functions in it. In that namespace, the session can call only what
+`expose_functions` permits.
 
-Return an empty `namespaces` (or omit it) to leave the session unscoped: it declares any namespace,
-and only `allowed_functions` and `expose_functions` apply.
+To leave the session unscoped, return an empty `namespaces` or omit it. The session can then
+register in any namespace, and only `allowed_functions` and `expose_functions` apply.
 
 <Warning>
   `allowed_functions` applies in `default` only. A grant listed there does not answer in `orders`,
   even for a session scoped to it. Put per-namespace grants in `namespaces`.
 </Warning>
 
-`forbidden_functions` is the exception: it holds in every namespace, and it wins over both
-`namespaces` and the infrastructure functions every worker needs.
+`forbidden_functions` holds in every namespace. It wins over `namespaces` and over the
+infrastructure functions that every session can call: `engine::channels::create`,
+`engine::workers::register`, `engine::log::*`, and `engine::baggage::*`.
 
 ## Connect a client
 
@@ -264,87 +251,136 @@ export const worker = registerWorker(`ws://localhost:3110?token=${encodeURICompo
 });
 ```
 
-The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.
+The session can now call only the functions that `expose_functions`, `namespaces`, and
+`allowed_functions` permit, plus the infrastructure functions.
+
+<Note>
+  The [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) also gates untrusted clients.
+  It runs an auth function, an `expose_functions` allowlist, middleware, and registration hooks from
+  its own port, in front of the engine. Its port is `49200` by default. Namespace-scoped rules and
+  `namespaces` grants work only on a `iii-worker-manager` RBAC listener. Add the proxy with `iii
+  trigger compose::add worker=rbac-proxy`.
+</Note>
+
 For an end-to-end walkthrough that turns a browser tab into a worker, see
-[Ch. 7: Bring in the browser](/tutorials/linkly/frontend).
+[Ch. 7: Bring in the browser](../tutorials/linkly/frontend). That chapter gates the browser with the
+`rbac-proxy` worker. It uses an auth function and an `expose_functions` allowlist from its own port.
 
 ## Intercept calls with middleware
 
-Set `middleware_function_id` on the listener to run a function on **every** invocation that comes
-through the RBAC port. It receives the call plus the session `context` from the auth result, and
-acts as a proxy: forward the (optionally rewritten) call and return its result, or throw to reject.
+Set `middleware_function_id` on the listener to run a function on each invocation that comes through
+the RBAC port. Calls to the `engine::*` functions that ship with the engine skip the middleware. The
+middleware receives the call plus the session `context` from the auth result, and acts as a proxy:
+forward the (optionally rewritten) call and return its result, or throw to reject.
 
-```yaml config.yaml
-- name: iii-worker-manager
-  config:
-    port: 3110
-    middleware_function_id: auth::middleware
-    rbac:
-      auth_function_id: auth::browser
-      expose_functions:
-        - match: "link::create"
-          namespace: browser
+The engine looks up the middleware in the namespace that the call targets. Register the middleware
+in each namespace that sessions on this listener call. In this example, the browser session calls
+functions in `browser`, so a worker in `browser` registers `auth::middleware`. The input also
+carries `namespace` and `action`. Forward both, so the call keeps its target namespace and its
+routing.
+
+```yaml worker-compose.yaml {7}
+engine:
+  workers:
+    # ...
+    "iii-worker-manager#rbac":
+      host: 127.0.0.1
+      port: 3110
+      middleware_function_id: auth::middleware
+      rbac:
+        auth_function_id: auth::browser
+        expose_functions:
+          - match: "link::create"
+            namespace: browser
 ```
 
 <Tabs>
   <Tab title="Node / TypeScript">
-    ```typescript src/index.ts
-    worker.registerFunction(
-      "auth::middleware",
-      async (input: {
-        function_id: string;
-        payload: Record<string, unknown>;
-        context: Record<string, unknown>;
-      }) => {
-        // stamp the authenticated caller onto every payload, then forward the call
-        const payload = { ...input.payload, _source: input.context.source };
-        return worker.trigger({ function_id: input.function_id, payload });
-      },
-    );
+    ```typescript
+    import { registerWorker, type MiddlewareFunctionInput } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+      workerName: "middleware",
+      namespace: "browser",
+    });
+
+    worker.registerFunction("auth::middleware", async (input: MiddlewareFunctionInput) => {
+      // stamp the authenticated caller onto every payload, then forward the call
+      const payload = { ...input.payload, _source: input.context.source };
+      return worker.trigger({
+        function_id: input.function_id,
+        payload,
+        action: input.action,
+        namespace: input.namespace,
+      });
+    });
     ```
+
   </Tab>
   <Tab title="Python">
-    ```python src/main.py
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL", "ws://localhost:49134"),
+        InitOptions(worker_name="middleware", namespace="browser"),
+    )
+
     def middleware(req: dict) -> dict:
         # stamp the authenticated caller onto every payload, then forward the call
         payload = {**req["payload"], "_source": req["context"]["source"]}
-        return worker.trigger({"function_id": req["function_id"], "payload": payload})
+        return worker.trigger({
+            "function_id": req["function_id"],
+            "payload": payload,
+            "action": req.get("action"),
+            "namespace": req.get("namespace"),
+        })
 
     worker.register_function("auth::middleware", middleware)
     ```
+
   </Tab>
   <Tab title="Rust">
-    ```rust src/main.rs
-    let mw = worker.clone();
+    ```rust
+    let worker = register_worker(&url, InitOptions {
+        namespace: Some("browser".into()),
+        ..Default::default()
+    });
+
     worker.register_function(
         "auth::middleware",
-        RegisterFunction::new_async(move |input: MiddlewareFunctionInput| {
-            let worker = mw.clone();
-            async move {
-                // stamp the authenticated caller onto every payload, then forward the call
-                let mut payload = input.payload.clone();
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert(
-                        "_source".into(),
-                        input.context.get("source").cloned().unwrap_or(Value::Null),
-                    );
-                }
-                worker
-                    .trigger(TriggerRequest {
+        RegisterFunction::new_async({
+            let worker = worker.clone();
+            move |input: MiddlewareFunctionInput| {
+                let worker = worker.clone();
+                async move {
+                    // stamp the authenticated caller onto every payload, then forward the call
+                    let mut payload = input.payload.clone();
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert(
+                            "_source".into(),
+                            input.context.get("source").cloned().unwrap_or(Value::Null),
+                        );
+                    }
+                    let request = TriggerRequest {
                         function_id: input.function_id,
                         payload,
-                        action: None,
+                        action: input.action,
                         timeout_ms: None,
-                    })
-                    .await
+                    };
+                    // an absent namespace means the engine's default namespace
+                    let namespace = input.namespace.unwrap_or_else(|| "default".into());
+                    worker.trigger(request.namespace(namespace)).await
+                }
             }
         }),
     );
     ```
+
   </Tab>
 </Tabs>
 
-The `rbac` block also accepts `on_function_registration_function_id`,
-`on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id` hooks. Each
-runs when an untrusted session registers a function, trigger, or trigger type, and can remap the
-registration (return the mapped fields) or throw to deny it.
+To remap or deny a trigger type, trigger, or function that an untrusted session registers, use the
+registration hooks in the
+[iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
