@@ -5,42 +5,50 @@ The `http` worker turns your functions into REST routes exposed as HTTP endpoint
 
 ## Before adding the worker
 
-`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
-running in separate terminals before using any of the commands below. If this project does not have
-a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+These commands need a running engine and a Compose daemon. If you followed the
+[Quickstart](../quickstart), `iii compose --up` already runs both. The Quickstart also added the
+`http` worker, so go to [Create endpoints](#create-endpoints).
+
+For other projects, run the engine and a Compose daemon in separate terminals. If this project does
+not have a Compose file yet, create `worker-compose.yaml` with this content first. Compose rejects a
+file with no workers unless the file also has an `engine:` section.
+
+```yaml worker-compose.yaml
+engine: {}
+containers: {}
+```
 
 ```bash
 # terminal 1
 iii --config config.yaml
 
 # terminal 2, from the directory that contains worker-compose.yaml
-iii compose --namespace dev --engine ws://127.0.0.1:49134
+iii compose --engine ws://127.0.0.1:49134
 ```
 
-Run the remaining commands from a third terminal in that same project directory:
+For the daemon options, see [Compose](../using-iii/compose). Run the remaining commands from a third
+terminal in that same project directory:
 
 ```bash
-iii trigger -n dev compose::add worker=http
+iii trigger compose::add worker=http
 ```
 
+The commands on this page use the `default` namespace. If your Compose daemon runs in a different
+namespace, add `-n <namespace>` to each `iii trigger` command.
+
 <Note>
-  This page covers the basic endpoint flow. For path patterns, methods, headers, and response handling, see the
-  [http worker docs](https://workers.iii.dev/workers/http). The worker's server settings
-  (port, host, CORS, timeouts) are managed at runtime through the
-  [configuration worker](../using-iii/configuration).
+  This page covers the basic endpoint flow. For path patterns, methods, headers, and response
+  handling, see the [http worker docs](https://workers.iii.dev/workers/http). The worker's server
+  settings (port, host, CORS, timeouts) are managed at runtime through the [configuration
+  worker](../using-iii/configuration).
 </Note>
 
 ## Create endpoints
 
-The http worker exposes an `http` trigger type that binds a function to an HTTP method and path; the
-function then runs on every matching request. Here is the full path from a running engine to a live
-endpoint.
-
-1. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
-   not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
-   source. The
-   handler receives the request (`body`, `headers`, method) and its return value becomes the
-   response:
+1. In a worker, bind an `http` trigger to the function you want to expose and register that
+   function. If you do not have a worker yet, follow
+   [Create a new worker](./workers#create-a-new-worker), then edit its source. For the request and
+   response fields, see the [http worker docs](https://workers.iii.dev/workers/http):
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -49,9 +57,12 @@ endpoint.
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, {
-      workerName: "my-worker",
-      namespace: "orders",
+    const worker = registerWorker(url, { workerName: "my-worker" });
+
+    worker.registerTrigger({
+      type: "http",
+      function_id: "http::add",
+      config: { api_path: "/math/add", http_method: "POST" },
     });
 
     worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
@@ -59,13 +70,8 @@ endpoint.
       body: { c: payload.body.a + payload.body.b },
       headers: { "Content-Type": "application/json" },
     }));
-
-    worker.registerTrigger({
-      type: "http",
-      function_id: "http::add",
-      config: { api_path: "/math/add", http_method: "POST" },
-    });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
@@ -74,7 +80,7 @@ endpoint.
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="my-worker", namespace="orders"),
+        InitOptions(worker_name="my-worker"),
     )
 
     def add(payload: dict) -> dict:
@@ -85,14 +91,15 @@ endpoint.
             "headers": {"Content-Type": "application/json"},
         }
 
-    worker.register_function("http::add", add)
-
     worker.register_trigger({
         "type": "http",
         "function_id": "http::add",
         "config": {"api_path": "/math/add", "http_method": "POST"},
     })
+
+    worker.register_function("http::add", add)
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
@@ -114,13 +121,12 @@ endpoint.
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(
-        &url,
-        InitOptions {
-            namespace: Some("orders".into()),
-            ..Default::default()
-        },
-    );
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_trigger(
+        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
+            .for_function("http::add"),
+    )?;
 
     worker.register_function(
         "http::add",
@@ -132,11 +138,6 @@ endpoint.
             }))
         }),
     );
-
-    worker.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
-            .for_function("http::add"),
-    )?;
     ```
 
   </Tab>
@@ -145,18 +146,13 @@ endpoint.
 2. Add the worker to Compose, pointing at its directory:
 
 ```bash
-iii trigger -n dev compose::add worker=./my-worker
+iii trigger compose::add worker=./workers/my-worker
 ```
-
-For path patterns, request and response shapes, and the other configuration options, see the
-[http worker docs](https://workers.iii.dev/workers/http).
 
 ## Calling the endpoint
 
-Once the trigger is registered, set `HTTP_WORKER_URL` to the address configured for the http worker
-and call the endpoint:
+Once the trigger is registered, call the endpoint on port `3111`:
 
 ```bash
-# call the exposed function
-curl -X POST "$HTTP_WORKER_URL/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
+curl -X POST "http://localhost:3111/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
 ```

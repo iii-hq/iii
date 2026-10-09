@@ -13,17 +13,9 @@ The engine receives function calls, routes them to connected workers, and routes
 callers. Project workers have their own lifecycle under [Compose](./compose); `config.yaml` is not a
 general process manager.
 
-## Engine configuration
+## Configure the engine-owned workers
 
-The engine reads `config.yaml` from the project root. Pass `--config <path>` to select another file.
-When the file is missing, interactive sessions offer to create it and non-interactive sessions
-create an empty one automatically.
-
-```bash
-iii --config config.yaml
-```
-
-Only workers coupled to the engine lifecycle may be declared in this file:
+You can declare five engine-owned workers:
 
 - `configuration`
 - `iii-worker-manager`
@@ -31,12 +23,59 @@ Only workers coupled to the engine lifecycle may be declared in this file:
 - `iii-stream`
 - `iii-sandbox`
 
-The engine injects `iii-engine-functions`, `iii-telemetry`, and `iii-observability` automatically;
-do not declare them. Any other name makes initial startup or config reload fail with
-`UNSUPPORTED_CONFIG_WORKERS` and a link to the [manual migration
-guide](../upgrading/workers-to-compose).
+`configuration` and `iii-worker-manager` always run. Declare them only to change their settings.
+`iii-http-functions`, `iii-stream`, and `iii-sandbox` run only when you declare them.
+
+The engine also injects `iii-engine-functions`, `iii-telemetry` (anonymous usage data), and
+`iii-observability` (OpenTelemetry traces, logs, and metrics). Do not declare these three. For the
+`#<instance>` suffix that runs a second instance of a worker, see
+[Engine fields](./compose#engine-fields).
+
+When `worker-compose.yaml` has an `engine:` section, `iii compose --up` starts the engine. If
+`--engine` or `III_URL` gives an engine address, Compose connects to that engine and does not start
+one. Declare the engine-owned workers in the `engine.workers` map of `worker-compose.yaml`. Each key
+is a worker name. Each value holds the settings of that worker. Use `{}` for the default settings.
+
+```yaml worker-compose.yaml
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    iii-http-functions: {}
+```
+
+Run `iii compose --up` to start the engine and the project workers. See
+[Declare workers with Compose](./workers#declare-workers-with-compose).
+
+By default, Compose writes the `engine:` section to `.iii/compose/<namespace>/engine-config.yaml` in
+the project directory. Then Compose starts the engine with that file. Do not edit that file. To
+apply a change to the `engine:` section, stop `iii compose --up` and run it again. For each field,
+see [Engine fields](./compose#engine-fields).
+
+## Engine configuration
+
+Use `config.yaml` when you start the engine with `iii` yourself, or when another supervisor starts
+it. The engine reads `config.yaml` from the directory where you run `iii`. It does not search parent
+directories. Pass `--config <path>` to read another file. When the file is missing, interactive
+sessions offer to create it and non-interactive sessions create an empty one automatically. The new
+file contains `workers: []`.
+
+```bash
+iii --config config.yaml
+```
+
+Declare the [engine-owned workers](#configure-the-engine-owned-workers) as a `workers:` list in this
+file. Any other name makes startup or a config reload fail with `UNSUPPORTED_CONFIG_WORKERS` (see
+[Common errors](../upgrading/workers-to-compose#common-errors)).
 
 ```yaml
+workers:
+  - name: iii-http-functions
+  - name: iii-stream
+```
+
+To give settings to an engine-owned worker, add a `config:` block under its `- name:` entry:
+
+```yaml config.yaml
 workers:
   - name: iii-stream
     config:
@@ -47,7 +86,6 @@ workers:
         config:
           store_method: file_based
           file_path: ./data/stream_store
-
   - name: configuration
     config:
       adapter:
@@ -56,38 +94,70 @@ workers:
           directory: ./config
 ```
 
-The engine watches this file. A valid change reloads the affected engine worker; an invalid change
-stops the engine so it cannot continue with a configuration different from the file on disk.
+For the settings of an engine-owned worker, see its Worker Docs, such as
+[iii-stream](https://workers.iii.dev/workers/iii-stream) and
+[configuration](https://workers.iii.dev/workers/configuration).
+
+The engine watches this file. When you make a valid change, the engine starts each engine-owned
+worker that you add, stops each one that you remove, and restarts each one that you change. An
+invalid change stops the engine.
+
+The `config:` block of `iii-stream` is a first-start seed, in this file and in `engine.workers`. At
+the first start of `iii-stream`, the configuration worker stores the block, with variables expanded,
+as the `iii-stream` entry. iii then removes the block from this file. After that, `iii-stream`
+ignores changes to the block, in this file and in `worker-compose.yaml`. To change `iii-stream`
+settings, see [Two configuration layers](./configuration#two-configuration-layers).
 
 ## Project workers
 
 HTTP, cron, queue, state, pubsub, bridge, application workers, and other registry workers belong in
-`worker-compose.yaml`. For the normal managed lifecycle, move the five engine configs into its
-direct `engine.workers` map and start the single file:
+`worker-compose.yaml`.
 
-```bash
-iii compose --namespace dev --up --file worker-compose.yaml
-```
-
-Keep the list-shaped `config.yaml` only when another supervisor owns the engine. In that case omit
-`engine:` from the Compose file, run the processes separately, and connect with
+Keep the list-shaped `config.yaml` only when you or another supervisor starts the engine. In that
+case omit `engine:` from the Compose file, run the processes separately, and connect with
 `--engine <ws-url>` or `III_URL`.
 
-See [Workers](./workers) for Compose lifecycle operations and [Move workers from config.yaml to
-Compose](../upgrading/workers-to-compose) for existing projects.
+See [Workers](./workers) for Compose lifecycle operations and
+[Move workers from config.yaml to Compose](../upgrading/workers-to-compose) for existing projects.
 
-## Environment variable expansion
+Another supervisor or another machine can also run workers. Any SDK process that connects and
+registers is a worker, independent of Compose.
 
-Values in direct `config.yaml` and `engine.workers` support `${VAR:default}`; the engine expands
-them before typing the generated YAML. Compose-owned fields such as `engine.url` use
-`${VAR:-default}`. `config_override` is likewise carried to the configuration worker without
-Compose expanding it.
+## Set the namespace registration timeout
 
-## Default configuration
+A new worker connection gets the `default` namespace when `engine::workers::register` does not
+arrive before the timeout. The default timeout is 5000 ms. See
+[How a connection gets its namespace](../understanding-iii/namespaces#how-a-connection-gets-its-namespace).
 
-The generated file contains `workers: []`. Mandatory engine services still start, but no project
-worker does. Add project workers to `worker-compose.yaml` and use `iii compose --up`; do not add them
-to the empty engine list.
+For a managed engine, set the timeout under `engine:` in `worker-compose.yaml`:
 
-Workers may also be started by another supervisor or on another machine. Any SDK process that
-connects and registers is a worker, independent of Compose.
+```yaml worker-compose.yaml
+engine:
+  registration_namespace_grace_ms: 10000
+```
+
+For an engine that reads `config.yaml` directly, set the same field at the top level of
+`config.yaml`. The engine reads the value only when it starts. To apply a change to a managed
+engine, restart Compose as in
+[Configure the engine-owned workers](#configure-the-engine-owned-workers).
+
+`III_NAMESPACE_GRACE_MS` in the environment of the engine process overrides both values. A managed
+engine gets the environment of `iii compose --up`. The variable has no effect in the environment of
+a worker.
+
+## Use environment variables in values
+
+Write `${VAR:default}` in values of `config.yaml`, `engine.workers`, and `config_override`.
+
+```yaml worker-compose.yaml
+engine:
+  url: ${ENGINE_URL:-ws://127.0.0.1:49134}
+  workers:
+    iii-stream:
+      port: ${STREAM_PORT:3112}
+```
+
+Write `${VAR:-default}` in Compose fields, such as `engine.url`. Give each variable a default when
+it can be unset. If a variable in `config.yaml` or `engine.workers` has no value and no default, the
+engine stops. For the component that expands each value, see
+[Expanding values from environment variables](./compose#expanding-values-from-environment-variables).

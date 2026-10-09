@@ -9,42 +9,18 @@ type: "explanation"
 
 ## What a namespace is
 
-A namespace is a routing value that the engine stores with a function id and a worker name. It is
+A namespace is a routing value that the engine stores with a worker name and a function id. It is
 not part of either value. For example `state::get` can exist as the same function id in `default`,
 `orders`, and `analytics` namespaces.
 
 The engine uses these registry keys:
 
-- `(namespace, function_id)` for functions.
 - `(namespace, worker_name)` for workers.
 - `(namespace, trigger_type_id)` for trigger type providers.
+- `(namespace, function_id)` for functions.
 
-A worker connection has one namespace. Its function, service, and trigger type registrations use
+A worker connection has one namespace. Its trigger type, function, and service registrations use
 that namespace.
-
-## Trigger types and the two namespaces a trigger names
-
-A trigger names two namespaces, and they answer different questions:
-
-- **`namespace`** is where the target function resolves when the trigger fires.
-- **`trigger_namespace`** is where the trigger type's provider is found.
-
-Both are optional. `namespace` absent means the engine's default namespace.
-`trigger_namespace` absent is not `default`: the engine resolves it, taking the
-registering worker's namespace first and the default namespace second.
-
-That order is what lets a project ship its own provider for a trigger type the
-engine also provides. The engine's own providers (`http`, `cron`, `state`,
-`stream`) live in the default namespace, so a worker that names nothing reaches
-them. A project that registers its own provider for the same type id gets that
-one instead, without any worker changing how it binds.
-
-Naming `trigger_namespace` explicitly is strict: that namespace or nothing. A
-binding that names one is never moved.
-
-A provider that registers after a binding already fell back to the default
-namespace claims that binding back. Start order therefore does not decide which
-provider serves a project.
 
 ## What namespaces enable
 
@@ -72,56 +48,80 @@ worker. These two values stay separate.
 
 ## Why routing is strict
 
-A call with `namespace: "orders"` resolves in `orders` only. A call with no namespace resolves in the
-namespace of the calling worker.
+A call with `namespace: "orders"` resolves in `orders` only. When a call names no namespace, the
+Node, browser, Python, and Rust SDKs send the namespace of the calling worker. The Go SDK sends no
+namespace, so the call resolves in `default`. For an `engine::*` function called with no namespace,
+every SDK sends `default`.
 
 The engine does not search other namespaces after a miss. A fallback could send a call to another
-tenant. Instead, the engine returns `function_not_found` and lists the namespaces where the function
-id exists.
+tenant. On a miss, the engine returns `function_not_found` and lists the namespaces where the
+function id exists.
 
-The discovery functions are less strict when no namespace is present. For `engine::functions::info`
-and `engine::workers::info`, a `default` entry has priority. If there is no `default` entry, a name
-that exists in only one namespace resolves there. A name that exists in multiple namespaces returns
-an ambiguity. An explicit namespace always uses strict resolution.
+Introspection that names no namespace uses a less strict lookup. With this lookup, an engine whose
+workers all use named namespaces can still describe itself. For the lookup order, see
+[Resolution](../reference/engine-protocol#resolution).
+
+<Note>
+  For the discovery functions, see the [iii-engine-functions worker
+  docs](https://workers.iii.dev/workers/iii-engine-functions).
+</Note>
+
+## Trigger types and the two namespaces a trigger names
+
+A trigger names two namespaces, and they answer different questions:
+
+- **`namespace`** is where the target function resolves when the trigger fires.
+- **`trigger_namespace`** is where the trigger type's provider is found.
+
+Both are optional. On the wire, an absent `namespace` means `default`. The Node, browser, Python,
+and Rust SDKs fill it with the namespace of the registering worker. So a trigger from these SDKs
+targets a function in the worker's own namespace. The Go SDK leaves it absent. In Go,
+`RegisterTriggerNamespaced` sets it. For the call that sets `namespace` in the other SDKs, see
+[Point a trigger at a namespaced function](../using-iii/namespaces#point-a-trigger-at-a-namespaced-function).
+When `trigger_namespace` is absent, the engine looks for the provider in the registering worker's
+namespace first, then in `default`.
+
+That order lets a project ship its own provider for a trigger type id that another provider also
+serves. A provider in the registering worker's namespace comes before a provider in `default`. The
+`http`, `cron`, and `state` workers register their trigger types in the namespace they run in.
+Workers that ship with the engine, such as `iii-stream` and `iii-observability`, register theirs in
+`default`. A project that registers its own provider for a type id gets that provider. No worker
+changes how it binds. See [`RegisterTriggerType`](../reference/engine-protocol#registertriggertype).
+
+Naming `trigger_namespace` explicitly is strict: that namespace or nothing. A binding that names one
+is never moved.
+
+A provider that registers after a binding already fell back to the default namespace claims that
+binding back. Start order therefore does not decide which provider serves a project.
 
 ## Why the engine rejects a collision
 
 Only one live worker can own a worker name in a namespace. Only one live worker can own a function
-id in a namespace. The engine rejects a second owner instead of replacing the current owner.
+id in a namespace. The engine keeps the current owner and rejects the second one.
 
 A worker-name conflict is fatal. The engine closes the new connection because the worker cannot use
 its declared identity. A function-id conflict rejects only that function. The worker stays connected
 and serves its other functions.
 
 Worker registration and function registration are separate operations. A connected worker does not
-confirm that all its functions are registered. The SDK reports a function conflict as a warning.
+confirm that all its functions are registered. To handle a function conflict, see
+[Handle a rejected registration](../using-iii/namespaces#handle-a-rejected-registration).
 
 A restart does not conflict with its own connection after teardown starts. The new connection can
 reclaim the same worker name.
 
 ## How a connection gets its namespace
 
-A worker declares its namespace in the `engine::workers::register` call. The engine starts a
-namespace timer when the WebSocket connection opens. The default timeout is `5000 ms`.
+A worker declares its namespace in the `engine::workers::register` call. A worker can send
+registrations before that call. The engine holds them until it knows the namespace. This keeps
+trigger type providers and functions out of a namespace that the worker did not declare.
 
-A client can send registration messages before `engine::workers::register`. The engine holds
-`RegisterFunction`, `UnregisterFunction`, `RegisterService`, `RegisterTrigger`, and
-`UnregisterTrigger` messages until it knows the namespace. It does not register them in `default`
-and move them later.
+If the call names no namespace, or does not arrive before the registration timeout, the connection
+gets `default`. A later worker registration cannot change that namespace.
 
-If `engine::workers::register` arrives first, the engine sets the declared namespace. An absent
-value selects `default`. The engine then processes the held messages in arrival order.
-
-If the timer expires first, the engine sets the connection namespace to `default` and processes the
-held messages. A later worker registration cannot change that namespace.
-
-To change the timeout, use `registration_namespace_grace_ms` or `III_NAMESPACE_GRACE_MS`. See
-[Registration namespace timeout](../using-iii/configuration#registration-namespace-timeout).
-
-## Use namespaces
-
-For deployment configuration, SDK examples, cross-namespace calls, trigger targets, discovery, and
-registration errors, see [Use namespaces](../using-iii/namespaces).
+For the message order, see [Connection flow](../reference/engine-protocol#connection-flow). To
+change the timeout, see
+[Set the namespace registration timeout](../using-iii/engine#set-the-namespace-registration-timeout).
 
 ## Related
 

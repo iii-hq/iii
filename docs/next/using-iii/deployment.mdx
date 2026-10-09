@@ -1,17 +1,18 @@
 ---
 title: "Deployment"
-description: "Running iii in development, staging, and production."
+description: "Running iii in production."
 owner: "devrel"
 type: "how-to"
 ---
 
-This page covers running the iii engine and its workers in a production environment. For local
-development, see the [Quickstart](../quickstart) and the [Engine](./engine) page.
+This page shows how to run a iii project in production. For local development, see the
+[Quickstart](../quickstart) and the [Engine](./engine) page.
 
 ## iii Cloud deployments
 
-The `iii cloud` subcommand group will manage hosted iii deployments. See [CLI](./cli) for the
-command surface as it stabilizes.
+`iii cloud` manages hosted iii deployments. The iii CLI runs the separate `iii-cloud` binary for
+these commands. If that binary is not installed, the iii CLI downloads it. Run `iii cloud --help` to
+see the commands that your version supports.
 
 <Note>iii's cloud will be available soon.</Note>
 
@@ -19,7 +20,7 @@ command surface as it stabilizes.
 
 ## Deploy with Docker
 
-Generate the Docker assets with the CLI and bring them up with Compose. Use
+Generate the Docker assets with the CLI and start them with Docker Compose. Use
 `iii project init --docker` for a fresh project, or `iii project generate-docker` to add Docker
 assets to an existing one:
 
@@ -31,45 +32,104 @@ Both forms emit three files at the project root: `Dockerfile`, `docker-compose.y
 Re-running the generator does not overwrite existing files, so edits you make to the templates
 stick.
 
+<Warning>
+  The generated image starts only the engine, with `iii --config /app/config.yaml`. It does not
+  start the workers in `worker-compose.yaml`. To run the workers, attach Compose to the engine in
+  the container:
+
+```bash
+iii compose --engine ws://127.0.0.1:49134 --up --file /path/to/worker-compose.yaml
+```
+
+The `--engine` flag stops Compose from starting a second engine. For more about Compose, see
+[Run a Compose project](#run-a-compose-project). The `Dockerfile` copies `config.yaml` from the
+project root. If your project has no `config.yaml`, create one with the line `workers: []` before
+you build.
+
+</Warning>
+
 Start the stack:
 
 ```bash
 docker compose up -d
 ```
 
-The generated `docker-compose.yml` exposes:
+The generated `docker-compose.yml` maps these ports:
 
-| Port  | Service                            |
-| ----- | ---------------------------------- |
-| 49134 | SDK WebSocket (worker connections) |
-| 3111  | REST API                           |
-| 3112  | Stream API                         |
+| Port  | Listener                                                  |
+| ----- | --------------------------------------------------------- |
+| 49134 | Engine WebSocket for trusted worker connections           |
+| 3111  | `http` worker. The generated container does not start it. |
+| 3112  | `iii-stream` worker, when `config.yaml` declares it       |
+| 9464  | No listener at this release                               |
 
-The Dockerfile builds against `iiidev/iii:latest` (distroless, non-root). The compose file ships
-commented-out Redis and RabbitMQ services that can be uncommented when workers need external
-adapters.
+To keep the engine port private, change the mapping in `docker-compose.yml` to
+`"127.0.0.1:49134:49134"`. If the `http` worker runs on the same host, remove the `3111:3111`
+mapping from `docker-compose.yml`. Otherwise the worker cannot bind port 3111.
+
+The `Dockerfile` builds from `iiidev/iii:latest`, a distroless image that runs as a non-root user.
+`docker-compose.yml` has commented-out Redis and RabbitMQ services. Uncomment them when a worker
+needs an external adapter.
+
+## Run a Compose project
+
+Compose runs in the foreground. Run it under a process supervisor, such as systemd. With `--up`,
+Compose starts the engine from the `engine:` section. Compose also starts the workers under
+`containers:`.
+
+```bash
+iii compose --namespace prod --up --file /path/to/worker-compose.yaml
+```
+
+To run Compose as a systemd service, create a unit file. This is a basic example:
+
+```ini
+[Unit]
+Description=iii compose
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/iii compose --namespace prod --up --file /path/to/worker-compose.yaml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Change `/usr/local/bin/iii` to the path of the `iii` binary on your server.
+
+<Warning>
+  Use `Type=simple`. With `Type=notify`, systemd waits for an `sd_notify` readiness message. Compose
+  does not send this message.
+</Warning>
 
 ## Configure a reverse proxy
 
-The engine does not terminate TLS. Place a reverse proxy in front of it to handle TLS and route the
-three transport surfaces (`/api/*`, `/stream/*`, `/ws`) to the right ports.
+The `http` worker, `iii-stream`, and the rbac-proxy worker do not terminate TLS. Put a reverse proxy
+in front of them. The proxy handles TLS and sends each host name to one port. Send each request path
+to the listener unchanged. Do not add or remove a path prefix.
+
+<Warning>
+  The engine listener on `49134` is trusted. Any client that connects to it can register functions
+  and call every function. Keep `49134` on a private network. Send public worker connections to the
+  [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) port. Its default is `49200`. See
+  [Workers](./workers).
+</Warning>
 
 ### Caddy
 
 ```
-your-domain.com {
-    handle /api/* {
-        reverse_proxy 127.0.0.1:3111
-    }
-    handle /stream/* {
-        reverse_proxy 127.0.0.1:3112
-    }
-    handle /ws {
-        reverse_proxy 127.0.0.1:49134
-    }
-    handle {
-        reverse_proxy 127.0.0.1:3111
-    }
+ws.your-domain.com {
+    reverse_proxy 127.0.0.1:49200
+}
+
+api.your-domain.com {
+    reverse_proxy 127.0.0.1:3111
+}
+
+stream.your-domain.com {
+    reverse_proxy 127.0.0.1:3112
 }
 ```
 
@@ -83,28 +143,34 @@ your-domain.com {
 ```nginx
 server {
     listen 443 ssl;
-    server_name your-domain.com;
+    server_name ws.your-domain.com;
 
-    location /api/ {
-        proxy_pass http://127.0.0.1:3111;
-    }
-
-    location /ws {
-        proxy_pass http://127.0.0.1:49134;
+    location / {
+        proxy_pass http://127.0.0.1:49200;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
     }
+}
 
-    location /stream/ {
+server {
+    listen 443 ssl;
+    server_name api.your-domain.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3111;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name stream.your-domain.com;
+
+    location / {
         proxy_pass http://127.0.0.1:3112;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:3111;
     }
 }
 ```

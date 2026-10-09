@@ -7,8 +7,10 @@ Solutions to errors you may hit while running the iii engine and workers.
 
 ## `KVM not accessible`
 
-Workers boot inside a microVM that needs read/write access to `/dev/kvm`. On Linux hosts where your
-user is not in the `kvm` group (common on WSL2), starting a worker fails with `KVM not accessible`.
+On Linux, workers that run in a VM and iii-sandbox sandboxes need read and write access to
+`/dev/kvm`. Bundle workers run in a VM. Path workers that set `runtime.base_image` in
+`iii.worker.yaml` also run in a VM. When your user is not in the `kvm` group (common on WSL2), the
+VM fails to start with `KVM not accessible`.
 
 Add your user to the `kvm` group:
 
@@ -19,4 +21,13 @@ sudo usermod -aG kvm $USER
 Then restart your session so the new group membership applies. On WSL2, run `wsl --shutdown` from a
 Windows terminal and reopen your distribution.
 
-<Info>For why workers run in microVMs, see [Engine](./understanding-iii/engine).</Info>
+If the error says `KVM not available`, `/dev/kvm` does not exist. Enable KVM in your kernel. Then
+load the KVM module for your CPU. On an Intel CPU, run:
+
+```bash
+sudo modprobe kvm_intel
+```
+
+On an AMD CPU, run `sudo modprobe kvm_amd`. This error can also occur on WSL2.
+
+<Info>To see which workers run in a VM, see [Worker kinds](./using-iii/compose#worker-kinds).</Info>

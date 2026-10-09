@@ -10,53 +10,55 @@ with an order between them: a database before the API, the API before the web fr
 before either. The engine holds workers and routes calls to them. Something has to own the order,
 the environment each process starts with, and the response when one of them dies.
 
-That is compose. A `worker-compose.yaml` declares the group, and a daemon turns the declaration into
+That is Compose. A `worker-compose.yaml` declares the group, and a daemon turns the declaration into
 running processes it keeps watching.
 
 ## The compose environment
 
-Compose files provide reproducibility. A project starts the same way from a login shell, a systemd
-unit, or a CI runner, because the daemon's own environment plays no part in it. Everything a
-container needs is in the compose file, which makes the file a complete description of how the
-project runs and makes a reviewer able to see the whole contract in one place.
+The compose file declares the workers, their start order, their environment files, and their
+environment values. A reviewer can see most of the contract in one place. Workers also inherit the
+environment of the Compose daemon, and `${VAR}` references in the file read that environment. So a
+project can start differently from a login shell, a systemd unit, or a CI runner. For the order of
+environment sources, see [The worker environment](../using-iii/compose#the-worker-environment).
 
-Strictness in the compose file serves the same end and ensures that an incomplete "system" cannot be
-started accidentally.
+Strict parsing keeps the file accurate. Compose rejects unknown keys, duplicate keys, and `${VAR}`
+references to unset variables that have no default. So a typing error cannot silently change how a
+project starts.
 
 ## Three names, three jobs
 
-A compose call names three things, and confusing any two of them is the mistake worth naming up
+A Compose call names three things, and confusing any two of them is the mistake worth naming up
 front.
 
-The **daemon namespace** is which machine. It comes from `--namespace`, and it is where that daemon
-answers `compose::*`, so `iii trigger compose::up --namespace dev` reaches one daemon and not its
-neighbour. Several daemons attach to one engine, which is what lets compose supervise workers where
-their resources are rather than only beside the engine.
+The **daemon namespace** selects the daemon. The daemon answers `compose::*` in this namespace, so
+`iii trigger compose::up --namespace dev file=./worker-compose.yaml` reaches one daemon only.
+Several daemons attach to one engine, so Compose can supervise workers on the machines that hold
+their resources.
 
 The **file** is which project. A daemon holds as many as it is given, and the compose file is the
 only thing that identifies one.
 
-The **project namespace** is where that project's workers register. It comes from `namespace:` in the
-compose file: the engine's routing dimension, the same one every other worker uses.
+The **project namespace** is where the workers of that project register. It is the engine's routing
+dimension, the same one every other worker uses.
+
+The `namespace:` field in the compose file and the `iii compose --namespace` flag set these
+namespaces. For the rules, see [Precedence](../using-iii/compose#precedence).
 
 ### Why the project has no name of its own
 
-An earlier design gave each project an id the operator chose on the first `up`. It read well and was
-wrong, because it was a second identity for something the file already identified. Two identities
-have to be kept in agreement, and the failure was silent in both directions: an id could be pointed
-at a different file, and a mistyped id became a new empty project reporting that it had nothing to
-stop, reporting success for a command that did nothing.
+The compose file identifies a project. A second identity, such as a name that the operator chooses,
+would have to agree with the file. When the two do not agree, the failure is silent: a name can
+point at a different file, and a mistyped name becomes a new empty project that reports success for
+a command that did nothing. When the file is the identity, the same file reached twice is the same
+project, and a mistyped path is a file that does not open.
 
-Deriving the project from its file removes the question. The same file reached twice is the same
-project however it was spelled, a mistyped file is a file that will not open, and an error existed
-only to police the divergence that can no longer happen.
+The namespace is declared in the file or on the command line, so an operator can read it and type it
+into `iii trigger --namespace` or a `worker.trigger` call. A declared namespace is predictable, and
+this makes it usable by hand.
 
-The namespace stays exactly what the compose file says, so an operator can read it off the file and
-type it into `iii trigger --namespace` or a `worker.trigger` call. Predictability is what makes a
-namespace usable by hand, and it comes from being declared rather than derived.
-
-Two copies of one project therefore share a project namespace and collide, which is how the engine
-reports a duplicate for every other worker as well.
+Two copies of one project on one engine share a project namespace and collide when both use the
+namespace from the file. The engine reports this duplicate worker in the same way as every other
+duplicate worker.
 
 <Note>
   For the routing dimension itself and how the engine handles a contested name, see
@@ -65,11 +67,12 @@ reports a duplicate for every other worker as well.
 
 ## Why the daemon owns seven variables
 
-A container's environment is its own, with seven exceptions the daemon sets and refuses to let a
-container replace. The rule is not that static configuration outranks an environment variable, which
-would be the wrong way round for most settings. It is that each of these seven is already declared
-somewhere in the compose file, and a second declaration of the same thing is a disagreement nobody
-resolves.
+A container can set any environment variable, with seven exceptions. The daemon sets these seven
+variables and refuses a container value for them. The daemon already has a value for each of them,
+from the compose file, from the path of the file, or from the `iii compose` command (its flags or
+the `III_URL` variable). A second value for the same setting is a disagreement that nothing
+resolves. For the list and the value of each variable, see
+[The worker environment](../using-iii/compose#the-worker-environment).
 
 `III_URL` is the daemon's connection. Readiness is observed over it, so a container pointed at
 another engine is invisible to the daemon that started it, however healthy it is. The failure would
@@ -77,9 +80,10 @@ arrive as a startup timeout over a worker that is running and serving, which is 
 diagnosable shape a failure can take. Two engines mean two daemons.
 
 `III_NAMESPACE` and `III_WORKER_NAME` are the pair readiness watches. Letting a container change
-either would mean compose waiting in one place while the child registers in another, so the override
+either would mean Compose waiting in one place while the child registers in another, so the override
 would have to be threaded through readiness, the child record and `compose::status` before it could
-work at all. Both are already declared: the namespace by the file, the name by the container key.
+work at all. Both are already declared: the namespace by the file or the `iii compose --namespace`
+flag, the name by the container key.
 
 `III_COMPOSE_NAMESPACE`, `III_COMPOSE_FILE`, and `III_COMPOSE_DIR` identify the supervisor and
 project that started the container. The project namespace cannot route to the daemon namespace, and
@@ -88,56 +92,42 @@ explicit, unambiguous `compose::*` call. The directory is the canonical parent o
 workers one stable base for project-owned data. Letting the container replace these values could
 send a lifecycle edit to another project or write data outside that project.
 
-`III_CONFIG_NAME` identifies the configuration service entry. Compose reads the current value,
-merges execution overrides, and calls `configuration::set` with `flush: false` before spawn.
-Workers read that value through the same GET. Explicit saves persist the submitted object.
-Removing an override does not restore an older disk value. No snapshot file is delivered. The retired `III_CONFIG` name is rejected in explicit
-`environment` and `env_file` declarations with `RETIRED_CONFIG_ENV`; stale inherited values are
-removed. Matching is case-sensitive on Unix and follows native case-insensitive rules on Windows.
+`III_CONFIG_NAME` names the configuration entry that Compose prepared for this container. The
+`config_name` field, or the namespace and the container key, already declare that name. A second
+value in the environment would point the worker at an entry that Compose did not prepare.
 
 ### A container that belongs in another namespace
 
-The case the reserved contract genuinely refuses is a container joining a namespace other than its
-project's, a shared one addressed by two projects for instance. That is not an oversight. A
-namespace is declared per file, and a project is its file, so a container that registers somewhere
-else is describing a different project. Declaring it in a second compose file says exactly that, and
+One case that the reserved contract refuses is a container that joins a namespace other than the
+namespace of its project, for example a namespace that two projects share. This is intentional. A
+project has one namespace, and a project is its file, so a container that registers somewhere else
+is describing a different project. Declaring it in a second compose file says exactly that, and
 keeps the property that reading one file tells you where everything in it lands.
 
 ## Why state belongs to the project
 
-A project's process records, resolved configuration, worker output and VM state are stored in
-`<project-dir>/.iii/compose/<namespace>/`. Its managed engine uses the same directory for its lock,
-generated configuration and log. The project directory comes from the canonical compose file path,
-so running `iii compose --up --file` from another directory keeps state beside that file.
-
-The engine lock belongs to the project and namespace together. Two checkouts can each use `default`
-with engines on different ports. A second managed invocation for the same project and namespace is
-refused. Within one engine, each Compose daemon still needs its own namespace.
-
-For read-only checkouts, `III_COMPOSE_STATE_DIR` moves project state to
-`$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug includes a hash of the canonical
-compose path so different checkouts remain separate under a shared root. `compose::status` reports
-the resolved `state_dir` for either layout. The default layout requires a `.iii/compose/` entry in
-the project's ignore rules to exclude generated state from version control.
-
-Installed packages remain shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
-The cache is keyed by name, version and target, so projects can reuse downloaded workers.
+By default, Compose keeps the state of a project beside its compose file, so a project and its
+records stay together. The engine lock belongs to the project and the daemon namespace together.
+Thus two checkouts can each use `default` with engines on different ports, and Compose refuses a
+second managed start of the same project in the same namespace. For the paths and the
+`III_COMPOSE_STATE_DIR` layout, see
+[Where Compose keeps state](../using-iii/compose#where-compose-keeps-state).
 
 ## Engine observed readiness
 
-Compose determines ready state through the engine rather than locally as this is the one way to
-ensure dependencies are ready for a given worker. For example when `api` starts after `database`,
-`start_after` guarantees the engine can already route a trigger to `database`, so `api` can reliably
-use the `database` dependency from boot. A check on the process alone would guarantee only that
-something was launched.
+Compose decides that a worker is ready when the worker registers on the engine under its container
+key in the project namespace. A check on the process shows only that something was launched. When
+`api` starts after `database`, `api` starts only after `database` is ready, or after `database`
+fails and is not required. A required `database` that fails ends the `up`, so `api` does not start.
+When `database` is not required and fails to start, `api` starts anyway, so `api` must handle a
+missing `database`.
 
 The engine's view is also detailed enough to report clear statuses to the user.
 
 ## Scoped shutdown
 
-When one container in an `up` fails, compose stops what that operation started, in reverse order,
-and leaves everything else running. The rule is that an operation undoes itself, which makes `up`
-safe to retry.
+When a required container fails during `up`, Compose stops what that operation started, in reverse
+order, and leaves everything else running. An operation undoes itself, so `up` is safe to retry.
 
 Teardown follows the graph backwards, so dependents stop before the containers they depend on and
 nothing is left using a worker that no longer exists. A container that stops on its own takes the
@@ -145,104 +135,69 @@ same path, so its dependents come down in the same order as a deliberate stop.
 
 ### The blast radius depends on the clock
 
-Those two sentences describe two different rules, and it is worth being plain about the gap between
-them. During an `up`, the first container that fails ends the operation: everything that operation
-started is rolled back, and everything after it in the start order is never attempted. On a first
-`up` of a five-container project, a failure in the last one leaves the whole project down, including
-containers that have nothing to do with it. Once a container is ready, the supervisor is narrower:
-it takes that container's transitive dependents down and leaves the rest alone.
+These rules apply at different times. During `up`, a required container that fails ends the
+operation. Compose stops everything the operation started and does not start the containers later in
+the start order. A container that is not required fails alone, and the other containers start. After
+a container is ready, the supervisor stops only the transitive dependents of a container that stops.
 
-So a `mailer` that nothing depends on would end the whole start if it failed during `up`, and be
-contained if it failed a minute later. The same declaration, the same container, two blast radii
-separated only by timing.
-
-Each rule is useful for a different project. Compose therefore makes the start-time choice part of
-the file instead of assuming that every container has the same blast radius.
+So a `mailer` with `required: true` that nothing depends on ends the whole start when it fails
+during `up`. When it fails a minute later, the failure stays contained. The `required` field lets
+each project choose the start-time rule for each container.
 
 ### Saying it in the file
 
-A container is not required by default. Its failed start is reported against that container,
-nothing is rolled back, and the operation carries on. Set `required: true` when one container must
-make the operation fail:
+A container is not required unless the file says so. Its failed start is reported against that
+container, nothing is rolled back, and the operation carries on. The `required` field marks a
+container that must make the operation fail. The `required_default` field sets the fallback for
+every container in a file. For the syntax and defaults, see
+[Required workers](../using-iii/compose#required-workers).
 
-```yaml
-containers:
-  database:
-    worker: path://./workers/database
-    required: true
-```
+Dependents of a container that is not required carry on too. A container that names it in
+`start_after` starts as if it had come up, because `start_after` only sets a start order. A
+dependent that cannot run without it reports this when it fails on its own.
 
-Use `required_default` to set the fallback for every container in a file. A container-level value
-always wins:
-
-```yaml
-required_default: true
-
-containers:
-  queue:
-    worker: path://./workers/queue
-    required: false
-  state:
-    worker: path://./workers/state
-```
-
-Here, `state` inherits `true`, while `queue` remains false. When neither `required` nor
-`required_default` is present, the effective value is false.
-
-Dependents of a non-required container carry on too. A container that names it in `start_after`
-starts as if it had come up, because `start_after` is a start order rather than a claim that the
-dependent cannot run without it. A dependent that genuinely cannot run without it says so by
-failing on its own.
-
-That moves what `status: ok` means. It used to say every planned container is up; it now says every
-required one is, so the return names the rest in `not_required_failures` rather than leaving a
-caller to compare the plan against a later status call. A successful result has no top-level error.
+`status: ok` means that every required container is up. The response names each container that is
+not required and failed in `not_required_failures`, so a caller does not have to compare the plan
+with a later status call. A successful result has no top-level error.
 
 `required` controls the result after Compose finishes trying. A second field controls whether
 Compose retries before it accepts that result.
 
 ### Retry policy
 
-A container declares what Compose does when its first start fails or when it exits after it was
-ready:
+The `restart` field declares what Compose does when the first start of a container fails, or when
+the container exits after it was ready. For the syntax and defaults, see
+[Restart policy](../using-iii/compose#restart-policy).
 
-```yaml
-containers:
-  api:
-    worker: path://./workers/api
-    restart: on-failure
-```
-
-`no` is the default. A failed first start settles immediately, and an exit after `Ready` takes the
-container's transitive dependents down. `on-failure` retries a failed start or a non-zero run-time
-exit. A clean run-time exit with `on-failure` is recorded as `stopped`. `always` retries a clean
-run-time exit, which is the answer for a worker that is only correct while it is running.
+With no policy, a failed first start settles immediately, and an exit after the container is ready
+takes its transitive dependents down. `on-failure` retries a failed start or a run-time exit with an
+error. `always` also retries a clean run-time exit, which suits a worker that is only correct while
+it runs.
 
 A supervised restart is the same act as `compose::restart`: one container stops and starts, and the
-graph around it is left alone. So its dependents stay up while it is gone. This is the same reasoning
-that non-required starts use: `start_after` is a start order rather than a claim that the dependent
-cannot run without it. What that costs is a dependent holding a connection that drops and has to
-reconnect, which is the cost the file asked for by declaring a policy at all.
+graph around it is left alone. So its dependents stay up while it is gone. The reason is the same as
+for a container that is not required: `start_after` only sets a start order. The cost is a dependent
+that holds a connection that drops and must reconnect. The file accepts this cost when it declares a
+policy.
 
-Replacement attempts are capped at five. The first retry is immediate. Later retries wait from
-500ms up to a ceiling of 30 seconds. Both limits are load-bearing: a policy with no backoff turns a
-crash loop into a busy loop, and a policy with no cap never lets the operator find out. A container
-that holds ready for a minute has recovered, so its run-time budget refills. A worker that crashes
-once an hour is therefore restarted every time, rather than five times ever.
+Replacement attempts have a cap and a backoff. Both limits are important: without backoff, a crash
+loop becomes a busy loop, and without a cap, the operator never finds out about the crash loop. A
+container that stays ready for the restart `window` (60 seconds by default) has recovered, so its
+run-time budget resets. Thus Compose restarts a worker that crashes once each hour every time.
 
 When the budget runs out the supervisor does what it would have done with no policy at all. It fails
 the container, takes its dependents down, and says which in the log. That is the shape worth
-keeping: `restart` changes how many times compose tries, and never what happens when trying is over.
+keeping: `restart` changes only how many times Compose tries. The result after the last try stays
+the same.
 
-`compose::status` reports a container waiting on a run-time replacement as `restarting`. It is
-not `ready`, because nothing is running under that name, and not `failed`, because the supervisor
-has not given up on it. It has no PID until the next process starts. During `up`, the active progress
-row shows the retry attempt, its wait, and the successful recovery.
+`compose::status` reports a container that waits for a run-time replacement as `restarting`. No
+process runs under that name, and the supervisor still has attempts left, so the container is
+neither `ready` nor `failed`.
 
 ## Related
 
 <Note>
   For the function surface, the compose file schema, and the error codes, see [Using iii /
-  Compose](../using-iii/compose). For how workers reach each other once compose has started them,
+  Compose](../using-iii/compose). For how workers reach each other once Compose has started them,
   see [Using iii / Functions](../using-iii/functions).
 </Note>

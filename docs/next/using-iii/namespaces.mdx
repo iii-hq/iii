@@ -19,39 +19,18 @@ The SDK selects the worker namespace in this order:
 | 2        | The worker process `III_NAMESPACE` environment variable |
 | 3        | `default`                                               |
 
-Use a non-empty string for a namespace. Leave the option out and the SDK reads `III_NAMESPACE`
-itself, then falls back to `default`; an absent option gives the same result as passing
-`process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
-`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value is invalid
-and fails in both the SDK and at the engine.
+Use a non-empty string for a namespace. The SDK refuses an empty or whitespace-only value. When you
+leave the option out, the SDK reads the `III_NAMESPACE` variable of the worker process. When
+`III_NAMESPACE` is unset or empty, the worker uses `default`. In Python and Rust, `None` means that
+you left the option out.
 
-{/* TODO: Add this back when compose is released */}
+### Workers that Compose starts
 
-{/* ### Managed workers */}
-
-{/* Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker */}
-
-{/* package independent from one tenant or project. */}
-
-{/* ```yaml compose.yaml */}
-
-{/* services: */}
-
-{/* state-orders: */}
-
-{/* image: example/state-worker:latest */}
-
-{/* environment: */}
-
-{/* III_URL: ws://iii:49134 */}
-
-{/* III_NAMESPACE: orders */}
-
-{/* ``` */}
-
-{/* The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a */}
-
-{/* per-worker `namespace:` key in `config.yaml`; that key does not exist. */}
+Compose sets `III_NAMESPACE` to the project namespace for each worker that it starts. Leave the SDK
+`namespace` option out of these workers. For the reserved variables, see
+[The worker environment](./compose#the-worker-environment). For the readiness error codes, see
+[Readiness](./compose#readiness). To change the project namespace, see
+[Precedence](./compose#precedence).
 
 ### SDK option
 
@@ -101,8 +80,7 @@ over `III_NAMESPACE`.
     ```typescript
     import { registerWorker } from "iii-browser-sdk";
 
-    const worker = registerWorker("ws://localhost:49135", {
-      workerName: "checkout-tab",
+    const worker = registerWorker("ws://localhost:3110", {
       namespace: "orders",
     });
     ```
@@ -110,19 +88,22 @@ over `III_NAMESPACE`.
   </Tab>
 </Tabs>
 
-The browser SDK cannot read a process environment. Pass its namespace explicitly or obtain it from
-trusted runtime configuration.
+A browser connects through an RBAC port, for example `3110`. The browser SDK cannot read a process
+environment. Pass the namespace in the options. Leave `workerName` unset. The SDK then gives each
+tab a unique name, so two tabs do not conflict. When the auth function scopes the session to
+namespaces, the session can declare only those namespaces. For the RBAC port and the connection
+token, see [Connect a client](../creating-workers/worker-manager#connect-a-client).
 
 ## Trigger a function in a namespace
 
-Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
-call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
-no namespace of its own resolves in `default`, as before.
+Set `namespace` on the invocation. The call resolves only in that namespace. When you omit the
+field, the SDK uses the namespace of the calling worker. A worker without a namespace calls into
+`default`. A call to an `engine::*` function goes to `default` when you omit the field.
 
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger --namespace orders state::get key=cart
+    iii trigger --namespace orders state::get scope=carts key=cart
     ```
 
   </Tab>
@@ -130,7 +111,7 @@ no namespace of its own resolves in `default`, as before.
     ```typescript
     const result = await worker.trigger({
       function_id: "state::get",
-      payload: { key: "cart" },
+      payload: { scope: "carts", key: "cart" },
       namespace: "orders",
     });
     ```
@@ -139,7 +120,7 @@ no namespace of its own resolves in `default`, as before.
     ```python
     result = worker.trigger({
         "function_id": "state::get",
-        "payload": {"key": "cart"},
+        "payload": {"scope": "carts", "key": "cart"},
         "namespace": "orders",
     })
     ```
@@ -153,7 +134,7 @@ no namespace of its own resolves in `default`, as before.
         .trigger(
             TriggerRequest {
                 function_id: "state::get".into(),
-                payload: json!({ "key": "cart" }),
+                payload: json!({ "scope": "carts", "key": "cart" }),
                 action: None,
                 timeout_ms: None,
             }
@@ -168,47 +149,48 @@ no namespace of its own resolves in `default`, as before.
 A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
 
 <Note>
-  `iii trigger --namespace <NS>` calls a function in that namespace. Without the flag it resolves in
-  `default`: a CLI invocation has no namespace of its own to inherit.
+  Without `--namespace`, `iii trigger` uses the `III_NAMESPACE` variable of the shell. When the
+  shell does not set `III_NAMESPACE`, the call resolves in `default`. A call to an `engine::*`
+  function without `--namespace` always resolves in `default`.
 </Note>
 
 ## Point a trigger at a namespaced function
 
 Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
-the target to the worker's namespace. Set `namespace` to bind it elsewhere, which is what a trigger
-pointing at an engine builtin needs, since those exist only in `default`.
+the target to the worker's namespace. Set `namespace` to bind it elsewhere. The engine registers its
+own `engine::*` functions only in `default`. A trigger that targets one of them, such as
+`engine::workers::list`, needs `namespace: "default"`.
 
 ```typescript
 // Bound to this worker's namespace.
 worker.registerTrigger({
   type: "http",
-  function_id: "state::get",
-  config: { api_path: "/orders/state", http_method: "GET" },
+  function_id: "cart::get",
+  config: { api_path: "/orders/cart", http_method: "GET" },
 });
 
 // Bound to `default`, where the engine's own functions live.
 worker.registerTrigger({
   type: "cron",
   function_id: "engine::workers::list",
-  config: { schedule: "0 * * * *" },
+  config: { expression: "0 0 * * * * *" },
   namespace: "default",
 });
 ```
 
 ## Inspect namespaces
 
-Every row from `engine::functions::list` and `engine::workers::list` contains a `namespace` field.
+Every row from `engine::workers::list` and `engine::functions::list` contains a `namespace` field.
 The list functions return all namespaces.
 
 Pass `namespace` to an info function for strict lookup:
 
 ```bash
-iii trigger engine::workers::info --json '{"name":"state","namespace":"orders"}'
+iii trigger engine::workers::info name=state namespace=orders
 ```
 
-Without a namespace, `engine::functions::info` and `engine::workers::info` first use a `default`
-entry. If no `default` entry exists, they resolve a name that exists in only one namespace. They
-return an ambiguity when the name exists in multiple namespaces.
+Without `namespace`, an info function can return an ambiguity. For the lookup rules, see
+[Resolution](../reference/engine-protocol#resolution).
 
 ## Handle a rejected registration
 
@@ -222,6 +204,12 @@ same namespace.
 
 For a worker-name conflict, change the worker name or namespace. For a function conflict, remove the
 duplicate function id or move one worker to another namespace.
+
+The engine also sends `registrationrejected` with `FUNCTION_NAMESPACE_CONFLICT` when a worker
+outside `default` registers a function id that starts with `engine::`. The engine reserves this
+prefix. In this case, `owner_worker_id` is empty. Give the function an id with a different prefix.
+The five `engine::queue::*` functions of the `queue` worker are the only exception. See
+[Reserved ids](../reference/engine-protocol#reserved-ids).
 
 <Warning>
   A connected worker does not confirm that all its functions are registered. SDKs report a function
@@ -241,5 +229,5 @@ the exact namespace when the rule must expose a namespaced function. See
 ## Related
 
 - [Understand namespaces](../understanding-iii/namespaces)
-- [Registration namespace timeout](./configuration#registration-namespace-timeout)
+- [Set the namespace registration timeout](./engine#set-the-namespace-registration-timeout)
 - [Upgrade from 0.22.x](../upgrading/from-0-22-x)
