@@ -16,7 +16,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # WebSocket proxy (must match workspace: engine uses 0.28)
 tokio-tungstenite = "0.28"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-tower-http = { version = "0.6.8", features = ["cors"] }
+tower-http = { version = "0.7.1", features = ["cors"] }
 iii-sdk = { workspace = true }
 iii-helpers = { workspace = true }
 
