@@ -7,10 +7,11 @@ import { randomUUID } from "node:crypto";
 
 const TOKEN = process.env.LINKLY_BROWSER_TOKEN ?? "dev-token";
 const CODE = process.env.LINKLY_CODE ?? "deleteme";
+const BROWSER_URL = process.env.BROWSER_URL ?? "ws://localhost:3110";
 const SESSION = randomUUID();
 
 const worker = registerWorker(
-  `ws://localhost:3110?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
+  `${BROWSER_URL}?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
   { namespace: `browser-${SESSION}` },
 );
 

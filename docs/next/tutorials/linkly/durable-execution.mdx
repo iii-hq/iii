@@ -6,23 +6,21 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-<Warning title="Deprecated">
-  This chapter uses the `pubsub` worker (`publish` and `subscribe`). `pubsub` is deprecated (pubsub)
-  and will be removed in an upcoming release. Behavior is unchanged for now, so the
-  chapter still works. The durable `queue` parts are not deprecated. See
-  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#migrate-from-pubsub).
-</Warning>
+<Note>
+  Earlier versions of this chapter published `link.created` with the `pubsub` worker. If your
+  project still has it, see [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
+</Note>
 
 In Chapter 3 every redirect triggers `link::record_click` directly, so the database write runs on
 the redirect's hot path and a slow write slows the redirect. In this chapter you move that work onto
-a **queue** so redirects return immediately, then use **pub/sub** to broadcast link events to
-independent subscribers: a Python analytics worker and a cache refresher, both decoupled from the
-`link` worker.
+a **queue** so redirects return immediately, then publish link events on **durable topics** that
+independent subscribers receive: a Python analytics worker and a cache refresher, both decoupled
+from the `link` worker.
 
 ## Add the workers
 
-This chapter uses `queue`, `pubsub`, and a new Python `analytics` worker. Uncomment the Ch. 4 block
-in `worker-compose.yaml`:
+This chapter uses `queue` and a new Python `analytics` worker. Uncomment the Ch. 4 block in
+`worker-compose.yaml`:
 
 ```yaml worker-compose.yaml
 queue:
@@ -36,12 +34,9 @@ queue:
         type: standard
         max_retries: 5
         concurrency: 5
-pubsub:
-  worker: package://pubsub
-  version: "0.21.5"
 analytics:
   worker: path://./analytics
-  start_after: [database, pubsub]
+  start_after: [database, queue]
 ```
 
 Also uncomment the `analytics` database under the Ch. 3 block's `config_override`:
@@ -91,37 +86,37 @@ worker.registerFunction("http::redirect", async (req) => {
 The redirect now returns as soon as the click is accepted onto the queue. `link::record_click`
 drains the queue in the background, with retries and a dead-letter queue if a write keeps failing.
 
-## Broadcast events with pub/sub
+## Broadcast events with durable topics
 
 A queue delivers each message to one consumer. When several unrelated parts of the system need to
-react to the same event, use a publish subscribe design instead.
+react to the same event, publish it on a **topic** instead. The `queue` worker serves topics too:
+`iii::durable::publish` sends a message to a topic, and every function bound to that topic with a
+`durable:subscriber` trigger receives its own copy.
 
 <Info>
-  We ship both a `queue` and `pubsub` worker. While `queue` provides standard queueing
-  it also provides its own durable publish and subscribe.
+  Topic messages are durable: each subscriber's copy is kept until it is handled, retried when the
+  handler fails, and moved to a dead-letter queue when it keeps failing. Delivery is at least once,
+  so make subscribers safe to run twice for the same message.
 
-When you need a publish and subscribe flow to be guaranteed to succeed (or fail to a DLQ) then use
-`queue`s `iii::durable::publish` and `durable:subscriber`.
-
-When you don't need a publish and subscribe flow to be guaranteed then use `pubsub`s `publish` and
-`subscribe` (deprecated; see the [migration guide](../../upgrading/migrate-from-streams#migrate-from-pubsub)).
+For notifications that nobody needs to replay, such as a live click counter, a worker can declare
+its own trigger type instead. You'll build one in Chapter 5.
 
 </Info>
 
-Here we'll implement topics that publish when a link is created, and when a link is updated. Later
+Here we'll publish an event when a link is created, and another when a link is updated. Later
 we'll make an `analytics` worker that collects data from these events. We don't have link updating
 functionality yet, so we'll add that and an HTTP endpoint for it too.
 
 ### Publish on link.created
 
-Publish an event whenever a link is created or its target changes. Inside `link::create`, after the
-database write and `state::set`, trigger the `publish` function:
+Publish an event whenever a link is created. Inside `link::create`, after the database write and
+`state::set`, publish on the `link.created` topic:
 
 ```typescript {3-6} src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   // ...previous code...
   await worker.trigger({
-    function_id: "publish",
+    function_id: "iii::durable::publish",
     payload: { topic: "link.created", data: { code, url } },
   });
   logger.info("link created", { code, url });
@@ -133,9 +128,8 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 
 Now add an update path to the `link` worker so a link's target can change, and announce it.
 
-First, the domain function: it updates the database row and publishes a `link.updated` event through
-durable pub/sub (`iii::durable::publish`, served by `queue`). Place it at the end of
-`link/src/index.ts`:
+First, the domain function: it updates the database row and publishes a `link.updated` event on its
+own topic, the same way. Place it at the end of `link/src/index.ts`:
 
 ```typescript src/index.ts
 worker.registerFunction("link::update", async (payload: { code: string; url: string }) => {
@@ -189,22 +183,20 @@ worker.registerTrigger({
 });
 ```
 
-This last bit of code isn't pubsub-specific but you'll need it for trying out your new feature at
-the end of the chapter.
+This last bit of code isn't about topics, but you'll need it for trying out your new feature at the
+end of the chapter.
 
 ## Add reactive state: Keep the cache correct without coupling
 
 `link::update` changes the database but not the state cache, so a query could serve stale data.
 Rather than handle refreshing the state cache inside `link::update`, subscribe to the `link.updated`
-event with a **durable** subscriber:
+topic with a `durable:subscriber` trigger:
 
 <Info>
-  **Durable vs. regular pub/sub.** `link.updated` uses durable pub/sub: `iii::durable::publish` with
-  a `durable:subscriber` trigger, both served by the `queue` worker. Consumers like this cache
-  refresher must receive every update. A dropped event would leave the cache pointing at a stale
-  URL. `link.created` stays on regular pub/sub (`pubsub`). Its only consumer is a best-effort daily
-  counter, so an occasional miss is harmless. Use durable pub/sub when a missed event would corrupt
-  state, and regular pub/sub for fire-and-forget fan-out.
+  **Why durable matters here.** This cache refresher must receive every update: a dropped event
+  would leave the cache pointing at a stale URL. A durable topic keeps the message until the
+  subscriber handles it, and retries it when the handler fails. Use a durable topic whenever a
+  missed event would corrupt state.
 </Info>
 
 ```typescript src/index.ts
@@ -247,8 +239,8 @@ scripts:
 
 ### Subscribe to link.created events
 
-Create `analytics/src/main.py` with this code, which subscribes to `link.created` events and keeps
-count of every time that a new short link is created:
+Create `analytics/src/main.py` with this code, which binds a `durable:subscriber` trigger to the
+`link.created` topic and keeps count of every time that a new short link is created:
 
 <Accordion title="analytics/src/main.py">
 
@@ -313,7 +305,7 @@ ensure_schema()
 worker.register_function("analytics::on_link_created", on_link_created)
 worker.register_trigger(
     {
-        "type": "subscribe",
+        "type": "durable:subscriber",
         "function_id": "analytics::on_link_created",
         "config": {"topic": "link.created"},
     }
@@ -374,7 +366,7 @@ iii trigger link::resolve code=analyticslink1
 ## Conclusion
 
 Redirects no longer wait on a database write: click rows ride a queue, drained in the background.
-Link events fan out over pub/sub to a Python analytics counter and a cache refresher, and the `link`
-worker does not know either of them exists. Next, in
+Link events fan out over durable topics to a Python analytics counter and a cache refresher, and the
+`link` worker does not know either of them exists. Next, in
 [Ch. 5: Stream live clicks](/tutorials/linkly/streaming), you broadcast every click in real time
 from a dedicated `click-streamer` worker.

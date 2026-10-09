@@ -365,33 +365,27 @@ click counts to a durable queue.
 
 iii's **composability** once again makes it easy to take applications from demo to production-ready.
 
-<Warning title="Deprecated">
-  This prompt adds the `pubsub` worker. `pubsub` is deprecated (pubsub) and will be removed in an
-  upcoming release. Behavior is unchanged for now. See
-  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#migrate-from-pubsub).
-</Warning>
-
 <CodeGroup>
 
 ```text Prompt
 Make redirects fast and add analytics.
 
 - Define a standard "clicks" queue with queue::define and enqueue click records instead of writing them inline on the redirect path.
-- Add the pubsub worker. link::create publishes a link.created event.
+- link::create publishes a link.created event on a durable topic with iii::durable::publish.
 - Add a second SQLite database named "analytics" for the analytics worker.
-- Create a Python analytics worker that subscribes to link.created and counts links per day in a
-  daily_link_counts table (day TEXT PRIMARY KEY, count INTEGER NOT NULL) in the analytics database,
-  and add it with compose.
+- Create a Python analytics worker that binds a durable:subscriber trigger to link.created and counts
+  links per day in a daily_link_counts table (day TEXT PRIMARY KEY, count INTEGER NOT NULL) in the
+  analytics database, and add it with compose.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
   from a durable subscriber.
 
-Add the pubsub worker and the second database yourself first, then split the rest across two
-subagents that work on separate files at the same time:
-- Subagent A: the Python analytics worker (subscribe to link.created, count links per day, write the
-  daily_link_counts rows to the analytics database) and add it with compose.
+Add the second database yourself first, then split the rest across two subagents that work on
+separate files at the same time:
+- Subagent A: the Python analytics worker (subscribe to link.created with durable:subscriber, count
+  links per day, write the daily_link_counts rows to the analytics database) and add it with compose.
 - Subagent B: the link worker changes in link/src/index.ts (define and enqueue the clicks queue,
-  publish link.created, add link::update with the PUT /links/:code route, publish link.updated
-  durably, and refresh the cache from a durable subscriber).
+  publish link.created and link.updated with iii::durable::publish, add link::update with the
+  PUT /links/:code route, and refresh the cache from a durable subscriber).
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -424,38 +418,38 @@ curl -s -X PUT http://127.0.0.1:3111/links/link1 \
 iii trigger link::resolve code=link1
 ```
 
-The exploratory [Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues,
-durable pub/sub, and regular pub/sub.
+The exploratory [Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues and
+durable topics.
 
 ## Ch. 5: Stream live clicks
 
-Collecting data is one thing but delivering it is another. This chapter broadcasts every click to
-subscribers in real time through a `clicks` stream via the stream worker.
-
-<Warning title="Deprecated">
-  This prompt builds on `stream::set` and `stream::list`. `stream::*` is deprecated (iii-stream) and
-  will be removed in an upcoming release. Behavior is unchanged for now. See
-  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
-</Warning>
+Collecting data is one thing but delivering it is another. This chapter pushes every click to
+listeners in real time through a trigger type that a new `click-streamer` worker owns, and gives
+late listeners a query for the running total.
 
 <CodeGroup>
 
 ```text Prompt
-Push every click to subscribers in real time.
+Push every click to listeners in real time.
 
-- Create a click-streamer worker that stores every click in a "clicks" stream with stream::set
-  (stream_name "clicks", group_id "all", one item per click, so stream::list reads them back), and add
-  it with compose. Use the stream worker and its functionality.
-- Have link::record_click publish each click so the streamer stores it. Build the stored item from the
-  fields you need ({ code, clicked_at }) instead of forwarding the delivered payload as-is: the engine
-  stamps bookkeeping fields such as _caller_worker_id on every delivery. We will make the subscribers
-  in a later step.
+- Create a click-streamer worker that declares its own trigger type, click-streamer::click. It keeps
+  a capped table of the bindings (add in registerTrigger, remove in unregisterTrigger, reject a
+  `code` filter that is not a string). Give it a click-streamer::broadcast function that delivers
+  { id, code, clicked_at } to every matching binding with TriggerAction.Void(), passing each
+  binding's namespace and metadata. Build the payload from those fields instead of forwarding the
+  delivered payload as-is: the engine stamps bookkeeping fields such as _caller_worker_id on every
+  delivery. Add it with compose.
+- After link::record_click inserts the click row, have it call click-streamer::broadcast with the new
+  row id (database::execute returns it as last_insert_id), without waiting for the result.
+- Add link::click_summary, which returns { total, last_id } from the clicks table, so a listener that
+  joins late can start from the current count. We will make the listeners in a later step.
 
-Pick the topic name first, then run two subagents on separate files at the same time:
-- Subagent A: the click-streamer worker that subscribes to that topic and stores each click in the
-  "clicks" stream with stream::set, added with compose.
-- Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
-  topic.
+Agree on the { id, code, clicked_at } payload first, then run two subagents on separate files at the
+same time:
+- Subagent A: the click-streamer worker with the click-streamer::click trigger type and
+  click-streamer::broadcast, added with compose.
+- Subagent B: the link worker changes in link/src/index.ts (the broadcast after the click insert,
+  and link::click_summary).
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -468,9 +462,10 @@ Select the **Triggers** page, shorten a link with `POST /links` using
 `{"url":"https://example.net/sale","code":"deal"}`, then follow `GET /s/:code` a few times with the
 `code` path parameter set to `deal`.
 
-Select the **Functions** page, invoke `stream::list` with
-`{"stream_name":"clicks","group_id":"all"}`, and read the click messages the stream collected. Each
-redirect is a new message row.
+Select the **Functions** page and invoke `link::click_summary` with `{}`: `total` counts every
+redirect. Then invoke `click-streamer::broadcast` with
+`{"id":0,"code":"deal","clicked_at":"2026-01-01T00:00:00Z"}`. It answers `{ "delivered": 0 }`
+because nothing listens yet; the browser you add in Chapter 7 will.
 
 The same flow from the CLI:
 
@@ -481,11 +476,11 @@ for n in $(seq 4 6); do
   curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
   sleep 2s
 done
-iii trigger stream::list stream_name=clicks group_id=all
+iii trigger link::click_summary
 ```
 
-The exploratory [Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains streams and
-`TriggerAction.Void()`.
+The exploratory [Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains worker-owned
+trigger types, shows a terminal listener for the feed, and covers `TriggerAction.Void()`.
 
 ## Ch. 6: Move bulk data with channels
 
@@ -557,11 +552,12 @@ an API gateway nor any other infrastructure to handle clients.
 Turn a browser tab into a worker.
 
 - Add an rbac-proxy worker that fronts a public port 3110 and reverse-proxies to the engine at
-  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
-  link::request_delete only). Add it with compose.
+  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create,
+  link::request_delete and link::click_summary only). Add it with compose.
 - Create an auth worker with an auth::browser function that admits browser connections (fail closed
   when its LINKLY_BROWSER_TOKEN env var is unset). Each tab sends a unique session id; grant it its
-  own `browser-<session>` namespace so two tabs never collide on the functions they register. Give it
+  own `browser-<session>` namespace so two tabs never collide on the functions they register, and
+  allow it to bind only the click-streamer::click trigger type (allowed_trigger_types). Give it
   the standard node worker manifest (base_image `docker.io/iiidev/node:latest`, npm install and start
   scripts) and set `LINKLY_BROWSER_TOKEN: dev-token` in a .env.browser file at the root where
   worker-compose.yaml is. Add it with compose and set env_file on this worker to open .env.browser.
@@ -570,8 +566,11 @@ Turn a browser tab into a worker.
   "browser-<uuid>" string; the handler uses it as-is with no prefix construction). before deleting.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
   react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
-  connect in a per-tab `browser-<session>` namespace, call link::create and subscribe to the click
-  stream in the default namespace, and register user::confirm_destructive_op.
+  connect in a per-tab `browser-<session>` namespace, call link::create in the default namespace,
+  and register user::confirm_destructive_op. For a live click counter, bind ui::on_click to the
+  click-streamer::click trigger type first, then read the starting count with link::click_summary
+  (default namespace); skip clicks whose id is at or below the last_id already counted, and read the
+  count again after a reconnect.
 - In App.tsx, call link::request_delete with { code, browser_namespace: `browser-${SESSION_ID}` }.
   Never pass the raw UUID as a namespace argument; always pass the fully-constructed string so the
   server can use it without knowing the prefix convention.
