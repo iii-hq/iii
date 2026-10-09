@@ -45,8 +45,6 @@ namespace, add `-n <namespace>` to each `iii trigger` command.
 
 ## Create endpoints
 
-Follow these steps to go from a running engine to a live endpoint.
-
 1. In a worker, bind an `http` trigger to the function you want to expose and register that
    function. If you do not have a worker yet, follow
    [Create a new worker](./workers#create-a-new-worker), then edit its source. For the request and
@@ -153,8 +151,7 @@ iii trigger compose::add worker=./workers/my-worker
 
 ## Calling the endpoint
 
-Once the trigger is registered, call the endpoint. The `http` worker listens on port `3111` by
-default:
+Once the trigger is registered, call the endpoint on port `3111`:
 
 ```bash
 curl -X POST "http://localhost:3111/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
