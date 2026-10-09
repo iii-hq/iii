@@ -320,8 +320,10 @@ a connection that has begun tearing down as not live, so the restart reclaims it
 For synchronous calls the engine assigns an `invocation_id`, forwards the `InvokeFunction` to the
 owning worker, and waits for the matching `InvocationResult`. For `Void` actions the engine forwards
 without an `invocation_id` and never expects a reply. For `Enqueue` the engine hands the invocation
-to the queue worker, which persists it and re-invokes the target function on a subscriber according
-to the queue's retry policy.
+to the queue worker registered in the target function's namespace (`default` targets keep using the
+provider in `default`), which persists it and re-invokes the target function on a subscriber
+according to the queue's retry policy. A namespaced target with no provider of its own fails with
+`enqueue_error` rather than falling back to a provider in `default`.
 
 ## Namespaces
 
@@ -362,8 +364,12 @@ reported as an ambiguity naming the candidates, never resolved by guessing. Pass
 that tries to register an `engine::*` function id in another namespace has that registration
 refused.
 
-The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
-The reserved-id check does not reject these functions.
+The queue worker supplied with the engine is the one exception. Its five provider functions
+(`engine::queue::enqueue`, `engine::queue::list_topics`, `engine::queue::topic_stats`,
+`engine::queue::dlq_topics`, and `engine::queue::dlq_messages`) are an exact allowlist that may
+register in any namespace, because enqueue dispatch and the queue administration functions resolve
+them in an explicit target namespace. The reserved-id check refuses every other worker-provided
+`engine::*` id outside `default`.
 
 ### Wire compatibility
 

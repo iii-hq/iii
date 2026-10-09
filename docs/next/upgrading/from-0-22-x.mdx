@@ -92,9 +92,11 @@ a non-default namespace registers an `engine::*` function id, the engine rejects
 with `FUNCTION_NAMESPACE_CONFLICT`. The connection stays open, and its other functions continue to
 serve requests. Rename the function with your own `service::name` prefix.
 
-The standalone queue worker registers its infrastructure functions in `default`. The rule does not
-reject those functions. It applies to a custom worker connection that registers an `engine::*`
-function in a non-default namespace.
+The standalone queue worker's provider functions (`engine::queue::enqueue`,
+`engine::queue::list_topics`, `engine::queue::topic_stats`, `engine::queue::dlq_topics`, and
+`engine::queue::dlq_messages`) are an exact allowlist that may register in any namespace. The rule
+applies to every other `engine::*` function that a custom worker connection registers in a
+non-default namespace.
 
 ## Step 5: Scope RBAC rules when adopting a namespace
 
