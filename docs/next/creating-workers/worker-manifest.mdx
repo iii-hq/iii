@@ -73,7 +73,8 @@ The images that ship with iii come in two variants:
 | `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. `docker.io/iiidev/node:latest` is the default for a registry bundle. |
 | `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution.                                    |
 
-This `runtime` block selects the builder variant:
+An install that compiles a dependency fails on the default variant, because that image has no
+compiler. This `runtime` block selects the builder variant:
 
 ```yaml
 runtime:
@@ -260,7 +261,8 @@ license: Apache-2.0 # SPDX id the registry publishes the worker under
 ```
 
 `iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of search aliases. The
-workers registry uses them for agent and user discovery. `license` is an
+workers registry uses them for agent and user discovery. Use short, lowercase terms that people
+search for, and do not repeat the worker description. `license` is an
 [SPDX license id](https://spdx.org/licenses/), for example `Apache-2.0`. The release pipeline of the
 workers repository requires it.
 

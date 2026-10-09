@@ -11,6 +11,12 @@ project, all of the links are gone. In this chapter you add a `database` worker 
 the durable record of links and a timestamped row for every click on a short code. `state` stays in
 the picture as a fast read cache in front of the database.
 
+<Info>
+  `state` can also keep its data across restarts on its own, with `store_method: file_based` and a
+  `file_path`. This chapter uses a dedicated `database` worker, which gives durable storage and SQL
+  to query the data.
+</Info>
+
 ## Add the database worker
 
 State is a fast cache, but you also want a durable record you can run SQL over: every link, and a

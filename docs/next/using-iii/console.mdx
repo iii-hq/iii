@@ -48,10 +48,14 @@ Open `http://127.0.0.1:3113` in your browser.
 
 ## Inspect a worker
 
-1. Open the **Workers** page. It lists the workers that are connected to the engine.
+1. Open the **Workers** page. It lists the workers that are connected to the engine. Each row shows
+   the worker name, the project that the worker reports, its runtime and SDK version, an isolation
+   badge, its IP address and PID, its function count, its in-flight invocations, and its connection
+   time.
 2. To show internal workers, turn on the **Internal** toggle.
-3. Select a worker. The detail panel shows the worker's metadata, its live metrics, and the
-   functions that it registered.
+3. Select a worker. The detail panel shows the worker's metadata (runtime, version, OS, IP, PID,
+   status, and the project, framework, and language that it reports), its live metrics (memory, CPU,
+   event-loop lag, and uptime), and the functions that it registered.
 
 <Info title="Isolation badge">
   A worker row can show an isolation badge. The badge shows the value of the `III_ISOLATION`
@@ -78,13 +82,15 @@ sidebar, start the console with `iii console --enable-flow`. You can also set
 
 ## Test a trigger
 
-1. Open the **Triggers** page.
+1. Open the **Triggers** page. Each row shows a summary of the trigger (the HTTP method and path,
+   the cron expression, or the event topic), its type, and the function that it routes to.
 2. To filter by type, select **HTTP**, **Cron**, **Event**, or **Other**.
 3. Select a trigger. The detail panel shows a tester for the trigger type.
 4. Run the test:
    - For an HTTP trigger, set the method, path parameters, query parameters, and body. Then select
      **Send Request**.
-   - For a cron trigger, select **Run Now**. The bound function runs immediately.
+   - For a cron trigger, the tester shows the schedule and the next run. Select **Run Now**. The
+     bound function runs immediately.
    - For an event trigger, edit the JSON payload. Then select **Emit Event**.
 
 The Triggers page has no tester for state triggers. To fire a state trigger, change the entry on the
@@ -96,7 +102,8 @@ The **States** page reads and writes the key-value store of the `state` worker.
 
 1. Open the **States** page.
 2. To find a group, type its ID in the search bar.
-3. Select a group. The items table shows its entries.
+3. Select a group. The items table shows its entries. To sort the table, select the **Key** or
+   **Type** column header.
 4. Change an entry:
    - To add an entry, select **Add** and complete the Add Item modal. The console calls
      `state::set`.
@@ -107,14 +114,16 @@ The **States** page reads and writes the key-value store of the `state` worker.
 5. After a write from outside the console, use the refresh control. This page does not get live
    updates.
 
-Each write fires the `state` triggers that match the entry's group and key. For the trigger payload,
-see the [state worker docs](https://workers.iii.dev/workers/state).
+Each write fires the `state` triggers that match the entry's group and key. A new key fires
+`state:created`, a changed key fires `state:updated`, and a deleted key fires `state:deleted`. For
+the trigger payload, see the [state worker docs](https://workers.iii.dev/workers/state).
 
 ## Monitor streams
 
 The **Streams** page shows the messages that flow through the `iii-stream` worker over WebSocket.
 
-1. Open the **Streams** page.
+1. Open the **Streams** page. The header shows the inbound and outbound message counts, the total
+   bytes, and the latency.
 2. To watch a stream, subscribe to it in the subscriptions modal.
 3. To isolate a flow, use the direction filter or pause the feed.
 4. Select a message to see its full payload.
@@ -122,8 +131,9 @@ The **Streams** page shows the messages that flow through the `iii-stream` worke
 
 ## Inspect a queue
 
-1. Open the **Queues** page. It lists the durable queue topics. A **DLQ** badge marks a topic that
-   has dead-lettered messages.
+1. Open the **Queues** page. It lists the durable queue topics with their broker and their
+   subscribers. A **DLQ** badge marks a topic that has dead-lettered messages. The page polls for
+   new counts and stats.
 2. Select a topic.
 3. On the **Overview** tab, read the live topic stats. To send a test message, use the JSON
    publisher.
@@ -136,16 +146,22 @@ To move through the list, use `j` and `k`. To select a topic, press `Enter`. To 
 
 1. Open the **Traces** page.
 2. If you know the trace ID, filter by trace ID. If not, filter by service name, status, and time
-   range.
+   range. You can also filter by operation name, duration range, and span attributes, and sort by
+   start time, duration, or service.
 3. Select a trace. The **Waterfall** view shows its spans by start time and duration.
-4. Select a span. The detail panel shows its attributes, logs, and errors.
+4. Select a span. The detail panel shows its info, tags, logs, errors, baggage, and links.
 
-To see the trace in a different layout, select **Flame Graph**, **Trace Map**, or **Flow**.
+To see the trace in a different layout, select one of these views:
+
+- **Flame Graph**: a stack view. A wider bar is a longer span.
+- **Trace Map**: a graph of the calls between services, from the parent-child spans.
+- **Flow**: a node graph of the parent-child spans.
 
 <Info title="Observability worker required">
-  The Traces page reads the in-memory trace storage of the iii-observability worker. Configure the
-  trace exporter of this worker to keep traces in memory. For the exporter settings, see the
-  [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
+  The Traces page reads the in-memory trace storage of the iii-observability worker. Set `exporter`
+  of this worker to `memory` or `both`. `both` also exports traces to your OTLP collector. For the
+  exporter settings, see the [iii-observability worker
+  docs](https://workers.iii.dev/workers/iii-observability).
 </Info>
 
 ## Read logs
@@ -158,9 +174,10 @@ To see the trace in a different layout, select **Flame Graph**, **Trace Map**, o
    trace on the [Traces page](#find-a-trace).
 
 <Info title="Observability worker required">
-  The Logs page reads the in-memory log storage of the iii-observability worker. Configure the logs
-  exporter of this worker to keep logs in memory. For the exporter settings, see the
-  [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
+  The Logs page reads the in-memory log storage of the iii-observability worker. Set `logs_exporter`
+  of this worker to `memory` or `both`. `both` also exports logs to your OTLP collector. For the
+  exporter settings, see the [iii-observability worker
+  docs](https://workers.iii.dev/workers/iii-observability).
 </Info>
 
 ## Configure the console

@@ -20,7 +20,9 @@ When a trigger payload or a function result is too large, the call fails with th
 limits each JSON frame to 16 MiB, and each WebSocket message to 64 MiB (67,108,864 bytes). When a
 worker sends a larger frame or message, the engine closes the connection of that worker.
 
-For payloads larger than 16 MiB, use a channel. The 16 MiB limit does not apply to channel data.
+For payloads larger than 16 MiB, use a channel. Channel data uses a separate WebSocket connection,
+and the SDK splits each write into 64 KiB frames. For this reason, the 16 MiB limit does not apply
+to channel data.
 
 ## Using channels
 

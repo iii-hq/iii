@@ -354,12 +354,13 @@ with no namespace goes to `default`.
 
 A miss returns `function_not_found` naming the namespaces where the id does exist.
 
-Introspection resolution is looser. For `engine::workers::info` and `engine::functions::info` with
-no explicit `namespace`: a `default` entry wins; otherwise an id or name unique to one non-default
-namespace resolves; an id or name present in several non-default namespaces at once fails with the
-error code `NOT_FOUND`. The error message names the candidate namespaces. In a `function_ids` batch,
-the entry for that id has `error: "not_found"`. Passing an explicit `namespace` restores strict
-resolution.
+Introspection resolution is looser. For the reason, see
+[Why routing is strict](../understanding-iii/namespaces#why-routing-is-strict). For
+`engine::workers::info` and `engine::functions::info` with no explicit `namespace`: a `default`
+entry wins; otherwise an id or name unique to one non-default namespace resolves; an id or name
+present in several non-default namespaces at once fails with the error code `NOT_FOUND`. The error
+message names the candidate namespaces. In a `function_ids` batch, the entry for that id has
+`error: "not_found"`. Passing an explicit `namespace` restores strict resolution.
 
 ### Reserved ids
 

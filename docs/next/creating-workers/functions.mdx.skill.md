@@ -16,8 +16,11 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 `function_id`.
 
 <Note>
-  Each trigger type sends its own payload to the function. For the payload of each trigger type, see
-  the worker page at [workers.iii.dev](https://workers.iii.dev/).
+  Each trigger type sends its own payload to the function. For example, `cron` sends
+  `{ trigger, job_id, scheduled_time, actual_time }`, and `http` sends the request with `body`,
+  `headers`, `path_params`, and `query_params`. For the payload of each trigger type, see the worker
+  page at [workers.iii.dev](https://workers.iii.dev/), for example
+  [cron](https://workers.iii.dev/workers/cron) and [http](https://workers.iii.dev/workers/http).
 </Note>
 
 <Tabs>
@@ -383,20 +386,36 @@ trigger type (queue, cron, state, http) all work without any other changes.
 A local function takes an `id` and a handler. An HTTP-invoked function takes an `id` and an
 `HttpInvocationConfig`.
 
-For the fields, types, and defaults of `HttpInvocationConfig`, see the
-[iii-http-functions Worker Docs](https://workers.iii.dev/workers/iii-http-functions).
+| Field        | Type                                              | Default    | Description                                                                                                          |
+| ------------ | ------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| `url`        | `string`                                          | (required) | Endpoint that `iii-http-functions` calls when the function is invoked.                                               |
+| `method`     | `"GET" \| "POST" \| "PUT" \| "PATCH" \| "DELETE"` | `"POST"`   | HTTP method.                                                                                                         |
+| `timeout_ms` | `number`                                          | `30000`    | Timeout of each request in milliseconds.                                                                             |
+| `headers`    | `Record<string, string>`                          | `{}`       | Headers added to each request.                                                                                       |
+| `auth`       | `HttpAuthConfig`                                  | (none)     | One of `{ type: "bearer", token_key }`, `{ type: "hmac", secret_key }`, or `{ type: "api_key", header, value_key }`. |
 
 <Note>
-  Auth fields hold the **names of environment variables**. For the auth fields and how the worker
-  reads the secrets, see the [iii-http-functions Worker
-  Docs](https://workers.iii.dev/workers/iii-http-functions).
+  Auth fields (`token_key`, `secret_key`, `value_key`) hold the **names of environment variables**.
+  The `iii-http-functions` worker runs in the engine process. When the function registers, the
+  worker reads the secret values from the environment of that process. The secrets stay on the
+  engine host and never travel over the SDK WebSocket. For the security controls of the worker, see
+  the [iii-http-functions Worker Docs](https://workers.iii.dev/workers/iii-http-functions).
 </Note>
 
 ### HTTP error handling
 
-The `iii-http-functions` worker sends the invocation payload as the JSON request body. When the
-endpoint call fails, the caller gets an invocation error. For the responses that count as a failure,
-see the [iii-http-functions Worker Docs](https://workers.iii.dev/workers/iii-http-functions).
+The `iii-http-functions` worker sends the invocation payload as the JSON request body. It handles
+the response of the endpoint as follows:
+
+- A 2xx response with a JSON body gives that body as the result. An empty body gives no result. A
+  body that is not JSON fails with `invalid_response`.
+- A 1xx or 3xx response is a success. The worker does not follow redirects. A JSON body becomes the
+  result. Any other body gives no result.
+- A 4xx or 5xx response fails. When the body is JSON with `error.code` and `error.message`, the
+  caller gets that code and message. Otherwise, the code is `http_error` and the message is
+  `HTTP <status>`.
+- A network error fails with `http_request_failed`.
+
 HTTP-invoked functions appear in
 [`engine::functions::list`](../using-iii/functions#engine-functions-engine) and in the console like
 other functions.
@@ -405,9 +424,12 @@ other functions.
 
 Return a value that matches the documented [response schema](#attach-request-and-response-schemas).
 For an expected failure, return a structured error value. For an unexpected failure, throw, raise,
-or return `Err`. The caller gets an invocation error with the worker's stack trace. For the stack
-trace fields in each SDK, see the [Node](../reference/sdk-node), [Python](../reference/sdk-python),
-and [Rust](../reference/sdk-rust) SDK references.
+or return `Err`. The caller gets an invocation error with the worker's stack trace. Node sends
+`error.stack`. Python sends `traceback.format_exc()`. Rust sends a backtrace that the SDK captures
+after the handler returns the error. If the handler returns `Error::Remote`, Rust sends the
+`stacktrace` field of that error, which can be empty. For the error types, see the
+[Node](../reference/sdk-node), [Python](../reference/sdk-python), and [Rust](../reference/sdk-rust)
+SDK references.
 
 ## Unregister a function
 

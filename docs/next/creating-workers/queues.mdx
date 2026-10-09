@@ -135,7 +135,9 @@ function. It sends each message to the subscribers one time and does not retry a
 Use a `durable:subscriber` trigger to bind the topic to a consumer function. The queue worker
 invokes the function once for each message and passes the published `data` as the payload. A normal
 return acknowledges the message. An error rejects the message, and the queue worker retries it. If
-all the retries fail, the queue worker moves the message to the dead-letter queue.
+all the retries fail, the queue worker moves the message to the dead-letter queue. To reject a
+message, throw an error in Node, raise an exception in Python, or return an `Err` (for example,
+`iii_sdk::Error::Handler`) in Rust.
 
 In a worker, register the consumer function and subscribe it to the topic. If you do not have a
 worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
@@ -247,7 +249,11 @@ iii trigger iii::durable::publish topic=emails data='{"to":"a@b.com","subject":"
 The examples use the `topic` to choose what to consume and `queue_config` to tune delivery for one
 subscriber. See the [`durable:subscriber` reference](https://workers.iii.dev/workers/queue) for the
 complete trigger schema, including filtering and adapter-specific options. The same page gives the
-retry schedule and how namespaces affect durable queues.
+retry schedule.
+
+The queue worker keys the durable queue of each subscriber by the namespace of that subscriber. Two
+subscribers with the same topic and function id in different namespaces get two queues, and each
+queue receives every published message.
 
 <Warning>
   RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
@@ -327,6 +333,10 @@ The queue worker always reports `subscriber_count` and `consumer_count` as `0`, 
 A message reaches the dead-letter queue when its subscribed function uses all of its retries. The
 DLQ functions return an empty list until a message fails. When a consumer fails, use these commands
 to find, inspect, and recover its dead-lettered messages.
+
+To try these commands, make `email::send` reject every message, restart the worker, and publish a
+message to `emails`. The message moves to the DLQ when its retries run out. With the default
+settings, this takes a few seconds.
 
 ### Listing topics with dead-lettered messages
 

@@ -68,7 +68,11 @@ iii:c:orders
 The process table shows the label in two fields. The `args` field holds the full label and the
 original command arguments. The `comm` field holds a short label. Linux limits `comm` to 15 bytes.
 In `comm`, a namespace longer than nine characters shows as its first two characters, `~`, and six
-hexadecimal hash characters.
+hexadecimal hash characters. The `args` field always holds the full namespace.
+
+```bash
+ps -p <PID> -o pid,ppid,comm,args
+```
 
 The daemon sets its command label through an early re-exec with the same PID, before starting the
 runtime or any children. Existing external engines keep their names. On other operating systems,
@@ -152,8 +156,14 @@ iii trigger compose::stop    --namespace dev
 ```
 
 `iii trigger` waits 30 seconds by default. Its `--timeout-ms` option sets a different wait, in
-milliseconds. For every option, see the [CLI reference](../cli-reference/index#iii-trigger).
-`compose::status` reports the state of each worker while a project starts.
+milliseconds. For every option, see the [CLI reference](../cli-reference/index#iii-trigger). A
+`compose::up` or `compose::restart` can take longer than 30 seconds, for example while packages
+download. Their `default_timeout_ms` in [`compose::schema`](#viewing-schema) is `600000` (10
+minutes). `compose::status` reports the state of each worker while a project starts.
+
+```bash
+iii trigger compose::up --namespace dev --timeout-ms 600000 file=./worker-compose.yaml
+```
 
 ### Starting a project
 
@@ -883,10 +893,12 @@ Compose downloads the URL in the lock and verifies its SHA-256 digest. Compose a
 extracted cache contents before reuse. A changed cache entry is downloaded again from the locked
 URL.
 
-`iii compose build --frozen` requires the compose file and lock to match.
+`iii compose build --frozen` requires the compose file and lock to match, for example in CI.
 `iii compose --up --frozen` and `compose::up frozen=true` apply the same rule during startup. Frozen
 mode never resolves selectors or changes the lock. It can download a missing artifact only from the
 URL already in the lock. Every environment that uses the same lock gets the same package content.
+When you commit the lock to version control, development, CI, and deployments use the same package
+content.
 
 ### Build registry packages
 
@@ -968,7 +980,8 @@ separate. With this override, two compose files in the same directory have separ
 directories and can use the same namespace on separate engines.
 
 The `.iii/compose/` directory holds generated state. Each nested project has its own `.iii/compose/`
-directory.
+directory. The `.gitignore` pattern `**/.iii/compose/` keeps the state of the project and of every
+nested project out of version control.
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
@@ -979,7 +992,10 @@ ls /home/you/shop/.iii/compose/dev/logs/
 The per-project layout does not migrate process records or logs from the earlier shared namespace
 layout. State from the shared layout stays under `~/.iii/compose/<namespace>/`, or in the old
 `III_COMPOSE_STATE_DIR` layout. Compose does not read that state. It has no record of daemons,
-engines, or workers that an earlier version started.
+engines, or workers that an earlier version started, so it cannot stop them. Before you upgrade,
+stop the Compose daemons with the earlier version and make sure that their engines and workers
+stopped. The old directory also holds the logs and VM data of the earlier version. Copy the files
+that you need before you remove it.
 
 ## Error codes
 

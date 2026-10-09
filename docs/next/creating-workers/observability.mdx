@@ -18,10 +18,14 @@ Use this page to emit logs from your workers and to read the traces of their cal
 
 ## OpenTelemetry support
 
+The `iii-observability` worker produces OpenTelemetry traces, metrics, and logs. It can keep them in
+memory or export them to any OpenTelemetry (OTLP) collector.
+
 To change sampling, retention, or exporter targets, edit the `iii-observability` entry of the
-[configuration worker](../using-iii/configuration). The `engine::traces::*` query functions on this
-page need the in-memory exporter. For the exporter and sampling options and the data that the worker
-produces, see the
+[configuration worker](../using-iii/configuration). A change to the trace exporter takes effect at
+the next engine start. The `engine::traces::*` query functions on this page need the `memory` or
+`both` exporter. `memory` is the default. For the exporter and sampling options and the data that
+the worker produces, see the
 [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
 
 ## Logging
@@ -88,10 +92,12 @@ iii trigger engine::logs::list | grep -C 10 hello
 
 ## Traces
 
-Traces come from worker function invocations. A worker records a span each time it handles a call.
-Calls to `engine::*` functions are not traced by default (set `III_OTEL_TRACE_BUILTINS=true` to
-include them), so call a worker function first to produce a trace. If you followed the
-[Quickstart](../quickstart), call the TypeScript worker, which calls the Python worker:
+Traces come from worker function invocations. The iii SDK in a worker records a span each time the
+worker handles a call, so you do not write instrumentation code. A trace joins the spans of one call
+across all the workers that it reaches. Calls to `engine::*` functions are not traced by default
+(set `III_OTEL_TRACE_BUILTINS=true` to include them), so call a worker function first to produce a
+trace. If you followed the [Quickstart](../quickstart), call the TypeScript worker, which calls the
+Python worker:
 
 ```bash
 # run something to produce a trace
@@ -113,8 +119,11 @@ iii trigger engine::traces::tree trace_id=$TID
 </Note>
 
 <Note>
-  To check the health of the observability components or to clear stored logs and traces, see the
-  [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
+  To check the health of the observability components, call `engine::health::check`. To clear stored
+  logs and traces while you develop, call `engine::logs::clear` and `engine::traces::clear`. New
+  logs arrive quickly, so `engine::logs::list` can show new lines right after a clear. For the
+  details of these functions, see the [iii-observability worker
+  docs](https://workers.iii.dev/workers/iii-observability).
 </Note>
 
 ## Seeing it in the console

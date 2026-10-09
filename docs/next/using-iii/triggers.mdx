@@ -90,6 +90,11 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 Each worker's Worker Docs describe the config, payload, and result shape of its trigger types (for
 example, [http](https://workers.iii.dev/workers/http) for the `http` type).
 
+For example, the `http` worker sends the request to the function as the payload. The JSON request
+body is in `payload.body`, next to `path_params`, `query_params`, and `headers`. The function
+returns `status_code`, `headers`, and `body`, and the `http` worker sends them as the response.
+Without `status_code`, the response status is `200`. Without `body`, the response body is `{}`.
+
 ### Trigger metadata
 
 The optional `metadata` field on a trigger registration holds arbitrary JSON. In Node and Python,
@@ -97,7 +102,9 @@ add a `metadata` key next to `config`. In Rust, call `.with_metadata(json!({ ...
 `RegisterTriggerInput`. The engine sends the metadata with the registration to the worker that
 provides the trigger type. When the trigger fires, that worker sends the metadata to the target
 function. The handler gets it as a second argument next to the payload. Support for metadata depends
-on the trigger type. Check the Worker Docs for the trigger type.
+on the trigger type. The `cron`, `state`, and `durable:subscriber` trigger types and the trigger
+types of the `database` worker send it. The `http` trigger type does not send it. For other types,
+check the Worker Docs for the trigger type.
 
 When many triggers share one target function, the handler can use `metadata` to find which
 registration fired. See
@@ -143,9 +150,16 @@ pending notice shows the Compose command that adds the worker for that type. For
 the worker that provides the type at [workers.iii.dev](https://workers.iii.dev).
 
 A provider can reject the config of a registration (for example, a `cron` expression with five
-fields). The SDK on the worker that sent the registration logs the error. The engine keeps the
-registration as `pending` and tries it again when a worker registers the type again. For the error
-message format, see
+fields). The SDK on the worker that sent the registration logs the error. What the engine does next
+depends on the trigger type:
+
+- For `http`, `cron`, `state`, and the trigger types of the workers that you write, the engine logs
+  a warning and keeps the registration as `pending`. It tries the registration again when a worker
+  registers the type again.
+- For the `stream` trigger type, the engine logs an error and does not store the registration.
+  Register the trigger again with a valid config.
+
+For the error message format, see
 [Engine protocol / `RegisterTrigger`](../reference/engine-protocol#registertrigger).
 
 To list registrations with their `status` (`active` or `pending`), run
@@ -219,8 +233,12 @@ A trigger can carry an optional `condition_function_id` in its `config`. When th
 worker that provides the trigger type calls the condition function first, with the trigger payload.
 The target `function_id` runs unless the condition returns `false`. If the condition function fails,
 the target function does not run. The condition is a regular registered function. Support for this
-field depends on the trigger type. Check the Worker Docs for the trigger type. For the `http` type,
-see [http](https://workers.iii.dev/workers/http) for the condition payload and response.
+field depends on the trigger type. Check the Worker Docs for the trigger type.
+
+For the `http` type, the condition function gets the same request payload as the handler, without
+the channel references `request_body` and `response`. When the condition returns `false`, the `http`
+worker responds with status `422` and the error code `CONDITION_NOT_MET`. When the condition
+function fails, it responds with status `500`. See [http](https://workers.iii.dev/workers/http).
 
 <Tabs>
   <Tab title="Node / TypeScript">

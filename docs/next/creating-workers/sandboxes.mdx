@@ -67,10 +67,21 @@ iii trigger sandbox::stop sandbox_id=$SB
 A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
 does not expand variables or chain commands; use `sandbox::run` with `lang=shell` for that.
 
-## Stop idle sandboxes
+## Concurrency and idle cleanup
 
-Call `sandbox::stop` when you no longer need a sandbox. For exec concurrency limits and idle
-cleanup, see the [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+A sandbox runs up to `max_concurrent_exec_per_sandbox` `sandbox::exec` calls at the same time (4 by
+default). One more call fails with error `S003`. Concurrent execs share the guest filesystem and
+process table, and nothing locks them, so coordinate commands that change shared state. To check the
+capacity before a call, read `exec_in_flight` and `exec_slots_free` from `sandbox::list`. The
+`exec_in_progress` field is `true` when at least one exec runs. It does not tell you if the next
+call fails.
+
+The worker stops a sandbox that has no activity for its idle timeout. An exec, a filesystem call, or
+relayed TCP, UDP, or DNS payload counts as activity, so the worker does not stop a sandbox while it
+handles network traffic. Bare acknowledgements and keepalive probes do not count.
+`max_exec_timeout_ms` limits each exec. Call `sandbox::stop` when you no longer need a sandbox. For
+the configuration fields, see the
+[iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 
 ## Catalog
 

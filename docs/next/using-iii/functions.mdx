@@ -114,6 +114,9 @@ iii trigger function::id --help
 To add schemas when you register a function, see
 [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
 
+`iii trigger` calls the real handler through the engine, the same as any other caller. A call to a
+function that writes state or a database changes that data.
+
 ## Common functions
 
 The workers below register functions that your project can call. Call them with
@@ -123,6 +126,14 @@ The workers below register functions that your project can call. Call them with
 
 The `iii-engine-functions` worker registers the `engine::*` functions. This worker always runs. To
 see the request schema of one function, run `iii trigger <function> --help`.
+
+To list the connected workers, call `engine::workers::list`. To list the trigger types and the
+registered triggers, call `engine::triggers::list` and `engine::registered-triggers::list`. To list
+the registered functions, call `engine::functions::list`. To run a function when a worker connects
+or disconnects, or when the set of functions changes, bind it to the `engine::workers-available` or
+`engine::functions-available` trigger type. For every function, its filters, and the trigger events,
+see [Engine discovery functions](../reference/engine-protocol#engine-discovery-functions) and
+[Engine discovery triggers](../reference/engine-protocol#engine-discovery-triggers).
 
 <Note>
   For the `engine::*` trigger types and functions, see the [iii-engine-functions worker
@@ -134,9 +145,15 @@ see the request schema of one function, run `iii trigger <function> --help`.
 Each of these workers registers its own functions. For function ids and payloads, see the docs of
 each worker:
 
-- **State**: [state](https://workers.iii.dev/workers/state). Its key namespaces are separate from
-  [routing namespaces](../understanding-iii/namespaces).
-- **Stream**: [iii-stream](https://workers.iii.dev/workers/iii-stream).
-- **Queue**: [queue](https://workers.iii.dev/workers/queue).
-- **Pub/Sub**: [pubsub](https://workers.iii.dev/workers/pubsub).
-- **Observability**: [iii-observability](https://workers.iii.dev/workers/iii-observability).
+- **State**: key-value state, grouped by `scope`, with a `state` trigger type that fires when a key
+  is created, updated, or deleted. A `scope` is separate from the
+  [routing namespaces](../understanding-iii/namespaces). See
+  [state](https://workers.iii.dev/workers/state).
+- **Stream**: real-time push to connected clients over WebSocket. See
+  [iii-stream](https://workers.iii.dev/workers/iii-stream).
+- **Queue**: durable job processing with retries, FIFO or concurrent delivery, concurrency limits,
+  and a dead-letter queue. See [queue](https://workers.iii.dev/workers/queue).
+- **Pub/Sub**: topic fan-out with no durability guarantees. See
+  [pubsub](https://workers.iii.dev/workers/pubsub).
+- **Observability**: traces, logs, metrics, alerts, sampling rules, and rollups. See
+  [iii-observability](https://workers.iii.dev/workers/iii-observability).

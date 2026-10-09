@@ -32,15 +32,131 @@ the running engine. The registry name `console` is an alias of the
 [`ade` worker](https://workers.iii.dev/workers/ade). The harness reaches models through
 `llm-router`, which reads your provider key from `.env`.
 
-This tutorial uses the Anthropic provider, which ships enabled. Put your Anthropic API key in the
-project's `.env` file before you start Compose:
+Anthropic and OpenAI ship enabled: put a key for one in `.env` before you start Compose. For any
+other provider, add it after start. Select your provider for the exact steps:
 
-```bash .env
-ANTHROPIC_API_KEY=yourkey
-```
+<div className="iii-qs" role="group" aria-label="provider setup">
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-anthropic" defaultChecked />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openai-codex" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-deepseek" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-kimi" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-openrouter" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-xai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-zai" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-github-copilot" />
+  <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
 
-To use a different provider, see the
-[`llm-router` worker](https://workers.iii.dev/workers/llm-router) page.
+<div className="iii-qs-head">
+  <span className="iii-qs-title">select your llm provider</span>
+  <div className="iii-qs-picker">
+    <label className="iii-qs-pill" htmlFor="qs-anthropic">
+      anthropic
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai">
+      openai api
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openai-codex">
+      openai codex
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-deepseek">
+      deepseek
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-kimi">
+      kimi (moonshot)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-openrouter">
+      openrouter
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-xai">
+      xai (grok)
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-zai">
+      z.ai
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-github-copilot">
+      github copilot
+    </label>
+    <label className="iii-qs-pill" htmlFor="qs-llamacpp">
+      llama.cpp (local)
+    </label>
+  </div>
+</div>
+
+  <div className="iii-qs-body">
+    <div className="iii-qs-slot" data-qs="anthropic">
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ANTHROPIC_API_KEY=yourkey</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai">
+      <div className="iii-qs-comment"># Ships enabled. Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENAI_API_KEY=yourkey</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openai-codex">
+      <div className="iii-qs-comment"># No api key. This provider uses your chatgpt subscription.</div>
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openai-codex</span></div>
+      <div className="iii-qs-comment"># Then open the provider's configuration form in the console and select Sign in with ChatGPT.</div>
+    </div>
+    <div className="iii-qs-slot" data-qs="deepseek">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>DEEPSEEK_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-deepseek</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="kimi">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>MOONSHOT_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-kimi</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="openrouter">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>OPENROUTER_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-openrouter</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="xai">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>XAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-xai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="zai">
+      <div className="iii-qs-comment"># Edit the project's .env file before you start Compose:</div>
+      <div className="iii-qs-cmd"><span>ZAI_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-zai</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="github-copilot">
+      <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-github-copilot</span></div>
+      <div className="iii-qs-comment"># Start the sign-in. The result has a user_code, a verification_uri, and a device_code:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger provider::github-copilot::login::start</span></div>
+      <div className="iii-qs-comment"># Enter the user_code at the verification_uri, then finish the sign-in:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger provider::github-copilot::login::poll device_code=&lt;device_code&gt;</span></div>
+    </div>
+    <div className="iii-qs-slot" data-qs="llamacpp">
+      <div className="iii-qs-comment"># Runs against your own llama-server, http://127.0.0.1:8080 by default.</div>
+      <div className="iii-qs-comment"># A key is only needed when llama-server runs with --api-key:</div>
+      <div className="iii-qs-cmd"><span>LLAMACPP_API_KEY=yourkey</span></div>
+      <div className="iii-qs-gap" aria-hidden="true" />
+      <div className="iii-qs-comment"># After iii compose --up:</div>
+      <div className="iii-qs-cmd"><span className="iii-qs-prompt">$</span><span>iii trigger compose::add worker=provider-llamacpp</span></div>
+    </div>
+
+    <div className="iii-qs-gap" aria-hidden="true" />
+    <div className="iii-qs-comment"># Open the console:</div>
+    <div className="iii-qs-cmd"><span>http://127.0.0.1:3113</span></div>
+
+  </div>
+</div>
 
 With your key in `.env`, you can use one command to start the iii engine, the project, and the
 agentic stack you'll use to develop it:
@@ -125,6 +241,21 @@ Then open `GET /s/:code`, set the `code` path parameter to `home`, and **Send Re
 You can also open another tab with the **+**, then select the **States** page, and find the stored
 link under the `links` group.
 
+The same flow from the CLI:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/docs","code":"docs"}'
+```
+
+```bash
+curl -i http://127.0.0.1:3111/s/docs
+```
+
+```bash
+iii trigger state::get scope="links" key="docs"
+```
+
 The exploratory version of [Ch. 1: Foundations](./foundations) explains `registerWorker`,
 `registerTrigger`, and `registerFunction` in depth.
 
@@ -203,11 +334,23 @@ Open another tab with the **+**, then select the **Functions** page, and open `d
 Invoke it with `{"db":"primary","sql":"SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'news'"}`,
 then read the count off the result view.
 
+The same flow from the CLI:
+
+```bash
+for n in $(seq 1 3); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/blog\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+done
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
+```
+
 Every iii function is **discoverable**. Run `iii trigger database::query --help` to see the
 arguments that `database::query` accepts.
 
 To confirm that the clicks persist, restart only the `database` worker. A full project restart also
-restarts the harness that runs the agent. On the **Functions** page, invoke `compose::restart` with
+restarts the harness that runs the agent. Run `iii trigger compose::restart worker=database`. In the
+console, the same call is `compose::restart` on the **Functions** page with
 `{ "worker": "database" }`. Then run the same `database::query` again. The count does not change.
 
 The exploratory version of [Ch. 3: Persist everything](./persistence) steps through the
@@ -264,6 +407,21 @@ Back on the Triggers tab, edit the link with `PUT /links/:code`: set the `code` 
 `promo` and put `{"url":"https://example.com/promo-2"}` in the body. Then invoke `link::resolve` for
 `promo`: it returns the new URL because the durable subscriber refreshed the cache.
 
+The same flow from the CLI. The `sleep` lines give the subscribers time to handle the events:
+
+```bash
+for n in $(seq 1 5); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.org/$n\",\"code\":\"link$n\"}"
+done
+sleep 5
+iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
+curl -s -X PUT http://127.0.0.1:3111/links/link1 \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.org/updated"}'
+sleep 3
+iii trigger link::resolve code=link1
+```
+
 The exploratory [Ch. 4: Make it durable](./durable-execution) explains queues, durable pub/sub, and
 regular pub/sub.
 
@@ -305,6 +463,18 @@ Select the **Triggers** page, shorten a link with `POST /links` using
 Select the **Functions** page, invoke `stream::list` with
 `{"stream_name":"clicks","group_id":"all"}`, and read the click messages the stream collected. Each
 redirect is a new message row.
+
+The same flow from the CLI:
+
+```bash
+for n in $(seq 4 6); do
+  curl -s -X POST http://127.0.0.1:3111/links \
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/feed\",\"code\":\"iii-example-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+  sleep 2s
+done
+iii trigger stream::list stream_name=clicks group_id=all
+```
 
 The exploratory [Ch. 5: Stream live clicks](./streaming) explains streams and
 `TriggerAction.Void()`.
@@ -358,6 +528,8 @@ console.
 
 Select the **Functions** page. Invoke `link::resolve` with `{"code":"mylink"}` and read the URL off
 the result.
+
+From the CLI, run `iii trigger link::resolve code=mylink`.
 
 Visit [Ch. 6: Move bulk data with channels](./channels) to understand channels and `createChannel`.
 

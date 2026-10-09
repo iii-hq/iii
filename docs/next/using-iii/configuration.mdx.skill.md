@@ -157,9 +157,9 @@ templates as written. It expands them on every read, from the environment of the
 variable that is set only for one worker, for example in its `env_file`, is not visible to this
 expansion. When a field holds only one placeholder, the expanded text is read as a YAML scalar. Thus
 `port: ${HTTP_PORT:3111}` gives the integer `3111`, and `${FLAG:true}` gives a boolean. If a
-variable has no value and no default, the read fails. For the error code, see the
-[configuration worker docs](https://workers.iii.dev/workers/configuration). To read the stored
-template, pass `raw: true` to `configuration::get`.
+variable has no value and no default, the read fails with `EXPAND_FAILED`. To read the stored
+template, pass `raw: true` to `configuration::get`. For the other error codes, see the
+[configuration worker docs](https://workers.iii.dev/workers/configuration).
 
 ## How changes apply
 

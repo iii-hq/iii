@@ -58,16 +58,20 @@ rbac-proxy:
 
 `expose_functions` lists the functions that a browser can call. `link::request_delete` is on the
 list so that a browser can also start a delete. In this chapter you start the delete from the CLI.
-`auth_function_id` names the function that admits each browser connection. You write it next. The
-[rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) define each config field.
+The list has no `stream::*` function. The browser reads the click stream through a `stream` trigger
+that calls its own `ui::on_click` function, and a trigger bound to a function of the same tab needs
+no entry in the list. `auth_function_id` names the function that admits each browser connection. You
+write it next. The [rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) define each
+config field.
 
 ## Gate connections with an auth function
 
 The `auth` worker owns connection gating, so the `link` worker stays focused on links.
-`auth::browser` runs once for each browser connection. It reads the token from the query parameters
-and throws an error to reject the connection. The
-[rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) describe the full auth function
-contract. Uncomment the Ch. 7 block in `auth/src/index.ts`:
+`auth::browser` runs once for each browser connection. It receives the `headers`, `query_params`,
+and `ip_address` of the request. It returns the permissions of the session: registration flags,
+optional allowed or forbidden functions, and a `context` object. This one reads the token from the
+query parameters and throws an error to reject the connection. Uncomment the Ch. 7 block in
+`auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
 import { registerWorker } from "iii-sdk";

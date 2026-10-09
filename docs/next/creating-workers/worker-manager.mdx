@@ -61,11 +61,12 @@ function accepts or rejects the connection. The next section shows how to write 
   worker in another namespace makes the listener reject every connection.
 </Warning>
 
-`expose_functions` is the allowlist of function IDs a session can call. A `match` value is a glob on
-the function ID. A `metadata` value matches the functions whose
-[`metadata`](./functions#attach-metadata) has those fields, for example `{ public: true }`,
-`{ tier: "premium" }`, or `{ scopes: ["read"] }`. For all entry forms, see the
-[iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
+`expose_functions` is the allowlist of function IDs a session can call. Each entry is a
+`match("...")` string, a map with a `match` key, or a map with a `metadata` key. Only the map forms
+accept `namespace`. A `match` value is a glob on the function ID. A `metadata` value matches the
+functions whose [`metadata`](./functions#attach-metadata) has those fields, for example
+`{ public: true }`, `{ tier: "premium" }`, or `{ scopes: ["read"] }`. For the full filter syntax,
+see the [iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
 
 ```yaml
 expose_functions:
@@ -221,9 +222,10 @@ uses:
 ```
 
 The keys also limit the namespaces that the session can register in. With this result, the session
-can register only in `orders` and `analytics`. An entry with an empty list, like `analytics`, grants
-the namespace and no functions in it. In that namespace, the session can call only what
-`expose_functions` permits.
+can register only in `orders` and `analytics`. A worker on this session that declares another
+namespace, `default` included, gets a `FORBIDDEN` error that lists the permitted namespaces. An
+entry with an empty list, like `analytics`, grants the namespace and no functions in it. In that
+namespace, the session can call only what `expose_functions` permits.
 
 To leave the session unscoped, return an empty `namespaces` or omit it. The session can then
 register in any namespace, and only `allowed_functions` and `expose_functions` apply.

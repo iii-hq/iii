@@ -99,7 +99,8 @@ scripts:
 ```
 
 <Info>
-  Compose runs the worker from `scripts.start`.
+  Compose runs the worker from `scripts.start`. A worker can also run outside Compose. Any process
+  that uses a iii SDK and calls `registerWorker()` is a worker.
   <p>Learn more about the [`iii.worker.yaml` manifest](../../creating-workers/worker-manifest).</p>
 </Info>
 

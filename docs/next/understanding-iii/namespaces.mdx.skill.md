@@ -71,17 +71,18 @@ A trigger names two namespaces, and they answer different questions:
 
 Both are optional. On the wire, an absent `namespace` means `default`. The Node, browser, Python,
 and Rust SDKs fill it with the namespace of the registering worker. So a trigger from these SDKs
-targets a function in the worker's own namespace. The Go SDK leaves it absent by default. For the
-call that sets `namespace`, see
+targets a function in the worker's own namespace. The Go SDK leaves it absent. In Go,
+`RegisterTriggerNamespaced` sets it. For the call that sets `namespace` in the other SDKs, see
 [Point a trigger at a namespaced function](../using-iii/namespaces#point-a-trigger-at-a-namespaced-function).
 When `trigger_namespace` is absent, the engine looks for the provider in the registering worker's
 namespace first, then in `default`.
 
 That order lets a project ship its own provider for a trigger type id that another provider also
-serves. A provider in the registering worker's namespace comes before a provider in `default`. A
-project that registers its own provider for a type id gets that provider. No worker changes how it
-binds. For the namespace where a worker registers its trigger types, see its page in the
-[worker docs](https://workers.iii.dev/).
+serves. A provider in the registering worker's namespace comes before a provider in `default`. The
+`http`, `cron`, and `state` workers register their trigger types in the namespace they run in.
+Workers that ship with the engine, such as `iii-stream` and `iii-observability`, register theirs in
+`default`. A project that registers its own provider for a type id gets that provider. No worker
+changes how it binds. See [`RegisterTriggerType`](../reference/engine-protocol#registertriggertype).
 
 Naming `trigger_namespace` explicitly is strict: that namespace or nothing. A binding that names one
 is never moved.

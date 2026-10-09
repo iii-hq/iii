@@ -134,9 +134,13 @@ rejected registrations, see
 
 ### States
 
-Read the connection state with `getConnectionState()` in Node or `get_connection_state()` in Python
-and Rust. When the state is `failed`, restart the worker. For the list of states, see
-[Node](../reference/sdk-node#iiiconnectionstate),
+The SDK tracks the state of its own connection: `disconnected`, `connecting`, `connected`,
+`reconnecting`, or `failed`. Read the state with `getConnectionState()` in Node or
+`get_connection_state()` in Python and Rust. When the connection drops, the SDK reconnects and
+registers its triggers and functions again. The state is `failed` when the engine rejects the worker
+registration, or when the Node or Python SDK uses all its reconnection retries. By default, these
+SDKs retry with no limit. When the state is `failed`, the SDK stops, so restart the worker. For the
+state types, see [Node](../reference/sdk-node#iiiconnectionstate),
 [Python](../reference/sdk-python#get_connection_state), and
 [Rust](../reference/sdk-rust#iiiconnectionstate).
 
