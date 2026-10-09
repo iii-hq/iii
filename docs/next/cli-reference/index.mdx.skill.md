@@ -50,6 +50,8 @@ iii compose <COMMAND>
 | `--up` | Serve with one project brought up first, starting its declared engine unless `--engine` selects an existing one |
 | `--frozen` | Require worker-compose.lock to match the compose file and use only its exact package resolutions. Missing cache artifacts are downloaded from the URLs in the lock |
 | `-f, --file <PATH>` | The compose file. Only valid with `--up`. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
+| `-F, --follow` | Print every project worker's stdout and stderr as it arrives, each line prefixed `[worker:stream]`. Works for a bare daemon and with `--up`; the same output stays retained for `iii compose logs` |
+| `--stream <STREAM>` | With `--follow`, print only one process stream [possible values: stdout, stderr] |
 
 #### `iii compose build`
 
