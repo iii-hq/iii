@@ -27,8 +27,9 @@ export async function Hero() {
     // biome-ignore lint/correctness/useUniqueElementIds: The page has one hero and this is its public anchor.
     <section id="hero" aria-labelledby="hero-title" className="relative overflow-hidden">
       <div className="mx-auto flex w-full max-w-[1240px] flex-col items-center px-5 pt-32 pb-14 sm:px-6 sm:pt-36 sm:pb-16 md:px-5 lg:pt-44 lg:pb-24">
-        {/* A 680px column centred on the page (840px on desktop, so the longest install command fits on one line):
-            eyebrow, headline, paragraph and install card all share one centre line. */}
+        {/* A 680px column centred on the page (840px on desktop, room for the headline): eyebrow, headline,
+            paragraph and install card all share one centre line. The install card and the email row stay 680px
+            everywhere (2026-10-09: narrower on desktop); the `ci` command wraps onto a second line there. */}
         <div className="flex w-full max-w-[680px] flex-col items-center text-center lg:max-w-[840px]">
           <Reveal className="flex w-full min-w-0 justify-center">
             <span className="inline-flex h-7 items-center gap-2 rounded-full border px-3 font-sans text-[13px] text-foreground/80 leading-none sm:h-8 sm:text-[13px]">
@@ -66,14 +67,14 @@ export async function Hero() {
             </p>
           </Reveal>
           {/* The install block is the hero's only call to action: one command, nothing to click through. */}
-          <Reveal delay={0.15} className="mt-8 flex w-full sm:mt-9">
+          <Reveal delay={0.15} className="mt-8 flex w-full max-w-[680px] sm:mt-9">
             <InstallCommand tabs={tabs} />
           </Reveal>
         </div>
         {/* Anthony: an email capture near the top, kept quiet so it doesn't compete with the install block. */}
         <Reveal
           delay={0.2}
-          className="mt-6 flex w-full max-w-[680px] flex-col items-start gap-3 px-1 sm:flex-row sm:items-center sm:justify-between lg:max-w-[840px]"
+          className="mt-6 flex w-full max-w-[680px] flex-col items-start gap-3 px-1 sm:flex-row sm:items-center sm:justify-between"
         >
           <p className="font-sans text-[13px] text-muted-foreground">{hero.updates}</p>
           <EmailSignup className="sm:max-w-[340px]" />

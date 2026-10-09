@@ -17,7 +17,7 @@ export const hero = {
   secondary: { label: 'View GitHub', href: 'https://github.com/iii-hq/iii' },
   updates: 'Release notes and new workers, by email',
   /* The install block replaces the two CTA buttons. Commands and notes come from iii.dev/docs/install.
-     2026-10-05 sync: no `workers` tab, it is internal jargon to a newcomer. */
+     2026-10-05 sync: no `workers` tab, it is internal jargon to a newcomer. 2026-10-09: no `no llm` tab either. */
   install: {
     tabs: [
       {
@@ -29,18 +29,6 @@ export const hero = {
             command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh',
           },
           { note: 'Then open http://127.0.0.1:3113' },
-        ],
-      },
-      {
-        id: 'no-llm',
-        label: 'no llm',
-        steps: [
-          {
-            note: 'Install the engine. Press n at the harness prompt.',
-            command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh',
-          },
-          { note: 'Create a project', command: 'iii project init my-app && cd my-app' },
-          { note: 'Start it, then open http://127.0.0.1:3113', command: 'iii compose --up' },
         ],
       },
       {

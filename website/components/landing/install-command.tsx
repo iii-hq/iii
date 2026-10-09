@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { type CSSProperties, useId, useState } from 'react'
 
 import { IconCopy, IconTerminal, IconTickSquare } from '@/components/icons/iconly'
-import type { CodeLine } from '@/lib/highlight'
+import type { CodeLine, CodeToken } from '@/lib/highlight'
 import { duration, easeOut, spring } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 
@@ -24,6 +24,21 @@ export type InstallTab = {
 type InstallCommandProps = {
   tabs: InstallTab[]
   className?: string
+}
+
+/**
+ * Groups a highlighted command into words (runs of tokens between spaces), so a wrapping command can only break at
+ * a space: browsers also break after a hyphen, which split `--non-interactive` mid-flag.
+ */
+function toWords(tokens: CodeLine): CodeToken[][] {
+  const words: CodeToken[][] = [[]]
+  for (const token of tokens) {
+    token.text.split(' ').forEach((part, index) => {
+      if (index > 0) words.push([])
+      if (part) words[words.length - 1].push({ text: part, style: token.style })
+    })
+  }
+  return words.filter((word) => word.length > 0)
 }
 
 /**
@@ -138,10 +153,10 @@ export function InstallCommand({ tabs, className }: InstallCommandProps) {
           </button>
         </div>
 
-        {/* From `sm` up every path's commands share one grid cell, so the card is always as tall as the longest path
-            (the three-step `no llm`) and switching tabs never moves the page; the full command shows, wrapping if
-            it must. Phones: only the selected path takes space, so a one-line `curl` gets a one-line card, and each
-            command stays on one line while this area scrolls sideways under a fade on the right edge. */}
+        {/* Only the selected path takes space, so the one-line `curl` gets a one-line card (2026-10-09: with the card
+            at 680px the `ci` command wraps, and sharing its height left `curl` with an empty line). From `sm` up the
+            full command shows, wrapping at a space if it must. Phones: each command stays on one line while this
+            area scrolls sideways under a fade on the right edge. */}
         <div className="grid overflow-x-auto overscroll-x-contain px-4 py-3 [mask-image:linear-gradient(to_right,black_calc(100%-40px),transparent)] [scrollbar-width:none] sm:overflow-visible sm:px-5 sm:py-5 sm:[mask-image:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const selected = tab.id === active.id
@@ -166,7 +181,7 @@ export function InstallCommand({ tabs, className }: InstallCommandProps) {
                 }}
                 className={cn(
                   'col-start-1 row-start-1 flex min-w-max flex-col gap-1.5 pr-10 sm:min-w-0 sm:gap-2.5 sm:pr-0',
-                  !selected && 'pointer-events-none max-sm:hidden',
+                  !selected && 'pointer-events-none hidden',
                 )}
               >
                 {tab.commands.map((line) => (
@@ -177,13 +192,21 @@ export function InstallCommand({ tabs, className }: InstallCommandProps) {
                     >
                       $
                     </span>
-                    {/* Phones: one line, scrolled sideways. Wider: the full command, wrapping onto a second line if
-                        it has to, never clipped. */}
-                    <code className="code-tokens whitespace-pre font-mono text-[13px] text-foreground leading-[1.7] sm:min-w-0 sm:whitespace-pre-wrap sm:text-[15px] sm:[overflow-wrap:anywhere]">
-                      {line.tokens.map((token, position) => (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: Tokens are static per command and never reorder.
-                        <span key={position} style={token.style as CSSProperties}>
-                          {token.text}
+                    {/* Phones: one line, scrolled sideways. Wider: the full command, wrapping at a space onto a
+                        second line if it has to, never clipped or split mid-flag. */}
+                    <code className="code-tokens whitespace-pre font-mono text-[13px] text-foreground leading-[1.7] sm:min-w-0 sm:whitespace-pre-wrap sm:text-[15px]">
+                      {toWords(line.tokens).map((word, wordIndex) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: Words are static per command and never reorder.
+                        <span key={wordIndex}>
+                          {wordIndex > 0 ? ' ' : null}
+                          <span className="whitespace-nowrap">
+                            {word.map((token, position) => (
+                              // biome-ignore lint/suspicious/noArrayIndexKey: Tokens are static per command and never reorder.
+                              <span key={position} style={token.style as CSSProperties}>
+                                {token.text}
+                              </span>
+                            ))}
+                          </span>
                         </span>
                       ))}
                     </code>
