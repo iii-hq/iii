@@ -1440,7 +1440,11 @@ fn resolve_config_value(
         |value| !matches!(value, serde_yaml::Value::Mapping(mapping) if mapping.is_empty()),
     );
 
-    if let Some(fetched) = fetched {
+    // A stored null is an entry registered without a value: what
+    // `configuration::ensure` persists when a worker sends no seed, and what
+    // it seeds over. Merged as a value it replaces every lower layer, and
+    // injected it hides the seed the worker installs on its next boot.
+    if let Some(fetched) = fetched.filter(|value| !value.is_null()) {
         value = Some(match value {
             Some(base) => merge(base, fetched),
             None => fetched,
@@ -1672,6 +1676,42 @@ containers:
         assert_eq!(
             resolve_config_value(Some(yaml("{}")), None, Some(yaml("{}"))),
             Some(yaml("{}"))
+        );
+    }
+
+    // A stored `null` is the entry `configuration::ensure` persists for a
+    // schema registered without a seed: the ide's file after its first boot.
+    // Injecting it back on the next start hid the shipped default and the
+    // worker's own seed ("null is not of type \"object\"").
+    #[test]
+    fn a_stored_null_keeps_the_shipped_default() {
+        assert_eq!(
+            resolve_config_value(
+                Some(yaml("default_timeout_ms: 30000\n")),
+                Some(serde_yaml::Value::Null),
+                None,
+            ),
+            Some(yaml("default_timeout_ms: 30000\n"))
+        );
+    }
+
+    #[test]
+    fn a_stored_null_without_other_layers_is_not_injected() {
+        assert_eq!(
+            resolve_config_value(None, Some(serde_yaml::Value::Null), None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_stored_null_keeps_the_shipped_default_under_the_compose_override() {
+        assert_eq!(
+            resolve_config_value(
+                Some(yaml("host: package\nport: 1111\n")),
+                Some(serde_yaml::Value::Null),
+                Some(yaml("port: 3333\n")),
+            ),
+            Some(yaml("host: package\nport: 3333\n"))
         );
     }
 
