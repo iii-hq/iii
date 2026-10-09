@@ -74,7 +74,7 @@ indicatif = "0.18"
 notify = "8.2.0"
 # `iii worker exec` stdout/stderr/stdin frames encode binary payloads
 # as base64 strings inside JSON. `0.22` matches the engine's version.
-base64 = "0.22"
+base64 = "0.23"
 # The shell relay needs direct libc access for `SO_PEERCRED` /
 # `getpeereid` peer-uid checks on the exec unix socket.
 libc = "0.2"
