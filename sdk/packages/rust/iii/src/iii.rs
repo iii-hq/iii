@@ -2747,7 +2747,7 @@ impl IIIClient {
                 use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
                 use iii_helpers::observability::redact_and_truncate;
                 let span = otel_cx.span();
-                if span.span_context().is_valid() {
+                if span.is_recording() {
                     let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
                     span.add_event(
                         "iii.invocation.input",
@@ -2769,7 +2769,7 @@ impl IIIClient {
                 use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
                 use iii_helpers::observability::redact_and_truncate;
                 let span = otel_cx.span();
-                if span.span_context().is_valid() {
+                if span.is_recording() {
                     let (output_json, truncated, ok) = match &result {
                         Ok(value) => {
                             let (j, t) = redact_and_truncate(value, payload_max_bytes);
