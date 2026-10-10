@@ -747,6 +747,7 @@ impl RollupStorage {
 
 /// Time-indexed metric storage with efficient range queries
 pub struct TimeIndexedMetricStorage {
+    // When both indexes are locked, lock time before name; both guards keep the indexes coherent.
     /// Primary storage: timestamp -> metrics
     metrics_by_time: std::sync::RwLock<std::collections::BTreeMap<u64, Vec<StoredMetric>>>,
     /// Secondary index: name -> timestamps (for name+time queries)
@@ -911,8 +912,8 @@ impl TimeIndexedMetricStorage {
     }
 
     pub fn get_metrics_by_name(&self, name: &str) -> Vec<StoredMetric> {
-        let by_name = self.metrics_by_name.read().unwrap();
         let by_time = self.metrics_by_time.read().unwrap();
+        let by_name = self.metrics_by_name.read().unwrap();
 
         if let Some(timestamps) = by_name.get(name) {
             timestamps
@@ -931,8 +932,8 @@ impl TimeIndexedMetricStorage {
         start_ns: u64,
         end_ns: u64,
     ) -> Vec<StoredMetric> {
-        let by_name = self.metrics_by_name.read().unwrap();
         let by_time = self.metrics_by_time.read().unwrap();
+        let by_name = self.metrics_by_name.read().unwrap();
 
         if let Some(timestamps) = by_name.get(name) {
             timestamps
