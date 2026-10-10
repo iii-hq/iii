@@ -298,8 +298,7 @@ pub trait EngineTrait: Send + Sync {
         self.call_with_metadata(function_id, input, None).await
     }
 
-    /// Engine-orchestration call in the default namespace. Hooks and middleware
-    /// use this: they are engine-internal and not namespace-aware.
+    /// Engine-orchestration call in the default namespace.
     async fn call_with_metadata(
         &self,
         function_id: &str,
@@ -311,9 +310,7 @@ pub trait EngineTrait: Send + Sync {
     }
 
     /// Like [`Self::call_with_metadata`] but resolves the target function in an
-    /// explicit `namespace`. `fire_triggers` uses this to run a trigger's target
-    /// in the namespace the trigger named (explicit, or `default` when absent),
-    /// rather than unconditionally in `default`.
+    /// explicit `namespace`, rather than unconditionally in `default`.
     async fn call_with_metadata_ns(
         &self,
         namespace: &str,
@@ -830,8 +827,8 @@ impl Engine {
                         &function_id,
                         namespace.as_deref(),
                         data,
-                        downstream_traceparent.clone(),
-                        downstream_baggage.clone(),
+                        downstream_traceparent,
+                        downstream_baggage,
                         metadata,
                     )
                     .await;
@@ -852,11 +849,11 @@ impl Engine {
                                         &worker,
                                         Message::InvocationResult {
                                             invocation_id,
-                                            function_id: function_id.clone(),
-                                            result: result.clone(),
+                                            function_id,
+                                            result,
                                             error: None,
-                                            traceparent: response_traceparent.clone(),
-                                            baggage: response_baggage.clone(),
+                                            traceparent: response_traceparent,
+                                            baggage: response_baggage,
                                         },
                                     )
                                     .await;
@@ -868,11 +865,11 @@ impl Engine {
                                         &worker,
                                         Message::InvocationResult {
                                             invocation_id,
-                                            function_id: function_id.clone(),
+                                            function_id,
                                             result: None,
-                                            error: Some(err.clone()),
-                                            traceparent: response_traceparent.clone(),
-                                            baggage: response_baggage.clone(),
+                                            error: Some(err),
+                                            traceparent: response_traceparent,
+                                            baggage: response_baggage,
                                         },
                                     )
                                     .await;
@@ -886,7 +883,7 @@ impl Engine {
                                     &worker,
                                     Message::InvocationResult {
                                         invocation_id,
-                                        function_id: function_id.clone(),
+                                        function_id,
                                         result: None,
                                         error: Some(ErrorBody {
                                             code: "invocation_error".into(),
@@ -1296,7 +1293,15 @@ impl Engine {
                             "description": description,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self
+                            .call_value_with_metadata_ns(
+                                DEFAULT_NAMESPACE,
+                                hook_fn_id,
+                                hook_input,
+                                None,
+                            )
+                            .await
+                        {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -1453,7 +1458,15 @@ impl Engine {
                             "namespace": crate::protocol::effective_namespace(namespace),
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self
+                            .call_value_with_metadata_ns(
+                                DEFAULT_NAMESPACE,
+                                hook_fn_id,
+                                hook_input,
+                                None,
+                            )
+                            .await
+                        {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
                                     reg_trigger_id = s.to_string();
@@ -1783,7 +1796,7 @@ impl Engine {
 
                         tokio::spawn(async move {
                             let response = match engine
-                                .call_with_metadata_ns(
+                                .call_value_with_metadata_ns(
                                     &ns,
                                     &middleware_id,
                                     middleware_input,
@@ -1905,7 +1918,7 @@ impl Engine {
                                             Value::String(target_namespace.clone());
                                     }
                                     engine
-                                        .call_with_metadata_ns(
+                                        .call_value_with_metadata_ns(
                                             &target_namespace,
                                             ENQUEUE_PROVIDER_FUNCTION_ID,
                                             enqueue_input,
@@ -2171,7 +2184,15 @@ impl Engine {
                             "namespace": self.connection_namespace(worker),
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self
+                            .call_value_with_metadata_ns(
+                                DEFAULT_NAMESPACE,
+                                hook_fn_id,
+                                hook_input,
+                                None,
+                            )
+                            .await
+                        {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -2453,7 +2474,58 @@ impl Engine {
         }
     }
 
-    pub async fn fire_triggers(&self, trigger_type: &str, data: Value) {
+    // Callers that already own a JSON value do not need to serialize its tree again.
+    async fn call_value_with_metadata_ns(
+        &self,
+        namespace: &str,
+        function_id: &str,
+        input: Value,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, ErrorBody> {
+        let function_opt = self.functions.get(namespace, function_id);
+
+        if let Some(function) = function_opt {
+            // Use the current tracing context to preserve parent-child links.
+            let ctx = tracing::Span::current().context();
+            let traceparent = inject_traceparent_from_context(&ctx);
+            let baggage = inject_baggage_from_context(&ctx);
+
+            let result = self
+                .invocations
+                .handle_invocation(
+                    None,
+                    None,
+                    function_id.to_string(),
+                    input,
+                    function,
+                    traceparent,
+                    baggage,
+                    None,
+                    metadata,
+                )
+                .await;
+
+            match result {
+                Ok(result) => result,
+                Err(err) => Err(ErrorBody {
+                    code: "invocation_error".into(),
+                    message: err.to_string(),
+                    stacktrace: None,
+                }),
+            }
+        } else {
+            Err(ErrorBody {
+                code: "function_not_found".into(),
+                message: format!(
+                    "Function {} not found in namespace {}",
+                    function_id, namespace
+                ),
+                stacktrace: None,
+            })
+        }
+    }
+
+    pub async fn fire_triggers(&self, trigger_type: &str, mut data: Value) {
         let triggers: Vec<crate::trigger::Trigger> = self
             .trigger_registry
             .triggers
@@ -2464,18 +2536,24 @@ impl Engine {
 
         let current_span = tracing::Span::current();
 
-        for trigger in triggers {
+        let trigger_count = triggers.len();
+        for (index, trigger) in triggers.into_iter().enumerate() {
             let engine = self.clone();
-            let function_id = trigger.function_id.clone();
-            let namespace = trigger.namespace.clone();
-            let metadata = trigger.metadata.clone();
-            let data = data.clone();
+            let function_id = trigger.function_id;
+            let namespace = trigger.namespace;
+            let metadata = trigger.metadata;
+            // Only additional destinations need a copy; the last takes the original.
+            let data = if index + 1 == trigger_count {
+                data.take()
+            } else {
+                data.clone()
+            };
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
                     match engine
-                        .call_with_metadata_ns(&namespace, &function_id, data, metadata)
+                        .call_value_with_metadata_ns(&namespace, &function_id, data, metadata)
                         .await
                     {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
@@ -3173,48 +3251,8 @@ impl EngineTrait for Engine {
             message: e.to_string(),
             stacktrace: None,
         })?;
-        let function_opt = self.functions.get(namespace, function_id);
-
-        if let Some(function) = function_opt {
-            // Inject current trace context and baggage to link spans as parent-child
-            // Use the tracing span's context directly to ensure proper propagation in async code
-            let ctx = tracing::Span::current().context();
-            let traceparent = inject_traceparent_from_context(&ctx);
-            let baggage = inject_baggage_from_context(&ctx);
-
-            let result = self
-                .invocations
-                .handle_invocation(
-                    None,
-                    None,
-                    function_id.to_string(),
-                    input,
-                    function,
-                    traceparent,
-                    baggage,
-                    None,
-                    metadata,
-                )
-                .await;
-
-            match result {
-                Ok(result) => result,
-                Err(err) => Err(ErrorBody {
-                    code: "invocation_error".into(),
-                    message: err.to_string(),
-                    stacktrace: None,
-                }),
-            }
-        } else {
-            Err(ErrorBody {
-                code: "function_not_found".into(),
-                message: format!(
-                    "Function {} not found in namespace {}",
-                    function_id, namespace
-                ),
-                stacktrace: None,
-            })
-        }
+        self.call_value_with_metadata_ns(namespace, function_id, input, metadata)
+            .await
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
