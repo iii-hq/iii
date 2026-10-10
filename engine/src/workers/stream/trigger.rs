@@ -34,6 +34,8 @@ pub struct StreamTriggerConfig {
     pub condition_function_id: Option<String>,
 }
 
+// When both stream registry locks are needed, acquire stream_triggers_by_name
+// before stream_triggers, matching StreamWorker::invoke_triggers.
 pub struct StreamTriggers {
     pub join_triggers: Arc<RwLock<HashSet<Trigger>>>,
     pub leave_triggers: Arc<RwLock<HashSet<Trigger>>>,
@@ -100,13 +102,14 @@ impl TriggerRegistrator for StreamWorker {
                             condition_function_id = %stream_trigger.condition_function_id.clone().unwrap_or_default(),
                             "{} Stream trigger", "[REGISTERED]".green());
 
-                        stream_triggers_by_name
-                            .write()
-                            .await
+                        // Publish both indexes together in dispatch's lock order.
+                        let mut by_name = stream_triggers_by_name.write().await;
+                        let mut triggers_map = stream_triggers.write().await;
+                        by_name
                             .entry(stream_trigger.stream_name.clone().unwrap())
                             .or_insert_with(Vec::new)
                             .push(trigger.id.clone());
-                        let _ = stream_triggers.write().await.insert(
+                        let _ = triggers_map.insert(
                             trigger.id.clone(),
                             StreamTrigger {
                                 trigger,
@@ -144,11 +147,14 @@ impl TriggerRegistrator for StreamWorker {
             if trigger.trigger_type == STREAM_TRIGGER_TYPE {
                 let trigger_id = trigger.id.clone();
 
-                // Remove from main triggers map
-                if let Some(removed_trigger) = stream_triggers.write().await.remove(&trigger_id) {
+                // Lock the name index first, as dispatch does. Holding the map
+                // writer while waiting for this index deadlocks with a dispatch
+                // reader holding the index while waiting for the map.
+                let mut by_name = stream_triggers_by_name.write().await;
+                let mut triggers_map = stream_triggers.write().await;
+                if let Some(removed_trigger) = triggers_map.remove(&trigger_id) {
                     // Remove from stream_name index
                     if let Some(stream_name_key) = removed_trigger.config.stream_name {
-                        let mut by_name = stream_triggers_by_name.write().await;
                         if let Some(trigger_ids) = by_name.get_mut(&stream_name_key) {
                             trigger_ids.retain(|id| id != &trigger_id);
                             if trigger_ids.is_empty() {
@@ -468,6 +474,82 @@ mod tests {
         let by_name = module.triggers.stream_triggers_by_name.read().await;
         let ids = by_name.get("shared").expect("should still have entry");
         assert_eq!(ids, &vec!["stream-2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_sets_and_trigger_cleanup_do_not_deadlock() {
+        use std::time::Duration;
+
+        use crate::{
+            function::FunctionResult,
+            workers::stream::structs::{StreamGetInput, StreamSetInput},
+        };
+
+        let module = setup();
+        let trigger = make_trigger(
+            "stream-lock-order",
+            STREAM_TRIGGER_TYPE,
+            "fn::on_stream_event",
+            serde_json::json!({"stream_name": "chat"}),
+        );
+        module.register_trigger(trigger.clone()).await.unwrap();
+
+        // Queue cleanup's map writer first. Tokio's write-preferring RwLock
+        // then queues the set's map reader behind it. Before the fix, set holds
+        // the name-index read lock and cleanup holds the map write lock: each
+        // waits for the other, even though the adapter has finished writing.
+        let map_reader = module.triggers.stream_triggers.read().await;
+        let mut cleanup = module.unregister_trigger(trigger);
+        assert!(futures::poll!(cleanup.as_mut()).is_pending());
+
+        let mut set = Box::pin(module.set(StreamSetInput {
+            stream_name: "chat".into(),
+            group_id: "g".into(),
+            item_id: "i".into(),
+            data: serde_json::json!({"value": 1}),
+        }));
+        assert!(futures::poll!(set.as_mut()).is_pending());
+
+        // Reads bypass trigger dispatch and still see the committed mutation.
+        let get = tokio::time::timeout(
+            Duration::from_secs(1),
+            module.get(StreamGetInput {
+                stream_name: "chat".into(),
+                group_id: "g".into(),
+                item_id: "i".into(),
+            }),
+        )
+        .await
+        .expect("stream get must remain available");
+        assert!(matches!(get, FunctionResult::Success(Some(value)) if value["value"] == 1));
+
+        // The locks are global: even a stream with no matching triggers waits.
+        let mut unrelated_set = Box::pin(module.set(StreamSetInput {
+            stream_name: "unrelated".into(),
+            group_id: "g".into(),
+            item_id: "i".into(),
+            data: serde_json::json!({"value": 2}),
+        }));
+        assert!(futures::poll!(unrelated_set.as_mut()).is_pending());
+        drop(map_reader);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (cleanup, set, unrelated_set) = tokio::join!(cleanup, set, unrelated_set);
+            cleanup.unwrap();
+            assert!(matches!(set, FunctionResult::Success(_)));
+            assert!(matches!(unrelated_set, FunctionResult::Success(_)));
+        })
+        .await
+        .expect("stream sets and trigger cleanup must not deadlock");
+        assert!(module.triggers.stream_triggers.read().await.is_empty());
+        assert!(
+            module
+                .triggers
+                .stream_triggers_by_name
+                .read()
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
