@@ -1,5 +1,11 @@
 //! Payload redaction + truncation for invocation event capture.
 
+use std::io::{self, Write};
+
+use serde::{
+    Serialize, Serializer,
+    ser::{SerializeMap, SerializeSeq},
+};
 use serde_json::Value;
 
 #[must_use]
@@ -64,33 +70,116 @@ pub fn redact(value: &Value) -> Value {
     }
 }
 
+// Serialize the redacted view directly instead of building a second JSON tree.
+struct Redacted<'a>(&'a Value);
+
+impl Serialize for Redacted<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Object(map) => {
+                let mut output = serializer.serialize_map(Some(map.len()))?;
+                for (key, value) in map {
+                    if is_sensitive_key(key) {
+                        output.serialize_entry(key, REDACTED_PLACEHOLDER)?;
+                    } else {
+                        output.serialize_entry(key, &Redacted(value))?;
+                    }
+                }
+                output.end()
+            }
+            Value::Array(items) => {
+                let mut output = serializer.serialize_seq(Some(items.len()))?;
+                for value in items {
+                    output.serialize_element(&Redacted(value))?;
+                }
+                output.end()
+            }
+            value => value.serialize(serializer),
+        }
+    }
+}
+
+struct CappedWriter {
+    bytes: Vec<u8>,
+    cap: usize,
+    truncated: bool,
+}
+
+impl CappedWriter {
+    fn new(cap: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(cap.min(128)),
+            cap,
+            truncated: false,
+        }
+    }
+
+    fn finish(mut self) -> (String, bool) {
+        if self.truncated {
+            let cut = self.cap.saturating_sub(TRUNCATION_MARKER.len());
+            // A byte limit can split a UTF-8 character. Keep only its valid prefix.
+            let cut = match std::str::from_utf8(&self.bytes[..cut]) {
+                Ok(prefix) => prefix.len(),
+                Err(error) => error.valid_up_to(),
+            };
+            self.bytes.truncate(cut);
+            self.bytes.extend_from_slice(
+                &TRUNCATION_MARKER.as_bytes()[..self.cap.min(TRUNCATION_MARKER.len())],
+            );
+        }
+        (
+            String::from_utf8(self.bytes).unwrap_or_else(|_| "null".into()),
+            self.truncated,
+        )
+    }
+}
+
+impl Write for CappedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let count = buf.len().min(self.cap - self.bytes.len());
+        if count == 0 {
+            self.truncated = true;
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        let required = self.bytes.len() + count;
+        if required > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(required)
+                .min(self.cap);
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+        self.bytes.extend_from_slice(&buf[..count]);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Redact then serialize to JSON, optionally capped at `max_bytes`.
 #[must_use]
 pub fn redact_and_truncate(value: &Value, max_bytes: Option<usize>) -> (String, bool) {
-    let redacted = redact(value);
-    let serialized = serde_json::to_string(&redacted).unwrap_or_else(|_| "null".into());
-
     let Some(cap) = max_bytes else {
-        return (serialized, false);
+        return (
+            serde_json::to_string(&Redacted(value)).unwrap_or_else(|_| "null".into()),
+            false,
+        );
     };
 
-    if serialized.len() <= cap {
-        return (serialized, false);
+    let mut writer = CappedWriter::new(cap);
+    if serde_json::to_writer(&mut writer, &Redacted(value)).is_err() && !writer.truncated {
+        // Preserve the serialization fallback, including the caller's byte limit.
+        writer.bytes.clear();
+        let _ = writer.write_all(b"null");
     }
-
-    if cap <= TRUNCATION_MARKER.len() {
-        return (TRUNCATION_MARKER[..cap].to_string(), true);
-    }
-
-    // Walk back to a char boundary so we don't emit half-codepoints.
-    // (`floor_char_boundary` is unstable.)
-    let mut cut = cap - TRUNCATION_MARKER.len();
-    while cut > 0 && !serialized.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let mut truncated = serialized[..cut].to_string();
-    truncated.push_str(TRUNCATION_MARKER);
-    (truncated, true)
+    writer.finish()
 }
 
 #[cfg(test)]
