@@ -1492,10 +1492,21 @@ async fn resolve_config(
 
     // GET supplies the current active value, not a forced reload from disk.
     // Omitting an override keeps that value, including after a worker restart.
-    if let Some(value) = value {
+    if let Some(value) = execution_value(value) {
         ctx.engine.set_config(&name, value).await?;
     }
     Ok(ResolvedConfig { name })
+}
+
+/// What to inject as the execution value. A null delivers nothing: the active
+/// value is already null (or absent), and an injected null would shadow the
+/// stored entry, including the default a worker seeds there at boot. That left
+/// a fresh project's `ide` failing `configuration::get` on its second start: the
+/// first start had persisted a null under the injected defaults (MOT-5355). A
+/// null overlay already in a running engine is only replaced by a save or an
+/// engine restart.
+fn execution_value(value: Option<serde_yaml::Value>) -> Option<serde_yaml::Value> {
+    value.filter(|value| !value.is_null())
 }
 
 async fn fire_post_run(ctx: &LifecycleCtx<'_>, spawn_ctx: &SpawnCtx<'_>, container: &Container) {
@@ -1631,6 +1642,29 @@ containers:
             Some(serde_yaml::Value::Null)
         );
     }
+    #[test]
+    fn a_stored_null_over_package_defaults_is_not_injected() {
+        // The second start of a fresh project: the first one persisted a null
+        // under the injected defaults, and the stored null wins the merge.
+        let resolved = resolve_config_value(
+            Some(yaml("code: {max_read_bytes: 10}")),
+            Some(serde_yaml::Value::Null),
+            None,
+        );
+        assert_eq!(resolved, Some(serde_yaml::Value::Null));
+        assert_eq!(execution_value(resolved), None);
+    }
+
+    #[test]
+    fn a_non_null_override_over_a_stored_null_is_still_injected() {
+        let resolved = resolve_config_value(
+            Some(yaml("port: 1")),
+            Some(serde_yaml::Value::Null),
+            Some(yaml("port: 2")),
+        );
+        assert_eq!(execution_value(resolved), Some(yaml("port: 2")));
+    }
+
     #[test]
     fn an_empty_shipped_default_preserves_the_active_configuration() {
         assert_eq!(

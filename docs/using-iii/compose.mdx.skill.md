@@ -734,7 +734,9 @@ worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails
 Lowest to highest: the configuration a package ships, the entry in the configuration worker, then
 `config_override`. Maps merge key by key; arrays and scalars replace. A mapping whose `name` the
 override changes is replaced whole: the keys beside `name` belong to the variant it picks. The
-merged result is delivered through `configuration::set` with `flush: false` before the worker starts.
+merged result is delivered through `configuration::set` with `flush: false` before the worker starts,
+unless it is null: an injected null would hide the stored entry, including the default a worker
+seeds there with `configuration::ensure`.
 `III_CONFIG_NAME` identifies the entry read through `configuration::get`. Compose does not create
 an execution snapshot file or set `III_CONFIG`. The persistent `config/<id>.yaml` remains unchanged
 by this memory-only update. `configuration::ensure` seeds defaults only into the base and preserves
