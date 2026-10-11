@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  FileJson,
   Eye,
   EyeOff,
   Loader2,
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useReducer, useRef } from 'react'
 import { z } from 'zod'
-import type { FunctionInfo } from '@/api'
+import type { FunctionDetail, FunctionInfo } from '@/api'
 import {
   fetchFunctionDetail,
   functionsQuery,
@@ -26,6 +27,13 @@ import {
   workersQuery,
 } from '@/api'
 import { Badge, Button } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
 import { PageHeader } from '@/components/ui/page-header'
@@ -82,6 +90,10 @@ interface FunctionsUiState {
   searchQuery: string
   showSystem: boolean
   selectedFunction: FunctionInfo | null
+  functionDetail: FunctionDetail | null
+  functionDetailLoading: boolean
+  functionDetailError: string | null
+  schemaDialogOpen: boolean
   copied: string | null
   collapsedGroups: Set<string>
 }
@@ -90,6 +102,10 @@ type FunctionsUiAction =
   | { type: 'SET_SEARCH_QUERY'; payload: string }
   | { type: 'TOGGLE_SHOW_SYSTEM' }
   | { type: 'SET_SELECTED_FUNCTION'; payload: FunctionInfo | null }
+  | { type: 'START_FUNCTION_DETAIL' }
+  | { type: 'SET_FUNCTION_DETAIL'; payload: FunctionDetail }
+  | { type: 'SET_FUNCTION_DETAIL_ERROR'; payload: string }
+  | { type: 'SET_SCHEMA_DIALOG_OPEN'; payload: boolean }
   | { type: 'SET_COPIED'; payload: string | null }
   | { type: 'TOGGLE_GROUP'; payload: string }
 
@@ -100,7 +116,24 @@ function functionsUiReducer(state: FunctionsUiState, action: FunctionsUiAction):
     case 'TOGGLE_SHOW_SYSTEM':
       return { ...state, showSystem: !state.showSystem }
     case 'SET_SELECTED_FUNCTION':
-      return { ...state, selectedFunction: action.payload }
+      return {
+        ...state,
+        selectedFunction: action.payload,
+        ...(!action.payload && { schemaDialogOpen: false }),
+      }
+    case 'START_FUNCTION_DETAIL':
+      return {
+        ...state,
+        functionDetail: null,
+        functionDetailLoading: true,
+        functionDetailError: null,
+      }
+    case 'SET_FUNCTION_DETAIL':
+      return { ...state, functionDetail: action.payload, functionDetailLoading: false }
+    case 'SET_FUNCTION_DETAIL_ERROR':
+      return { ...state, functionDetailLoading: false, functionDetailError: action.payload }
+    case 'SET_SCHEMA_DIALOG_OPEN':
+      return { ...state, schemaDialogOpen: action.payload }
     case 'SET_COPIED':
       return { ...state, copied: action.payload }
     case 'TOGGLE_GROUP': {
@@ -136,10 +169,24 @@ function FunctionsPage() {
     searchQuery: '',
     showSystem: false,
     selectedFunction: null,
+    functionDetail: null,
+    functionDetailLoading: false,
+    functionDetailError: null,
+    schemaDialogOpen: false,
     copied: null,
     collapsedGroups: new Set<string>(),
   })
-  const { searchQuery, showSystem, selectedFunction, copied, collapsedGroups } = uiState
+  const {
+    searchQuery,
+    showSystem,
+    selectedFunction,
+    functionDetail,
+    functionDetailLoading,
+    functionDetailError,
+    schemaDialogOpen,
+    copied,
+    collapsedGroups,
+  } = uiState
 
   useEffect(() => {
     if (qFromSearch !== undefined) {
@@ -274,6 +321,7 @@ function FunctionsPage() {
     } else {
       selectedFunctionRef.current = fn.function_id
       dispatchUi({ type: 'SET_SELECTED_FUNCTION', payload: fn })
+      dispatchUi({ type: 'START_FUNCTION_DETAIL' })
       dispatchInvocation({ type: 'CLEAR_RESULT' })
       // The list route returns slim summaries without schemas. Fetch the
       // detail to pre-fill the request body from `request_schema`; fall back to
@@ -282,12 +330,18 @@ function FunctionsPage() {
       fetchFunctionDetail(fn.function_id)
         .then((detail) => {
           if (selectedFunctionRef.current !== fn.function_id) return
+          dispatchUi({ type: 'SET_FUNCTION_DETAIL', payload: detail })
           const template = detail.request_schema
             ? generateTemplate(detail.request_schema)
             : '{\n  \n}'
           dispatchInvocation({ type: 'SET_REQUEST_BODY', body: template })
         })
         .catch(() => {
+          if (selectedFunctionRef.current !== fn.function_id) return
+          dispatchUi({
+            type: 'SET_FUNCTION_DETAIL_ERROR',
+            payload: 'Unable to load schemas for this function.',
+          })
           // Keep the empty-object fallback already set above.
         })
     }
@@ -456,6 +510,15 @@ function FunctionsPage() {
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
+                    onClick={() => dispatchUi({ type: 'SET_SCHEMA_DIALOG_OPEN', payload: true })}
+                    className="p-1.5 hover:bg-dark-gray rounded transition-colors"
+                    title="View request and response schemas"
+                    aria-label="View request and response schemas"
+                  >
+                    <FileJson className="w-3.5 h-3.5 text-muted" />
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => copyToClipboard(selectedFunction.function_id, 'path')}
                     className="p-1.5 hover:bg-dark-gray rounded transition-colors"
                     title="Copy function ID"
@@ -469,7 +532,10 @@ function FunctionsPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => dispatchUi({ type: 'SET_SELECTED_FUNCTION', payload: null })}
+                    onClick={() => {
+                      selectedFunctionRef.current = null
+                      dispatchUi({ type: 'SET_SELECTED_FUNCTION', payload: null })
+                    }}
                     className="h-7 w-7 md:h-6 md:w-6 p-0"
                   >
                     <X className="w-4 h-4" />
@@ -568,6 +634,75 @@ function FunctionsPage() {
                 )}
               </div>
             </div>
+
+            <Dialog
+              open={schemaDialogOpen}
+              onOpenChange={(open) =>
+                dispatchUi({ type: 'SET_SCHEMA_DIALOG_OPEN', payload: open })
+              }
+            >
+              <DialogContent className="w-[80vw] max-w-[80vw] h-[90vh] max-h-[90vh] overflow-hidden flex flex-col">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 pr-6">
+                    <FileJson className="h-4 w-4 text-muted" />
+                    Function Schemas
+                  </DialogTitle>
+                  <DialogDescription className="font-mono text-xs break-all">
+                    {selectedFunction.function_id}
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                  {functionDetailLoading ? (
+                    <div className="md:col-span-2 space-y-3 py-4">
+                      <Skeleton className="h-32 w-full" />
+                      <Skeleton className="h-32 w-full" />
+                    </div>
+                  ) : functionDetailError ? (
+                    <div className="md:col-span-2 rounded border border-error/30 bg-error/5 p-4 text-sm text-error">
+                      {functionDetailError}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="min-w-0 min-h-0 flex flex-col">
+                        <h3 className="mb-2 shrink-0 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+                          Request Schema
+                        </h3>
+                        <div className="min-h-32 flex-1 overflow-y-auto overflow-x-hidden rounded border border-border bg-black/40 p-3">
+                          {functionDetail?.request_schema ? (
+                            <JsonViewer
+                              data={functionDetail.request_schema}
+                              collapsed={false}
+                              maxDepth={8}
+                              className="min-w-0 [overflow-wrap:anywhere] [&_pre]:overflow-x-hidden [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
+                            />
+                          ) : (
+                            <p className="text-xs text-muted">No request schema provided.</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="min-w-0 min-h-0 flex flex-col">
+                        <h3 className="mb-2 shrink-0 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+                          Response Schema
+                        </h3>
+                        <div className="min-h-32 flex-1 overflow-y-auto overflow-x-hidden rounded border border-border bg-black/40 p-3">
+                          {functionDetail?.response_schema ? (
+                            <JsonViewer
+                              data={functionDetail.response_schema}
+                              collapsed={false}
+                              maxDepth={8}
+                              className="min-w-0 [overflow-wrap:anywhere] [&_pre]:overflow-x-hidden [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
+                            />
+                          ) : (
+                            <p className="text-xs text-muted">No response schema provided.</p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
         )}
       </div>
