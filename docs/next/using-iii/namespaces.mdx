@@ -232,6 +232,13 @@ duplicate function id or move one worker to another namespace.
 For the wire fields and the exact conflict sequence, see
 [`RegistrationRejected`](../reference/engine-protocol#registrationrejected).
 
+## Enqueue functions in a namespace
+
+`TriggerAction.Enqueue` resolves the `engine::queue::enqueue` provider in the target function's
+namespace. A namespace whose functions are enqueued needs its own namespace-aware queue worker; the
+engine fails the enqueue with `enqueue_error` rather than falling back to a provider in `default`.
+See [Queue providers and namespaces](../creating-workers/queues#queue-providers-and-namespaces).
+
 ## Configure RBAC for a namespace
 
 An `iii-worker-manager` `expose_functions` rule without a namespace applies to `default` only. Add

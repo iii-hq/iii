@@ -104,6 +104,42 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
   </Tab>
 </Tabs>
 
+## Queue Providers and Namespaces
+
+`TriggerAction.Enqueue` routes through the `engine::queue::enqueue` provider function that the
+queue worker registers. The engine resolves that provider in the target function's namespace and
+never falls back to another namespace:
+
+- A target in `default` uses the provider registered in `default`. Older queue worker releases keep
+  working there unchanged.
+- A target in any other namespace uses only a provider registered in that same namespace, so each
+  namespace that enqueues functions needs its own namespace-aware queue worker.
+
+The Compose daemon starts its workers in the daemon's own namespace, so the
+`compose::add worker=queue` call from the setup above installs the provider where that project's
+functions resolve. A queue worker built before namespace routing ignores `III_NAMESPACE` and
+registers in `default`; Compose reports that container with a startup error instead of leaving the
+project without a provider.
+
+The queue worker's provider functions are the only worker-provided `engine::*` function ids allowed
+to register outside `default`: `engine::queue::enqueue`, `engine::queue::list_topics`,
+`engine::queue::topic_stats`, `engine::queue::dlq_topics`, and `engine::queue::dlq_messages`. The
+engine refuses every other `engine::*` registration from a namespaced worker. See
+[Reserved ids](../reference/engine-protocol#reserved-ids).
+
+### Enqueue errors
+
+An enqueue that cannot reach a provider in the target namespace fails with an `enqueue_error`
+result instead of enqueueing the function in the wrong namespace:
+
+- The target namespace has no provider, but `default` has one. A provider that only exists in
+  `default` may predate namespace routing and would enqueue the target in the wrong namespace, so
+  the engine fails the enqueue before invoking it. The error message says the provider in `default`
+  cannot enqueue functions in the target namespace and asks you to update the queue worker to a
+  namespace-aware release and register it in that namespace.
+- No provider exists at all. The error message says no queue provider is installed and points at
+  `iii trigger -n <compose-daemon-namespace> compose::add worker=queue`.
+
 ## Pub/Sub Queues
 
 Queues can also be used in a publish/subscribe form when multiple listeners need to subscribe to the
