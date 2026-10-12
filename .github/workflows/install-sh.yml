@@ -29,7 +29,7 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck on install.sh
@@ -39,7 +39,7 @@ jobs:
     name: Unit tests (bats)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install bats-core and jq
         run: sudo apt-get update && sudo apt-get install -y bats jq
       - name: Run bats unit tests
@@ -61,7 +61,7 @@ jobs:
             os: macos-14
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install jq (macOS)
         if: startsWith(matrix.os, 'macos')
         run: brew install jq || true
@@ -82,7 +82,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: apk add --no-cache bash curl jq tar git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run integration tests in alpine
         env:
           CI: "true"
