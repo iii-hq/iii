@@ -181,6 +181,8 @@ fn sandbox_daemon_exits_when_engine_dies() {
     );
 }
 
+/// Parent-watch readiness must follow signal installation, and an immediate
+/// SIGTERM must use graceful shutdown rather than the OS default disposition.
 #[test]
 fn sandbox_signal_exit_writes_no_engine_gone_breadcrumb() {
     let tmp = tempfile::tempdir().unwrap();
@@ -196,6 +198,15 @@ fn sandbox_signal_exit_writes_no_engine_gone_breadcrumb() {
     assert!(
         armed,
         "sandbox-daemon never armed its exit watch; log:\n{log}"
+    );
+
+    let signals_ready = log
+        .find("shutdown signal handlers ready")
+        .expect("parent-watch readiness was published before signal handlers were ready");
+    let parent_ready = log.find("parent exit-watch armed").unwrap();
+    assert!(
+        signals_ready < parent_ready,
+        "signal installation must precede parent-watch readiness: {log}"
     );
 
     kill(Pid::from_raw(daemon.0.id() as i32), Signal::SIGTERM).expect("send SIGTERM");
