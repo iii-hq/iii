@@ -202,8 +202,8 @@ impl EngineClient {
         };
 
         let value = response.get("value").cloned().unwrap_or(response);
-        // Absence is NOT_FOUND; explicit null is a stored value, including
-        // during migration. Never replace it with package defaults implicitly.
+        // Absence is NOT_FOUND. A stored null is returned as stored, including
+        // after migration; layering decides that it contributes no value.
         serde_yaml::to_value(value)
             .map(Some)
             .map_err(|err| ComposeError::ConfigFetchFailed {

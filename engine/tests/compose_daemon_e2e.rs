@@ -2728,6 +2728,115 @@ containers:
     child.shutdown_async().await;
 }
 
+/// A stored `null` is an entry registered without a value, never a value to inject.
+///
+/// `configuration::ensure` without a seed persists `value: null`. The ide does
+/// exactly that on its first boot under compose: compose's in-memory value is
+/// active, so it sends no seed. The next start used to read that `null` back
+/// and inject it over every other layer. On a restarted engine (no schema yet)
+/// the injection succeeded and hid the seed the worker then installed, so its
+/// own read failed with `null is not of type "object"`. Once the schema was
+/// known, the injection itself failed with `CONFIG_FETCH_FAILED`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_null_configuration_does_not_hide_the_workers_seed_on_restart() {
+    isolate_state();
+    let id = "null-restart-api";
+    let schema = json!({"type": "object"});
+    for schema_known in [false, true] {
+        let storage = tempfile::tempdir().unwrap();
+        if !schema_known {
+            // The file the fs adapter left behind after the first boot. A
+            // restarted engine loads it without a schema until the worker
+            // registers again.
+            std::fs::write(
+                storage.path().join(format!("{id}.yaml")),
+                format!("id: {id}\nname: API\ndescription: test\nvalue: null\n"),
+            )
+            .unwrap();
+        }
+        let port = spawn_engine_with_configuration_in(true, Some(storage.path())).await;
+        if schema_known {
+            // The worker already registered its schema in this engine, without a seed.
+            let ensured = call(
+                port,
+                "configuration::ensure",
+                json!({"id": id, "name": "API", "description": "test", "schema": schema}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(ensured["action"], "registered");
+        }
+        assert_eq!(
+            saved_configuration(storage.path(), id)["value"],
+            Value::Null
+        );
+
+        let supervisor = format!("null-restart-supervisor-{schema_known}");
+        let daemon = start_daemon_named(port, &supervisor).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project(
+            tmp.path(),
+            r#"
+namespace: null-restart
+startup_timeout: 5s
+stop_timeout: 100ms
+required_default: true
+containers:
+  api:
+    worker: path://./workers/api
+    scripts:
+      run: 'touch started; sleep 30'
+"#,
+            &["api"],
+        );
+        let started = tmp.path().join("workers/api/started");
+        let up = call_in(
+            port,
+            Some(&supervisor),
+            "compose::up",
+            json!({"file": file}),
+        );
+        tokio::pin!(up);
+        let markers = [started.as_path()];
+        let child = tokio::select! {
+            () = wait_for_start_markers(&markers) => {
+                register_test_worker(port, "null-restart", "api")
+            }
+            result = &mut up => {
+                panic!("compose::up settled before the worker started: {result:?}")
+            }
+        };
+        let result = up.await.unwrap();
+        assert_eq!(result["status"], "ok", "{result}");
+
+        // The worker's own boot: seed through ensure, then read the applied value.
+        let ensured = call(
+            port,
+            "configuration::ensure",
+            json!({
+                "id": id, "name": "API", "description": "test", "schema": schema,
+                "initial_value": {"seeded": true}
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ensured["action"], "seeded");
+        assert_eq!(
+            call(port, "configuration::get", json!({"id": id}))
+                .await
+                .unwrap()["value"],
+            json!({"seeded": true})
+        );
+        assert_eq!(
+            saved_configuration(storage.path(), id)["value"],
+            json!({"seeded": true})
+        );
+        daemon.shutdown().await;
+        child.shutdown_async().await;
+    }
+}
+
 /// Pre-namespace entries belong only to default and replace generated destinations.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
