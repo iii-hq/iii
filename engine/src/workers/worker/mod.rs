@@ -49,6 +49,22 @@ pub(crate) const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 pub const DEFAULT_PORT: u16 = 49134;
 
+/// Select the outbound JSON envelope limit from the SDK version reported at registration.
+/// Browser workers cannot receive more than one 16 MiB frame; all other targets
+/// require a valid SDK version at least 0.24.5 to use the 64 MiB limit.
+pub(crate) fn receive_message_limit(runtime: Option<&str>, version: Option<&str>) -> (usize, bool) {
+    let requires_upgrade = runtime != Some("browser");
+    let supports_large_messages = runtime != Some("browser")
+        && version
+            .and_then(|version| semver::Version::parse(version).ok())
+            .is_some_and(|version| version >= semver::Version::new(0, 24, 5));
+    if supports_large_messages {
+        (MAX_JSON_MESSAGE_BYTES, false)
+    } else {
+        (MAX_JSON_FRAME_BYTES, requires_upgrade)
+    }
+}
+
 /// Default deadline for an accepted TCP connection to complete its HTTP
 /// request (the WS upgrade). Generous for a handshake that normally takes
 /// milliseconds; the point is bounding it at all (MOT-3967).
@@ -523,5 +539,30 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn receive_message_limit_classifies_versions_and_runtime() {
+        let cases = [
+            (None, None, MAX_JSON_FRAME_BYTES, true),
+            (None, Some("unknown"), MAX_JSON_FRAME_BYTES, true),
+            (None, Some("garbage"), MAX_JSON_FRAME_BYTES, true),
+            (None, Some("0.24.4"), MAX_JSON_FRAME_BYTES, true),
+            (None, Some("0.24.5-rc.1"), MAX_JSON_FRAME_BYTES, true),
+            (None, Some("0.24.5"), MAX_JSON_MESSAGE_BYTES, false),
+            (None, Some("0.24.6"), MAX_JSON_MESSAGE_BYTES, false),
+            (None, Some("1.0.0"), MAX_JSON_MESSAGE_BYTES, false),
+            (Some("browser"), Some("1.0.0"), MAX_JSON_FRAME_BYTES, false),
+            // Before registration, the connection has no SDK metadata.
+            (None, None, MAX_JSON_FRAME_BYTES, true),
+        ];
+
+        for (runtime, version, expected_limit, expected_upgrade) in cases {
+            assert_eq!(
+                receive_message_limit(runtime, version),
+                (expected_limit, expected_upgrade),
+                "runtime={runtime:?}, version={version:?}"
+            );
+        }
     }
 }

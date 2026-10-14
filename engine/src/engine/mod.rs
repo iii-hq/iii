@@ -635,6 +635,76 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
+    async fn guard_outbound(
+        &self,
+        worker: &WorkerConnection,
+        msg: Message,
+        serialized: String,
+    ) -> Option<(Message, String)> {
+        let size = serialized.len();
+        let limit = worker
+            .receive_message_limit
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .min(crate::workers::worker::MAX_JSON_MESSAGE_BYTES);
+        if size <= limit {
+            return Some((msg, serialized));
+        }
+
+        let upgrade = worker
+            .receive_limit_requires_upgrade
+            .load(std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            worker_id = %worker.id,
+            version = ?worker.receive_sdk_version.read().unwrap_or_else(|error| error.into_inner()).as_ref(),
+            size_bytes = size,
+            limit_bytes = limit,
+            message_type = protocol_message_type(&msg),
+            "Outbound JSON envelope exceeds target worker receive limit"
+        );
+        match msg {
+            Message::InvokeFunction {
+                invocation_id: Some(invocation_id),
+                ..
+            } => {
+                if let Some(invocation) = self.invocations.remove(&invocation_id) {
+                    if let Some(caller_id) = invocation.worker_id
+                        && let Some(caller) = self.worker_registry.get_worker(&caller_id)
+                    {
+                        caller.remove_invocation(&invocation_id).await;
+                    }
+                    let _ = invocation
+                        .sender
+                        .send(Err(payload_too_large_error(size, limit, upgrade)));
+                }
+                worker.remove_invocation(&invocation_id).await;
+                None
+            }
+            Message::InvocationResult {
+                invocation_id,
+                function_id,
+                traceparent,
+                baggage,
+                ..
+            } => {
+                let fallback = Message::InvocationResult {
+                    invocation_id,
+                    function_id,
+                    result: None,
+                    error: Some(payload_too_large_error(size, limit, upgrade)),
+                    traceparent,
+                    baggage,
+                };
+                let fallback_payload = serde_json::to_string(&fallback).ok()?;
+                (fallback_payload.len() <= limit).then_some((fallback, fallback_payload))
+            }
+            Message::InvokeFunction {
+                invocation_id: None,
+                ..
+            } => None,
+            _ => None,
+        }
+    }
+
     fn remove_function(&self, namespace: &str, function_id: &str) {
         self.functions.remove(namespace, function_id);
     }
@@ -2643,17 +2713,29 @@ impl Engine {
             };
 
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
+        let worker = WorkerConnection::with_session(tx.clone(), session);
+        let writer_worker = worker.clone();
+        let writer_engine = self.clone();
 
         let writer = tokio::spawn(async move {
             while let Some(outbound) = rx.recv().await {
                 let send_result = match outbound {
-                    Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
-                        Ok(payload) => ws_tx.send(WsMessage::Text(payload.into())).await,
-                        Err(err) => {
-                            tracing::error!(peer = %peer, error = ?err, "serialize error");
+                    Outbound::Protocol(msg) => {
+                        let serialized = match serde_json::to_string(&msg) {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                tracing::error!(peer = %peer, error = ?err, "serialize error");
+                                continue;
+                            }
+                        };
+                        let Some((_msg, payload)) = writer_engine
+                            .guard_outbound(&writer_worker, msg, serialized)
+                            .await
+                        else {
                             continue;
-                        }
-                    },
+                        };
+                        ws_tx.send(WsMessage::Text(payload.into())).await
+                    }
                     Outbound::Raw(frame) => ws_tx.send(frame).await,
                 };
 
@@ -2663,7 +2745,6 @@ impl Engine {
             }
         });
 
-        let worker = WorkerConnection::with_session(tx.clone(), session);
         // Mark before registering: from the moment this connection is
         // discoverable, a Reattach targeting it can rely on this read loop
         // to exit on eviction and run the cleanup.
@@ -3427,6 +3508,31 @@ impl EngineTrait for Engine {
     }
 }
 
+fn payload_too_large_error(size: usize, limit: usize, requires_upgrade: bool) -> ErrorBody {
+    let remediation = if requires_upgrade {
+        " Upgrade the target worker SDK to 0.24.5 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+    } else {
+        " Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+    };
+    ErrorBody::new(
+        "payload_too_large",
+        format!(
+            "Serialized JSON envelope is {size} bytes; target worker accepts up to {limit} bytes.{remediation}"
+        ),
+    )
+}
+
+fn protocol_message_type(message: &Message) -> &'static str {
+    match message {
+        Message::InvokeFunction { .. } => "InvokeFunction",
+        Message::InvocationResult { .. } => "InvocationResult",
+        Message::RegisterFunction { .. } => "RegisterFunction",
+        Message::RegisterTrigger { .. } => "RegisterTrigger",
+        Message::RegisterService { .. } => "RegisterService",
+        _ => "other",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3455,7 +3561,10 @@ mod tests {
         },
     };
 
-    use super::{Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE};
+    use super::{
+        Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE, payload_too_large_error,
+        protocol_message_type,
+    };
 
     fn make_request(function_id: &str) -> crate::engine::RegisterFunctionRequest {
         crate::engine::RegisterFunctionRequest {
@@ -8760,5 +8869,242 @@ mod tests {
         engine.abort_namespace_resolution(&worker);
 
         assert_eq!(engine.connection_namespace(&worker), "orders");
+    }
+
+    #[tokio::test]
+    async fn oversized_invoke_completes_caller_and_cleans_caller_and_target_state() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (caller_tx, _caller_rx) = mpsc::channel::<Outbound>(8);
+        let caller = WorkerConnection::new(caller_tx);
+        engine.worker_registry.register_worker(caller.clone());
+        let (target_tx, mut target_rx) = mpsc::channel::<Outbound>(8);
+        let target = WorkerConnection::new(target_tx);
+        let invocation_id = uuid::Uuid::new_v4();
+        caller.add_invocation(invocation_id).await;
+        target.add_invocation(invocation_id).await;
+        let handler: std::sync::Arc<crate::function::HandlerFn> =
+            std::sync::Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Deferred }));
+        let invocation_task = {
+            let engine = engine.clone();
+            let caller = caller.clone();
+            tokio::spawn(async move {
+                engine
+                    .invocations
+                    .handle_invocation_with_handler(
+                        Some(invocation_id),
+                        Some(&caller),
+                        "caller::fn".into(),
+                        serde_json::json!({}),
+                        handler,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(caller.invocation_count().await, 1);
+        caller.receive_message_limit.store(1024, Ordering::Relaxed);
+        target.receive_message_limit.store(1024, Ordering::Relaxed);
+        let invoke = Message::InvokeFunction {
+            invocation_id: Some(invocation_id),
+            function_id: "target::fn".into(),
+            data: serde_json::json!({ "payload": "x".repeat(4096) }),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: None,
+            namespace: None,
+        };
+
+        assert!(
+            engine
+                .guard_outbound(
+                    &target,
+                    invoke.clone(),
+                    serde_json::to_string(&invoke).unwrap()
+                )
+                .await
+                .is_none()
+        );
+        let caller_result = tokio::time::timeout(Duration::from_millis(100), invocation_task)
+            .await
+            .expect("caller completes promptly")
+            .expect("invocation task");
+        assert_eq!(
+            caller_result.unwrap().unwrap_err().code,
+            "payload_too_large"
+        );
+        assert_eq!(caller.invocation_count().await, 0);
+        assert_eq!(target.invocation_count().await, 0);
+        assert!(
+            target_rx.try_recv().is_err(),
+            "oversized invoke is not queued to the target"
+        );
+        let next = Message::WorkerRegistered {
+            worker_id: caller.id.to_string(),
+            reattach_token: None,
+        };
+        assert!(
+            engine
+                .guard_outbound(&caller, next.clone(), serde_json::to_string(&next).unwrap())
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_invocation_result_is_replaced_by_correlated_error() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        worker.receive_message_limit.store(2048, Ordering::Relaxed);
+        let invocation_id = uuid::Uuid::new_v4();
+        let msg = Message::InvocationResult {
+            invocation_id,
+            function_id: "target::fn".into(),
+            result: Some(serde_json::json!({ "payload": "x".repeat(4096) })),
+            error: None,
+            traceparent: None,
+            baggage: None,
+        };
+
+        let (fallback, fallback_payload) = engine
+            .guard_outbound(&worker, msg.clone(), serde_json::to_string(&msg).unwrap())
+            .await
+            .expect("fallback error");
+        assert!(fallback_payload.len() <= 2048);
+        match fallback {
+            Message::InvocationResult {
+                invocation_id: actual_id,
+                function_id,
+                result,
+                error,
+                ..
+            } => {
+                assert_eq!(actual_id, invocation_id);
+                assert_eq!(function_id, "target::fn");
+                assert!(result.is_none());
+                assert_eq!(error.expect("error").code, "payload_too_large");
+            }
+            other => panic!("expected InvocationResult fallback, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "fallback is returned to the single writer"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_at_limit_is_unchanged_and_other_oversized_is_dropped() {
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let message = Message::WorkerRegistered {
+            worker_id: worker.id.to_string(),
+            reattach_token: None,
+        };
+        let exact_size = serde_json::to_string(&message).unwrap().len();
+        worker
+            .receive_message_limit
+            .store(exact_size, Ordering::Relaxed);
+        let (at_limit, serialized) = engine
+            .guard_outbound(
+                &worker,
+                message.clone(),
+                serde_json::to_string(&message).unwrap(),
+            )
+            .await
+            .expect("in-limit message is accepted");
+        assert!(matches!(at_limit, Message::WorkerRegistered { .. }));
+        assert_eq!(serialized.len(), exact_size);
+
+        worker.receive_message_limit.store(1, Ordering::Relaxed);
+        assert!(
+            engine
+                .guard_outbound(
+                    &worker,
+                    message.clone(),
+                    serde_json::to_string(&message).unwrap()
+                )
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn oversized_error_text_and_message_type_are_stable() {
+        let error = payload_too_large_error(20, 16, true);
+        assert_eq!(error.code, "payload_too_large");
+
+        assert_eq!(
+            error.message,
+            "Serialized JSON envelope is 20 bytes; target worker accepts up to 16 bytes. Upgrade the target worker SDK to 0.24.5 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+        );
+        assert_eq!(
+            protocol_message_type(&Message::WorkerRegistered {
+                worker_id: "id".into(),
+                reattach_token: None
+            }),
+            "other"
+        );
+    }
+
+    #[tokio::test]
+    async fn sdk_0245_worker_never_receives_envelopes_over_64_mib() {
+        ensure_default_meter();
+        let registry = crate::worker_connections::WorkerConnectionRegistry::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(1);
+        let worker = WorkerConnection::new(tx);
+        let worker_id = worker.id;
+        registry.register_worker(worker.clone());
+        registry.update_worker_metadata(
+            &worker_id,
+            "rust".into(),
+            Some("0.24.5".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            worker.receive_message_limit.load(Ordering::Relaxed),
+            crate::workers::worker::MAX_JSON_MESSAGE_BYTES
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        let message = Message::InvocationResult {
+            invocation_id,
+            function_id: "target::fn".into(),
+            result: Some(
+                serde_json::json!({ "payload": "x".repeat(crate::workers::worker::MAX_JSON_MESSAGE_BYTES) }),
+            ),
+            error: None,
+            traceparent: None,
+            baggage: None,
+        };
+        let serialized = serde_json::to_string(&message).expect("serialize oversized result");
+        assert!(serialized.len() > crate::workers::worker::MAX_JSON_MESSAGE_BYTES);
+
+        let (fallback, _payload) = Engine::new()
+            .guard_outbound(&worker, message, serialized)
+            .await
+            .expect("correlated error fallback");
+        assert!(matches!(
+            fallback,
+            Message::InvocationResult { invocation_id: actual, result: None, error: Some(error), .. }
+                if actual == invocation_id && error.code == "payload_too_large" && error.message.contains("67108864 bytes")
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "fallback is returned to the sole writer"
+        );
     }
 }

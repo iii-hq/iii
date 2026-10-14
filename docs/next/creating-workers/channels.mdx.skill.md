@@ -2,9 +2,9 @@
 
 
 Channels move large or binary payloads between iii workers without putting the data in a JSON
-function payload. Use one when the payload is expected to be large (files, images, datasets), above
-roughly **16 MB**, intended to be streamed (audio, video), or you want incremental progress updates
-during long-running work. For small JSON, stick with a regular `worker.trigger(...)` call.
+function payload. Use one for files, images, datasets, payloads above the JSON message limit, audio
+or video streams, or incremental progress updates during long-running work. For small JSON, use a
+regular `worker.trigger(...)` call.
 
 <Note>
   For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
@@ -13,28 +13,29 @@ during long-running work. For small JSON, stick with a regular `worker.trigger(.
 
 ## Payload size
 
-iii itself doesn't enforce a maximum trigger-payload size. The effective ceiling comes from
-whichever WebSocket library the engine and the calling SDK use, and each has its own defaults for
-the per-frame and per-message size. The smallest common per-frame default sits around 16 MB, which
-is the practical line at which you should switch to a channel.
+The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust,
+Node, Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB**
+outbound limit and does not fragment messages because browser WebSocket APIs do not expose frame
+control. Browser workers also have a **16 MiB** receive limit.
 
-The libraries iii currently relies on:
+For Rust, Node, Python, and Go, messages up to **16 MiB** are sent as one text frame. Larger
+messages, up to and including 64 MiB, are sent as one fragmented WebSocket text message using
+multiple frames. Applications send and receive these messages through the usual function APIs.
 
-- **Engine** ([axum](https://docs.rs/axum) on top of
-  [tokio-tungstenite](https://docs.rs/tokio-tungstenite) ). See
-  [`WebSocketConfig`](https://docs.rs/tungstenite/latest/tungstenite/protocol/struct.WebSocketConfig.html)
-  for `max_frame_size` and `max_message_size`.
-- **Node SDK** ([ws](https://github.com/websockets/ws)). See the
-  [`maxPayload`](https://github.com/websockets/ws/blob/master/doc/ws.md#new-websocketserveroptions-callback)
-  option.
-- **Python SDK** ([websockets](https://websockets.readthedocs.io/)). See the
-  [`max_size`](https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html) option.
-- **Rust SDK** ([tokio-tungstenite](https://docs.rs/tokio-tungstenite)) See
-  [`WebSocketConfig`](https://docs.rs/tungstenite/latest/tungstenite/protocol/struct.WebSocketConfig.html),
-  same as the engine.
+The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than
+16 MiB. An updated engine checks the serialized envelope against the target worker's receive limit
+and returns `payload_too_large` to the caller when the target cannot accept it. The engine also
+limits browser workers, workers with a missing or unknown SDK version, and workers running an SDK
+older than 0.24.5 to **16 MiB**.
 
-These are library defaults and can shift between dependency versions; iii doesn't publish a hard
-guaranteed cap. 16 MB is a safe default to follow.
+Above **64 MiB**, the Rust, Node, Python, and Go SDKs reject the message locally with
+`payload_too_large`; the error message links to this [Payload size](#payload-size) section. Engines
+older than the updated size check forward messages as a single frame without checking the target's
+limit. An older worker may then disconnect if the message is too large for it. Use an engine and
+SDKs from the same release, or newer.
+
+Use a channel for payloads above **64 MiB**. Channels stream payload bytes separately from the JSON
+function envelope. See [Using channels](#using-channels).
 
 ## Using channels
 

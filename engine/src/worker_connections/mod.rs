@@ -9,7 +9,10 @@ pub mod traits;
 use std::{
     collections::HashSet,
     str::FromStr,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc, RwLock as StdRwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use chrono::{DateTime, Utc};
@@ -162,6 +165,16 @@ impl WorkerConnectionRegistry {
         namespace: Option<String>,
     ) {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
+            let (limit, requires_upgrade) =
+                crate::workers::worker::receive_message_limit(Some(&runtime), version.as_deref());
+            worker.receive_message_limit.store(limit, Ordering::Relaxed);
+            worker
+                .receive_limit_requires_upgrade
+                .store(requires_upgrade, Ordering::Relaxed);
+            *worker
+                .receive_sdk_version
+                .write()
+                .unwrap_or_else(|error| error.into_inner()) = version.clone();
             worker.runtime = Some(runtime);
             worker.version = version;
             if name.is_some() {
@@ -262,6 +275,12 @@ pub struct WorkerConnection {
     /// and is treated as [`DEFAULT_NAMESPACE`] — read it through
     /// [`WorkerConnectionRegistry::get_namespace`] rather than directly.
     pub namespace: Option<String>,
+    /// Cached maximum serialized JSON envelope accepted by this connection.
+    pub receive_message_limit: Arc<AtomicUsize>,
+    /// Whether a size rejection should recommend upgrading an unknown/old SDK.
+    pub receive_limit_requires_upgrade: Arc<AtomicBool>,
+    /// Shared with the connection writer for size-rejection diagnostics.
+    pub receive_sdk_version: Arc<StdRwLock<Option<String>>>,
     pub session: Option<Arc<Session>>,
     /// In-flight `Message::RegisterTrigger` deliveries awaiting this worker's
     /// `TriggerRegistrationResult` ack, keyed by trigger id. Only ownerless
@@ -314,6 +333,11 @@ impl WorkerConnection {
             pid: None,
             isolation: None,
             namespace: None,
+            receive_message_limit: Arc::new(AtomicUsize::new(
+                crate::workers::worker::MAX_JSON_FRAME_BYTES,
+            )),
+            receive_limit_requires_upgrade: Arc::new(AtomicBool::new(true)),
+            receive_sdk_version: Arc::new(StdRwLock::new(None)),
             session: None,
             pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
@@ -349,6 +373,11 @@ impl WorkerConnection {
             has_reader: Arc::new(AtomicBool::new(false)),
             cleanup_claimed: Arc::new(AtomicBool::new(false)),
             cleanup_done: Arc::new(watch::channel(false).0),
+            receive_message_limit: Arc::new(AtomicUsize::new(
+                crate::workers::worker::MAX_JSON_FRAME_BYTES,
+            )),
+            receive_limit_requires_upgrade: Arc::new(AtomicBool::new(true)),
+            receive_sdk_version: Arc::new(StdRwLock::new(None)),
             reattach_token: Uuid::new_v4(),
         }
     }

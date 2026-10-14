@@ -4,17 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 )
 
-// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+// maxJSONFrameBytes is the largest serialized JSON envelope sent as one text frame.
 const maxJSONFrameBytes = 16 * 1024 * 1024
 
-// Main JSON inbound message: 64 MiB (67,108,864 bytes).
+// maxJSONMessageBytes is the inclusive outbound and inbound JSON message limit.
 const maxJSONMessageBytes = 64 * 1024 * 1024
+
+// maxJSONFragmentBytes is the maximum payload written in each fragmented text frame.
+const maxJSONFragmentBytes = 1 * 1024 * 1024
 
 // MarshalMessage remains the public serializer; only transport adds size policy.
 func prepareJSON(msg any) ([]byte, error) {
@@ -26,7 +30,7 @@ func prepareJSON(msg any) ([]byte, error) {
 }
 
 func prepareFrame(frame []byte) ([]byte, error) {
-	if len(frame) <= maxJSONFrameBytes {
+	if len(frame) <= maxJSONMessageBytes {
 		return frame, nil
 	}
 	var header struct {
@@ -37,15 +41,15 @@ func prepareFrame(frame []byte) ([]byte, error) {
 	if err := json.Unmarshal(frame, &header); err != nil {
 		return frame, err
 	}
-	sizeErr := &InvocationError{Code: "payload_too_large", FunctionID: header.FunctionID,
-		Message: fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for large data.", len(frame), maxJSONFrameBytes)}
+	message := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(frame), maxJSONMessageBytes)
+	sizeErr := &InvocationError{Code: "payload_too_large", FunctionID: header.FunctionID, Message: message}
 	if header.Type == "invocationresult" && header.InvocationID != nil {
 		fallback, err := MarshalMessage(&InvocationResultMessage{InvocationID: *header.InvocationID, FunctionID: header.FunctionID,
 			Error: &ErrorBody{Code: sizeErr.Code, Message: sizeErr.Message}})
 		if err != nil {
 			return frame, err
 		}
-		if len(fallback) <= maxJSONFrameBytes {
+		if len(fallback) <= maxJSONMessageBytes {
 			return fallback, nil
 		}
 	}
@@ -79,5 +83,26 @@ func (c *Client) writeJSON(ctx context.Context, conn *websocket.Conn, frame []by
 	if err != nil {
 		return err
 	}
-	return conn.Write(ctx, websocket.MessageText, checked)
+	if len(checked) <= maxJSONFrameBytes {
+		return conn.Write(ctx, websocket.MessageText, checked)
+	}
+
+	writer, err := conn.Writer(ctx, websocket.MessageText)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(checked); start += maxJSONFragmentBytes {
+		end := start + maxJSONFragmentBytes
+		if end > len(checked) {
+			end = len(checked)
+		}
+		n, writeErr := writer.Write(checked[start:end])
+		if writeErr != nil {
+			return writeErr
+		}
+		if n != end-start {
+			return io.ErrShortWrite
+		}
+	}
+	return writer.Close()
 }

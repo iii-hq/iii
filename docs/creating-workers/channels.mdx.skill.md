@@ -2,9 +2,9 @@
 
 
 Channels move large or binary payloads between iii workers without putting the data in a JSON
-function payload. Use one when the payload is expected to be large (files, images, datasets), above
-roughly **16 MB**, intended to be streamed (audio, video), or you want incremental progress updates
-during long-running work. For small JSON, stick with a regular `worker.trigger(...)` call.
+function payload. Use one for files, images, datasets, payloads above the JSON message limit, audio
+or video streams, or incremental progress updates during long-running work. For small JSON, use a
+regular `worker.trigger(...)` call.
 
 <Note>
   For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
@@ -13,28 +13,15 @@ during long-running work. For small JSON, stick with a regular `worker.trigger(.
 
 ## Payload size
 
-iii itself doesn't enforce a maximum trigger-payload size. The effective ceiling comes from
-whichever WebSocket library the engine and the calling SDK use, and each has its own defaults for
-the per-frame and per-message size. The smallest common per-frame default sits around 16 MB, which
-is the practical line at which you should switch to a channel.
+As of SDK version **0.24.5**, the Rust, Node, Python, and Go SDKs reject outbound JSON envelopes larger
+than **16 MiB** locally with `payload_too_large`. The size is measured in bytes across the complete
+serialized UTF-8 JSON envelope, not just the function payload value. The browser SDK in version
+0.24.5 does not check outbound message size before sending. For browser payloads larger than
+16 MiB, use a channel.
 
-The libraries iii currently relies on:
-
-- **Engine** ([axum](https://docs.rs/axum) on top of
-  [tokio-tungstenite](https://docs.rs/tokio-tungstenite) ). See
-  [`WebSocketConfig`](https://docs.rs/tungstenite/latest/tungstenite/protocol/struct.WebSocketConfig.html)
-  for `max_frame_size` and `max_message_size`.
-- **Node SDK** ([ws](https://github.com/websockets/ws)). See the
-  [`maxPayload`](https://github.com/websockets/ws/blob/master/doc/ws.md#new-websocketserveroptions-callback)
-  option.
-- **Python SDK** ([websockets](https://websockets.readthedocs.io/)). See the
-  [`max_size`](https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html) option.
-- **Rust SDK** ([tokio-tungstenite](https://docs.rs/tokio-tungstenite)) See
-  [`WebSocketConfig`](https://docs.rs/tungstenite/latest/tungstenite/protocol/struct.WebSocketConfig.html),
-  same as the engine.
-
-These are library defaults and can shift between dependency versions; iii doesn't publish a hard
-guaranteed cap. 16 MB is a safe default to follow.
+Messages at or below 16 MiB are sent as a single WebSocket text frame. Channels stream payload
+bytes separately from the JSON function envelope, making them suitable for larger data and
+continuous transfers.
 
 ## Using channels
 

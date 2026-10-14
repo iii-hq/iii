@@ -12,7 +12,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, replace
 from importlib.metadata import version
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
+from typing import Any, Awaitable, Callable, Coroutine, Iterator, TypeVar, cast
 
 import websockets
 from iii_helpers.http import HttpInvocationConfig
@@ -66,11 +66,24 @@ TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
 
-# Outbound JSON is one frame (16 MiB); inbound messages may span frames (64 MiB).
-# Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+# JSON envelopes up to this size are sent as one text frame.
 _MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
-# Main JSON inbound message: 64 MiB (67,108,864 bytes).
+# Outbound and inbound JSON message limit (67,108,864 bytes).
+_MAX_JSON_OUTBOUND_BYTES = 64 * 1024 * 1024
 _MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
+# Python websockets takes strings per fragment, so boundaries are UTF-8 safe.
+_JSON_FRAGMENT_BYTES = 1024 * 1024
+
+
+def _json_fragments(payload: bytes) -> Iterator[str]:
+    """Yield UTF-8 text fragments no larger than the frame payload limit."""
+    offset = 0
+    while offset < len(payload):
+        end = min(offset + _JSON_FRAGMENT_BYTES, len(payload))
+        while end < len(payload) and payload[end] & 0b11000000 == 0b10000000:
+            end -= 1
+        yield payload[offset:end].decode("utf-8")
+        offset = end
 
 
 def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
@@ -538,7 +551,7 @@ class III:
                     # Replay must surface a dead transport to _do_connect;
                     # _send would requeue on a non-OPEN socket and let setup
                     # falsely succeed, resetting the retry budget forever.
-                    await self._ws.send(self._prepare_json(queued_msg))
+                    await self._send_json(self._ws, self._prepare_json(queued_msg))
                 except InvocationError as error:
                     if error.code != "payload_too_large":
                         raise
@@ -624,7 +637,7 @@ class III:
         data = self._to_dict(msg)
         payload = json.dumps(data)
         size = len(payload.encode("utf-8"))
-        if size <= _MAX_JSON_FRAME_BYTES:
+        if size <= _MAX_JSON_OUTBOUND_BYTES:
             return payload
         invocation_id = data.get("invocation_id")
         function_id = data.get("function_id")
@@ -640,7 +653,8 @@ class III:
             ),
             message=(
                 f"Serialized JSON envelope is {size} bytes; limit is "
-                f"{_MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+                f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use channels for larger payloads: "
+                "https://iii.dev/docs/creating-workers/channels#payload-size"
             ),
         )
         if data.get("type") == MessageType.INVOCATION_RESULT.value:
@@ -652,15 +666,50 @@ class III:
                     "error": {"code": error.code, "message": error.message},
                 }
             )
-            if len(fallback.encode("utf-8")) <= _MAX_JSON_FRAME_BYTES:
+            if len(fallback.encode("utf-8")) <= _MAX_JSON_OUTBOUND_BYTES:
                 return fallback
         raise error
+
+    async def _send_json(self, ws: ClientConnection, payload: str) -> None:
+        """Send a JSON message as one frame or a sequence of fragments."""
+        encoded = payload.encode("utf-8")
+        log.debug("Send JSON envelope: %d bytes", len(encoded))
+        if len(encoded) <= _MAX_JSON_FRAME_BYTES:
+            await ws.send(payload)
+        else:
+            started = False
+
+            def fragments() -> Iterator[str]:
+                nonlocal started
+                parts = iter(_json_fragments(encoded))
+                try:
+                    first = next(parts)
+                except StopIteration:
+                    return
+                # websockets consumes the iterable only after waiting for any
+                # previous fragmented send, so this marks this message itself.
+                started = True
+                yield first
+                yield from parts
+
+            try:
+                await ws.send(fragments())
+            except asyncio.CancelledError:
+                protocol = getattr(ws, "protocol", None)
+                incomplete = getattr(protocol, "expect_continuation_frame", False)
+                if started and incomplete:
+                    # Only this message may leave this flag true: another send
+                    # cannot start until websockets completes the current one.
+                    # Abort to avoid leaving an OPEN connection mid-message.
+                    transport = getattr(ws, "transport", None)
+                    if transport is not None:
+                        transport.abort()
+                raise
 
     async def _send(self, msg: Any) -> None:
         payload = self._prepare_json(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            log.debug("Send JSON envelope: %d bytes", len(payload.encode("utf-8")))
-            await self._ws.send(payload)
+            await self._send_json(self._ws, payload)
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
                 log.warning("Message queue full, dropping oldest message")

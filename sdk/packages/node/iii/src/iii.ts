@@ -15,9 +15,11 @@ import {
   WS_PING_INTERVAL_MS,
 } from './iii-constants'
 
-// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+// Main JSON outbound single-frame threshold: 16 MiB (16,777,216 bytes).
 const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
-// Main JSON inbound message: 64 MiB (67,108,864 bytes).
+// Payload size for each WebSocket fragment when an envelope exceeds the single-frame threshold.
+const MAX_JSON_FRAGMENT_BYTES = 1024 * 1024
+// Main JSON message limit, outbound and inbound: 64 MiB (67,108,864 bytes).
 const MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
@@ -842,7 +844,7 @@ class Sdk implements IIIClient {
 
     this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address, {
-      // Match the engine's message bound; outbound single frames use 16 MiB.
+      // Match the engine's inbound message bound; outbound envelopes may be fragmented up to the same size.
       maxPayload: MAX_JSON_MESSAGE_BYTES,
       headers: resolveHeaders(this.options?.headers),
       handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
@@ -1046,14 +1048,14 @@ class Sdk implements IIIClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
-  // Main protocol JSON uses one frame, with an inclusive 16 MiB limit.
+  // Classify the complete serialized envelope against the inclusive message limit.
   private prepareJson(message: Record<string, unknown>): string {
     const data = JSON.stringify(message)
     const size = Buffer.byteLength(data, 'utf8')
-    if (size <= MAX_JSON_FRAME_BYTES) return data
+    if (size <= MAX_JSON_MESSAGE_BYTES) return data
     const error = new InvocationError({
       code: 'payload_too_large',
-      message: `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for large data.`,
+      message: `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size`,
     })
     if (message.type === MessageType.InvocationResult) {
       const fallback = JSON.stringify({
@@ -1062,7 +1064,7 @@ class Sdk implements IIIClient {
         function_id: message.function_id,
         error: { code: error.code, message: error.message },
       })
-      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_FRAME_BYTES) return fallback
+      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_MESSAGE_BYTES) return fallback
     }
     if (typeof message.invocation_id === 'string') {
       const pending = this.invocations.get(message.invocation_id)
@@ -1074,17 +1076,35 @@ class Sdk implements IIIClient {
 
   private sendMessageRaw(data: string): void {
     // Reattach and queue flush bypass sendMessage.
-    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_FRAME_BYTES) {
+    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_MESSAGE_BYTES) {
       data = this.prepareJson(JSON.parse(data))
     }
     if (this.ws && this.isOpen()) {
+      let offset = 0
       try {
-        this.ws.send(data, (err) => {
-          if (err) {
-            this.logError('Failed to send message', err)
-          }
-        })
+        const size = Buffer.byteLength(data, 'utf8')
+        if (size <= MAX_JSON_FRAME_BYTES) {
+          this.ws.send(data, (err) => {
+            if (err) {
+              this.logError('Failed to send message', err)
+            }
+          })
+          return
+        }
+
+        const bytes = Buffer.from(data, 'utf8')
+        // Keep this loop synchronous: ws queues sends in call order, so no data
+        // frame from another message can appear between these fragments.
+        for (; offset < bytes.length; offset += MAX_JSON_FRAGMENT_BYTES) {
+          const end = Math.min(offset + MAX_JSON_FRAGMENT_BYTES, bytes.length)
+          this.ws.send(bytes.subarray(offset, end), { binary: false, fin: end === bytes.length }, (err) => {
+            if (err) {
+              this.logError('Failed to send message', err)
+            }
+          })
+        }
       } catch (error) {
+        if (offset > 0) this.ws?.terminate()
         this.logError('Exception while sending message', error)
       }
     }

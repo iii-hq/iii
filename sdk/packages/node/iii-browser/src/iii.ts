@@ -41,6 +41,40 @@ export type TelemetryOptions = {
   framework?: string
 }
 
+// Browser WebSocket APIs expose no control over framing, so outbound JSON is limited to the 16 MiB single-frame size.
+const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
+const JSON_ENCODER = new TextEncoder()
+const PAYLOAD_SIZE_DOCS = 'https://iii.dev/docs/creating-workers/channels#payload-size'
+
+class InvocationError extends Error {
+  readonly code: string
+  readonly function_id?: string
+  readonly invocation_id?: string
+
+  constructor(message: string, functionId?: string, invocationId?: string) {
+    super(message)
+    this.name = 'InvocationError'
+    this.code = 'payload_too_large'
+    this.function_id = functionId
+    this.invocation_id = invocationId
+  }
+}
+
+function createPayloadTooLargeError(
+  size: number,
+  functionId?: string,
+  invocationId?: string,
+): InvocationError {
+  return new InvocationError(
+    `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for larger payloads: ${PAYLOAD_SIZE_DOCS}`,
+    functionId,
+    invocationId,
+  )
+}
+
+function isPayloadTooLargeError(error: unknown): error is Error & { code: string } {
+  return error instanceof Error && 'code' in error && error.code === 'payload_too_large'
+}
 /**
  * Configuration options passed to {@link registerWorker}.
  *
@@ -213,21 +247,25 @@ class Sdk implements ISdk {
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
-    this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
-    this.triggerTypes.set(triggerType.id, {
-      message: { ...triggerType, message_type: MessageType.RegisterTriggerType },
+    const message = this.snapshotRegistration<RegisterTriggerTypeMessage>({
+      ...triggerType,
+      message_type: MessageType.RegisterTriggerType,
+    })
+    this.sendMessage(MessageType.RegisterTriggerType, message, true)
+    this.triggerTypes.set(message.id, {
+      message,
       handler,
     })
 
     return {
-      id: triggerType.id,
+      id: message.id,
       // Pairs a function with its trigger, so it defaults the trigger's namespace
       // to this worker's — otherwise the function lands in the worker's namespace
       // and the trigger in `default`, never resolving it. The low-level
       // `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig) => {
         return this.registerTrigger({
-          type: triggerType.id,
+          type: message.id,
           function_id: functionId,
           config,
           namespace: this.namespace,
@@ -236,7 +274,7 @@ class Sdk implements ISdk {
       registerFunction: (functionId, handler, config) => {
         const ref = this.registerFunction(functionId, handler)
         this.registerTrigger({
-          type: triggerType.id,
+          type: message.id,
           function_id: functionId,
           config,
           namespace: this.namespace,
@@ -244,7 +282,7 @@ class Sdk implements ISdk {
         return ref
       },
       unregister: () => {
-        this.unregisterTriggerType(triggerType)
+        this.unregisterTriggerType(message)
       },
     }
   }
@@ -283,7 +321,7 @@ class Sdk implements ISdk {
    */
   registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
     const id = randomUUID()
-    const fullTrigger: RegisterTriggerMessage = {
+    const fullTrigger = this.snapshotRegistration<RegisterTriggerMessage>({
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
@@ -300,7 +338,7 @@ class Sdk implements ISdk {
         )
         return namespace !== undefined ? { namespace } : {}
       })(),
-    }
+    })
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
 
@@ -351,11 +389,11 @@ class Sdk implements ISdk {
       throw new Error(`function id already registered: ${functionId}`)
     }
 
-    const fullMessage: RegisterFunctionMessage = {
+    const fullMessage = this.snapshotRegistration<RegisterFunctionMessage>({
       ...options,
       id: functionId,
       message_type: MessageType.RegisterFunction,
-    }
+    })
 
     this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
 
@@ -666,13 +704,18 @@ class Sdk implements ISdk {
     // would trip WORKER_NAMESPACE_CONFLICT against ourselves. The token proves
     // we ARE that worker (ids alone are publicly listable).
     if (this.workerId) {
-      this.sendMessageRaw(
-        JSON.stringify({
-          type: MessageType.Reattach,
-          previous_worker_id: this.workerId,
-          reattach_token: this.reattachToken,
-        }),
-      )
+      try {
+        this.sendMessageRaw(
+          JSON.stringify({
+            type: MessageType.Reattach,
+            previous_worker_id: this.workerId,
+            reattach_token: this.reattachToken,
+          }),
+        )
+      } catch (error) {
+        if (!isPayloadTooLargeError(error)) throw error
+        console.error('[iii] Reattach JSON envelope rejected', error)
+      }
     }
 
     // Announce before registering anything. The engine buffers a connection's
@@ -683,13 +726,13 @@ class Sdk implements ISdk {
 
 
     this.triggerTypes.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterTriggerType, message, true)
+      this.replayRegistration(MessageType.RegisterTriggerType, message)
     })
     this.functions.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterFunction, message, true)
+      this.replayRegistration(MessageType.RegisterFunction, message)
     })
     this.triggers.forEach((trigger) => {
-      this.sendMessage(MessageType.RegisterTrigger, trigger, true)
+      this.replayRegistration(MessageType.RegisterTrigger, trigger)
     })
 
     const pending = this.messagesToSend
@@ -702,7 +745,12 @@ class Sdk implements ISdk {
       ) {
         continue
       }
-      this.sendMessageRaw(JSON.stringify(message))
+      try {
+        this.sendMessageRaw(JSON.stringify(message))
+      } catch (error) {
+        if (!isPayloadTooLargeError(error)) throw error
+        console.error('[iii] Queued JSON envelope rejected', error)
+      }
     }
   }
 
@@ -710,7 +758,51 @@ class Sdk implements ISdk {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
+  private snapshotRegistration<T extends object>(message: T): T {
+    return JSON.parse(JSON.stringify(message)) as T
+  }
+
+  private replayRegistration(type: MessageType, message: Omit<IIIMessage, 'message_type'>): void {
+    try {
+      this.sendMessage(type, message, true)
+    } catch (error) {
+      if (!isPayloadTooLargeError(error)) throw error
+      console.error('[iii] Registration JSON envelope rejected', error)
+    }
+  }
+
+  private prepareJson(message: Record<string, unknown>): string {
+    const data = JSON.stringify(message)
+    const size = JSON_ENCODER.encode(data).byteLength
+    if (size <= MAX_JSON_FRAME_BYTES) return data
+
+    const error = createPayloadTooLargeError(
+      size,
+      typeof message.function_id === 'string' ? message.function_id : undefined,
+      typeof message.invocation_id === 'string' ? message.invocation_id : undefined,
+    )
+    if (message.type === MessageType.InvocationResult) {
+      const fallback = JSON.stringify({
+        type: MessageType.InvocationResult,
+        invocation_id: message.invocation_id,
+        function_id: message.function_id,
+        error: { code: error.code, message: error.message },
+      })
+      if (JSON_ENCODER.encode(fallback).byteLength <= MAX_JSON_FRAME_BYTES) return fallback
+    }
+
+    if (typeof message.invocation_id === 'string') {
+      const pending = this.invocations.get(message.invocation_id)
+      this.invocations.delete(message.invocation_id)
+      pending?.reject(error)
+    }
+    throw error
+  }
+
   private sendMessageRaw(data: string): void {
+    if (JSON_ENCODER.encode(data).byteLength > MAX_JSON_FRAME_BYTES) {
+      data = this.prepareJson(JSON.parse(data) as Record<string, unknown>)
+    }
     if (this.ws && this.isOpen()) {
       try {
         this.ws.send(data)
@@ -758,10 +850,11 @@ class Sdk implements ISdk {
 
   private sendMessage(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>, skipIfClosed = false): void {
     const wireMessage = this.toWireFormat(messageType, message)
+    const data = this.prepareJson(wireMessage)
     if (this.isOpen()) {
-      this.sendMessageRaw(JSON.stringify(wireMessage))
+      this.sendMessageRaw(data)
     } else if (!skipIfClosed) {
-      this.messagesToSend.push(wireMessage)
+      this.messagesToSend.push(JSON.parse(data) as Record<string, unknown>)
     }
   }
 

@@ -1,7 +1,9 @@
-// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+// Main JSON single-frame threshold: 16 MiB (16,777,216 bytes).
 const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
-// Main JSON inbound frame/message: 64 MiB (67,108,864 bytes).
+// Main JSON inbound and outbound message limit: 64 MiB (67,108,864 bytes).
 const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+// Payload bytes in each outbound fragment above the single-frame threshold.
+const JSON_FRAGMENT_BYTES: usize = 1024 * 1024;
 
 #[cfg(test)]
 mod json_size_tests {
@@ -21,8 +23,8 @@ mod json_size_tests {
         let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
         let (mut tx, _) = stream.split();
         let sdk = IIIClient::new("ws://127.0.0.1:0");
-        let rejected =
-            IIIClient::prepare_envelope(&invocation("x".repeat(MAX_JSON_FRAME_BYTES))).unwrap_err();
+        let rejected = IIIClient::prepare_envelope(&invocation("x".repeat(MAX_JSON_MESSAGE_BYTES)))
+            .unwrap_err();
         assert_eq!(
             rejected.invocation_error().unwrap().code,
             "payload_too_large"
@@ -31,7 +33,7 @@ mod json_size_tests {
             IIIClient::prepare_envelope(&Message::InvocationResult {
                 invocation_id: Uuid::nil(),
                 function_id: "f".into(),
-                result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+                result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
                 error: None,
                 traceparent: None,
                 baggage: None,
@@ -53,7 +55,7 @@ mod json_size_tests {
         let error = sdk
             .trigger(crate::protocol::TriggerRequest {
                 function_id: "size::echo".into(),
-                payload: Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+                payload: Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
                 action: None,
                 timeout_ms: Some(100),
             })
@@ -95,7 +97,7 @@ mod json_size_tests {
         let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
         assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
 
-        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
 
         let types = sdk.inner.trigger_types.lock_or_recover();
         let accepted = &types["size::custom"];
@@ -127,7 +129,7 @@ mod json_size_tests {
         assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
         let rejected = sdk.register_function_inner(
             RegisterFunctionMessage::with_id("size::handler".into())
-                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+                .with_description("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             None,
         );
         rejected.unregister();
@@ -150,16 +152,16 @@ mod json_size_tests {
         sdk.inner.running.store(true, Ordering::SeqCst);
         let rejected = sdk.register_function_inner(
             RegisterFunctionMessage::with_id("size::rejected".into())
-                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+                .with_description("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             None,
         );
         rejected.unregister();
-        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
         let error = sdk
             .register_trigger(RegisterTriggerInput::new(
                 "size::custom",
                 "size::handler",
-                Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+                Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             ))
             .err()
             .expect("oversized trigger must fail");
@@ -187,7 +189,7 @@ mod json_size_tests {
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let owned = sdk.inner.trigger_types.lock_or_recover();
         let thread = std::thread::spawn(move || {
-            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
             finished_tx.send(()).unwrap();
         });
         // Holding the mutex makes the old insertion-before-validation path
@@ -212,7 +214,7 @@ mod json_size_tests {
             .clone();
         let mut rejected_message = rejected_message.to_message();
         if let Message::RegisterTriggerType { description, .. } = &mut rejected_message {
-            *description = "x".repeat(MAX_JSON_FRAME_BYTES);
+            *description = "x".repeat(MAX_JSON_MESSAGE_BYTES);
         }
         let rejected_sdk = sdk.clone();
         let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
@@ -259,32 +261,309 @@ mod json_size_tests {
         }
     }
 
-    #[test]
-    fn complete_utf8_envelope_has_inclusive_boundary() {
+    fn envelope_with_size(size: usize) -> PreparedEnvelope {
         let overhead = serde_json::to_string(&invocation(String::new()))
             .unwrap()
             .len();
-        for size in [
-            MAX_JSON_FRAME_BYTES - 1,
-            MAX_JSON_FRAME_BYTES,
-            MAX_JSON_FRAME_BYTES + 1,
-        ] {
-            let message = invocation("x".repeat(size - overhead));
-            let result = IIIClient::prepare_envelope(&message);
-            if size <= MAX_JSON_FRAME_BYTES {
-                assert_eq!(result.unwrap().payload.len(), size);
+        IIIClient::prepare_envelope(&invocation("x".repeat(size - overhead))).unwrap()
+    }
+
+    fn assert_frame_classification(envelope: &PreparedEnvelope, expected_size: usize) {
+        assert_eq!(envelope.payload.len(), expected_size);
+        let frames = outbound_ws_frames(envelope);
+        if expected_size <= MAX_JSON_FRAME_BYTES {
+            assert_eq!(frames.len(), 1);
+            assert!(matches!(frames[0], WsMessage::Text(_)));
+            return;
+        }
+
+        let expected_count = expected_size.div_ceil(JSON_FRAGMENT_BYTES);
+        assert_eq!(frames.len(), expected_count);
+        for (index, frame) in frames.iter().enumerate() {
+            let WsMessage::Frame(frame) = frame else {
+                panic!("expected a fragmented WebSocket frame");
+            };
+            let is_first = index == 0;
+            let is_final = index + 1 == expected_count;
+            let opcode = if is_first { Data::Text } else { Data::Continue };
+            assert_eq!(frame.header().opcode, OpCode::Data(opcode));
+            assert_eq!(frame.header().is_final, is_final);
+            let expected_payload = if is_final {
+                expected_size - index * JSON_FRAGMENT_BYTES
             } else {
-                let error = result.unwrap_err();
-                assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
-            }
+                JSON_FRAGMENT_BYTES
+            };
+            assert_eq!(frame.payload().len(), expected_payload);
         }
     }
 
     #[test]
-    fn unicode_and_escapes_use_serialized_bytes() {
-        let input = "😀é\n\"\\".repeat(1_700_000);
+    fn complete_utf8_envelope_has_inclusive_single_frame_and_message_boundaries() {
+        for size in [
+            MAX_JSON_FRAME_BYTES - 1,
+            MAX_JSON_FRAME_BYTES,
+            MAX_JSON_FRAME_BYTES + 1,
+            40 * 1024 * 1024,
+            MAX_JSON_MESSAGE_BYTES,
+        ] {
+            let envelope = envelope_with_size(size);
+            assert_frame_classification(&envelope, size);
+        }
+
+        let overhead = serde_json::to_string(&invocation(String::new()))
+            .unwrap()
+            .len();
+        let message = invocation("x".repeat(MAX_JSON_MESSAGE_BYTES + 1 - overhead));
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        let size = MAX_JSON_MESSAGE_BYTES + 1;
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
+    }
+
+    #[test]
+    fn unicode_is_counted_as_serialized_utf8_and_fragments_may_split_codepoints() {
+        let input = "😀é\n\"\\\\".repeat(1_500_000);
         assert!(input.chars().count() < MAX_JSON_FRAME_BYTES);
-        assert!(IIIClient::prepare_envelope(&invocation(input)).is_err());
+        let envelope = IIIClient::prepare_envelope(&invocation(input)).unwrap();
+        assert!(envelope.payload.len() > MAX_JSON_FRAME_BYTES);
+        assert!(envelope.payload.len() <= MAX_JSON_MESSAGE_BYTES);
+
+        let mut message = invocation("😀".repeat(5_000_000));
+        for _ in 0..4 {
+            let serialized = serde_json::to_string(&message).unwrap();
+            if !serialized.is_char_boundary(JSON_FRAGMENT_BYTES) {
+                break;
+            }
+            if let Message::InvokeFunction { function_id, .. } = &mut message {
+                function_id.push('x');
+            }
+        }
+        let serialized = serde_json::to_string(&message).unwrap();
+        assert!(!serialized.is_char_boundary(JSON_FRAGMENT_BYTES));
+        let envelope = IIIClient::prepare_envelope(&message).unwrap();
+        let frames = outbound_ws_frames(&envelope);
+        let payloads: Vec<_> = frames
+            .iter()
+            .map(|frame| match frame {
+                WsMessage::Frame(frame) => frame.payload(),
+                _ => panic!("expected a fragmented data frame"),
+            })
+            .collect();
+        assert!(std::str::from_utf8(payloads[0]).is_err());
+        let reassembled: Vec<u8> = payloads.into_iter().flatten().copied().collect();
+        assert_eq!(reassembled, serialized.as_bytes());
+        let decoded: Message = serde_json::from_slice(&reassembled).unwrap();
+        assert!(matches!(decoded, Message::InvokeFunction { .. }));
+    }
+
+    #[test]
+    fn multibyte_envelope_over_message_limit_is_rejected_by_utf8_byte_count() {
+        let message = invocation("😀".repeat(17_000_000));
+        let serialized = serde_json::to_string(&message).unwrap();
+        let character_count = serialized.chars().count();
+        let byte_count = serialized.len();
+
+        assert!(character_count < MAX_JSON_MESSAGE_BYTES);
+        assert!(byte_count > MAX_JSON_MESSAGE_BYTES);
+        assert_eq!(character_count, 17_000_117);
+        assert_eq!(byte_count, 68_000_117);
+
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {byte_count} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
+    }
+
+    #[test]
+    fn escaped_utf8_below_message_limit_is_rejected_after_json_expansion() {
+        let input = String::from_utf8(vec![0; 11_200_000]).unwrap();
+        let raw_bytes = input.len();
+        let message = invocation(input);
+        let serialized = serde_json::to_string(&message).unwrap();
+        let envelope_bytes = serialized.len();
+
+        assert!(raw_bytes < MAX_JSON_MESSAGE_BYTES);
+        assert!(envelope_bytes > MAX_JSON_MESSAGE_BYTES);
+        assert!(
+            envelope_bytes >= 6 * raw_bytes,
+            "NUL escaping should expand each raw byte to a six-byte JSON escape"
+        );
+
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {envelope_bytes} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fragmented_envelopes_reassemble_under_engine_frame_limits() {
+        use tokio_tungstenite::accept_async_with_config;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(MAX_JSON_FRAME_BYTES))
+                .max_message_size(Some(MAX_JSON_MESSAGE_BYTES));
+            let mut ws = accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            for expected_size in [
+                MAX_JSON_FRAME_BYTES,
+                MAX_JSON_FRAME_BYTES + 1,
+                40 * 1024 * 1024,
+                MAX_JSON_MESSAGE_BYTES,
+            ] {
+                let frame = ws.next().await.unwrap().unwrap();
+                let text = frame.into_text().unwrap();
+                assert_eq!(text.len(), expected_size);
+                assert!(text.starts_with("{\"type\":\"invokefunction\""));
+                assert!(text.ends_with('}'));
+            }
+            let frame = ws.next().await.unwrap().unwrap();
+            let text = frame.into_text().unwrap();
+            let parsed: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed["data"].as_str().unwrap().chars().count(), 4_200_000);
+            ws.send(WsMessage::Ping(Bytes::new())).await.unwrap();
+            assert!(matches!(
+                ws.next().await.unwrap().unwrap(),
+                WsMessage::Pong(_)
+            ));
+        });
+
+        let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (mut tx, mut rx) = stream.split();
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        for size in [
+            MAX_JSON_FRAME_BYTES,
+            MAX_JSON_FRAME_BYTES + 1,
+            40 * 1024 * 1024,
+            MAX_JSON_MESSAGE_BYTES,
+        ] {
+            sdk.send_ws(&mut tx, &envelope_with_size(size))
+                .await
+                .unwrap();
+        }
+        let mut unicode = invocation("😀".repeat(4_200_000));
+        for _ in 0..4 {
+            let serialized = serde_json::to_string(&unicode).unwrap();
+            if !serialized.is_char_boundary(JSON_FRAGMENT_BYTES) {
+                break;
+            }
+            if let Message::InvokeFunction { function_id, .. } = &mut unicode {
+                function_id.push('x');
+            }
+        }
+        sdk.send_ws(&mut tx, &IIIClient::prepare_envelope(&unicode).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.next().await.unwrap().unwrap(),
+            WsMessage::Ping(_)
+        ));
+        tx.send(WsMessage::Pong(Bytes::new())).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_callers_cannot_interleave_fragments_and_connection_stays_open() {
+        use tokio_tungstenite::accept_async_with_config;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ping_tx, ping_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(MAX_JSON_FRAME_BYTES))
+                .max_message_size(Some(MAX_JSON_MESSAGE_BYTES));
+            let mut ws = accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            let mut received = HashSet::new();
+            while received.len() < 3 {
+                let frame = ws.next().await.unwrap().unwrap();
+                let WsMessage::Text(text) = frame else {
+                    continue;
+                };
+                let parsed: Value = serde_json::from_str(&text).unwrap();
+                let Some(function_id) = parsed["function_id"].as_str() else {
+                    continue;
+                };
+                if function_id.starts_with("size::concurrent_") {
+                    assert_eq!(
+                        parsed["data"].as_str().unwrap().len(),
+                        MAX_JSON_FRAME_BYTES + 1
+                    );
+                    received.insert(function_id.to_owned());
+                }
+            }
+            assert_eq!(received.len(), 3);
+            ws.send(WsMessage::Ping(Bytes::new())).await.unwrap();
+            let _ = ping_tx.send(());
+            loop {
+                let frame = ws.next().await.unwrap().unwrap();
+                let WsMessage::Text(text) = frame else {
+                    continue;
+                };
+                let parsed: Value = serde_json::from_str(&text).unwrap();
+                if parsed["function_id"] == "size::after" {
+                    break;
+                }
+            }
+        });
+
+        let sdk = IIIClient::new(&format!("ws://{address}"));
+        sdk.connect();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sdk.get_connection_state() != IIIConnectionState::Connected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("client should connect to the in-process engine");
+
+        let mut callers = Vec::new();
+        for index in 0..3 {
+            let sdk = sdk.clone();
+            callers.push(tokio::task::spawn_blocking(move || {
+                let mut message = invocation("x".repeat(MAX_JSON_FRAME_BYTES + 1));
+                if let Message::InvokeFunction { function_id, .. } = &mut message {
+                    *function_id = format!("size::concurrent_{index}");
+                }
+                sdk.send_message(message).unwrap();
+            }));
+        }
+        for caller in callers {
+            caller.await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(20), ping_rx)
+            .await
+            .expect("server should receive whole fragmented messages before ping")
+            .unwrap();
+        let mut after = invocation("after".to_owned());
+        if let Message::InvokeFunction { function_id, .. } = &mut after {
+            *function_id = "size::after".into();
+        }
+        sdk.send_message(after).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("connection should remain open after fragmented messages")
+            .unwrap();
+        sdk.shutdown_async().await;
     }
 
     #[test]
@@ -292,15 +571,22 @@ mod json_size_tests {
         let message = Message::InvocationResult {
             invocation_id: Uuid::nil(),
             function_id: "size::echo".into(),
-            result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+            result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
         };
+        let size = serde_json::to_string(&message).unwrap().len();
         let payload = IIIClient::prepare_envelope(&message).unwrap().payload;
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["invocation_id"], Uuid::nil().to_string());
         assert_eq!(parsed["error"]["code"], "payload_too_large");
+        assert_eq!(
+            parsed["error"]["message"],
+            format!(
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
         assert!(parsed.get("result").is_none());
         assert!(!payload.contains("secret"));
     }
@@ -343,7 +629,16 @@ use tokio::{
 };
 #[cfg(test)]
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::{Message as WsMessage, Utf8Bytes, protocol::WebSocketConfig};
+use tokio_tungstenite::tungstenite::{
+    Bytes, Message as WsMessage, Utf8Bytes,
+    protocol::{
+        WebSocketConfig,
+        frame::{
+            Frame,
+            coding::{Data, OpCode},
+        },
+    },
+};
 use uuid::Uuid;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -873,6 +1168,31 @@ struct PreparedEnvelope {
     // The payload is dropped before its lease; send_ws borrows the envelope
     // throughout its shared-byte clone and network await.
     _spare_capacity: Option<SpareCapacityLease>,
+}
+
+fn outbound_ws_frames(message: &PreparedEnvelope) -> Vec<WsMessage> {
+    if message.payload.len() <= MAX_JSON_FRAME_BYTES {
+        return vec![WsMessage::Text(message.payload.clone())];
+    }
+
+    let payload: Bytes = message.payload.clone().into();
+    (0..payload.len())
+        .step_by(JSON_FRAGMENT_BYTES)
+        .map(|offset| {
+            let end = (offset + JSON_FRAGMENT_BYTES).min(payload.len());
+            let opcode = if offset == 0 {
+                Data::Text
+            } else {
+                Data::Continue
+            };
+            let is_final = end == payload.len();
+            WsMessage::Frame(Frame::message(
+                payload.slice(offset..end),
+                OpCode::Data(opcode),
+                is_final,
+            ))
+        })
+        .collect()
 }
 
 impl PreparedEnvelope {
@@ -2057,7 +2377,7 @@ impl IIIClient {
         }
     }
 
-    // A single-frame JSON envelope must fit Axum's inclusive 16 MiB frame limit.
+    // Receive complete JSON messages up to the shared 64 MiB message limit.
     fn receive_config() -> WebSocketConfig {
         WebSocketConfig::default()
             .max_frame_size(Some(MAX_JSON_MESSAGE_BYTES))
@@ -2087,7 +2407,7 @@ impl IIIClient {
     ) -> Result<PreparedEnvelope, Error> {
         let payload = serde_json::to_string(message)?;
         let size = payload.len();
-        if size <= MAX_JSON_FRAME_BYTES {
+        if size <= MAX_JSON_MESSAGE_BYTES {
             return Ok(PreparedEnvelope::from_json(
                 payload,
                 Self::registration_key(message),
@@ -2095,7 +2415,7 @@ impl IIIClient {
             ));
         }
         let error_message = format!(
-            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
         );
         if let Message::InvocationResult {
             invocation_id,
@@ -2116,7 +2436,7 @@ impl IIIClient {
                 baggage: None,
             };
             let payload = serde_json::to_string(&fallback)?;
-            if payload.len() <= MAX_JSON_FRAME_BYTES {
+            if payload.len() <= MAX_JSON_MESSAGE_BYTES {
                 return Ok(PreparedEnvelope::from_json(payload, None, None));
             }
         }
@@ -2460,18 +2780,20 @@ impl IIIClient {
     }
 
     async fn send_ws(&self, ws_tx: &mut WsTx, message: &PreparedEnvelope) -> Result<(), Error> {
-        // Bound the send: on a blackholed peer with a full TCP send window,
-        // send().await can block indefinitely — and since callers await this
-        // inside select! handlers, an unbounded send wedges the entire
-        // connection loop (idle detection included). A send that can't
-        // complete within the idle window is a dead link; reconnect.
-        let t = *self.inner.timings.lock_or_recover();
-        match tokio::time::timeout(
-            t.idle_timeout,
-            ws_tx.send(WsMessage::Text(message.payload.clone())),
-        )
-        .await
-        {
+        let timeout = self.inner.timings.lock_or_recover().idle_timeout;
+        for frame in outbound_ws_frames(message) {
+            self.send_ws_frame(ws_tx, frame, timeout).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_ws_frame(
+        &self,
+        ws_tx: &mut WsTx,
+        frame: WsMessage,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        match tokio::time::timeout(timeout, ws_tx.send(frame)).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.into()),
             Err(_) => {
