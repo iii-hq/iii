@@ -26,9 +26,9 @@
     "dev:console": "turbo run dev --filter=console-frontend"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.6",
-    "tsx": "^4.21.0",
-    "turbo": "^2.5.0"
+    "@biomejs/biome": "^2.5.15",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.7"
   },
   "packageManager": "pnpm@10.19.0",
   "engines": {
