@@ -505,17 +505,16 @@ impl TriggerRegistry {
             // remove it — and only unregister it with the registrator — if it
             // still belongs to the disconnecting worker; a replaced binding
             // keeps firing. Same guard as trigger types below.
-            if self
+            let Some((_, trigger)) = self
                 .triggers
                 .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id))
-                .is_none()
-            {
+            else {
                 tracing::debug!(
                     trigger_id = trigger.id,
                     "Trigger already replaced by another worker; leaving it"
                 );
                 continue;
-            }
+            };
 
             if let Some(trigger_type) = self.trigger_types.get(&trigger.provider_key()) {
                 tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
@@ -1524,6 +1523,93 @@ mod tests {
             .unwrap();
         assert!(removed);
         assert!(!registry.triggers.contains_key("t_durable"));
+    }
+
+    #[tokio::test]
+    async fn worker_cleanup_uses_the_provider_of_the_removed_binding() {
+        struct PauseFirstUnregister {
+            calls: AtomicUsize,
+            entered: tokio::sync::Notify,
+            resume: tokio::sync::Notify,
+        }
+        impl TriggerRegistrator for Arc<PauseFirstUnregister> {
+            fn register_trigger(
+                &self,
+                _trigger: Trigger,
+            ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+
+            fn unregister_trigger(
+                &self,
+                _trigger: Trigger,
+            ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+                Box::pin(async move {
+                    if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        self.entered.notify_one();
+                        self.resume.notified().await;
+                    }
+                    Ok(())
+                })
+            }
+        }
+
+        let registry = Arc::new(TriggerRegistry::new());
+        let fallback = Arc::new(PauseFirstUnregister {
+            calls: AtomicUsize::new(0),
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "fallback",
+                Box::new(fallback.clone()),
+                None,
+            ))
+            .await
+            .unwrap();
+        let owner = Uuid::new_v4();
+        for id in ["first", "second"] {
+            let mut trigger = resolved_trigger(id, "evt", "shop");
+            trigger.worker_id = Some(owner);
+            registry.register_trigger(trigger).await.unwrap();
+        }
+
+        let home = Arc::new(ControlledRegistrator::new(false, false));
+        // Install the provider before cleanup takes a type-map read guard, but
+        // defer its re-home pass until cleanup has snapshotted both bindings.
+        registry.trigger_types.insert(
+            type_key("shop", "evt"),
+            TriggerType::new_ns("shop", "evt", "home", Box::new(home.clone()), None),
+        );
+        let cleanup = {
+            let registry = registry.clone();
+            tokio::spawn(async move { registry.unregister_worker(&owner).await })
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fallback.entered.notified(),
+        )
+        .await
+        .expect("cleanup reached its first provider call");
+
+        let home_type = registry
+            .trigger_types
+            .get(&type_key("shop", "evt"))
+            .unwrap();
+        registry.rehome_fallback_bindings(&home_type).await;
+        drop(home_type);
+        assert_eq!(home.register_count.load(Ordering::SeqCst), 1);
+        fallback.resume.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), cleanup)
+            .await
+            .expect("cleanup completed")
+            .unwrap();
+
+        assert!(registry.triggers.is_empty());
+        assert_eq!(home.unregister_count.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback.calls.load(Ordering::SeqCst), 2);
     }
 
     /// Provider restart where the replacement registers concurrently with the
