@@ -46,19 +46,13 @@ with `state` kept in front as a fast read cache.
 
 ### Ch. 4: Make it durable
 
-Push click events onto `queue` so redirects stay fast, and publish `link.created` events with
-`pubsub` (deprecated) that a cache and an analytics function each subscribe to.
+Push click events onto `queue` so redirects stay fast, and publish `link.created` and `link.updated`
+events on durable topics that an analytics function and a cache refresher each subscribe to.
 
 ### Ch. 5: Stream live clicks
 
-Push every click to subscribers in real time from a dedicated `click-streamer` worker with
-`iii-stream` (deprecated).
-
-<Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and `pubsub` is deprecated (pubsub); both will be removed
-  in an upcoming release. Behavior is unchanged for now, so chapters 4, 5 and 7 still
-  work. See [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
-</Warning>
+Push every click to listeners in real time from a dedicated `click-streamer` worker that owns a
+trigger type, and read the running total with a query.
 
 ### Ch. 6: Move bulk data with channels
 
@@ -66,5 +60,5 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
 
 ### Ch. 7: Bring in the browser
 
-Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, subscribe to
-the click stream, and register a browser-side function the server can call.
+Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, bind to the
+live click feed, and register a browser-side function the server can call.

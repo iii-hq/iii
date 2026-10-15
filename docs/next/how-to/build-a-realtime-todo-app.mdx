@@ -5,23 +5,21 @@ owner: "devrel"
 type: "how-to"
 ---
 
-<Warning title="Deprecated">
-  This outline is built on `stream::get`, `stream::set`, `stream::list` and `stream::delete`.
-  `stream::*` is deprecated (iii-stream) and will be removed in an upcoming release.
-  Behavior is unchanged for now. For new apps, follow the stored records recipe in
-  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
-</Warning>
-
 A full-stack reactive todo app over a single browser-to-engine WebSocket. Function calls and live
-stream change events flow over the same connection.
+change notifications flow over the same connection. The app follows the stored records pattern from
+[Recipe 2: stored records with live updates](../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates):
+the todo worker owns the data, serves queries, and announces each change through a trigger type it
+owns.
 
 ## Engine configuration
 
-The `config.yaml` workers needed to support a browser-driven reactive app.
+The workers needed to support a browser-driven reactive app: `state` for storage and an RBAC
+listener (`rbac-proxy` or `iii-worker-manager`) for browser connections. No streaming worker is
+required.
 
 ## Backend
 
-The worker, auth, stream wrapper, and CRUD functions that power the app server-side.
+The worker, auth, storage, change trigger, and CRUD functions that power the app server-side.
 
 ### Worker setup
 
@@ -30,17 +28,24 @@ Connect a worker, register the functions the app needs, and bind triggers.
 ### Auth function (RBAC)
 
 An auth function runs on each new browser WebSocket connection, issues a session ID, and namespaces
-the session's registered functions to prevent collisions.
+the session's registered functions to prevent collisions. It also limits the trigger types the
+session may bind to the todo change trigger.
 
-### Stream wrapper
+### Storage
 
-A typed wrapper class over `stream::get` / `stream::set` / `stream::list` / `stream::delete` for one
-named stream.
+Todos live in the `state` worker under one scope, one key per todo, each with a revision number that
+every write increments.
+
+### Change trigger
+
+The todo worker declares a `todos::changed` trigger type, keeps a capped table of its bindings, and
+after every committed write delivers `{ id, revision, op }` to each binding in the binding's
+namespace.
 
 ### Functions
 
-The CRUD functions the browser calls (create, toggle, delete, list) wired to write through the
-stream wrapper.
+The CRUD functions the browser calls (create, toggle, delete) write to storage and then fire
+`todos::changed`. `todos::get` and a paginated `todos::list` serve reads.
 
 ## Frontend
 
@@ -52,9 +57,12 @@ Connect the browser to the engine over a single WebSocket using `iii-browser-sdk
 
 ### Real-time hook
 
-A hook that subscribes to the stream and re-renders the UI on each change event the engine pushes.
+A hook that binds a browser function to `todos::changed`, then loads the list with `todos::list`.
+Each notification re-reads one todo unless the hook already has that revision, and the hook reloads
+the list after a reconnect.
 
 ## Key concepts
 
 The reactive primitives this app relies on: single-WebSocket transport, per-session RBAC
-namespacing, and stream-driven UI updates.
+namespacing, a worker-owned trigger type for change notifications, and a query for the initial
+state and recovery.

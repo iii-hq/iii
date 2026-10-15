@@ -464,13 +464,20 @@ keys. Do not delete the `iii-stream` store files or Redis keys until your consum
 A documented export path, the id mapping and a rollback plan are part of the removal phase and will
 be published before storage access is removed in an upcoming release.
 
-## Tutorials that still use iii-stream or pubsub
+## Worked examples in the tutorials
 
-The Linkly tutorial chapters
-[Ch. 4: Make it durable](../tutorials/linkly/durable-execution),
-[Ch. 5: Stream live clicks](../tutorials/linkly/streaming) and
-[Ch. 7: Bring in the browser](../tutorials/linkly/frontend) still use `pubsub` and `iii-stream`.
-They keep working during the support window and will be rewritten with Recipe 2.
+The Linkly tutorial and the real-time todo how-to no longer use `iii-stream` or `pubsub`. They use
+worker-owned trigger types and the `queue` worker:
+
+- [Ch. 5: Stream live clicks](../tutorials/linkly/streaming) is a worked example of Recipe 2. The
+  `click-streamer` worker owns the `click-streamer::click` trigger type and announces each click
+  after its row is committed, and `link::click_summary` gives a late listener the current total.
+- [Ch. 7: Bring in the browser](../tutorials/linkly/frontend) binds that trigger type from the
+  Browser SDK through `rbac-proxy`, reads the total first, and reads it again after a reconnect.
+- [Ch. 4: Make it durable](../tutorials/linkly/durable-execution) fans `link.created` and
+  `link.updated` out on durable topics with `iii::durable::publish` and `durable:subscriber`.
+- [Build a real-time todo app](../how-to/build-a-realtime-todo-app) outlines Recipe 2 for a browser
+  app: stored todos, `todos::get` and `todos::list`, and an owned `todos::changed` trigger type.
 
 ## Checklist
 
