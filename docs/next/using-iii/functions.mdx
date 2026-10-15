@@ -73,8 +73,8 @@ and returns the result.
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
 once: direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
-event-source workers like http, cron, queue, state, and iii-stream. All paths leave the handler
-unchanged.
+event-source workers like http, cron, queue, state, and iii-stream (deprecated). All paths leave
+the handler unchanged.
 
 The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
 from the terminal with the command `iii trigger`. The engine routes the call to whatever worker
@@ -245,14 +245,23 @@ these to react to the registry changing:
 Each of these is published by a separate worker. Function ids, payload shapes, and per-function
 behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.dev):
 
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
+  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
+
 - **State**: KV-style state with scoped key namespaces (distinct from
   [routing namespaces](../understanding-iii/namespaces)) and reactive triggers on
   create/update/delete. See [state](https://workers.iii.dev/workers/state).
-- **Stream**: Real-time push to connected clients over WebSocket. See
-  [iii-stream](https://workers.iii.dev/workers/iii-stream).
+- **Stream** (deprecated): Real-time push to connected clients over WebSocket. See
+  [iii-stream](https://workers.iii.dev/workers/iii-stream). Use
+  [worker-owned trigger types](../creating-workers/triggers#declaring-a-trigger-type) or
+  [channels](../creating-workers/channels) for new work.
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
   queue. See [queue](https://workers.iii.dev/workers/queue).
-- **Pub/Sub**: Lightweight in-engine topic subscription for fan-out without durability guarantees.
-  See [pubsub](https://workers.iii.dev/workers/pubsub).
+- **Pub/Sub** (deprecated): Lightweight in-engine topic subscription for fan-out without durability
+  guarantees. See [pubsub](https://workers.iii.dev/workers/pubsub). Use worker-owned trigger types
+  or durable queue topics for new work.
 - **Observability**: Traces, logs, metrics, alerts, sampling rules, and rollups. See
   [iii-observability](https://workers.iii.dev/workers/iii-observability).

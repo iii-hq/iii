@@ -3,10 +3,16 @@ name: iii-stream
 description: >-
   Durable real-time streams with a CRUD function surface plus reactive triggers
   that fire on item changes and WebSocket subscriber lifecycle — reach for it to
-  build live backends without polling.
+  build live backends without polling. iii-stream is deprecated (iii-stream) and
+  will be removed in an upcoming release. Behavior is unchanged for
+  now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 ---
 
 # iii-stream
+
+> **Deprecated.** iii-stream is deprecated (iii-stream) and will be removed in an upcoming release.
+> Behavior is unchanged for now. Migration guide:
+> https://iii.dev/docs/upgrading/migrate-from-streams
 
 The `iii-stream` worker stores real-time data as a three-level hierarchy (`stream_name` -> `group_id` -> `item_id`) in the configured adapter and exposes two surfaces: a CRUD-shaped `stream::*` function namespace for reading and writing items, and reactive trigger types (`stream`, `stream:join`, `stream:leave`) that fire on data changes and on WebSocket subscriber connect/disconnect. Reactive backends are built by binding handlers to those triggers rather than by polling.
 

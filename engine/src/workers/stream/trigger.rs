@@ -78,6 +78,9 @@ impl TriggerRegistrator for StreamWorker {
         let stream_triggers_by_name = &self.triggers.stream_triggers_by_name;
 
         Box::pin(async move {
+            // On bind (and replay after a provider restart), never per event.
+            self.warn_deprecated_trigger_bind(&trigger);
+
             if trigger.trigger_type == JOIN_TRIGGER_TYPE {
                 tracing::info!(
                     "Registering join trigger for function {}",
@@ -96,6 +99,18 @@ impl TriggerRegistrator for StreamWorker {
 
                 match stream_trigger {
                     Ok(stream_trigger) => {
+                        // A stream trigger is indexed by stream name; without
+                        // one it can never fire, so reject the registration.
+                        let Some(stream_name) = stream_trigger.stream_name.clone() else {
+                            tracing::error!(
+                                trigger_id = %trigger.id,
+                                "Stream trigger config is missing stream_name"
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Invalid stream trigger {}: config.stream_name is required",
+                                trigger.id
+                            ));
+                        };
                         tracing::info!(stream_name = %stream_trigger.stream_name.clone().unwrap_or_default(),
                             group_id = %stream_trigger.group_id.clone().unwrap_or_default(),
                             item_id = %stream_trigger.item_id.clone().unwrap_or_default(),
@@ -106,7 +121,7 @@ impl TriggerRegistrator for StreamWorker {
                         let mut by_name = stream_triggers_by_name.write().await;
                         let mut triggers_map = stream_triggers.write().await;
                         by_name
-                            .entry(stream_trigger.stream_name.clone().unwrap())
+                            .entry(stream_name)
                             .or_insert_with(Vec::new)
                             .push(trigger.id.clone());
                         let _ = triggers_map.insert(
@@ -362,6 +377,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_register_stream_trigger_without_stream_name_is_rejected() {
+        let module = setup();
+        let trigger = make_trigger(
+            "stream-no-name",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!({ "group_id": "grp-1" }),
+        );
+
+        let result = module.register_trigger(trigger).await;
+        let err = result.expect_err("a stream trigger without stream_name must be rejected");
+        assert!(
+            err.to_string()
+                .contains("Invalid stream trigger stream-no-name: config.stream_name is required"),
+            "{err}"
+        );
+        assert!(module.triggers.stream_triggers.read().await.is_empty());
+        assert!(
+            module
+                .triggers
+                .stream_triggers_by_name
+                .read()
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn test_register_multiple_stream_triggers_same_stream_name() {
         let module = setup();
 
@@ -507,6 +550,7 @@ mod tests {
             group_id: "g".into(),
             item_id: "i".into(),
             data: serde_json::json!({"value": 1}),
+            caller_worker_id: None,
         }));
         assert!(futures::poll!(set.as_mut()).is_pending());
 
@@ -517,6 +561,7 @@ mod tests {
                 stream_name: "chat".into(),
                 group_id: "g".into(),
                 item_id: "i".into(),
+                caller_worker_id: None,
             }),
         )
         .await
@@ -529,6 +574,7 @@ mod tests {
             group_id: "g".into(),
             item_id: "i".into(),
             data: serde_json::json!({"value": 2}),
+            caller_worker_id: None,
         }));
         assert!(futures::poll!(unrelated_set.as_mut()).is_pending());
         drop(map_reader);

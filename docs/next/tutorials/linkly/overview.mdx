@@ -49,12 +49,18 @@ with `state` kept in front as a fast read cache.
 ### Ch. 4: Make it durable
 
 Push click events onto `queue` so redirects stay fast, and publish `link.created` events with
-`pubsub` that a cache and an analytics function each subscribe to.
+`pubsub` (deprecated) that a cache and an analytics function each subscribe to.
 
 ### Ch. 5: Stream live clicks
 
 Push every click to subscribers in real time from a dedicated `click-streamer` worker with
-`iii-stream`.
+`iii-stream` (deprecated).
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and `pubsub` is deprecated (pubsub); both will be removed
+  in an upcoming release. Behavior is unchanged for now, so chapters 4, 5 and 7 still
+  work. See [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
+</Warning>
 
 ### Ch. 6: Move bulk data with channels
 

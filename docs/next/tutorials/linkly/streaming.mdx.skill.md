@@ -3,6 +3,14 @@
 # Ch. 5: Stream live clicks
 
 
+<Warning title="Deprecated">
+  This chapter uses `iii-stream` (`stream::set`, `stream::list`) and the `pubsub` worker. `iii-stream`
+  is deprecated (iii-stream) and `pubsub` is deprecated (pubsub); both will be removed in an
+  upcoming release. Behavior is unchanged for now, so the chapter still works. For new code, use
+  the stored records recipe in
+  [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates).
+</Warning>
+
 `iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
 like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
 back as well as receive them), but here you only need to broadcast clicks outward. You'll move the

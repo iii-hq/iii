@@ -1,3 +1,4 @@
+#![allow(deprecated)] // MOT-3619: legacy stream/subscribe triggers; see the migrate-from-streams guide
 use iii_helpers::stream::StreamTriggerConfig;
 use iii_sdk::builtin_triggers::*;
 use iii_sdk::trigger::IIITrigger;
