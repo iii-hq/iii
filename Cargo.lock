@@ -2868,6 +2868,7 @@ dependencies = [
  "vt100",
  "windows-sys 0.60.2",
  "wiremock",
+ "zip",
 ]
 
 [[package]]

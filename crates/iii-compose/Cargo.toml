@@ -29,6 +29,7 @@ reqwest = { workspace = true }
 url = { workspace = true }
 flate2 = "1"
 tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 uuid = { workspace = true }
 schemars = "0.8"
 thiserror = { workspace = true }
