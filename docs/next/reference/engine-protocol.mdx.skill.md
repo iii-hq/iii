@@ -30,7 +30,8 @@ own workers:
 | `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
 | `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
 
-The console UI runs on `3113` and is launched separately by `iii console`.
+The [console](../using-iii/console) UI (the ADE worker) runs on `3113` by default. Add it to a project
+with `iii trigger compose::add worker=ade`.
 
 ## Connection flow
 

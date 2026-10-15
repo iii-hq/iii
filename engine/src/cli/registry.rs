@@ -18,7 +18,7 @@ pub struct BinarySpec {
 
 #[derive(Debug, Clone)]
 pub struct CommandMapping {
-    /// The command name as exposed by iii (e.g., "console", "create")
+    /// The command name as exposed by iii (e.g., "cloud", "worker")
     pub cli_command: &'static str,
     /// The subcommand to pass to the binary, or None for direct passthrough
     pub binary_subcommand: Option<&'static str>,
@@ -57,25 +57,6 @@ pub static REGISTRY: &[BinarySpec] = &[
             "x86_64-apple-darwin",
         ],
         commands: &[],
-        tag_prefix: Some("iii"),
-    },
-    BinarySpec {
-        name: "iii-console",
-        repo: "iii-hq/iii",
-        has_checksum: true,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-pc-windows-msvc",
-            "aarch64-pc-windows-msvc",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "console",
-            binary_subcommand: None,
-        }],
         tag_prefix: Some("iii"),
     },
     BinarySpec {
@@ -161,9 +142,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_console() {
-        let (spec, sub) = resolve_command("console").unwrap();
-        assert_eq!(spec.name, "iii-console");
+    fn test_console_no_longer_resolves() {
+        // The legacy iii-console was removed (MOT-3619): `iii console` is a
+        // notice-only stub, so it must never dispatch or download a binary,
+        // and `iii update` must no longer install iii-console.
+        assert!(resolve_command("console").is_err());
+        assert!(resolve_binary_for_update("console").is_err());
+        assert!(resolve_binary_for_update("iii-console").is_err());
+        assert!(all_binaries().iter().all(|spec| spec.name != "iii-console"));
+    }
+
+    #[test]
+    fn test_resolve_worker() {
+        let (spec, sub) = resolve_command("worker").unwrap();
+        assert_eq!(spec.name, "iii-worker");
         assert_eq!(spec.repo, "iii-hq/iii");
         assert!(sub.is_none());
     }
@@ -191,8 +183,8 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_for_update() {
-        let spec = resolve_binary_for_update("iii-console").unwrap();
-        assert_eq!(spec.name, "iii-console");
+        let spec = resolve_binary_for_update("iii-worker").unwrap();
+        assert_eq!(spec.name, "iii-worker");
     }
 
     #[test]
@@ -202,8 +194,8 @@ mod tests {
     }
 
     #[test]
-    fn test_console_has_checksum() {
-        let (spec, _) = resolve_command("console").unwrap();
+    fn test_worker_has_checksum() {
+        let (spec, _) = resolve_command("worker").unwrap();
         assert!(spec.has_checksum);
     }
 

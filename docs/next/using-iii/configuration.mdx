@@ -79,14 +79,14 @@ and the previous good value stays in effect, so a typo can't take a worker down.
 
 ### Use the console
 
-The [console worker](https://workers.iii.dev/workers/console)'s **Configuration** page lists every
+The [console](./console) (ADE worker)'s **Configuration** page lists every
 registered entry and renders an editing form generated from its JSON Schema: typed fields,
 per-adapter variants, and validation before save. `${VAR:default}` templates are shown and saved
 verbatim, so a console edit does not overwrite an environment-driven value. Saving applies
 immediately.
 
 ```bash
-iii trigger -n dev compose::add worker=console
+iii trigger -n dev compose::add worker=ade
 ```
 
 Replace `dev` with the namespace of the running Compose daemon.

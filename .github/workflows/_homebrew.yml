@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       bin_name:
-        description: 'Binary name (e.g., iii, iii-console)'
+        description: 'Binary name (e.g., iii)'
         required: true
         type: string
       formula_class:
-        description: 'Ruby class name for the formula (e.g., Iii, IiiConsole)'
+        description: 'Ruby class name for the formula (e.g., Iii)'
         required: true
         type: string
       formula_path:
@@ -52,6 +52,11 @@ on:
         default: ''
       slack_label:
         description: 'Label for this step in Slack notifications (optional)'
+        required: false
+        type: string
+        default: ''
+      tombstone_notice:
+        description: 'For a removed binary that only prints a notice and exits 1 (e.g., the iii-console tombstone): text the notice must contain. When set, the formula test and the local check expect exit 1 and this text instead of running --version.'
         required: false
         type: string
         default: ''
@@ -176,6 +181,7 @@ jobs:
           RELEASE_REPO: ${{ inputs.release_repo }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           INCLUDE_LINUX: ${{ inputs.include_linux }}
+          TOMBSTONE_NOTICE: ${{ inputs.tombstone_notice }}
           MACOS_X86_SHA: ${{ steps.checksums.outputs.macos_x86_64_sha256 }}
           MACOS_ARM_SHA: ${{ steps.checksums.outputs.macos_aarch64_sha256 }}
           LINUX_X86_SHA: ${{ steps.checksums.outputs.linux_x86_64_sha256 }}
@@ -222,7 +228,12 @@ jobs:
             echo "  end"
             echo ""
             echo "  test do"
-            echo "    assert_match version.to_s, shell_output(\"\#{bin}/${BIN_NAME} --version\")"
+            if [[ -n "$TOMBSTONE_NOTICE" ]]; then
+              # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
+              echo "    assert_match \"${TOMBSTONE_NOTICE}\", shell_output(\"\#{bin}/${BIN_NAME} 2>&1\", 1)"
+            else
+              echo "    assert_match version.to_s, shell_output(\"\#{bin}/${BIN_NAME} --version\")"
+            fi
             echo "  end"
             echo "end"
           } > "$FORMULA_FILE"
@@ -234,13 +245,24 @@ jobs:
         env:
           BIN_NAME: ${{ inputs.bin_name }}
           FORMULA_FILE: ${{ inputs.formula_path }}
+          TOMBSTONE_NOTICE: ${{ inputs.tombstone_notice }}
         run: |
           brew tap iii-hq/tap
           cp "$GITHUB_WORKSPACE/homebrew-tap/${FORMULA_FILE}" \
             "$(brew --repo iii-hq/tap)/${FORMULA_FILE}"
           brew audit --new "iii-hq/tap/${BIN_NAME}" || true
           brew install "iii-hq/tap/${BIN_NAME}"
-          "${BIN_NAME}" --version
+          if [[ -n "$TOMBSTONE_NOTICE" ]]; then
+            # A tombstone prints its notice and exits non-zero on any invocation.
+            if "${BIN_NAME}" > tombstone.txt 2>&1; then
+              echo "::error::${BIN_NAME} tombstone must exit non-zero"
+              exit 1
+            fi
+            cat tombstone.txt
+            grep -qF "$TOMBSTONE_NOTICE" tombstone.txt
+          else
+            "${BIN_NAME}" --version
+          fi
           brew uninstall "${BIN_NAME}"
           brew untap iii-hq/tap
 

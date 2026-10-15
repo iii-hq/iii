@@ -201,19 +201,19 @@ mod tests {
             prerelease: false,
             assets: vec![
                 ReleaseAsset {
-                    name: "iii-console-aarch64-apple-darwin.tar.gz".to_string(),
+                    name: "iii-cloud-aarch64-apple-darwin.tar.gz".to_string(),
                     browser_download_url: "https://example.com/a".to_string(),
                     size: 1000,
                 },
                 ReleaseAsset {
-                    name: "iii-console-x86_64-apple-darwin.tar.gz".to_string(),
+                    name: "iii-cloud-x86_64-apple-darwin.tar.gz".to_string(),
                     browser_download_url: "https://example.com/b".to_string(),
                     size: 2000,
                 },
             ],
         };
 
-        let found = find_asset(&release, "iii-console-aarch64-apple-darwin.tar.gz");
+        let found = find_asset(&release, "iii-cloud-aarch64-apple-darwin.tar.gz");
         assert!(found.is_some());
         assert_eq!(found.unwrap().browser_download_url, "https://example.com/a");
 

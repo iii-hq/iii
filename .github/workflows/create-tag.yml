@@ -84,6 +84,8 @@ jobs:
           fi
 
           if [[ "$TARGET" == "iii" ]]; then
+            # console/packages/console-rust is the iii-console tombstone (MOT-3619); it is still
+            # versioned and released. TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
             for f in Cargo.toml \
                      engine/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
@@ -282,6 +284,7 @@ jobs:
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/observability/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/helpers/pyproject.toml" "$PY_VERSION"
+            # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"

@@ -9,11 +9,11 @@ directly from the engine.
 
 ## Open the console
 
-iii has a console worker that provides an easy to use web interface for monitoring and interacting
+iii has a console worker (ADE) that provides an easy to use web interface for monitoring and interacting
 with your iii application. Add it to your project with:
 
 ```bash
-iii trigger compose::add worker=console
+iii trigger compose::add worker=ade
 ```
 
 Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"

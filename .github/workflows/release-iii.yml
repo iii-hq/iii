@@ -332,41 +332,18 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
-  # Console Binary
+  # Console tombstone binary
+  # The legacy iii-console was removed (MOT-3619). This job still releases a
+  # placeholder `iii-console` asset (no frontend; it prints a removal notice
+  # pointing to the iii console in ADE and exits non-zero) so older CLIs'
+  # `iii update` and `iii console` keep finding the asset.
+  # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
   # ──────────────────────────────────────────────────────────────
 
-  console-frontend:
-    name: Build Console Frontend
-    needs: [setup, create-iii-release]
-    if: ${{ !failure() && !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build frontend for binary embedding
-        run: pnpm --filter console-frontend build:binary
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: console-frontend-dist
-          path: console/packages/console-frontend/dist-binary/
-          retention-days: 1
-
   console-release:
-    name: Console Binary Release
-    needs: [setup, create-iii-release, console-frontend]
+    # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
+    name: Console Tombstone Release
+    needs: [setup, create-iii-release]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
@@ -377,10 +354,8 @@ jobs:
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      artifact_name: console-frontend-dist
-      artifact_dest: console/packages/console-rust/assets/
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: Console Binary
+      slack_label: Console Tombstone
     secrets:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
       III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -615,8 +590,11 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  # Publishes the tombstone to the iii-console formula so `brew upgrade`
+  # also lands on the removal notice.
+  # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
   homebrew-console:
-    name: Homebrew Console
+    name: Homebrew Console (tombstone)
     needs: [setup, console-release]
     if: ${{ !failure() && !cancelled() && needs.setup.outputs.is_prerelease != 'true' }}
     uses: ./.github/workflows/_homebrew.yml
@@ -624,7 +602,7 @@ jobs:
       bin_name: iii-console
       formula_class: IiiConsole
       formula_path: Formula/iii-console.rb
-      description: Developer console for the iii engine
+      description: Removed - placeholder that points to the iii console in ADE
       homepage: https://github.com/iii-hq/iii
       release_repo: ${{ github.repository }}
       release_tag: ${{ needs.setup.outputs.tag }}
@@ -633,6 +611,7 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Homebrew (iii-console)
+      tombstone_notice: iii-console has been removed
     secrets:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
       III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -699,7 +678,7 @@ jobs:
       - setup
       - engine-release
       - worker-release
-      - console-release
+      - console-release # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -753,7 +732,7 @@ jobs:
       - setup
       - engine-release
       - worker-release
-      - console-release
+      - console-release # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -841,7 +820,7 @@ jobs:
       - firmware-upload
       - engine-release
       - worker-release
-      - console-release
+      - console-release # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -855,7 +834,7 @@ jobs:
       - helpers-rust
       - docker-engine
       - homebrew-engine
-      - homebrew-console
+      - homebrew-console # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
       - publish-builtin-workers
       - publish-worker-skills
     runs-on: ubuntu-latest
@@ -871,6 +850,7 @@ jobs:
           FIRMWARE_RESULT: ${{ needs.firmware-upload.result }}
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           WORKER_RESULT: ${{ needs.worker-release.result }}
+          # TODO(MOT-3619): stop shipping the iii-console tombstone after N releases (TBD).
           CONSOLE_RESULT: ${{ needs.console-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
@@ -904,7 +884,7 @@ jobs:
           LINES="$LINES$(icon "$FIRMWARE_RESULT") Firmware Assets\n"
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$WORKER_RESULT") Worker Binary\n"
-          LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
+          LINES="$LINES$(icon "$CONSOLE_RESULT") Console Tombstone\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
@@ -922,7 +902,7 @@ jobs:
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
             LINES="$LINES$(icon "$BREW_ENGINE_RESULT") Homebrew (iii)\n"
-            LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
+            LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console tombstone)\n"
           fi
 
           for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do

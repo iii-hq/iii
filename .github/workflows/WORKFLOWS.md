@@ -67,7 +67,7 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
 | `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability` against a live engine |
 | `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
-| `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
+| `console-tombstone` | — | Builds the `iii-console` tombstone and checks it prints the removal notice and exits non-zero (legacy console removed, MOT-3619; TODO: stop shipping the tombstone after N releases, TBD) |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
 
@@ -188,11 +188,9 @@ setup (parse tag metadata, Slack notification)
   │     │     │
   │     │     └─► homebrew-engine ► _homebrew.yml (stable only)
   │     │
-  │     ├─► console-frontend ───► Build React frontend for embedding
+  │     ├─► console-release ─────► _rust-binary.yml (iii-console tombstone: prints a removal notice; TODO MOT-3619, drop after N releases, TBD)
   │     │     │
-  │     │     └─► console-release ► _rust-binary.yml (with embedded frontend)
-  │     │           │
-  │     │           └─► homebrew-console ► _homebrew.yml (stable only)
+  │     │     └─► homebrew-console ► _homebrew.yml (stable only, tombstone_notice set)
   │     │
   │     ├─► sdk-npm ─────────────► _npm.yml
   │     ├─► sdk-py ──────────────► _py.yml
@@ -253,7 +251,7 @@ Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers a
 | Job | What it does |
 |-----|--------------|
 | `rust-advisories` | `cargo deny check advisories bans` over the workspace `Cargo.lock`, configured in `deny.toml` (vulnerabilities fail; unmaintained notices fail only for direct dependencies; duplicate versions warn) |
-| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website`, `console` or `docs` are reported without failing |
+| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website` or `docs` are reported without failing |
 
 Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm and GitHub Actions.
 
@@ -316,7 +314,7 @@ Cross-compiles a Rust binary for 9 platform targets and uploads them to a GitHub
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04` |
 | `armv7-unknown-linux-gnueabihf` | `ubuntu-22.04` |
 
-Supports downloading a pre-built artifact (used by console to embed the frontend build).
+Supports downloading a pre-built artifact before building (optional; no current caller uses it since the legacy console frontend was removed).
 
 Uses `taiki-e/upload-rust-binary-action` for building and uploading.
 
