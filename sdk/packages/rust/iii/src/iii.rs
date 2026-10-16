@@ -1525,6 +1525,15 @@ impl IIIClient {
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
             .spawn(move || {
+                // Lets `iii ps` find this worker while the connection loop runs.
+                let _marker = crate::process_marker::Marker::announce(
+                    &iii.inner.address,
+                    iii.inner
+                        .worker_metadata
+                        .lock_or_recover()
+                        .as_ref()
+                        .map(|metadata| metadata.name.as_str()),
+                );
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

@@ -211,8 +211,18 @@ fn managed_engine_has_its_own_role_and_stops_with_the_named_compose() {
     assert_eq!(comm(pid), "iii:c:orders");
     assert_eq!(cmdline(pid)[0], "iii:c:orders");
 
+    // Compose's other child is its reaper.
     let children = fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap();
-    let engine_pid: u32 = children.split_whitespace().next().unwrap().parse().unwrap();
+    let engine_pid: u32 = children
+        .split_whitespace()
+        .map(|child| child.parse().unwrap())
+        .find(|child| {
+            !fs::read(format!("/proc/{child}/environ"))
+                .unwrap()
+                .split(|byte| *byte == 0)
+                .any(|var| var == b"III_COMPOSE_REAPER=1")
+        })
+        .unwrap();
     assert_eq!(comm(engine_pid), "iii:e:orders");
     assert_eq!(
         cmdline(engine_pid),

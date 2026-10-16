@@ -4,6 +4,7 @@ pub mod engine;
 pub mod error;
 pub mod helpers;
 pub mod iii;
+mod process_marker;
 pub mod protocol;
 pub mod stream_provider;
 pub mod structs;

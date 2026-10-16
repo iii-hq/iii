@@ -28,7 +28,9 @@ iii [OPTIONS] [COMMAND]
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
 | [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
 | [`console`](#iii-console) | Launch the iii web console. |
+| [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
@@ -89,6 +91,21 @@ iii compose logs [OPTIONS] [WORKER]
   Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
 </Note>
 
+### `iii kill`
+
+Stop iii processes by engine port, by compose project, or every orphaned worker
+
+```text
+iii kill [OPTIONS] <--port <PORT>|--compose [<PATH>]|--orphans>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--port <PORT>` | Stop the engine on this port, the compose daemon that manages it, and every worker pointed at it |
+| `--compose <PATH>` | Stop a compose project: its daemon, managed engine and workers. Takes the compose file or its directory [default: ./worker-compose.yaml] |
+| `--orphans` | Stop every compose worker whose compose daemon is gone |
+| `--force` | Send SIGKILL at once instead of letting processes shut down |
+
 ### `iii project`
 
 Manage iii projects (init, generate-docker)
@@ -131,6 +148,18 @@ iii project init [OPTIONS] [NAME]
 | `--skip-iii` | Skip the iii-engine version compatibility check |
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
 | `--learn-iii` | Start the iii harness and take a quick look at what iii can do: scaffold the "harness" template into NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then start `iii compose --up` inside it. Cannot be combined with any other scaffolding option |
+
+### `iii ps`
+
+List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to
+
+```text
+iii ps [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--json` | Print JSON instead of a table |
 
 ### `iii trigger`
 

@@ -166,6 +166,18 @@ enum Commands {
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
+    /// List iii processes on this machine: engines, compose daemons and
+    /// workers, with the compose project each belongs to
+    Ps {
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Stop iii processes by engine port, by compose project, or every
+    /// orphaned worker
+    Kill(cli::ps::KillArgs),
+
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
     #[command(name = "gen-cli-docs", hide = true)]
@@ -222,6 +234,8 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             None => "compose".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
+        Some(Commands::Ps { .. }) => "ps".to_string(),
+        Some(Commands::Kill(_)) => "kill".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
         }) => "update list-targets".to_string(),
@@ -399,6 +413,12 @@ fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t>
 }
 
 fn main() -> anyhow::Result<()> {
+    // Started by compose to stop its children if it dies; never a CLI call.
+    #[cfg(unix)]
+    if iii_compose::process::reaper::requested() {
+        iii_compose::process::reaper::run();
+    }
+
     let argv: Vec<String> = std::env::args().collect();
     let cli_args = match Cli::try_parse_from(&argv) {
         Ok(c) => c,
@@ -510,9 +530,15 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             }
             cli::telemetry::install_compose_reporter();
             iii_compose::set_host_version(env!("CARGO_PKG_VERSION"));
+            #[cfg(unix)]
+            if let Ok(exe) = std::env::current_exe() {
+                iii_compose::process::reaper::set_program(exe, Vec::new());
+            }
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        Some(Commands::Ps { json }) => cli::ps::ps(*json),
+        Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
         Some(Commands::GenDocs { .. }) => unreachable!("gen-cli-docs returns early"),
         Some(Commands::Update {

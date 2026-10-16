@@ -135,6 +135,7 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 - Keep secrets in environment-backed configuration; do not commit literal credentials.
 - Preserve configuration, stream, state, and queue storage paths during migrations.
 - Use `compose::status` for process ownership and `engine::workers::list` for live connections.
+- Use `iii ps` to find iii processes on the machine, including orphaned workers, and `iii kill --orphans`, `--port` or `--compose` to stop them.
 - `compose::add` never edits `engine:` or restarts the engine.
 
 ## When to Use

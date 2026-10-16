@@ -31,6 +31,13 @@ including an abrupt kill such as `SIGKILL` during startup, the managed engine is
 the next `iii compose --up` starts a fresh engine. Run `iii` and `iii compose` separately when the
 engine needs its own lifecycle.
 
+Workers are tied to the Compose process in the same way. Compose starts a small reaper process next
+to its workers. When Compose exits without stopping them, whether from `SIGKILL`, a crash, or a
+second `Ctrl^C`, the reaper sends each worker `SIGTERM`, waits up to 10 seconds, then sends
+`SIGKILL`. A worker's child processes stop with it. A worker that is still running when Compose
+starts again, left by a Compose that is gone, is stopped and started fresh rather than reused. The
+reaper runs on Linux and macOS.
+
 ### Starting a project with the daemon
 
 ```text
@@ -49,6 +56,11 @@ iii compose [OPTIONS]
 daemon, and the iii engine if compose was started with `--up`. When `--up` has started the engine,
 every project and worker stops before the engine process is stopped. `compose::stop` is the function
 equivalent of this operation.
+
+A second signal during that shutdown makes Compose exit at once, and the reaper stops the remaining
+workers. Signals that arrive within 200 milliseconds of the first count as the same request: a
+wrapper such as `dotenv --` or a package-manager script forwards the terminal's `Ctrl^C` to Compose,
+which already received it, and one key press must not skip the orderly shutdown.
 
 Compose only stops an engine it started itself. An external engine, selected with `--engine`,
 `III_URL`, or an external engine in the compose file, keeps running when Compose exits. If the
@@ -153,6 +165,7 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | `compose::up`       | `file`, `container`, `frozen`                               | An operation result.                                                       |
 | `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
 | `compose::status`   | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
+| `compose::ps`       | `file`                                                      | The daemon pid and the operating-system processes of its projects.        |
 | `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
 | `compose::list`     | nothing                                                     | The daemon name, its namespace, its pid, and every project it holds.       |
 | `compose::validate` | `file`                                                      | A validation report.                                                       |
@@ -479,6 +492,20 @@ compose daemon).
 | `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
 | `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
 | `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
+
+### Listing processes
+
+`compose::ps` lists what the operating system sees for this daemon's projects, or for one project
+when `file` is set: the daemon, its managed engine, every worker, and the processes those workers
+started. Each entry has `pid`, `ppid`, `kind` (`engine`, `compose` or `worker`), `name` (the worker's
+container key), `ports`, `compose_file`, `orphan`, `started_at` (seconds since the Unix epoch), and
+`command`. `orphan` is `true` for a worker of the project that no Compose daemon supervises.
+
+```bash
+iii trigger compose::ps --namespace dev file=./worker-compose.yaml
+```
+
+To see every iii process on the machine, including other projects, use [`iii ps`](#finding-and-stopping-iii-processes).
 
 ### Viewing logs
 
@@ -957,6 +984,41 @@ Before upgrading from the shared namespace layout, stop existing Compose daemons
 version and confirm that their engines and workers have stopped. The new version does not migrate
 old process records or logs. Previous state remains under `~/.iii/compose/<namespace>/` (or the old
 `III_COMPOSE_STATE_DIR` layout); keep any logs or VM data you need before removing it.
+
+## Finding and stopping iii processes
+
+`iii ps` lists every iii process the current user runs: engines with the ports they listen on,
+Compose daemons, and workers with the project each belongs to.
+
+```text
+$ iii ps
+PID    KIND     NAME   PORT   STATUS     UPTIME  COMPOSE
+41200  engine   -      49134  running    2h5m    ~/shop
+41198  compose  -      49134  running    2h5m    ~/shop
+41260  worker   api    49134  running    2h5m    ~/shop
+38811  worker   cron   5202   orphan     3d2h    ~/billing
+```
+
+`STATUS` is `orphan` for a worker whose Compose daemon is gone, and `no engine` for a worker whose
+engine port has no engine listening. `iii ps --json` prints the same list as JSON.
+
+`iii kill` stops a selection of those processes:
+
+| Option             | Stops                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `--port <PORT>`    | The engine listening on `PORT`, the Compose daemon that manages it, and every worker using it. |
+| `--compose [PATH]` | A project's daemon, managed engine and workers. `PATH` is the compose file or its directory.   |
+| `--orphans`        | Every worker whose Compose daemon is gone.                                                     |
+| `--force`          | Sends `SIGKILL` at once instead of waiting for a graceful exit.                                |
+
+Compose daemons receive `SIGTERM` first, so each one stops its project in reverse dependency order.
+The remaining processes then receive `SIGTERM`, and `SIGKILL` after 15 seconds. `iii kill` exits
+with `1` when nothing matches or a process is still running afterwards.
+
+Compose marks each worker through its environment (`III_COMPOSE_FILE`, `III_WORKER_NAME`, `III_URL`),
+which identifies it whichever SDK version it was built with. Engines and SDK workers started outside
+Compose write a marker file, `~/.iii/run/<kind>-<pid>.json`, while they run. `iii ps` deletes
+markers whose process is gone.
 
 ## Error codes
 

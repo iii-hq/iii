@@ -640,7 +640,14 @@ func (c *Client) enqueueOutbound(frame []byte) {
 // times Connect (or RegisterWorker) is called, so there is never more than one goroutine
 // driving the socket.
 func (c *Client) startSupervisor() {
-	c.superviseOnce.Do(func() { go c.supervise() })
+	c.superviseOnce.Do(func() {
+		// Lets `iii ps` find this worker until Close ends the supervisor.
+		remove := announceProcess(c.url, c.name, "")
+		go func() {
+			defer remove()
+			c.supervise()
+		}()
+	})
 }
 
 // Connect starts the connection lifecycle (if not already started) and blocks until the

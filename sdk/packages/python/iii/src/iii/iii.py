@@ -57,6 +57,7 @@ from .iii_types import (
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
+from .process_marker import announce_process
 from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
@@ -292,6 +293,12 @@ class III:
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=False)
         self._thread.start()
 
+        # Lets `iii ps` find this worker however it was started.
+        self._remove_process_marker = announce_process(
+            address,
+            os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}",
+        )
+
         # Auto-connect (non-blocking, matches Node.js constructor behavior)
         self._connected_event = threading.Event()
         self._schedule_on_loop(self.connect_async())
@@ -399,6 +406,7 @@ class III:
             >>> await worker.shutdown_async()
         """
         self._running = False
+        self._remove_process_marker()
 
         for task in [self._reconnect_task, self._receiver_task]:
             if task:

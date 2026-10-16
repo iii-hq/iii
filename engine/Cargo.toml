@@ -149,7 +149,7 @@ indicatif = "0.18"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
 tar = "0.4"
-zip = "2"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 thiserror = "2"
 tokio-tungstenite = "0.28"
 # Used by workers::external::resolve_external_module to locate

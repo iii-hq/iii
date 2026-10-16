@@ -41,6 +41,7 @@ mod parallelism;
 pub mod process;
 pub mod process_title;
 pub mod project;
+pub mod ps;
 pub mod registry;
 pub mod remote;
 pub mod report;

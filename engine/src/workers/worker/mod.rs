@@ -152,11 +152,18 @@ impl Worker for WorkerManager {
             .await
             .map_err(|err| crate::workers::traits::bind_address_error(&addr, err))?;
         tracing::info!("Engine listening on address: {}", addr.purple());
+        // Lets `iii ps` and `iii kill --port` find this engine by its port.
+        // Removed when the server task below ends.
+        let marker = listener
+            .local_addr()
+            .ok()
+            .and_then(|local| iii_compose::ps::announce_engine(&format!("ws://{local}")));
 
         let app = worker_router(state);
 
         let handshake_timeout = Duration::from_millis(config.handshake_timeout_ms);
         let handle = tokio::spawn(async move {
+            let _marker = marker;
             let shutdown = async move {
                 tokio::select! {
                     _ = shutdown_signal() => {

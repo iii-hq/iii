@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import { type Data, WebSocket } from 'ws'
 import { ChannelReader, ChannelWriter } from './channels'
 import { InvocationError, isErrorBody, RegistrationRejectedError } from './errors'
+import { announceProcess } from './process-marker'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -283,6 +284,7 @@ class Sdk implements IIIClient {
   // namespace/name collision). Terminal: no reconnect follows. Mirrors the
   // Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
   private fatalError?: RegistrationRejectedError
+  private removeProcessMarker: () => void
 
   constructor(
     private readonly address: string,
@@ -304,6 +306,9 @@ class Sdk implements IIIClient {
       engineWsUrl: this.address,
       engineWsHeaders: resolveHeaders(options?.headers),
     })
+
+    // Lets `iii ps` find this worker however it was started.
+    this.removeProcessMarker = announceProcess(this.address, this.workerName)
 
     this.connect()
   }
@@ -787,6 +792,7 @@ class Sdk implements IIIClient {
    */
   shutdown = async (): Promise<void> => {
     this.isShuttingDown = true
+    this.removeProcessMarker()
 
     this.stopMetricsReporting()
 

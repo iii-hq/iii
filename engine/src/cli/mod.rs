@@ -12,6 +12,7 @@ pub mod gen_docs;
 pub mod github;
 pub mod platform;
 pub mod project;
+pub mod ps;
 pub mod registry;
 pub mod state;
 pub mod telemetry;

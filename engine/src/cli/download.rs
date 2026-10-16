@@ -185,7 +185,10 @@ fn extract_from_zip(binary_name: &str, archive_bytes: &[u8]) -> Result<Vec<u8>, 
             .by_index(i)
             .map_err(|e| ExtractError::ExtractionFailed(e.to_string()))?;
 
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .map_err(|e| ExtractError::ExtractionFailed(e.to_string()))?
+            .into_owned();
         let file_name = std::path::Path::new(&name)
             .file_name()
             .and_then(|n| n.to_str())

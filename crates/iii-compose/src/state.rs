@@ -115,6 +115,39 @@ pub struct DaemonState {
     pub namespace: String,
     #[serde(default)]
     pub containers: BTreeMap<String, ChildRecord>,
+    /// The compose process that opened this project last. `None` in state
+    /// written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Owner>,
+}
+
+/// One compose process, fingerprinted like the children it records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    pub pid: u32,
+    pub birth: BirthIdentity,
+}
+
+impl Owner {
+    pub fn current() -> Self {
+        let pid = std::process::id();
+        Self {
+            pid,
+            birth: birth_identity(pid),
+        }
+    }
+
+    /// Whether this compose process is still running. Children recorded by a
+    /// live owner are its own, even when another process reads the state; a
+    /// dead owner's survivors are supervised by nobody.
+    pub fn is_alive(&self) -> bool {
+        // Equality, not `matches`: this process is alive even where no
+        // fingerprint can be taken.
+        if self.pid == std::process::id() {
+            return self.birth == birth_identity(self.pid);
+        }
+        crate::process::is_running(self.pid) && self.birth.matches(&birth_identity(self.pid))
+    }
 }
 
 impl DaemonState {
@@ -123,6 +156,7 @@ impl DaemonState {
             compose_path: compose_path.to_path_buf(),
             namespace: namespace.to_string(),
             containers: BTreeMap::new(),
+            owner: None,
         }
     }
 
@@ -148,6 +182,8 @@ impl DaemonState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reconciliation {
     /// Same process, still running: re-adopt it without restarting anything.
+    /// Only a live owner's children are kept that way; see
+    /// [`DaemonState::owner`].
     Adopt,
     /// The process is gone. Its `post_run` still owes a run and its local
     /// dependents have to come down.
