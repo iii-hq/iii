@@ -330,6 +330,30 @@ impl FsAdapter {
         {
             entry.schema = cached.schema.clone();
         }
+        // A backup left by a completed migration means this source was already
+        // adopted. A source back on disk with different bytes was rewritten
+        // afterwards, typically by a worker that still registers the bare id at
+        // runtime. The published destination stays authoritative and nothing is
+        // written: adopting the rewrite would replace the destination and then
+        // trip the backup guard below on every later start.
+        let backup = source.with_extension("yaml.bak");
+        match std::fs::read(&backup) {
+            Ok(archived) if archived != original => {
+                if let Some(entry) = &prior {
+                    cache.insert(to_id.to_string(), entry.clone());
+                    return Ok(ConfigurationMigrateResult {
+                        action: MigrateAction::Preserved,
+                        entry: Some(entry.clone()),
+                    });
+                }
+                anyhow::bail!(
+                    "existing backup differs; preserve or relocate it before retrying migration"
+                );
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         // A partially migrated file may already carry the destination id.
         // Do not invent a source cache entry with a mismatched internal id.
         if entry.id == from_id {
@@ -378,7 +402,6 @@ impl FsAdapter {
             std::fs::read(&source)? == original,
             "configuration source changed during migration; both copies retained"
         );
-        let backup = source.with_extension("yaml.bak");
         #[cfg(test)]
         self.fail_migration_at("backup")?;
         // Publish the original bytes without replacing any previous backup.
@@ -777,6 +800,90 @@ mod tests {
                 source.value
             );
         }
+    }
+
+    #[tokio::test]
+    async fn source_rewritten_after_migration_is_preserved_without_writes() {
+        use crate::workers::configuration::store::ConfigurationStore;
+        let dir = temp_dir();
+        let adapter = Arc::new(
+            FsAdapter::new(Some(json!({"directory": dir.path()})))
+                .await
+                .unwrap(),
+        );
+        let mut seeded = sample_entry("state");
+        seeded.value = json!({"data_dir": "/data", "preserve_me": true});
+        adapter.register(seeded.clone()).await.unwrap();
+        let store = ConfigurationStore::new(adapter.clone());
+        store.prime_from_adapter().await.unwrap();
+        assert_eq!(
+            store
+                .migrate("state", "default-state")
+                .await
+                .unwrap()
+                .action,
+            MigrateAction::Migrated
+        );
+        let backup = std::fs::read(dir.path().join("state.yaml.bak")).unwrap();
+        // A worker that still uses the bare id re-registers it with its own defaults.
+        let mut rewritten = sample_entry("state");
+        rewritten.value = json!({"data_dir": "./data"});
+        adapter.register(rewritten.clone()).await.unwrap();
+        // The next start primes the store from disk before Compose migrates again.
+        store.prime_from_adapter().await.unwrap();
+        let target = adapter.entry_path("default-state");
+        let bytes = std::fs::read(&target).unwrap();
+        let modified = std::fs::metadata(&target).unwrap().modified().unwrap();
+        let count = std::fs::read_dir(dir.path()).unwrap().count();
+        for _ in 0..2 {
+            assert_eq!(
+                store
+                    .migrate("state", "default-state")
+                    .await
+                    .unwrap()
+                    .action,
+                MigrateAction::Preserved
+            );
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("state.yaml.bak")).unwrap(),
+            backup
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), count);
+        assert_eq!(
+            store.get("default-state").await.unwrap().value,
+            seeded.value
+        );
+        assert_eq!(store.get("state").await.unwrap().value, rewritten.value);
+        let reloaded = FsAdapter::new(Some(json!({"directory": dir.path()})))
+            .await
+            .unwrap();
+        assert_eq!(reloaded.list().await.unwrap().len(), 2);
+        assert_eq!(
+            reloaded.get("default-state").await.unwrap().unwrap().value,
+            seeded.value
+        );
+        // Without a destination the conflicting backup still stops migration.
+        std::fs::remove_file(&target).unwrap();
+        let fresh = Arc::new(
+            FsAdapter::new(Some(json!({"directory": dir.path()})))
+                .await
+                .unwrap(),
+        );
+        let fresh_store = ConfigurationStore::new(fresh);
+        fresh_store.prime_from_adapter().await.unwrap();
+        let error = fresh_store
+            .migrate("state", "default-state")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("existing backup differs"), "{error}");
+        assert!(!target.exists());
     }
 
     #[tokio::test]
