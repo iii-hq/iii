@@ -139,7 +139,10 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 	m.mu.Lock()
 	socket := m.active
 	m.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Race-instrumented encoding and parsing of the >16 MiB frames takes about
+	// 5 s on a fast machine and several times that on a shared CI runner; the
+	// deadlines bound a genuinely stuck exchange, not the expected time.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	out, err := c.Trigger(ctx, TriggerRequest{FunctionID: "remote"})
 	if err != nil || len(out) != len(huge) {
@@ -152,7 +155,7 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 		}
 		msgs := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
 			return firstWhere(msgs, func(msg map[string]json.RawMessage) bool { return stringField(msg, "invocation_id") == id.String() }) != nil
-		}, 5*time.Second)
+		}, time.Minute)
 		frame := firstWhere(msgs, func(msg map[string]json.RawMessage) bool { return stringField(msg, "invocation_id") == id.String() })
 		if frame == nil || frame["error"] != nil {
 			t.Fatalf("incoming invocation: %v", frame)

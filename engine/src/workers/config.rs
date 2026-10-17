@@ -61,6 +61,9 @@ pub struct EngineConfig {
     /// before the engine assigns it to `default`.
     #[serde(default = "default_registration_namespace_grace_ms")]
     pub registration_namespace_grace_ms: u64,
+    /// Observer limits and timeouts (protocol.md §3.6). Absent: defaults.
+    #[serde(default)]
+    pub observers: crate::observer::ObserversConfig,
     #[serde(default)]
     pub modules: Vec<WorkerEntry>,
     #[serde(default)]
@@ -75,6 +78,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
+            observers: Default::default(),
             modules: Vec::new(),
             workers: Vec::new(),
         }
@@ -704,6 +708,14 @@ impl EngineBuilder {
 
         self.engine
             .set_registration_namespace_grace_ms(config.registration_namespace_grace_ms);
+        config
+            .observers
+            .validate()
+            .map_err(|err| anyhow::anyhow!("invalid engine config: {err}"))?;
+        for warning in config.observers.warnings() {
+            tracing::warn!("{warning}: check the engine config's observers section");
+        }
+        self.engine.observers.set_config(config.observers.clone());
 
         crate::workers::observability::metrics::ensure_default_meter();
 
@@ -1591,6 +1603,31 @@ workers: []
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.registration_namespace_grace_ms, 10_000);
+    }
+
+    #[test]
+    fn test_config_yaml_observers_section() {
+        let config: EngineConfig = serde_yaml::from_str("workers: []\n").unwrap();
+        assert_eq!(
+            config.observers,
+            crate::observer::ObserversConfig::default()
+        );
+
+        let yaml = r#"
+observers:
+  local_dispatch: false
+  max_observe_depth: 4
+  observer_grace_ms: 1000
+workers: []
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.observers.local_dispatch);
+        assert_eq!(config.observers.max_observe_depth, 4);
+        assert_eq!(config.observers.observer_grace_ms, 1000);
+        assert_eq!(config.observers.max_per_connection, 1024);
+
+        let typo = "observers:\n  max_depth: 4\nworkers: []\n";
+        assert!(serde_yaml::from_str::<EngineConfig>(typo).is_err());
     }
 
     #[test]
@@ -2618,6 +2655,7 @@ workers:
                         "port": 0,
                     })),
                 }],
+                observers: Default::default(),
             })
             .build()
             .await
@@ -2644,6 +2682,7 @@ workers:
                 registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
                 modules: Vec::new(),
                 workers: Vec::new(),
+                observers: Default::default(),
             })
             .add_worker("configuration", Some(config_entry))
             .build()
@@ -2687,6 +2726,7 @@ workers:
                 registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
                 modules: Vec::new(),
                 workers: Vec::new(),
+                observers: Default::default(),
             })
             .add_worker("configuration", Some(config_entry))
             .with_config_path("config.yaml")

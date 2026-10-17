@@ -6,7 +6,7 @@
 
 //! Render a `clap::Command` tree as a Mintlify MDX reference page.
 //!
-//! Each user-facing binary (`iii`, `iii-worker`, `iii-console`) exposes a
+//! Each user-facing binary in this repo (`iii`, `iii-worker`) exposes a
 //! hidden `gen-cli-docs` subcommand that hands its own `Command` tree to
 //! [`render_mdx`]. The output is committed under `docs/next/cli-reference/`
 //! and CI regenerates + diffs it so the docs can never drift from the CLI.
@@ -16,7 +16,7 @@
 //! command/flag is skipped, and subcommands listed in
 //! [`PageMeta::delegated`] are linked to their own page instead of being
 //! rendered (the engine's `console`/`cloud`/`worker` passthrough stubs carry
-//! no real structure; the real trees live in the other binaries).
+//! no real structure; the real trees live in the dispatched binaries).
 
 use std::collections::BTreeMap;
 

@@ -13,7 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use iii::{EngineBuilder, engine::EngineTrait};
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use iii_sdk::{Dispatch, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use std::{
     process::{Child, Command, Stdio},
@@ -138,12 +138,17 @@ async fn oversized_json_preserves_connections_across_sdks() {
         let mut ready = false;
         for _ in 0..50 {
             if sdk
-                .trigger(TriggerRequest {
-                    function_id: target.into(),
-                    payload: json!({"size": 1}),
-                    timeout_ms: Some(1000),
-                    action: None,
-                })
+                // The engine path: a call to this worker's own `size::rust`
+                // would otherwise run in-process, where no frame limit applies.
+                .trigger(
+                    TriggerRequest {
+                        function_id: target.into(),
+                        payload: json!({"size": 1}),
+                        timeout_ms: Some(1000),
+                        action: None,
+                    }
+                    .dispatch(Dispatch::Remote),
+                )
                 .await
                 .is_ok()
             {
@@ -159,22 +164,28 @@ async fn oversized_json_preserves_connections_across_sdks() {
             .await
             .unwrap();
         let error = sdk
-            .trigger(TriggerRequest {
-                function_id: target.into(),
-                payload: json!({"size": JSON_FRAME_LIMIT_BYTES}),
-                timeout_ms: Some(10000),
-                action: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: target.into(),
+                    payload: json!({"size": JSON_FRAME_LIMIT_BYTES}),
+                    timeout_ms: Some(10000),
+                    action: None,
+                }
+                .dispatch(Dispatch::Remote),
+            )
             .await
             .unwrap_err();
         assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
         assert_eq!(
-            sdk.trigger(TriggerRequest {
-                function_id: target.into(),
-                payload: json!({"size": 2}),
-                timeout_ms: Some(10000),
-                action: None
-            })
+            sdk.trigger(
+                TriggerRequest {
+                    function_id: target.into(),
+                    payload: json!({"size": 2}),
+                    timeout_ms: Some(10000),
+                    action: None
+                }
+                .dispatch(Dispatch::Remote)
+            )
             .await
             .unwrap(),
             json!("xx")

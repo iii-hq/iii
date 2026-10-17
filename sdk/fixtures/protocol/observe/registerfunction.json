@@ -1,0 +1,19 @@
+{
+  "type": "registerfunction",
+  "id": "orders::archive",
+  "description": "Archives a closed order.",
+  "request_format": {
+    "type": "object",
+    "required": [
+      "order_id"
+    ],
+    "properties": {
+      "order_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_format": {
+    "type": "null"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "filters.md §6: writes made on behalf of anyone except the search indexer",
+  "filters": {"caller.parent.worker_name": {"$ne": "search-indexer"}},
+  "cases": [
+    { "doc": {"caller": {"worker_name": "database", "parent": {"worker_name": "search-indexer"}}}, "expect": false },
+    { "doc": {"caller": {"worker_name": "database", "parent": {"worker_name": "api"}}}, "expect": true },
+    { "doc": {"caller": {"worker_name": "api"}}, "expect": true }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "description": "only the documented operators exist",
+  "cases": [
+    { "filters": {"input.a": {"$regex": "x"}}, "code": "INVALID_FILTER", "note": "no regular expressions" },
+    { "filters": {"input.a": {"$size": 1}}, "code": "INVALID_FILTER", "note": "$size" },
+    { "filters": {"input.a": {"$elemMatch": {"$eq": 1}}}, "code": "INVALID_FILTER", "note": "$elemMatch (use $any)" },
+    { "filters": {"input.a": {"$EQ": 1}}, "code": "INVALID_FILTER", "note": "operators are case-sensitive" },
+    { "filters": {"input.a": {"$type": "string"}}, "code": "INVALID_FILTER", "note": "$type" },
+    { "filters": {"input.a": {"$not": {"$eq": 1}}}, "code": "INVALID_FILTER", "note": "$not is a clause, not a value operator" },
+    { "filters": {"input.a": {"$and": [{"input.a": {"$eq": 1}}]}}, "code": "INVALID_FILTER", "note": "$and inside an operator object" },
+    { "filters": {"input.a": {"$or": [{"input.a": {"$eq": 1}}]}}, "code": "INVALID_FILTER", "note": "$or inside an operator object" },
+    { "filters": {"$nor": [{"input.a": {"$eq": 1}}]}, "code": "INVALID_FILTER", "note": "$nor" },
+    { "filters": {"$where": "this.a == 1"}, "code": "INVALID_FILTER", "note": "$where" },
+    { "filters": {"$expr": {}}, "code": "INVALID_FILTER", "note": "$expr" },
+    { "filters": {"$": {}}, "code": "INVALID_FILTER", "note": "bare $" },
+    { "filters": {"input.l": {"$any": {"$regex": "x"}}}, "code": "INVALID_FILTER", "note": "unknown operator inside $any" }
+  ]
+}

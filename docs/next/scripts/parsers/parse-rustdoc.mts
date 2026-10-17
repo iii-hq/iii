@@ -174,6 +174,9 @@ function extractDocs(item: RustDocItem, opts?: { keepCodeBlocks?: boolean }): st
     .replace(/\[(`[^`]+`)\]\([^)]*\)/g, '$1')
     .replace(/\[(`[^`]+`)\]\[[^\]]*\]/g, '$1')
     .replace(/\[(`[^`]+`)\]/g, '$1')
+    // Plain-text intra-doc links to a Rust path ([module docs](self),
+    // [the client](crate::IIIClient)) have no page to point at: keep the text.
+    .replace(/\[([^\]]+)\]\(([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:!|\(\))?)\)/g, '$1')
     .trim()
 }
 
@@ -294,7 +297,20 @@ function buildMethodDoc(item: RustDocItem): FunctionDoc | null {
     returns: { type: outputType, description: extractReturnDescription(item.docs) },
     examples: extractExamples(item),
     ...parseExpandMarker(item.docs),
+    ...(item.deprecation ? { deprecated: deprecationOf(item.deprecation) } : {}),
   }
+}
+
+/** `#[deprecated(since, note)]` as the callout's text. */
+function deprecationOf(d: NonNullable<RustDocItem['deprecation']>): { since?: string; note: string } {
+  return { ...(d.since ? { since: d.since } : {}), note: d.note ?? '' }
+}
+
+/** A one-line deprecation prefix for a table cell (no room for a callout there). */
+function deprecationPrefix(d: NonNullable<RustDocItem['deprecation']>): string {
+  const since = d.since ? ` since ${d.since}` : ''
+  const note = d.note ? ` ${d.note.charAt(0).toUpperCase()}${d.note.slice(1)}` : ''
+  return `**Deprecated${since}.**${note.replace(/[^.]$/, '$&.')}`
 }
 
 function extractMethodsFromStruct(structId: number, index: Record<string, RustDocItem>, exclude?: Set<string>): FunctionDoc[] {
@@ -309,7 +325,10 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
     for (const methodId of getImplItems(implItem)) {
       const method = index[methodId]
       if (!method || method.visibility !== 'public') continue
-      if (method.deprecation) continue
+      // Deprecated methods stay, with a deprecation callout: in 0.25
+      // `register_trigger` is still how a worker binds to providers that have
+      // not moved to observable functions. `#[doc(hidden)]` ones never reach
+      // the rustdoc JSON.
       if (exclude && exclude.has(method.name ?? '')) continue
       if (getItemKind(method) !== 'function') continue
       const doc = buildMethodDoc(method)
@@ -331,7 +350,7 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
     if (!implItem || !isInherentImpl(implItem)) continue
     for (const methodId of getImplItems(implItem)) {
       const method = index[methodId]
-      if (!method || method.visibility !== 'public' || method.deprecation) continue
+      if (!method || method.visibility !== 'public') continue
       if (getItemKind(method) !== 'function') continue
       if (isInternalDoc(method.docs)) continue
       const sig = getSig(method)
@@ -342,10 +361,13 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
       const paramSig = inputs.map(([name, type]: [string, any]) => `${name}: ${rustTypeToString(type)}`).join(', ')
       const outputType = rustTypeToString(sig.output)
       const returnSuffix = outputType && outputType !== '()' ? ` -> ${outputType}` : ''
+      const summary = firstParagraph(extractDocs(method))
       rows.push({
         name: method.name ?? '',
         type: `${isAsync(method) ? 'async ' : ''}fn(${paramSig})${returnSuffix}`,
-        description: firstParagraph(extractDocs(method)),
+        description: method.deprecation
+          ? `${deprecationPrefix(method.deprecation)}${summary ? ` ${summary}` : ''}`
+          : summary,
         required: true,
       })
     }
@@ -582,6 +604,7 @@ export function parseRustdoc(jsonPath: string, helpersJsonPath?: string): SdkDoc
 
   const registerWorker = findItemByName(data, 'register_worker', 'function')
   const entryPoint = registerWorker ? buildMethodDoc(registerWorker) : null
+  const functions = collectRootFunctions(data, new Set(['register_worker']))
 
   const PKG = 'iii_sdk'
   const facade = collectFacadeMap(data)
@@ -633,9 +656,40 @@ export function parseRustdoc(jsonPath: string, helpersJsonPath?: string): SdkDoc
       },
     },
     methods,
+    functions,
     types,
     typeGroups,
   }
+}
+
+/**
+ * Free functions a module defines and the crate re-exports at its root with
+ * `pub use` (e.g. `iii_sdk::current_invocation`, `iii_sdk::scope` from
+ * `context`). Functions defined at the root itself are the entry point and its
+ * address helpers (`register_worker`, `register_worker_from_env`,
+ * `engine_url_from_env`); the Initialization section covers those.
+ */
+function collectRootFunctions(data: RustDocIndex, exclude: Set<string>): FunctionDoc[] {
+  const root = data.index[data.root]
+  const out: FunctionDoc[] = []
+  const seen = new Set<string>()
+  for (const id of root?.inner?.module?.items ?? []) {
+    const reexport = data.index[id]
+    if (!reexport || reexport.crate_id !== 0 || reexport.visibility !== 'public') continue
+    const use = reexport.inner?.use
+    if (!use || use.id == null || use.is_glob) continue
+    const item = data.index[use.id]
+    if (!item || item.crate_id !== 0) continue
+    if (getItemKind(item) !== 'function' || !item.name) continue
+    // A deprecated free function stays, with the same callout as a deprecated
+    // method (buildMethodDoc carries `deprecated`).
+    if (isInternalDoc(item.docs)) continue
+    if (exclude.has(item.name) || seen.has(item.name)) continue
+    seen.add(item.name)
+    const doc = buildMethodDoc(item)
+    if (doc) out.push(doc)
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // ---------------------------------------------------------------------------

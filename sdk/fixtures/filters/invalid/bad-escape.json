@@ -1,0 +1,12 @@
+{
+  "description": "only \\. and \\\\ are escapes",
+  "cases": [
+    { "filters": {"input.a\\b": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "\\b" },
+    { "filters": {"input.a\\": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "dangling backslash" },
+    { "filters": {"input.a\\n": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "\\n is not an escape" },
+    { "filters": {"input.\\@": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "\\@ is not an escape" },
+    { "filters": {"input.a\\\\\\": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "escaped backslash then a dangling one" },
+    { "filters": {"input.a\\ b": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "backslash space" },
+    { "filters": {"input.l": {"$any": {"@.a\\x": {"$eq": 1}}}}, "code": "INVALID_FILTER", "note": "inside $any" }
+  ]
+}

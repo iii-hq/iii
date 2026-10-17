@@ -1,0 +1,11 @@
+{
+  "description": "$exists false: absent only",
+  "filters": {"input.a": {"$exists": false}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {}, "expect": true },
+    { "doc": {"input": {"a": null}}, "expect": false, "note": "null is present" },
+    { "doc": {"input": "a"}, "expect": true, "note": "stepping into a string is absent" },
+    { "doc": {"input": {"a": 0}}, "expect": false }
+  ]
+}

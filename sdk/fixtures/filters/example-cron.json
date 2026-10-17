@@ -1,0 +1,10 @@
+{
+  "description": "filters.md §2.2: the iii lang example",
+  "filters": {"input.scheduled_time": {"$gte": "2026-11-01T00:00:00Z"}, "caller.worker_name": {"$ne": "replayer"}},
+  "cases": [
+    { "doc": {"input": {"scheduled_time": "2026-11-02T09:00:00Z"}, "caller": {"worker_name": "cron"}}, "expect": true },
+    { "doc": {"input": {"scheduled_time": "2026-10-30T09:00:00Z"}, "caller": {"worker_name": "cron"}}, "expect": false },
+    { "doc": {"input": {"scheduled_time": "2026-11-02T09:00:00Z"}, "caller": {"worker_name": "replayer"}}, "expect": false },
+    { "doc": {"input": {"scheduled_time": "2026-11-02T09:00:00Z"}}, "expect": true }
+  ]
+}

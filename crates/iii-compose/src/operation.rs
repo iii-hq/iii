@@ -90,7 +90,10 @@ impl ProgressEmitter {
         );
         let handler = ProgressTriggers::default();
         let bindings = Arc::clone(&handler.bindings);
-        client.register_trigger_type(
+        // `compose-operation` stays a trigger type until its subscribers move to
+        // observers; the deprecation (and its runtime warning) is for user code.
+        #[allow(deprecated)]
+        client.register_trigger_type_without_warning(
             RegisterTriggerType::new(
                 "compose-operation",
                 "Streams structured progress for Compose dependency-tree operations",

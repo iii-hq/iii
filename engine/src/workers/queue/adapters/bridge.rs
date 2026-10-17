@@ -281,6 +281,7 @@ impl QueueAdapter for BridgeAdapter {
             }),
         );
 
+        #[allow(deprecated)]
         let trigger = match self.bridge.register_trigger(RegisterTriggerInput::new(
             "durable:subscriber".to_string(),
             handler_path.clone(),

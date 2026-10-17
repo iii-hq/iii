@@ -77,6 +77,7 @@ fn span(trace_id: &str, span_id: &str, start_time: u64, payload_bytes: usize) ->
         flags: None,
         trace_state: None,
         pending: false,
+        observe_depth: 0,
     }
 }
 
@@ -479,6 +480,30 @@ fn permission_denied_directory_reports_actionable_error_without_partial_archive(
     assert!(!locked.join("traces.sqlite3").exists());
 }
 
+/// Held by the child that runs under `ulimit -S -f`: on drop it raises the
+/// soft file-size limit back to the hard one. The limit is for the test body
+/// only; a coverage build writes its multi-MiB profile when the child exits,
+/// and a capped write leaves a truncated profile that fails the coverage merge.
+#[cfg(unix)]
+struct LiftFileSizeLimitOnDrop;
+
+#[cfg(unix)]
+impl Drop for LiftFileSizeLimitOnDrop {
+    fn drop(&mut self) {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit only read and write the owned struct.
+        unsafe {
+            if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) == 0 {
+                limit.rlim_cur = limit.rlim_max;
+                libc::setrlimit(libc::RLIMIT_FSIZE, &limit);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 const FILE_LIMIT_CHILD: &str = "III_TRACE_STORAGE_FILE_LIMIT_CHILD";
 #[cfg(unix)]
@@ -491,6 +516,7 @@ fn disk_full_degrades_without_partial_commit_and_keeps_committed_data() {
     use std::process::Command;
 
     if std::env::var_os(FILE_LIMIT_CHILD).is_some() {
+        let _lift = LiftFileSizeLimitOnDrop;
         let directory = PathBuf::from(
             std::env::var_os(FILE_LIMIT_DIRECTORY).expect("child directory is provided"),
         );
@@ -530,7 +556,7 @@ fn disk_full_degrades_without_partial_commit_and_keeps_committed_data() {
     let output = Command::new("bash")
         .args([
             "-c",
-            "ulimit -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
+            "ulimit -S -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
             "trace-storage-file-limit-child",
         ])
         .arg(executable)

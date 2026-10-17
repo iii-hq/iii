@@ -46,8 +46,8 @@ commonly listens on `ws://localhost:49134`. Keep this foreground supervisor runn
 
 `--namespace dev` names the daemon and becomes `III_NAMESPACE` for every worker it starts, so your
 workers register and call each other in `dev`; that is why the `iii trigger` commands below pass
-`-n dev`. Engine-owned functions (`engine::*`, `configuration::*`) stay in `default`; when a worker
-in `dev` calls one of those, pass `namespace: "default"` on the call (see `iii-sdk-reference`).
+`-n dev`. Engine-owned functions (`engine::*`, `configuration::*`) stay in `default`, and SDK calls
+to them resolve there without a namespace (see `iii-sdk-reference`).
 
 ## Step 4: Install the SDK
 
@@ -130,13 +130,19 @@ iii.register_function(
     }).description("Greet a user by name"),
 );
 
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "http".into(),
-    function_id: "hello::greet".into(),
-    config: json!({ "api_path": "/hello", "http_method": "POST" }),
-    metadata: None,
-})?;
+// Deprecated since 0.25, still how you bind to the http worker: compiles with a warning.
+#[allow(deprecated)]
+iii.register_trigger(RegisterTriggerInput::new(
+    "http",
+    "hello::greet",
+    json!({ "api_path": "/hello", "http_method": "POST" }),
+))?;
 ```
+
+`registerTrigger` logs a one-time deprecation warning in iii 0.25. It keeps working, and it is still
+the way to bind to the `http`, `cron`, queue, `state`, `stream`, and pub/sub workers, which have not
+moved to source functions yet. To run a function after another one, use `iii.observe` (see
+`iii-observe`).
 
 ## Step 6: Test It
 
@@ -181,19 +187,21 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent the top-level iii model: functions, triggers, workers, registry access,
-SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
+Skills teach your agent the top-level iii model: functions, triggers, workers, observers, registry
+access, SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
 live with the worker docs and registry entries.
 
 ## Adapting This Pattern
 
-- Add more functions to the same worker — each gets its own `registerFunction` + `registerTrigger`
+- Add more functions to the same worker: each gets its own `registerFunction` + `registerTrigger`
   calls
 - Use `::` separator for function IDs to namespace them: `orders::create`, `orders::validate`
 - Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field: sec
   min hour day month weekday year)
 - Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
 - Use `iii.trigger()` to invoke other functions from within a function
+- Use `iii.observe({ function_id: "hello::greet" }, "audit::record")` to run a registered function
+  after every successful call of another one (see `iii-observe`)
 - Use `state::get` / `state::set` to persist data across function calls
 - Use `iii trigger -n <daemon> compose::add worker=<name>` when the capability already exists in
   the worker registry
@@ -202,21 +210,24 @@ live with the worker docs and registry entries.
 
 After getting your first worker running:
 
-1. **Register functions, triggers, and workers** — See `iii-core-primitives`
-2. **Choose the right SDK APIs** — See `iii-sdk-reference`
-3. **Configure the engine** — See `iii-engine-config`
-4. **Explore backend patterns** — See `iii-architecture-patterns`
-5. **Handle failures well** — See `iii-error-handling`
+1. **Register functions, triggers, and workers**: see `iii-core-primitives`
+2. **Observe functions and engine events**: see `iii-observe`
+3. **Choose the right SDK APIs**: see `iii-sdk-reference`
+4. **Configure the engine**: see `iii-engine-config`
+5. **Explore backend patterns**: see `iii-architecture-patterns`
+6. **Handle failures well**: see `iii-error-handling`
 
 ## Key Resources
 
 - [Quickstart Guide](https://iii.dev/docs/quickstart)
-- [SDK Reference — Node.js](https://iii.dev/docs/reference/sdk-node)
-- [SDK Reference — Python](https://iii.dev/docs/reference/sdk-python)
-- [SDK Reference — Rust](https://iii.dev/docs/reference/sdk-rust)
+- [SDK Reference: Node.js](https://iii.dev/docs/reference/sdk-node)
+- [SDK Reference: Python](https://iii.dev/docs/reference/sdk-python)
+- [SDK Reference: Rust](https://iii.dev/docs/reference/sdk-rust)
 - [Compose](https://iii.dev/docs/using-iii/compose)
 - [Configuration](https://iii.dev/docs/using-iii/configuration)
 - [Console](https://iii.dev/docs/using-iii/console)
+- [Observers](https://iii.dev/docs/using-iii/observers)
+- [Upgrading from 0.24.x](https://iii.dev/docs/upgrading/from-0-24-x)
 - Every docs page is also available as Markdown by adding a `.md` suffix to its URL.
 
 ## Pattern Boundaries
@@ -224,6 +235,8 @@ After getting your first worker running:
 - For function and trigger registration patterns, worker creation, worker registry access, trigger
   payload schemas, invocation modes, channels, custom triggers, and HTTP-invoked functions, prefer
   `iii-core-primitives`
+- For observing functions and engine events, and for migrating off `registerTrigger`, prefer
+  `iii-observe`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
 - For worker-backed HTTP, cron, queue, pubsub, state, stream, and observability behavior, use the matching worker page on https://workers.iii.dev/

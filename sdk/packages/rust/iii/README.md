@@ -44,30 +44,30 @@ change for direct dependents and ships as a minor bump of `iii-sdk`:
 ## Hello World
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, Error, InitOptions, RegisterFunction, Source};
+use iii_sdk::protocol::TriggerRequest;
 use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function("hello::greet", |input: Value| async move {
-        let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-        Ok(json!({ "message": format!("Hello, {name}!") }))
-    });
+    iii.register_function(
+        "hello::greet",
+        RegisterFunction::new_async(|input: Value| async move {
+            let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+            Ok::<_, Error>(json!({ "message": format!("Hello, {name}!") }))
+        }),
+    );
 
-    iii.register_trigger("http", "hello::greet", json!({
-        "api_path": "/greet",
-        "http_method": "POST"
-    }))?;
+    // Run hello::greet for every POST /greet (the http worker owns http::on-request)
+    iii.observe(
+        Source::function("http::on-request").args(json!({ "method": "POST", "path": "/greet" })),
+        "hello::greet",
+    );
 
     let result: Value = iii
-        .trigger(TriggerRequest {
-        function_id: "hello::greet".to_string(),
-            payload: json!({ "name": "world" }),
-            action: None,
-            timeout_ms: None,
-        })
+        .trigger(TriggerRequest::new("hello::greet", json!({ "name": "world" })))
         .await?;
 
     println!("result: {result}");
@@ -81,7 +81,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | ------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `register_worker(address, options)`                                                          | Create an SDK instance and auto-connect                |
 | Register function        | `iii.register_function(id, \|input: Value\| ...)`                                            | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, fn_id, config)?`                                                 | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Observe a function       | `iii.observe(Source::function(id).args(..).filters(..), target)`                             | Invoke `target` for the events of a function           |
+| Observable function      | `RegisterFunction::new(f).observe(Observe::owner().handler(h))`                              | Know who observes a function; route events to them     |
 | Invoke (await)           | `iii.trigger(TriggerRequest { ... }).await?`                                                 | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Void), ... }).await?`              | Fire-and-forget invocation                             |
 | Invoke (enqueue)         | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Enqueue { queue }), ... }).await?` | Route invocation through a named queue                 |
@@ -100,14 +101,33 @@ iii.register_function("orders::create", |input: Value| async move {
 });
 ```
 
-### Registering Triggers
+### Observing Functions
+
+Every function is observable. `observe(source, target)` invokes `target` (a
+registered function) for each event of `source`: its invocations, or what its
+owner hands to the observer. `args` are for the owner (a route, a schedule),
+`filters` pick the events:
 
 ```rust
-iii.register_trigger("http", "orders::create", json!({
-    "api_path": "/orders",
-    "http_method": "POST"
-}))?;
+use iii_sdk::{Capture, On, ObserverOptions, Source};
+
+let alerts = iii.observe_with(
+    Source::function("payments::charge")
+        .on(On::Error)
+        .filters(json!({ "input.amount": { "$gte": 500 } }))
+        .capture([Capture::Input, Capture::Error, Capture::Caller]),
+    "alerts::payment-failed",
+    ObserverOptions::default().max_in_flight(4),
+);
+alerts.ready().await?;
 ```
+
+A worker calling one of its own functions runs it in-process (no frames on
+the wire unless an observer's filters match); `TriggerRequest::dispatch(Dispatch::Remote)`
+forces the engine path.
+
+`register_trigger` and `register_trigger_type` are deprecated since 0.25.0 and
+keep working; see the [migration guide](https://iii.dev/docs/upgrading/from-0-24-x).
 
 ### Invoking Functions
 

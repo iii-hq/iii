@@ -1,0 +1,13 @@
+{
+  "description": "filters inside $or / $not are normalized too; $or branch order is kept",
+  "cases": [
+    { "filters": {"$or": [{"input.b": {"$eq": 1}, "input.a": {"$eq": 1}}, {}]},
+      "normalized": {"$and": [{"$or": [{"$and": [{"input.a": {"$eq": 1}}, {"input.b": {"$eq": 1}}]}, {}]}]} },
+    { "filters": {"$not": {}},
+      "normalized": {"$and": [{"$not": {}}]} },
+    { "filters": {"$not": {"$not": {"input.a": {"$exists": true}}}},
+      "normalized": {"$and": [{"$not": {"$and": [{"$not": {"$and": [{"input.a": {"$exists": true}}]}}]}}]} },
+    { "filters": {"$or": [{"input.z": {"$eq": 1}}, {"input.a": {"$eq": 1}}]},
+      "normalized": {"$and": [{"$or": [{"$and": [{"input.z": {"$eq": 1}}]}, {"$and": [{"input.a": {"$eq": 1}}]}]}]} }
+  ]
+}

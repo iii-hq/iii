@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
+    observable::FunctionEntry,
     protocol::{RegisterFunctionMessage, RegisterTriggerTypeMessage},
     triggers::TriggerHandler,
 };
@@ -32,6 +33,8 @@ pub type RemoteFunctionHandlerWithMetadata =
 pub struct RemoteFunctionData {
     pub message: RegisterFunctionMessage,
     pub handler: Option<RemoteFunctionHandlerWithMetadata>,
+    /// Observe state: hooks, observers, local dispatch.
+    pub(crate) observe: Arc<FunctionEntry>,
 }
 
 #[derive(Clone)]

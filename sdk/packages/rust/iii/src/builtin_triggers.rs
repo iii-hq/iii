@@ -1,3 +1,12 @@
+//! Typed configs for the trigger types the iii workers provide, for
+//! [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
+//!
+//! **Deprecated since 0.25.0** together with `register_trigger`. The http,
+//! cron, queue, state, stream, pubsub and database workers still publish these
+//! trigger types in 0.25, so keep using these configs with `register_trigger`
+//! until a provider ships its source function. Migration guide:
+//! <https://iii.dev/docs/upgrading/from-0-24-x>.
+
 use std::collections::HashMap;
 
 use iii_helpers::stream::{StreamJoinLeaveTriggerConfig, StreamTriggerConfig};
@@ -279,6 +288,9 @@ pub struct LogCallRequest {
 // ── IIITrigger enum ────────────────────────────────────────────────────
 
 /// Enum of all built-in trigger types with typed configuration.
+///
+/// **Deprecated since 0.25.0** with [`IIIClient::register_trigger`](crate::IIIClient::register_trigger);
+/// see the [module docs](self).
 ///
 /// Use `.for_function()` to create a [`RegisterTriggerInput`]:
 /// ```rust,no_run

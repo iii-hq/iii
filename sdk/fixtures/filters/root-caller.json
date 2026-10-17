@@ -1,0 +1,10 @@
+{
+  "description": "caller root: top-level calls have no function_id",
+  "filters": {"caller.worker_name": {"$eq": "billing"}, "caller.function_id": {"$exists": false}},
+  "cases": [
+    { "doc": {"caller": {"worker_id": "w1", "worker_name": "billing"}}, "expect": true },
+    { "doc": {"caller": {"worker_id": "w1", "worker_name": "billing", "function_id": "billing::close", "invocation_id": "i1"}}, "expect": false },
+    { "doc": {"caller": {"worker_name": "shipping"}}, "expect": false },
+    { "doc": {}, "expect": false }
+  ]
+}

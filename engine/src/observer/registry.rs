@@ -1,0 +1,978 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! `observe` / `unobserve`, and the observing connection's lifecycle
+//! (disconnect, grace, `Reattach`).
+
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
+
+use iii_filter::Filter;
+use serde_json::{Map, Value};
+use uuid::Uuid;
+
+use super::{
+    Departed, FnKey, ObserverRegistry,
+    lifecycle::{
+        CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy, Tombstone,
+    },
+    owner::check_descriptor,
+};
+use crate::{
+    engine::Engine,
+    protocol::{
+        DEFAULT_NAMESPACE, ErrorBody, INVALID_NAMESPACE, Message, ObserveSource, ObserveTarget,
+        ObserverState, default_capture, is_blank_namespace, observe_codes,
+    },
+    worker_connections::WorkerConnection,
+};
+
+/// Longest observer id accepted. Ids are client-generated UUIDs (CONTRACT
+/// D3); the bound only keeps a misbehaving client from filling memory.
+const MAX_OBSERVER_ID_LEN: usize = 128;
+
+/// A decoded `observe` message.
+#[derive(Debug, Clone)]
+pub struct ObserveRequest {
+    pub id: String,
+    pub source: ObserveSource,
+    pub target: ObserveTarget,
+    pub metadata: Option<Value>,
+    pub max_fires: Option<u64>,
+    pub expires_in_ms: Option<u64>,
+    pub max_in_flight: Option<u32>,
+}
+
+impl ObserveRequest {
+    /// The spec a replay is compared on (see [`ObserveSpec`]).
+    fn spec(&self, default_max_in_flight: u32) -> ObserveSpec {
+        let namespace =
+            |ns: &Option<String>| ns.clone().unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
+        let filters = match &self.source.filters {
+            None => Filter::match_all().normalized().clone(),
+            Some(src) => Filter::parse(src)
+                .map(|filter| filter.normalized().clone())
+                .unwrap_or_else(|_| src.clone()),
+        };
+        ObserveSpec {
+            function: (
+                namespace(&self.source.namespace),
+                self.source.function_id.clone(),
+            ),
+            target: (
+                namespace(&self.target.namespace),
+                self.target.function_id.clone(),
+            ),
+            args: match &self.source.args {
+                None | Some(Value::Null) => Value::Object(Map::new()),
+                Some(args) => args.clone(),
+            },
+            filters,
+            capture: CaptureSet::from_list(&self.source.capture()).to_list(),
+            on: self.source.on(),
+            deliver: self.source.deliver(),
+            metadata: self.metadata.clone(),
+            max_fires: self.max_fires,
+            expires_in_ms: self.expires_in_ms,
+            max_in_flight: self.max_in_flight.unwrap_or(default_max_in_flight),
+            legacy: None,
+        }
+    }
+}
+
+fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
+    ErrorBody::new(code, message)
+}
+
+impl ObserverRegistry {
+    /// Handles `observe` from `worker`: creates the observer, or answers a
+    /// replay, and replies with `observeresult`. Every reply and every later
+    /// `observerstatechanged` reach the observing worker in order.
+    pub async fn observe(
+        self: &Arc<Self>,
+        engine: &Engine,
+        worker: &WorkerConnection,
+        request: ObserveRequest,
+    ) {
+        self.remember_runtime();
+        let id = request.id.clone();
+        if let Err(error) = self.create(engine, worker, request).await {
+            tracing::debug!(
+                worker_id = %worker.id,
+                observer_id = %id,
+                code = %error.code,
+                message = %error.message,
+                "observe rejected"
+            );
+            self.notify(
+                worker.id,
+                Message::ObserveResult {
+                    id,
+                    state: ObserverState::Error,
+                    error: Some(error),
+                    warnings: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// Validates and stores the observer. On success the `observeresult` has
+    /// already been queued; an `Err` is a rejection the caller reports.
+    async fn create(
+        self: &Arc<Self>,
+        engine: &Engine,
+        worker: &WorkerConnection,
+        request: ObserveRequest,
+    ) -> Result<(), ErrorBody> {
+        if request.id.trim().is_empty() || request.id.len() > MAX_OBSERVER_ID_LEN {
+            return Err(reject(
+                observe_codes::INVALID_ARGS,
+                format!(
+                    "an observer id is a non-empty string of at most {MAX_OBSERVER_ID_LEN} bytes"
+                ),
+            ));
+        }
+
+        // A replay: the same spec from the observing connection is a no-op
+        // that answers with the current state.
+        let spec = request.spec(self.config().default_max_in_flight);
+        if let Some(existing) = self.get(&request.id) {
+            if existing.observing().connection == worker.id && existing.spec == spec {
+                let (state, reason) = existing.snapshot_state();
+                let error = (state == ObserverState::Error).then_some(reason).flatten();
+                self.notify(
+                    worker.id,
+                    Message::ObserveResult {
+                        id: request.id,
+                        state,
+                        error,
+                        warnings: existing.warnings.clone(),
+                    },
+                );
+                return Ok(());
+            }
+            return Err(reject(
+                observe_codes::OBSERVER_ID_CONFLICT,
+                if existing.observing().connection == worker.id {
+                    format!(
+                        "observer `{}` already exists with a different spec",
+                        request.id
+                    )
+                } else {
+                    format!("observer `{}` is owned by another connection", request.id)
+                },
+            ));
+        }
+        // A replay of an observer disposed meanwhile (max_fires, expiry, an
+        // admin's dispose while the worker was away): it stays disposed.
+        if let Some(tombstone) = self.tombstones.get(&request.id)
+            && tombstone.connection == worker.id
+            && tombstone.until > Instant::now()
+        {
+            let reason = tombstone.reason.clone();
+            drop(tombstone);
+            self.notify(
+                worker.id,
+                Message::ObserveResult {
+                    id: request.id,
+                    state: ObserverState::Disposed,
+                    error: Some(reason),
+                    warnings: Vec::new(),
+                },
+            );
+            return Ok(());
+        }
+
+        for (field, function_id) in [
+            ("source.function_id", &request.source.function_id),
+            ("target.function_id", &request.target.function_id),
+        ] {
+            if function_id.trim().is_empty() {
+                return Err(reject(
+                    observe_codes::INVALID_ARGS,
+                    format!("`{field}` is empty"),
+                ));
+            }
+        }
+
+        let ObserveRequest {
+            id,
+            source,
+            target,
+            metadata,
+            max_fires,
+            expires_in_ms,
+            max_in_flight,
+        } = request;
+
+        for (field, value) in [
+            ("source.namespace", &source.namespace),
+            ("target.namespace", &target.namespace),
+        ] {
+            if is_blank_namespace(value) {
+                return Err(reject(
+                    INVALID_NAMESPACE,
+                    format!(
+                        "`{field}` is empty: name a namespace, or omit it to use `{DEFAULT_NAMESPACE}`"
+                    ),
+                ));
+            }
+        }
+
+        // Values a newer peer may send and this engine cannot honour
+        // (CONTRACT D14). Never defaulted: the observer would silently do
+        // something other than what was asked.
+        if let Some(on) = &source.on
+            && !on.is_known()
+        {
+            return Err(unsupported("source.on", on.as_str()));
+        }
+        if let Some(deliver) = &source.deliver
+            && !deliver.is_known()
+        {
+            return Err(unsupported("source.deliver", deliver.as_str()));
+        }
+        if let Some(unknown) = source
+            .capture
+            .iter()
+            .flatten()
+            .find(|capture| !capture.is_known())
+        {
+            return Err(unsupported("source.capture", unknown.as_str()));
+        }
+
+        for (field, value) in [
+            ("max_fires", max_fires),
+            ("expires_in_ms", expires_in_ms),
+            ("max_in_flight", max_in_flight.map(u64::from)),
+        ] {
+            if value == Some(0) {
+                return Err(reject(
+                    observe_codes::INVALID_ARGS,
+                    format!("`{field}` must be at least 1, or omitted"),
+                ));
+            }
+        }
+
+        let mut function_id = source.function_id.clone();
+        let function_namespace = source
+            .namespace
+            .clone()
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
+        let mut target_id = target.function_id.clone();
+        let target_namespace = target
+            .namespace
+            .clone()
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
+        // `null` is no args, stored (and shown to the owner) as `{}`.
+        let mut args = match &source.args {
+            None | Some(Value::Null) => Value::Object(Map::new()),
+            Some(args) => args.clone(),
+        };
+        let mut filters = source.filters.clone();
+        let mut activation_metadata = metadata;
+
+        if let Some(session) = &worker.session {
+            // Same contract as `on_trigger_registration_function_id`: an
+            // object answer may rewrite the registration, anything else denies.
+            if let Some(hook) = session
+                .config
+                .rbac
+                .as_ref()
+                .and_then(|rbac| rbac.on_observer_registration_function_id.as_ref())
+            {
+                let hook_input = serde_json::json!({
+                    "observer_id": id,
+                    "function_id": function_id,
+                    "namespace": function_namespace,
+                    "args": args,
+                    "filters": filters,
+                    "target_function_id": target_id,
+                    "target_namespace": target_namespace,
+                    "metadata": activation_metadata,
+                    "context": session.context,
+                });
+                match engine
+                    .call_value_with_metadata_ns(DEFAULT_NAMESPACE, hook, hook_input, None)
+                    .await
+                {
+                    Ok(Some(Value::Object(answer))) => {
+                        if let Some(s) = answer.get("function_id").and_then(Value::as_str) {
+                            function_id = s.to_string();
+                        }
+                        if let Some(s) = answer.get("target_function_id").and_then(Value::as_str) {
+                            target_id = s.to_string();
+                        }
+                        if let Some(v) = answer.get("args") {
+                            args = if v.is_null() {
+                                Value::Object(Map::new())
+                            } else {
+                                v.clone()
+                            };
+                        }
+                        if let Some(v) = answer.get("filters") {
+                            filters = (!v.is_null()).then(|| v.clone());
+                        }
+                        if let Some(v) = answer.get("metadata") {
+                            activation_metadata = (!v.is_null()).then(|| v.clone());
+                        }
+                    }
+                    other => {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            observer_id = %id,
+                            result = ?other,
+                            "observer registration denied by hook"
+                        );
+                        return Err(reject(
+                            observe_codes::FORBIDDEN,
+                            "observer registration denied by the registration hook",
+                        ));
+                    }
+                }
+            }
+            // A prefixed session's own functions live under `prefix::id`, as
+            // for a trigger's target.
+            if let Some(prefix) = &session.function_registration_prefix {
+                target_id = format!("{prefix}::{target_id}");
+            }
+            for (namespace, function) in [
+                (&function_namespace, &function_id),
+                (&target_namespace, &target_id),
+            ] {
+                if !engine.is_function_allowed(session, Some(namespace), function) {
+                    return Err(reject(
+                        observe_codes::FORBIDDEN,
+                        format!("function '{function}' not allowed in namespace '{namespace}'"),
+                    ));
+                }
+            }
+        }
+
+        let function: FnKey = (function_namespace, function_id);
+        let target_key: FnKey = (target_namespace, target_id);
+        if function == target_key {
+            return Err(reject(
+                observe_codes::SELF_TARGET,
+                format!("`{}` cannot be the target of its own observer", function.1),
+            ));
+        }
+        self.check_target_invocable(&target_key)?;
+
+        // `null` is absent, and absent matches every event.
+        let filter = match &filters {
+            Some(src) => {
+                Filter::parse(src).map_err(|err| reject(err.code.as_str(), err.message))?
+            }
+            None => Filter::match_all(),
+        };
+
+        // What depends on the function's registration is checked now when it
+        // is registered, and when it registers otherwise.
+        let mut warnings = Vec::new();
+        let formats = self.function_formats(&function);
+        match &formats {
+            Some((request_format, response_format)) => {
+                let descriptor = self.function_entry(&function).and_then(|e| e.descriptor());
+                check_descriptor(descriptor.as_ref(), &function, &args)?;
+                warnings = filter
+                    .check_schema_paths(request_format.as_ref(), response_format.as_ref())
+                    .map_err(|err| reject(err.code.as_str(), err.message))?;
+            }
+            None => {
+                warnings.push(format!(
+                    "`{}` is not registered yet: its args and filter paths are checked when it \
+                     registers",
+                    function.1
+                ));
+            }
+        }
+
+        let config = self.config();
+        // Observers the legacy shim made from old triggers count against no
+        // limit (protocol.md §6).
+        let owned = self
+            .by_connection
+            .get(&worker.id)
+            .map(|ids| {
+                ids.iter()
+                    .filter(|id| self.get(id).is_some_and(|o| o.legacy.is_none()))
+                    .count()
+            })
+            .unwrap_or(0);
+        if owned >= config.max_per_connection {
+            return Err(reject(
+                observe_codes::LIMIT_EXCEEDED,
+                format!(
+                    "this connection already owns {owned} observers (observers.max_per_connection)"
+                ),
+            ));
+        }
+        let on_function = self
+            .function_entry(&function)
+            .map(|e| e.limited_observer_count())
+            .unwrap_or(0);
+        if on_function >= config.max_per_function {
+            return Err(reject(
+                observe_codes::LIMIT_EXCEEDED,
+                format!(
+                    "`{}` already has {on_function} observers (observers.max_per_function)",
+                    function.1
+                ),
+            ));
+        }
+
+        let capture = source.capture.clone().unwrap_or_else(default_capture);
+        let observer = Arc::new(Observer::new(NewObserver {
+            id: id.clone(),
+            target: target_key.clone(),
+            spec,
+            args,
+            filter,
+            capture: CaptureSet::from_list(&capture),
+            on: source.on(),
+            deliver: source.deliver(),
+            metadata: activation_metadata,
+            policy: Policy {
+                max_fires,
+                expires_in_ms,
+                expires_at: expires_in_ms.map(|ms| Instant::now() + Duration::from_millis(ms)),
+                max_in_flight: max_in_flight.unwrap_or(config.default_max_in_flight).max(1),
+                max_queue: config.max_queue_per_observer,
+            },
+            warnings: warnings.clone(),
+            observing: Observing {
+                connection: worker.id,
+                worker_name: self
+                    .deps
+                    .get()
+                    .and_then(|deps| deps.workers.get_worker_name(&worker.id)),
+                session: worker.session.clone(),
+            },
+            flags: Flags {
+                observing_connected: true,
+                function_available: formats.is_some(),
+                target_available: self.is_registered(&target_key),
+                owner_acked: self.acked_by_default(&function),
+                announced: None,
+                rejected_by_owner: false,
+                activated_once: false,
+                failed: None,
+                disposed: None,
+            },
+            function,
+            legacy: None,
+        }));
+
+        let inserted = self.publish(&observer, worker.id, warnings);
+        if !inserted {
+            return Err(reject(
+                observe_codes::OBSERVER_ID_CONFLICT,
+                format!("observer `{id}` was created concurrently"),
+            ));
+        }
+
+        // The registry may have changed between the checks above and the
+        // insert; the listener only sees observers it can find.
+        let function_available = self.is_registered(&observer.function);
+        let target_available = self.is_registered(&observer.target);
+        self.update(&observer, |flags| {
+            flags.function_available = function_available;
+            flags.target_available = target_available;
+        });
+        self.arm_expiry(&observer);
+        // The connection went away while this `observe` was being handled:
+        // its teardown may already have suspended its other observers, so
+        // this one joins them (suspended, grace timer) instead of staying
+        // active with nobody to report to.
+        if worker
+            .cleanup_claimed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.connection_closed(worker.id, worker.reattach_token);
+        }
+        Ok(())
+    }
+
+    /// Makes `observer` visible to every index and queues its
+    /// `observeresult` (not for a legacy observer, whose registrant sent no
+    /// `observe`), before any transition can be reported.
+    pub(super) fn publish(
+        self: &Arc<Self>,
+        observer: &Arc<Observer>,
+        connection: Uuid,
+        warnings: Vec<String>,
+    ) -> bool {
+        let state = observer.state();
+        match self.by_id.entry(observer.id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => return false,
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(observer.clone());
+            }
+        }
+        self.state_counts.enter(&state);
+        // Queued before the observer is reachable from the function and target
+        // indexes, which are what a concurrent registry change goes through:
+        // any transition it causes is reported after this.
+        if observer.legacy.is_none() {
+            self.notify(
+                connection,
+                Message::ObserveResult {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    error: None,
+                    warnings,
+                },
+            );
+        } else if state == ObserverState::Active {
+            self.answer_legacy(observer, None);
+        }
+        self.by_connection
+            .entry(connection)
+            .or_default()
+            .insert(observer.id.clone());
+        self.by_target
+            .entry(observer.target.clone())
+            .or_default()
+            .insert(observer.id.clone());
+        self.attach_to_function(observer);
+        if state == ObserverState::Active {
+            self.refresh_active(&observer.function);
+        }
+        true
+    }
+
+    /// Disposes an observer `expires_in_ms` after its creation.
+    pub(super) fn arm_expiry(self: &Arc<Self>, observer: &Arc<Observer>) {
+        let (Some(ms), Some(runtime)) = (observer.policy.expires_in_ms, self.runtime()) else {
+            return;
+        };
+        let registry = Arc::downgrade(self);
+        let weak_observer = Arc::downgrade(observer);
+        let handle = runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            if let (Some(registry), Some(observer)) = (registry.upgrade(), weak_observer.upgrade())
+            {
+                registry.dispose(
+                    &observer,
+                    observe_codes::EXPIRED,
+                    "the observer's expires_in_ms elapsed",
+                );
+            }
+        });
+        observer.set_expiry_timer(handle.abort_handle());
+    }
+
+    /// Handles `unobserve` from `connection`: only the observing connection may
+    /// dispose its observer this way.
+    pub fn unobserve(&self, connection: Uuid, id: &str) {
+        let Some(observer) = self.get(id) else {
+            tracing::debug!(observer_id = %id, "unobserve for an unknown observer; ignoring");
+            return;
+        };
+        if observer.observing().connection != connection {
+            tracing::debug!(
+                observer_id = %id,
+                connection = %connection,
+                "unobserve from a connection that does not own the observer; ignoring"
+            );
+            return;
+        }
+        self.dispose(
+            &observer,
+            observe_codes::UNOBSERVED,
+            "disposed by its observing worker",
+        );
+    }
+
+    /// The observing connection is gone: its observers are `suspended` for
+    /// `observers.observer_grace_ms`, waiting for a `Reattach` that presents
+    /// `reattach_token`, and disposed after that.
+    pub fn connection_closed(self: &Arc<Self>, connection: Uuid, reattach_token: Uuid) {
+        // Nothing more is delivered to this connection; its forwarder ends
+        // with it.
+        self.notifiers.remove(&connection);
+        let observers: Vec<Arc<Observer>> = self
+            .by_connection
+            .get(&connection)
+            .map(|ids| ids.iter().filter_map(|id| self.get(id)).collect())
+            .unwrap_or_default();
+        let observers: Vec<Arc<Observer>> = observers
+            .into_iter()
+            .filter(|o| o.observing().connection == connection)
+            .collect();
+        if observers.is_empty() {
+            return;
+        }
+        for observer in &observers {
+            self.update(observer, |flags| flags.observing_connected = false);
+        }
+        let Some(runtime) = self.runtime() else {
+            for observer in &observers {
+                self.dispose(
+                    observer,
+                    observe_codes::OBSERVER_DISCONNECTED,
+                    "the observing worker disconnected",
+                );
+            }
+            return;
+        };
+        let grace = Duration::from_millis(self.config().observer_grace_ms);
+        let registry = Arc::downgrade(self);
+        let timer = runtime.spawn(async move {
+            tokio::time::sleep(grace).await;
+            if let Some(registry) = registry.upgrade() {
+                registry.grace_elapsed(connection);
+            }
+        });
+        if let Some(previous) = self.departed.insert(
+            connection,
+            Departed {
+                token: reattach_token,
+                timer: timer.abort_handle(),
+            },
+        ) {
+            previous.timer.abort();
+        }
+    }
+
+    fn grace_elapsed(&self, connection: Uuid) {
+        // A `Reattach` that claimed the record first owns these observers now.
+        let Some((_, departed)) = self.departed.remove(&connection) else {
+            return;
+        };
+        let observers: Vec<Arc<Observer>> = self
+            .by_connection
+            .get(&connection)
+            .map(|ids| ids.iter().filter_map(|id| self.get(id)).collect())
+            .unwrap_or_default();
+        for observer in observers {
+            if observer.observing().connection == connection
+                && !observer.flags().observing_connected
+            {
+                self.dispose(
+                    &observer,
+                    observe_codes::OBSERVER_DISCONNECTED,
+                    "the observing worker did not reattach within observers.observer_grace_ms",
+                );
+            }
+        }
+        // Every observer the connection owned is disposed now, each with a
+        // tombstone: the ones just disposed and any disposed while it was
+        // away. A tombstone lasts one grace period; the record outlives it
+        // for a worker that comes back late.
+        let now = Instant::now();
+        let disposed: Vec<(String, ErrorBody)> = self
+            .tombstones
+            .iter()
+            .filter(|tombstone| tombstone.connection == connection && tombstone.until > now)
+            .map(|tombstone| (tombstone.key().clone(), tombstone.reason.clone()))
+            .collect();
+        self.remember_expired(connection, departed.token, disposed);
+    }
+
+    /// `Reattach` from `connection`, presenting `token` for `previous`:
+    /// re-parents `previous`'s suspended observers, counters intact. Returns
+    /// whether it did. Works whether `previous` is still being torn down or
+    /// is long gone, as long as its grace period has not ended. After that,
+    /// see [`Self::reattach_late`].
+    ///
+    /// Re-parenting never rejects an observer: `max_per_connection` applies
+    /// when observers are created, and these were created already.
+    pub fn reattach(
+        &self,
+        previous: Uuid,
+        token: Option<&str>,
+        connection: &WorkerConnection,
+    ) -> bool {
+        let new_connection = connection;
+        let connection = new_connection.id;
+        let Some(token) = token else {
+            return false;
+        };
+        let Some((_, departed)) = self
+            .departed
+            .remove_if(&previous, |_, d| d.token.to_string() == token)
+        else {
+            self.reattach_late(previous, token, connection);
+            return false;
+        };
+        departed.timer.abort();
+        let ids = self
+            .by_connection
+            .remove(&previous)
+            .map(|(_, ids)| ids)
+            .unwrap_or_default();
+        let mut moved = 0usize;
+        for id in ids {
+            let Some(observer) = self.get(&id) else {
+                continue;
+            };
+            let observing = observer.observing();
+            if observing.connection != previous {
+                continue;
+            }
+            observer.set_observing(Observing {
+                connection,
+                worker_name: observing.worker_name,
+                session: new_connection.session.clone(),
+            });
+            self.by_connection
+                .entry(connection)
+                .or_default()
+                .insert(id.clone());
+            // Disposed meanwhile: its index entries are gone, and so must the
+            // one just added, or it would count against the cap forever.
+            let live = self
+                .by_id
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(&current, &observer));
+            if !live {
+                if let Some(mut ids) = self.by_connection.get_mut(&connection) {
+                    ids.remove(&id);
+                }
+                continue;
+            }
+            self.update(&observer, |flags| flags.observing_connected = true);
+            moved += 1;
+        }
+        for mut tombstone in self.tombstones.iter_mut() {
+            if tombstone.connection == previous {
+                tombstone.connection = connection;
+            }
+        }
+        tracing::info!(
+            previous = %previous,
+            connection = %connection,
+            observers = moved,
+            "Reattach: observers re-parented to the new connection"
+        );
+        true
+    }
+
+    /// `Reattach` after `previous`'s grace period ended: its observers are
+    /// disposed, and the replay that follows on `connection` must not create
+    /// them again with fresh counters (`max_fires`, `expires_in_ms`). Each one
+    /// gets a tombstone on `connection`, so its replayed `observe` is answered
+    /// with its disposal, as it would have been within the grace period.
+    fn reattach_late(&self, previous: Uuid, token: &str, connection: Uuid) {
+        let now = Instant::now();
+        let Some((_, expired)) = self.expired.remove_if(&previous, |_, expired| {
+            expired.until > now && expired.token.to_string() == token
+        }) else {
+            return;
+        };
+        let count = expired.disposed.len();
+        let until = now + Duration::from_millis(self.config().observer_grace_ms);
+        for (id, reason) in expired.disposed {
+            self.remember_tombstone(
+                id,
+                Tombstone {
+                    connection,
+                    reason,
+                    until,
+                },
+            );
+        }
+        tracing::info!(
+            previous = %previous,
+            connection = %connection,
+            observers = count,
+            "Reattach after the grace period: the observers stay disposed"
+        );
+    }
+
+    /// Live observers, in any state but `disposed`.
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    /// Fires counted so far by `id`, for tests and introspection.
+    pub fn fires(&self, id: &str) -> Option<u64> {
+        self.get(id).map(|o| o.fires.load(Ordering::Relaxed))
+    }
+}
+
+fn unsupported(field: &str, value: &str) -> ErrorBody {
+    reject(
+        observe_codes::UNSUPPORTED,
+        format!("`{field}` value `{value}` is not supported by this engine"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::Value;
+
+    use super::super::{ObserversConfig, events::test_support};
+    use crate::{
+        engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+        function::FunctionResult,
+        protocol::{ObserverState, observe_codes},
+    };
+
+    fn engine_with_functions() -> Arc<Engine> {
+        let engine = Arc::new(Engine::new());
+        engine.observers.set_config(ObserversConfig {
+            // The grace timer never fires on its own here.
+            observer_grace_ms: 600_000,
+            ..ObserversConfig::default()
+        });
+        for id in ["test::src", "test::dst"] {
+            engine.register_function_handler(
+                RegisterFunctionRequest {
+                    function_id: id.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(|_: Value| async move { FunctionResult::Success(None) }),
+            );
+        }
+        engine
+    }
+
+    fn state(engine: &Engine, id: &str) -> Option<ObserverState> {
+        engine.observers.get(id).map(|o| o.state())
+    }
+
+    /// An `observe` handled while its connection is being torn down joins
+    /// the connection's other observers: suspended, waiting for a reattach.
+    #[tokio::test]
+    async fn an_observe_racing_its_connections_teardown_is_suspended_with_it() {
+        let engine = engine_with_functions();
+        let (worker, _socket) = test_support::worker(&engine);
+        worker
+            .cleanup_claimed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine
+            .observers
+            .observe(
+                &engine,
+                &worker,
+                test_support::request("obs", "test::src", "test::dst", None),
+            )
+            .await;
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
+        assert_eq!(
+            engine.observers.get("obs").unwrap().reason().unwrap().code,
+            observe_codes::OBSERVER_DISCONNECTED
+        );
+    }
+
+    /// A reattach and the end of the grace period exclude each other,
+    /// whichever comes first.
+    #[tokio::test]
+    async fn a_reattach_and_the_grace_period_end_exclude_each_other() {
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (first, _first_socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &first,
+            test_support::request("obs", "test::src", "test::dst", None),
+        )
+        .await;
+
+        // Reattach first: the grace period ending late does nothing.
+        registry.connection_closed(first.id, first.reattach_token);
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
+        let (second, _second_socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(registry.reattach(first.id, Some(&token), &second));
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
+        registry.grace_elapsed(first.id);
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
+        assert_eq!(
+            registry.get("obs").unwrap().observing().connection,
+            second.id
+        );
+
+        // Grace first: a reattach that comes after finds nothing.
+        registry.connection_closed(second.id, second.reattach_token);
+        registry.grace_elapsed(second.id);
+        assert!(registry.get("obs").is_none(), "disposed");
+        let (third, _third_socket) = test_support::worker(&engine);
+        let token = second.reattach_token.to_string();
+        assert!(!registry.reattach(second.id, Some(&token), &third));
+    }
+
+    /// A worker that reattaches after its grace period ended finds its
+    /// observers disposed: its replay does not create them again with fresh
+    /// counters. A wrong token neither learns that nor uses up the record.
+    #[tokio::test]
+    async fn a_late_reattach_keeps_the_observers_disposed() {
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (first, _first_socket) = test_support::worker(&engine);
+        let mut request = test_support::request("obs", "test::src", "test::dst", None);
+        request.max_fires = Some(3);
+        test_support::observe_request(&engine, &first, request.clone()).await;
+        registry.connection_closed(first.id, first.reattach_token);
+        registry.grace_elapsed(first.id);
+        assert!(registry.get("obs").is_none(), "disposed");
+
+        let (intruder, _intruder_socket) = test_support::worker(&engine);
+        assert!(!registry.reattach(first.id, Some("not-the-token"), &intruder));
+        assert!(
+            registry
+                .tombstones
+                .get("obs")
+                .is_none_or(|t| t.connection != intruder.id)
+        );
+
+        let (second, _second_socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            !registry.reattach(first.id, Some(&token), &second),
+            "nothing to re-parent"
+        );
+        registry.observe(&engine, &second, request).await;
+        assert!(
+            registry.get("obs").is_none(),
+            "the replay did not create it"
+        );
+        let tombstone = registry.tombstones.get("obs").unwrap();
+        assert_eq!(tombstone.connection, second.id);
+        assert_eq!(tombstone.reason.code, observe_codes::OBSERVER_DISCONNECTED);
+    }
+
+    /// With `disposed_retention_ms: 0` nothing is remembered past the grace
+    /// period: a late replay creates the observer again, as after an engine
+    /// restart.
+    #[tokio::test]
+    async fn without_retention_a_late_replay_creates_the_observer_again() {
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        registry.set_config(ObserversConfig {
+            disposed_retention_ms: 0,
+            ..(*registry.config()).clone()
+        });
+        let (first, _first_socket) = test_support::worker(&engine);
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &first, request.clone()).await;
+        registry.connection_closed(first.id, first.reattach_token);
+        registry.grace_elapsed(first.id);
+
+        let (second, _second_socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        registry.reattach(first.id, Some(&token), &second);
+        test_support::observe_request(&engine, &second, request).await;
+        assert_eq!(
+            registry.get("obs").unwrap().observing().connection,
+            second.id
+        );
+    }
+}

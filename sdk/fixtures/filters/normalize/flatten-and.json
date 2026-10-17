@@ -1,0 +1,16 @@
+{
+  "description": "explicit $and is flattened into the enclosing filter",
+  "cases": [
+    { "filters": {"$and": [{"input.b": {"$eq": 1}}, {"input.a": {"$eq": 2}}], "input.c": {"$eq": 3}},
+      "normalized": {"$and": [{"input.a": {"$eq": 2}}, {"input.b": {"$eq": 1}}, {"input.c": {"$eq": 3}}]} },
+    { "filters": {"$and": [{"$and": [{"input.a": {"$eq": 1}}]}, {"$and": [{}]}]},
+      "normalized": {"$and": [{"input.a": {"$eq": 1}}]} },
+    { "filters": {"$and": [{}]},
+      "normalized": {} },
+    { "filters": {"$and": [{}, {"$and": [{}]}]},
+      "normalized": {} },
+    { "filters": {"$and": [{"input.a": {"$gt": 1}}, {"input.a": {"$lt": 5}}]},
+      "normalized": {"$and": [{"input.a": {"$gt": 1}}, {"input.a": {"$lt": 5}}]},
+      "note": "same path twice stays two clauses, sorted by operand" }
+  ]
+}

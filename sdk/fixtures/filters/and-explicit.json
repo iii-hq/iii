@@ -1,0 +1,10 @@
+{
+  "description": "$and on the same path",
+  "filters": {"$and": [{"input.a": {"$gt": 1}}, {"input.a": {"$lt": 5}}]},
+  "cases": [
+    { "doc": {"input": {"a": 3}}, "expect": true },
+    { "doc": {"input": {"a": 1}}, "expect": false },
+    { "doc": {"input": {"a": 5}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "value operators need a path",
+  "cases": [
+    { "filters": {"$eq": 1}, "code": "INVALID_FILTER", "note": "$eq at the filter level" },
+    { "filters": {"$exists": true}, "code": "INVALID_FILTER", "note": "$exists at the filter level" },
+    { "filters": {"$or": [{"$in": [1]}]}, "code": "INVALID_FILTER", "note": "$in at the filter level inside $or" },
+    { "filters": {"input.l": {"$any": {"@.a": {"$eq": 1}, "$gt": 1}}}, "code": "INVALID_FILTER", "note": "$any operand mixing an @ path and an operator" },
+    { "filters": {"input.l": {"$any": {"$eq": 1, "$and": [{"@": {"$eq": 1}}]}}}, "code": "INVALID_FILTER", "note": "$any operand mixing an operator and $and" }
+  ]
+}

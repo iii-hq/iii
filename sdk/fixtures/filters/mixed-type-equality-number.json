@@ -1,0 +1,12 @@
+{
+  "description": "no coercion in equality",
+  "filters": {"input.v": {"$eq": 0}},
+  "cases": [
+    { "doc": {"input": {"v": 0}}, "expect": true },
+    { "doc": {"input": {"v": false}}, "expect": false },
+    { "doc": {"input": {"v": "0"}}, "expect": false },
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {"v": []}}, "expect": false },
+    { "doc": {"input": {"v": [0]}}, "expect": false }
+  ]
+}

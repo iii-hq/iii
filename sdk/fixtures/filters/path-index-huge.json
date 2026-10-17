@@ -1,0 +1,8 @@
+{
+  "description": "an index beyond any array length is absent; on an object it is a key",
+  "filters": {"input.items.99999999999999999999": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"items": [1]}}, "expect": false },
+    { "doc": {"input": {"items": {"99999999999999999999": 1}}}, "expect": true }
+  ]
+}

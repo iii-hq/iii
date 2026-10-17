@@ -138,6 +138,9 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 action: None,
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             };
             let _ = socket
                 .send(WsMessage::Text(
@@ -202,6 +205,9 @@ async fn run_service_worker(ws_url: String) {
                 action: Some(TriggerAction::Void),
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             })
             .expect("serialize workers::register")
             .into(),
@@ -219,6 +225,7 @@ async fn run_service_worker(ws_url: String) {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             })
             .expect("serialize RegisterFunction")
             .into(),
@@ -295,6 +302,9 @@ async fn invoke_and_wait(
         action: None,
         metadata: None,
         namespace: None,
+        caller: None,
+        observe_depth: None,
+        activation: None,
     };
     writer
         .send(WsMessage::Text(

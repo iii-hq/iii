@@ -1,0 +1,11 @@
+{
+  "description": "floats order by f64 value",
+  "filters": {"input.n": {"$gt": 0.1, "$lte": 0.3}},
+  "cases": [
+    { "doc": {"input": {"n": 0.2}}, "expect": true },
+    { "doc": {"input": {"n": 0.1}}, "expect": false },
+    { "doc": {"input": {"n": 0.3}}, "expect": true },
+    { "doc": {"input": {"n": 0.30000000000000004}}, "expect": false },
+    { "doc": {"input": {"n": 0.10000000000000002}}, "expect": true }
+  ]
+}

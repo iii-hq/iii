@@ -1,0 +1,9 @@
+{
+  "description": "a path may be the root alone",
+  "filters": {"input": {"$eq": {"a": 1}}},
+  "cases": [
+    { "doc": {"input": {"a": 1}}, "expect": true },
+    { "doc": {"input": {"a": 1, "b": 2}}, "expect": false },
+    { "doc": {}, "expect": false }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "description": "paths are kept as written; escaped spellings sort by their text",
+  "cases": [
+    { "filters": {"input.a\\.b": {"$eq": 1}, "input.a.b": {"$eq": 1}, "input.a\\\\": {"$eq": 1}},
+      "normalized": {"$and": [{"input.a.b": {"$eq": 1}}, {"input.a\\.b": {"$eq": 1}}, {"input.a\\\\": {"$eq": 1}}]} }
+  ]
+}

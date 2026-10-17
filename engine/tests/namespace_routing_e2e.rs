@@ -367,6 +367,7 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
+        on_observer_registration_function_id: None,
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(8);
@@ -401,6 +402,9 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
         action: None,
         metadata: None,
         namespace: namespace.map(str::to_string),
+        caller: None,
+        observe_depth: None,
+        activation: None,
     };
 
     async fn next_result(rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Message {

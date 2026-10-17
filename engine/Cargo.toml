@@ -114,6 +114,10 @@ url = { workspace = true }
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
+# observe: lock-free snapshots of the observed-function set on the invocation
+# hot path, and the filter language shared with every SDK.
+arc-swap = "1"
+iii-filter = { workspace = true }
 indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }

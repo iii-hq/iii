@@ -5,6 +5,11 @@ use iii_sdk::trigger::IIITrigger;
 use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
+/// `register_trigger` is deprecated since 0.25.0 in favour of `iii.observe`.
+/// HTTP routes are provided by the http worker; until it ships
+/// `http::on-request`, `register_trigger` keeps binding routes (and, after,
+/// reaches that function through the engine's legacy shim).
+#[allow(deprecated)]
 pub fn setup(iii: &IIIClient) {
     let client = reqwest::Client::new();
 

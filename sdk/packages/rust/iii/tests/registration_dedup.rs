@@ -11,6 +11,9 @@
 //! connection loop replayed the in-memory map (frame #1) and then the
 //! select! loop drained the leftover queued copies (frame #2 — duplicate).
 
+// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
+#![allow(deprecated)]
+
 mod common;
 
 use std::time::Duration;

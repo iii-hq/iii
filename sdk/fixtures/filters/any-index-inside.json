@@ -1,0 +1,9 @@
+{
+  "description": "index segments under @",
+  "filters": {"input.rows": {"$any": {"@.0": {"$eq": "id"}}}},
+  "cases": [
+    { "doc": {"input": {"rows": [["x", 1], ["id", 2]]}}, "expect": true },
+    { "doc": {"input": {"rows": [{"0": "id"}]}}, "expect": true, "note": "numeric segment is a key on objects" },
+    { "doc": {"input": {"rows": [[]]}}, "expect": false }
+  ]
+}

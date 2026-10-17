@@ -50,6 +50,12 @@ class RemoteFunctionData(BaseModel):
 
     message: RegisterFunctionMessage
     handler: RemoteFunctionHandler | None = None
+    #: Observers of this function as the engine pushed them, local dispatch
+    #: state and hooks (an ``iii.observable.FunctionObservers``).
+    observe: Any = None
+    #: A sync handler, called in-process on the caller's thread by a local
+    #: ``trigger()`` (``None`` for async handlers).
+    call_sync: Callable[[Any, Any], Any] | None = None
 
 
 class RemoteTriggerTypeData(BaseModel):
@@ -103,6 +109,10 @@ class IIIClient(Protocol):
     ) -> Any: ...
 
     def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
+
+    def observe(self, source: Any, target: Any, options: Any = None) -> Any: ...
+
+    def current_invocation(self) -> Any: ...
 
     def register_trigger_type(
         self,

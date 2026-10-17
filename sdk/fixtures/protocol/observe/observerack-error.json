@@ -1,0 +1,11 @@
+{
+  "type": "observerack",
+  "function_id": "cron::on-tick",
+  "namespace": "default",
+  "id": "a07d4c2e-6b1f-4a3d-9e8c-5f2a1b3c4d5e",
+  "revision": 13,
+  "error": {
+    "code": "INVALID_CRON_EXPRESSION",
+    "message": "invalid day-of-week field"
+  }
+}

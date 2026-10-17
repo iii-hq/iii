@@ -388,6 +388,15 @@ pub struct RegisteredTriggerSummary {
     /// backward compatibility — do not parse it.
     pub config: Value,
     pub config_summary: String,
+    /// Set for a binding the legacy shim serves (protocol.md §6): the
+    /// function standing in for the trigger type. Absent for a binding of an
+    /// old-style provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub served_by: Option<String>,
+    /// For a binding the legacy shim serves: its observer's state (`pending`
+    /// while the stand-in's owner has not acked it yet, then `active`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observer_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -406,6 +415,12 @@ pub struct RegisteredTriggerDetail {
     /// Full function detail; `None` if the target function was
     /// unregistered after the instance was created.
     pub function: Option<FunctionDetail>,
+    /// Set for a binding the legacy shim serves: the stand-in function.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub served_by: Option<String>,
+    /// For a binding the legacy shim serves: its observer's state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observer_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -527,6 +542,12 @@ pub struct RegisterWorkerInput {
     /// SDKs keep registering unchanged.
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Protocol features the SDK supports (`observe.v1`,
+    /// `local-dispatch.v1`). Absent from SDKs older than 0.25. Read
+    /// leniently: a malformed list declares nothing instead of failing the
+    /// registration.
+    #[serde(default, deserialize_with = "crate::protocol::deserialize_features")]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -976,15 +997,19 @@ impl EngineFunctionsWorker {
             .collect()
     }
 
-    async fn functions_changed_payload(&self) -> Option<Value> {
+    /// The `functions_changed` event, when anything listens: a
+    /// `engine::functions-available` trigger, or (`observed`) an observer of
+    /// `engine::on-functions-changed`.
+    async fn functions_changed_payload(&self, observed: bool) -> Option<Value> {
         // Check after coalescing so a subscriber added during the delay still
         // receives the change. Release registry guards before snapshot awaits.
-        if !self
-            .engine
-            .trigger_registry
-            .triggers
-            .iter()
-            .any(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
+        if !observed
+            && !self
+                .engine
+                .trigger_registry
+                .triggers
+                .iter()
+                .any(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
         {
             return None;
         }
@@ -1007,7 +1032,8 @@ impl EngineFunctionsWorker {
     }
 
     fn list_trigger_type_summaries(&self) -> Vec<TriggerTypeSummary> {
-        self.engine
+        let mut summaries: Vec<TriggerTypeSummary> = self
+            .engine
             .trigger_registry
             .trigger_types
             .iter()
@@ -1021,7 +1047,24 @@ impl EngineFunctionsWorker {
                     description: tt._description.clone(),
                 }
             })
-            .collect()
+            .collect();
+        // A trigger type a stand-in function serves is still listed (one
+        // entry per namespace; a live provider's entry wins).
+        for shim in self.engine.observers.shim_types() {
+            let listed = summaries
+                .iter()
+                .any(|t| t.id == shim.trigger_type && t.namespace == shim.function.0);
+            if !listed {
+                let detail = self.shim_type_detail(&shim);
+                summaries.push(TriggerTypeSummary {
+                    id: detail.id,
+                    namespace: detail.namespace,
+                    worker_name: detail.worker_name,
+                    description: detail.description,
+                });
+            }
+        }
+        summaries
     }
 
     fn registered_trigger_summary(
@@ -1037,6 +1080,64 @@ impl EngineFunctionsWorker {
             status,
             config: t.config.clone(),
             config_summary: Self::config_summary(&t.config),
+            served_by: None,
+            observer_state: None,
+        }
+    }
+
+    fn shim_binding_summary(
+        index: &HashMap<(String, String), String>,
+        binding: &crate::observer::ShimBinding,
+    ) -> RegisteredTriggerSummary {
+        RegisteredTriggerSummary {
+            id: binding.id.clone(),
+            trigger_type: binding.trigger_type.clone(),
+            function_id: binding.target.1.clone(),
+            worker_name: Self::worker_name_for_function_id(
+                index,
+                &binding.target.0,
+                &binding.target.1,
+            ),
+            status: Self::shim_status(binding),
+            config: binding.config.clone(),
+            config_summary: Self::config_summary(&binding.config),
+            served_by: Some(binding.served_by.1.clone()),
+            observer_state: Some(binding.state.to_string()),
+        }
+    }
+
+    fn shim_status(binding: &crate::observer::ShimBinding) -> RegisteredTriggerStatus {
+        if binding.served {
+            RegisteredTriggerStatus::Active
+        } else {
+            RegisteredTriggerStatus::Pending
+        }
+    }
+
+    /// A trigger type a stand-in function serves, in the shape of a
+    /// provider's (protocol.md §6).
+    fn shim_type_detail(&self, shim: &crate::observer::ShimType) -> TriggerTypeDetail {
+        TriggerTypeDetail {
+            id: shim.trigger_type.clone(),
+            namespace: shim.function.0.clone(),
+            worker_name: shim
+                .owner
+                .and_then(|owner| self.engine.worker_registry.get_worker_name(&owner))
+                .unwrap_or_else(|| Self::first_segment(&shim.function.1)),
+            description: format!(
+                "Served by `{}`, which stands in for this trigger type (observe)",
+                shim.function.1
+            ),
+            configuration_schema: shim.config_format.clone(),
+            request_schema: shim.request_format.clone(),
+            response_schema: None,
+            instance_count: self
+                .engine
+                .observers
+                .shim_bindings()
+                .iter()
+                .filter(|binding| binding.served_by == shim.function)
+                .count(),
         }
     }
 
@@ -1069,6 +1170,18 @@ impl EngineFunctionsWorker {
                 )
             }));
         }
+        // The bindings the legacy shim serves are registrations too, listed
+        // from the moment they are stored (as old triggers were), also while
+        // the owner's ack is in flight; parked (the stand-in away) only with
+        // the pending ones.
+        rows.extend(
+            self.engine
+                .observers
+                .shim_bindings()
+                .iter()
+                .filter(|binding| include_pending || binding.served)
+                .map(|binding| Self::shim_binding_summary(&index, binding)),
+        );
         rows
     }
 
@@ -1235,12 +1348,15 @@ impl EngineFunctionsWorker {
 
     async fn build_registered_trigger_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
         let registry = &self.engine.trigger_registry;
-        let (trigger, status) = match registry.triggers.get(id) {
-            Some(entry) => (entry.value().clone(), RegisteredTriggerStatus::Active),
-            None => (
-                registry.pending_triggers.get(id)?.value().clone(),
-                RegisteredTriggerStatus::Pending,
-            ),
+        let found = match registry.triggers.get(id) {
+            Some(entry) => Some((entry.value().clone(), RegisteredTriggerStatus::Active)),
+            None => registry
+                .pending_triggers
+                .get(id)
+                .map(|entry| (entry.value().clone(), RegisteredTriggerStatus::Pending)),
+        };
+        let Some((trigger, status)) = found else {
+            return self.build_shim_binding_detail(id).await;
         };
 
         let index = self.function_owner_index().await;
@@ -1262,6 +1378,42 @@ impl EngineFunctionsWorker {
             metadata: trigger.metadata.clone(),
             trigger: trigger_detail,
             function: function_detail,
+            served_by: None,
+            observer_state: None,
+        })
+    }
+
+    /// [`Self::build_registered_trigger_detail`] for a binding the legacy
+    /// shim serves.
+    async fn build_shim_binding_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
+        let binding = self.engine.observers.shim_binding(id)?;
+        let index = self.function_owner_index().await;
+        let trigger = self
+            .engine
+            .observers
+            .shim_types()
+            .into_iter()
+            .find(|shim| shim.function == binding.served_by)
+            .map(|shim| self.shim_type_detail(&shim));
+        let function = self
+            .build_function_detail(&binding.target.0, &binding.target.1)
+            .await;
+        Some(RegisteredTriggerDetail {
+            id: binding.id.clone(),
+            trigger_type: binding.trigger_type.clone(),
+            function_id: binding.target.1.clone(),
+            worker_name: Self::worker_name_for_function_id(
+                &index,
+                &binding.target.0,
+                &binding.target.1,
+            ),
+            status: Self::shim_status(&binding),
+            config: binding.config.clone(),
+            metadata: binding.metadata.clone(),
+            trigger,
+            function,
+            served_by: Some(binding.served_by.1.clone()),
+            observer_state: Some(binding.state.to_string()),
         })
     }
 
@@ -1499,16 +1651,32 @@ impl EngineFunctionsWorker {
         })
     }
 
-    async fn register_worker_metadata(&self, input: RegisterWorkerInput) {
+    /// Returns whether this call fixed the connection's protocol features.
+    async fn register_worker_metadata(&self, input: RegisterWorkerInput) -> bool {
         let worker_id = match uuid::Uuid::parse_str(&input.worker_id) {
             Ok(id) => id,
             Err(_) => {
                 tracing::error!(worker_id = %input.worker_id, "Invalid worker_id format");
-                return;
+                return false;
             }
         };
 
         let runtime = input.runtime.unwrap_or_else(|| "unknown".to_string());
+
+        // Before the buffered registrations drain (the caller drains right
+        // after this returns): what the engine sends for them depends on
+        // whether the connection speaks observe.
+        let features_fixed = !input.features.is_empty()
+            && self
+                .engine
+                .worker_registry
+                .set_worker_features(&worker_id, &input.features);
+        if !input.features.is_empty() && !features_fixed {
+            tracing::debug!(
+                worker_id = %worker_id,
+                "features already fixed for this connection; ignoring a later declaration"
+            );
+        }
 
         // A CLI command connects only long enough to do its work, so it cannot
         // wait for a heartbeat to report itself. It marks the name it registers
@@ -1532,6 +1700,7 @@ impl EngineFunctionsWorker {
             input.namespace,
         );
         crate::workers::telemetry::collector::track_worker_registered();
+        features_fixed
     }
 }
 
@@ -1609,31 +1778,57 @@ impl Worker for EngineFunctionsWorker {
         // and public, so a change can come from a thread with no current
         // runtime, and it must still produce an event.
         let runtime = tokio::runtime::Handle::current();
-        let scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Whether a send is scheduled, and the deepest observe depth among the
+        // changes it carries: a change made inside an activation (an
+        // in-process registration, or one a worker made while handling it) is
+        // part of that chain, and so is the event
+        // `engine::on-functions-changed` observers get for it. One lock, so a
+        // change's depth goes with the event that carries the change.
+        let burst = Arc::new(std::sync::Mutex::new((false, 0u32)));
         self.engine.functions.set_change_listener(Arc::new(
             move |_change: crate::function::FunctionChange,
                   _namespace: &str,
                   _function_id: &str| {
-                use std::sync::atomic::Ordering;
-                if scheduled.swap(true, Ordering::AcqRel) {
-                    return;
+                {
+                    let mut burst = burst.lock().unwrap_or_else(|e| e.into_inner());
+                    burst.1 = burst.1.max(crate::observer::InvocationCtx::current_depth());
+                    if std::mem::replace(&mut burst.0, true) {
+                        return;
+                    }
                 }
                 let engine = engine.clone();
-                let scheduled = scheduled.clone();
+                let burst = burst.clone();
                 runtime.spawn(async move {
                     tokio::time::sleep(FUNCTIONS_CHANGED_COALESCE).await;
                     // Clear before snapshotting: a change landing from here on
                     // schedules its own event, so none is lost.
-                    scheduled.store(false, Ordering::Release);
+                    let depth = {
+                        let mut burst = burst.lock().unwrap_or_else(|e| e.into_inner());
+                        burst.0 = false;
+                        std::mem::take(&mut burst.1)
+                    };
                     let Some(engine) = engine.upgrade() else {
                         return;
                     };
+                    let observed = engine.observers.is_observed(
+                        crate::protocol::DEFAULT_NAMESPACE,
+                        crate::observer::events::ON_FUNCTIONS_CHANGED,
+                    );
                     let Some(payload) = EngineFunctionsWorker::new(engine.clone())
-                        .functions_changed_payload()
+                        .functions_changed_payload(observed)
                         .await
                     else {
                         return;
                     };
+                    engine.observers.emit_with(
+                        crate::protocol::DEFAULT_NAMESPACE,
+                        crate::observer::events::ON_FUNCTIONS_CHANGED,
+                        crate::observer::Emission {
+                            depth: Some(depth),
+                            traceparent: None,
+                        },
+                        || Some(payload.clone()),
+                    );
                     engine
                         .fire_triggers(TRIGGER_FUNCTIONS_AVAILABLE, payload)
                         .await;
@@ -1648,6 +1843,9 @@ impl Worker for EngineFunctionsWorker {
             None,
         );
         let _ = self.engine.register_trigger_type(workers_trigger).await;
+
+        // The functions replacing both trigger types (README §9).
+        crate::observer::events::register_engine_event_sources(&self.engine);
 
         Ok(())
     }
@@ -1943,9 +2141,19 @@ impl EngineFunctionsWorker {
             ],
         };
         candidates.dedup();
-        let found = candidates.iter().find_map(|ns| {
-            self.build_trigger_type_detail(&crate::trigger::type_key(ns, &input.id))
-        });
+        // A live provider first, then a function standing in for the type.
+        let found = candidates
+            .iter()
+            .find_map(|ns| self.build_trigger_type_detail(&crate::trigger::type_key(ns, &input.id)))
+            .or_else(|| {
+                let shims = self.engine.observers.shim_types();
+                candidates.iter().find_map(|ns| {
+                    shims
+                        .iter()
+                        .find(|shim| shim.trigger_type == input.id && shim.function.0 == *ns)
+                        .map(|shim| self.shim_type_detail(shim))
+                })
+            });
         match found {
             Some(detail) => FunctionResult::Success(detail),
             None => FunctionResult::Failure(ErrorBody {
@@ -2117,10 +2325,11 @@ impl EngineFunctionsWorker {
         // connection was actually fixed to, and warn on a mismatch. While the
         // namespace is still `Pending` (the normal, in-time case) this is `None`
         // and the declared namespace is used verbatim.
-        let namespace = match uuid::Uuid::parse_str(&worker_id)
+        let already_fixed = uuid::Uuid::parse_str(&worker_id)
             .ok()
-            .and_then(|uuid| self.engine.already_fixed_namespace(&uuid))
-        {
+            .and_then(|uuid| self.engine.already_fixed_namespace(&uuid));
+        let namespace_was_fixed = already_fixed.is_some();
+        let namespace = match already_fixed {
             Some(fixed) if fixed != declared => {
                 tracing::warn!(
                     worker_id = %worker_id,
@@ -2156,7 +2365,28 @@ impl EngineFunctionsWorker {
             return FunctionResult::Success(RegisterWorkerResult { success: false });
         }
 
-        self.register_worker_metadata(input).await;
+        let features_fixed = self.register_worker_metadata(input).await;
+
+        // Registrations that drained before this connection declared its
+        // features were handled as a legacy connection's; the observer
+        // registry catches up on them. The grace timer may have fixed the
+        // namespace (and drained) while this call ran, so it is read again
+        // now that the features are stored: from here on a drain announces
+        // its registrations itself, and one announced twice is sent once.
+        let fixed_now = uuid::Uuid::parse_str(&worker_id)
+            .ok()
+            .and_then(|uuid| self.engine.already_fixed_namespace(&uuid));
+        if features_fixed
+            && (namespace_was_fixed || fixed_now.is_some())
+            && let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
+            && let Some(worker) = self.engine.worker_registry.get_worker(&uuid)
+        {
+            let fixed = fixed_now.unwrap_or_else(|| namespace.clone());
+            self.engine
+                .observers
+                .features_declared_late(&self.engine, &worker, &fixed)
+                .await;
+        }
 
         // This call is the only moment the connection's namespace becomes
         // known. Registrations the worker sent ahead of it are queued on the
@@ -2176,6 +2406,11 @@ impl EngineFunctionsWorker {
             "event": "worker_metadata_updated",
             "worker_id": worker_id,
         });
+        self.engine.observers.emit(
+            crate::protocol::DEFAULT_NAMESPACE,
+            crate::observer::events::ON_WORKERS_CHANGED,
+            || Some(data.clone()),
+        );
         self.engine
             .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data)
             .await;
@@ -2278,6 +2513,8 @@ impl EngineFunctionsWorker {
         &self,
         input: UnregisterTriggerInput,
     ) -> FunctionResult<UnregisterTriggerResult, ErrorBody> {
+        // A trigger the legacy shim made into an observer (protocol.md §6).
+        let shim = self.engine.observers.unregister_legacy(&input.id);
         let removed = match self
             .engine
             .trigger_registry
@@ -2294,7 +2531,63 @@ impl EngineFunctionsWorker {
             }
         };
 
-        FunctionResult::Success(UnregisterTriggerResult { removed })
+        FunctionResult::Success(UnregisterTriggerResult {
+            removed: removed || shim,
+        })
+    }
+
+    #[function(
+        id = "engine::observers::list",
+        description = "List observers (iii.observe): function, args, filters, target, observing worker, delivery, state, reason, fires and drops by reason. Only observers of functions the caller may invoke are listed."
+    )]
+    pub async fn observers_list(
+        &self,
+        input: crate::observer::builtins::ListObserversInput,
+        session: Option<Arc<Session>>,
+    ) -> FunctionResult<crate::observer::builtins::ObserversListResult, ErrorBody> {
+        FunctionResult::Success(self.engine.observers.list_infos(
+            &self.engine,
+            session.as_ref(),
+            &input,
+        ))
+    }
+
+    #[function(
+        id = "engine::observers::get",
+        description = "Get one observer by id. OBSERVER_NOT_FOUND when it does not exist or its function is not visible to the caller."
+    )]
+    pub async fn observers_get(
+        &self,
+        input: crate::observer::builtins::ObserverIdInput,
+        session: Option<Arc<Session>>,
+    ) -> FunctionResult<crate::observer::builtins::ObserverInfo, ErrorBody> {
+        match self
+            .engine
+            .observers
+            .get_info(&self.engine, session.as_ref(), &input.id)
+        {
+            Ok(info) => FunctionResult::Success(info),
+            Err(err) => FunctionResult::Failure(err),
+        }
+    }
+
+    #[function(
+        id = "engine::observers::dispose",
+        description = "Dispose an observer by id. Allowed for the worker that created it, or for a caller no RBAC restricts."
+    )]
+    pub async fn observers_dispose(
+        &self,
+        input: crate::observer::builtins::ObserverIdInput,
+        session: Option<Arc<Session>>,
+    ) -> FunctionResult<crate::observer::builtins::DisposeObserverResult, ErrorBody> {
+        match self
+            .engine
+            .observers
+            .dispose_by_caller(&self.engine, session.as_ref(), &input)
+        {
+            Ok(result) => FunctionResult::Success(result),
+            Err(err) => FunctionResult::Failure(err),
+        }
     }
 }
 
@@ -2451,6 +2744,38 @@ mod tests {
         });
         let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
         assert_eq!(input.namespace.as_deref(), Some("orders"));
+    }
+
+    #[test]
+    fn register_worker_input_reads_features() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "features": ["observe.v1", "local-dispatch.v1"]
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.features, vec!["observe.v1", "local-dispatch.v1"]);
+    }
+
+    /// A pre-0.25 SDK sends no features; a malformed list costs the worker its
+    /// features, never its registration.
+    #[test]
+    fn register_worker_input_without_or_with_malformed_features_still_deserializes() {
+        for features in [
+            None,
+            Some(serde_json::json!("observe.v1")),
+            Some(serde_json::json!(7)),
+        ] {
+            let mut json = serde_json::json!({
+                "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+                "namespace": "orders"
+            });
+            if let Some(features) = features {
+                json["features"] = features;
+            }
+            let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+            assert!(input.features.is_empty());
+            assert_eq!(input.namespace.as_deref(), Some("orders"));
+        }
     }
 
     #[test]
@@ -2673,6 +2998,7 @@ mod tests {
             pid: None,
             isolation: None,
             namespace: None,
+            features: Vec::new(),
         };
         module.register_worker_metadata(input).await;
     }
@@ -2696,6 +3022,7 @@ mod tests {
             pid: None,
             isolation: Some("libkrun".to_string()),
             namespace: None,
+            features: Vec::new(),
         };
 
         module.register_worker_metadata(input).await;
@@ -2707,6 +3034,54 @@ mod tests {
         assert_eq!(workers[0].name.as_deref(), Some("my-worker"));
         assert_eq!(workers[0].os.as_deref(), Some("darwin"));
         assert_eq!(workers[0].isolation.as_deref(), Some("libkrun"));
+    }
+
+    /// The features ride on the registry's copy of the connection, but every
+    /// clone shares them: `router_msg` holds the connect-time snapshot.
+    #[tokio::test]
+    async fn register_worker_metadata_records_the_declared_features() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let snapshot = worker.clone();
+        engine.worker_registry.register_worker(worker);
+        assert!(!snapshot.features.observe_v1());
+
+        let mut input = register_worker_input_with_namespace(&snapshot.id.to_string(), None);
+        input.features = vec![
+            "observe.v1".to_string(),
+            "local-dispatch.v1".to_string(),
+            "telepathy.v9".to_string(),
+        ];
+        module.register_worker_metadata(input).await;
+
+        assert!(snapshot.features.observe_v1());
+        assert!(snapshot.features.local_dispatch_v1());
+        assert_eq!(
+            snapshot.features.declared(),
+            vec!["observe.v1", "local-dispatch.v1", "telepathy.v9"],
+            "unknown features are kept as declared"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_worker_metadata_without_features_leaves_the_connection_legacy() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let snapshot = worker.clone();
+        engine.worker_registry.register_worker(worker);
+
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &snapshot.id.to_string(),
+                None,
+            ))
+            .await;
+
+        assert!(!snapshot.features.observe_v1());
+        assert!(!snapshot.features.local_dispatch_v1());
+        assert!(snapshot.features.declared().is_empty());
     }
 
     fn register_worker_input_with_namespace(
@@ -2724,6 +3099,7 @@ mod tests {
             pid: None,
             isolation: None,
             namespace,
+            features: Vec::new(),
         }
     }
 
@@ -2793,6 +3169,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -2839,6 +3216,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -2913,6 +3291,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -3203,6 +3582,8 @@ mod tests {
             status: RegisteredTriggerStatus::Active,
             config: serde_json::json!({ "x": 1 }),
             config_summary: "{\"x\":1}".to_string(),
+            served_by: None,
+            observer_state: None,
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert_eq!(json["id"], "t-1");
@@ -4766,6 +5147,7 @@ mod tests {
                 pid: None,
                 isolation: None,
                 namespace: None,
+                features: Vec::new(),
             })
             .await;
         assert!(matches!(

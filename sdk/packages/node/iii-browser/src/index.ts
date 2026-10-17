@@ -1,6 +1,12 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
-export { RegistrationRejectedError, type RegistrationRejectedInit } from './errors'
+export {
+  InvocationError,
+  type InvocationErrorInit,
+  ObserveRejection,
+  RegistrationRejectedError,
+  type RegistrationRejectedInit,
+} from './errors'
 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
@@ -13,7 +19,9 @@ export type {
   EnqueueResult,
   MessageType,
   MiddlewareFunctionInput,
+  ObserveDescriptorWire,
   OnFunctionRegistrationInput,
+  OpenEnum,
   OnFunctionRegistrationResult,
   OnTriggerRegistrationInput,
   OnTriggerRegistrationResult,
@@ -26,6 +34,24 @@ export type {
   StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
+
+export type {
+  Caller,
+  CallerInfo,
+  Capture,
+  Filter,
+  InvocationContext,
+  ObserveDoc,
+  Observed,
+  ObserveHooks,
+  ObserveReason,
+  Observer,
+  ObserverHandle,
+  ObserverOptions,
+  ObserverState,
+  ObserveSource,
+  Target,
+} from './observe-types'
 
 export type { TriggerConfig, TriggerHandler } from './triggers'
 

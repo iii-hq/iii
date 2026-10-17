@@ -1,0 +1,12 @@
+{
+  "description": "$any takes an operator object or a filter over @",
+  "cases": [
+    { "filters": {"input.a": {"$any": "x"}}, "code": "INVALID_FILTER", "note": "string" },
+    { "filters": {"input.a": {"$any": [1]}}, "code": "INVALID_FILTER", "note": "array" },
+    { "filters": {"input.a": {"$any": null}}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"input.a": {"$any": 1}}, "code": "INVALID_FILTER", "note": "number" },
+    { "filters": {"input.a": {"$any": {"input.b": {"$eq": 1}}}}, "code": "INVALID_FILTER", "note": "paths inside $any start at @" },
+    { "filters": {"input.a": {"$any": {"$or": [{"input.b": {"$eq": 1}}]}}}, "code": "INVALID_FILTER", "note": "paths inside $any start at @, also under $or" },
+    { "filters": {"input.a": {"$any": {"@.b": {"$any": {"input.c": {"$eq": 1}}}}}}, "code": "INVALID_FILTER", "note": "nested $any too" }
+  ]
+}

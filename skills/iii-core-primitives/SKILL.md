@@ -1,10 +1,10 @@
 ---
 name: iii-core-primitives
 description: >-
-  Use when registering iii functions, binding triggers, selecting sync/void/enqueue invocation,
-  creating workers, inspecting the live worker registry, installing registry workers, authoring
-  custom triggers, moving channel data, or adapting external HTTP functions across TypeScript,
-  Python, and Rust.
+  Use when registering iii functions, binding triggers, observing functions, selecting
+  sync/void/enqueue invocation, creating workers, inspecting the live worker registry, installing
+  registry workers, authoring event sources, moving channel data, or adapting external HTTP
+  functions across TypeScript, Python, and Rust.
 ---
 
 # Core Primitives
@@ -14,6 +14,11 @@ iii has three top-level primitives:
 - **Function**: a named unit of work such as `orders::validate`
 - **Trigger**: an event source bound to a function
 - **Worker**: a process that connects to the engine and executes functions
+
+Since 0.25 every function is also **observable**: `iii.observe(source, target)` invokes `target`
+on each invocation of `source` that passes its filters. Observers replace trigger bindings over
+time; the built-in providers (`http`, `cron`, queue, `state`, `stream`, pub/sub, database) still
+use trigger types in 0.25, so keep `registerTrigger` for them. See `iii-observe`.
 
 Use `::` in function IDs, leading slashes in HTTP `api_path`, and `expression` for cron config.
 
@@ -26,7 +31,8 @@ iii should call an existing external endpoint.
 | --- | --- |
 | `registerFunction(id, handler, options?)` | Local worker code |
 | `registerFunction(id, HttpInvocationConfig, options?)` | Existing HTTP services |
-| `registerTrigger({ type, function_id, config, metadata? })` | Binding an event source |
+| `registerTrigger({ type, function_id, config, metadata? })` | Binding a built-in event source (deprecated in 0.25, still required for providers that have not migrated) |
+| `observe({ function_id, args?, filters? }, target, options?)` | Running `target` after another function's invocations, or on an engine event (`iii-observe`) |
 | `trigger({ function_id, payload, action?, timeout? })` | Calling any function by ID |
 
 Functions and triggers can carry metadata for ownership, discovery, and generated skills. Do not put
@@ -39,7 +45,7 @@ are two common paths:
 
 | Task | Use |
 | --- | --- |
-| Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` |
+| Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` or `observe` |
 | Add an existing capability | Browse `https://workers.iii.dev/`, then call `compose::add worker=<name>` |
 | Pin a worker version | `compose::add worker=<name>@<version>` |
 | Declare a local worker | Add `worker: path://./workers/my-worker` under `containers:` |
@@ -79,11 +85,18 @@ types. Read it through the built-in discovery functions:
 | `engine::functions::list` | Registered functions |
 | `engine::triggers::list` | Registered triggers |
 | `engine::trigger-types::list` | Advertised trigger types and schemas |
+| `engine::observers::list` | Observers you may see (`function_id`, `namespace`, `worker` filters) |
 
-For topology changes, bind triggers to `engine::workers-available` or
-`engine::functions-available`.
+For topology changes, observe the engine-hosted sources `engine::on-workers-changed` or
+`engine::on-functions-changed` with `deliver: 'input'` (see `iii-observe`). The older
+`engine::workers-available` and `engine::functions-available` trigger types still fire.
 
 ## Built-In Trigger Shapes
+
+The workers behind these types have not moved to source functions in 0.25, so bind them with
+`registerTrigger`. Each call logs a one-time deprecation warning per process; it is informational
+and the binding works as before. For `log`, the engine also hosts the `observability::on-log`
+source (`iii-observe`).
 
 | Trigger type | Registration config | Handler payload |
 | --- | --- | --- |
@@ -96,7 +109,8 @@ For topology changes, bind triggers to `engine::workers-available` or
 | `log` | `{ level: "warn" }` | OpenTelemetry-style log data |
 
 Add `condition_function_id` to built-in trigger config when the handler should only run if a boolean
-condition function returns `true`.
+condition function returns `true`. With `observe`, a condition you can state over the event becomes a
+declarative filter; a condition that needs code stays on `registerTrigger` or moves into the target.
 
 ## Invocation Modes
 
@@ -184,21 +198,21 @@ iii.register_trigger({
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, TriggerAction};
+use iii_sdk::{register_worker, Error, InitOptions, RegisterFunction, TriggerAction};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use serde_json::json;
+use serde_json::{json, Value};
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function("orders::validate", RegisterFunction::new(|order: serde_json::Value| {
+iii.register_function("orders::validate", RegisterFunction::new(|order: Value| -> Result<Value, Error> {
     if order["id"].is_null() {
         return Err("missing order id".into());
     }
     Ok(json!({ "valid": true, "order": order }))
-}))?;
+}));
 
 let process_client = iii.clone();
-iii.register_function("orders::process", RegisterFunction::new_async(move |order: serde_json::Value| {
+iii.register_function("orders::process", RegisterFunction::new_async(move |order: Value| {
     let iii = process_client.clone();
     async move {
         let validated = iii.trigger(TriggerRequest::new("orders::validate", order)).await?;
@@ -208,22 +222,26 @@ iii.register_function("orders::process", RegisterFunction::new_async(move |order
             action: Some(TriggerAction::Enqueue { queue: "payments".into() }),
             timeout_ms: None,
         }).await?;
-        Ok(json!({ "accepted": true, "order": validated }))
+        Ok::<_, Error>(json!({ "accepted": true, "order": validated }))
     }
-}))?;
+}));
 
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "http".into(),
-    function_id: "orders::process".into(),
-    config: json!({ "api_path": "/orders", "http_method": "POST" }),
-    metadata: None,
-})?;
+// Deprecated since 0.25 (the http worker still provides a trigger type): compiles with a warning.
+#[allow(deprecated)]
+iii.register_trigger(RegisterTriggerInput::new(
+    "http",
+    "orders::process",
+    json!({ "api_path": "/orders", "http_method": "POST" }),
+))?;
 ```
 
 ## Advanced Primitive Patterns
 
-- **Custom triggers**: use `registerTriggerType({ id, description }, handler)` when the event source is
-  not built in. Keep listener setup in `registerTrigger` and cleanup in `unregisterTrigger`.
+- **Custom event sources**: since 0.25, register a function with an `observe` descriptor
+  (`delivery: 'owner'`, `args_format`, `onObserverAdded` / `onObserverRemoved`) and hand events to
+  observers with `obs.emit` or `obs.call` (see `iii-observe`). `registerTriggerType({ id,
+  description }, handler)` is deprecated: it still works and logs one warning per process. Keep
+  listener setup in `registerTrigger` and cleanup in `unregisterTrigger` if you maintain one.
 - **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
   JSON payloads. Pass `readerRef` or `writerRef` through a function payload.
 - **HTTP-invoked functions**: use `HttpInvocationConfig` for legacy APIs, third-party endpoints, or
@@ -236,10 +254,14 @@ iii.register_trigger(RegisterTriggerInput {
 - Use this skill for function registration, trigger binding, trigger payload shapes, invocation mode
   decisions, worker creation, worker registry access, trigger conditions, custom trigger types,
   channels, and HTTP-invoked functions.
+- Use it to decide between `registerTrigger` (built-in providers in 0.25) and `observe` (any
+  function, engine events, migrated providers).
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 
 ## Boundaries
 
+- For `iii.observe`, filters, observable functions, local dispatch, and migrating off
+  `registerTrigger` / `registerTriggerType`, use `iii-observe`.
 - For engine ports, adapters, engine-owned workers, RBAC (`rbac-proxy`), and deployment config,
   use `iii-engine-config`.
 - For SDK-specific package exports and language caveats, use `iii-sdk-reference`.

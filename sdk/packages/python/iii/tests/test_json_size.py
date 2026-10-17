@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from iii.errors import InvocationError
-from iii.iii import _MAX_JSON_FRAME_BYTES, III
+from iii.iii import _MAX_JSON_FRAME_BYTES, III, _ObserveHost
 from iii.triggers import TriggerHandler
 
 
@@ -17,6 +17,13 @@ def client():
     sdk._fatal_error = None
     sdk._queue = []
     sdk._ws = SimpleNamespace(state=SimpleNamespace(name="OPEN"), send=AsyncMock())
+    # observe state (a bare instance skips __init__)
+    sdk._functions = {}
+    sdk._engine_features = frozenset()
+    sdk._registered_on_connection = False
+    sdk._connection_epoch = 0
+    sdk._held_observe_frames = []
+    sdk._observe_host = _ObserveHost(sdk)
     return sdk
 
 

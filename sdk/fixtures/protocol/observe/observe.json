@@ -1,0 +1,31 @@
+{
+  "type": "observe",
+  "id": "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d",
+  "source": {
+    "function_id": "cron::on-tick",
+    "namespace": "default",
+    "args": {
+      "expression": "0 0 9 * * Mon-Fri"
+    },
+    "filters": {
+      "input.scheduled_time": {
+        "$gte": "2026-11-01T00:00:00Z"
+      }
+    },
+    "capture": [
+      "input"
+    ],
+    "on": "success",
+    "deliver": "envelope"
+  },
+  "target": {
+    "function_id": "local::cron-handler",
+    "namespace": "default"
+  },
+  "metadata": {
+    "__binding": "weekday-digest"
+  },
+  "max_fires": 1,
+  "expires_in_ms": 600000,
+  "max_in_flight": 64
+}

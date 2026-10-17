@@ -1,0 +1,9 @@
+{
+  "description": "depth 8: seven nested $any operator objects (the innermost operand is at depth 8)",
+  "filters": {"input.m": {"$any": {"$any": {"$any": {"$any": {"$any": {"$any": {"$any": {"$eq": 0}}}}}}}}},
+  "cases": [
+    { "doc": {"input": {"m": [[[[[[[0]]]]]]]}}, "expect": true },
+    { "doc": {"input": {"m": [[[[[[0]]]]]]}}, "expect": false },
+    { "doc": {"input": {"m": [[[[[[[1]]]]]]]}}, "expect": false }
+  ]
+}

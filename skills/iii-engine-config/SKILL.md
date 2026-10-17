@@ -2,8 +2,8 @@
 name: iii-engine-config
 description: >-
   Configure a managed iii engine through worker-compose.yaml or a directly supervised engine
-  through config.yaml. Use for engine ports, RBAC via the rbac-proxy worker, streams, sandboxes,
-  and configuration storage.
+  through config.yaml. Use for engine ports, RBAC via the rbac-proxy worker, observer limits,
+  streams, sandboxes, and configuration storage.
 ---
 
 # Engine Config
@@ -69,6 +69,39 @@ HTTP, cron, queue, state, pubsub, bridge, application, and custom workers belong
 iii trigger -n orders-daemon compose::add worker=state
 ```
 
+## Observers
+
+Since 0.25 the engine reads an optional top-level `observers:` section (`iii-observe` explains the
+model). Every key is optional; these are the defaults:
+
+```yaml
+observers:
+  local_dispatch: true            # let SDKs run a worker's own functions in-process
+  max_per_connection: 1024        # observers one connection may own (LIMIT_EXCEEDED)
+  max_per_function: 4096          # observers one function may have (LIMIT_EXCEEDED)
+  max_observe_depth: 8            # deeper activations are dropped (LOOP_GUARD)
+  observer_grace_ms: 30000        # suspended observers of a disconnected worker wait this long
+  disposed_retention_ms: 3600000  # a worker back after the grace period is told they were disposed
+  owner_ack_timeout_ms: 30000     # an unacknowledged add fails with OWNER_TIMEOUT
+  activation_timeout_ms: 30000    # an unanswered activation frees its slot and counts as TIMEOUT
+  default_max_in_flight: 64       # max_in_flight of an observer that sets none
+  max_queue_per_observer: 1024    # queued activations beyond max_in_flight (then OVERFLOW)
+```
+
+- In `config.yaml` it sits next to `workers:`. In a managed Compose file it goes under
+  `engine.observers` and is passed through as written.
+- Unknown keys and zero counts or depth are rejected at load; zero timeouts only warn. Changes need
+  an engine restart.
+- `observers.local_dispatch: false` turns off in-process calls for every worker.
+- Inspect live observers with `engine::observers::list({ function_id?, namespace?, worker? })` and
+  `engine::observers::get({ id })` (results are filtered to functions the caller may invoke).
+  `engine::observers::dispose({ id })` is allowed for the observing worker and unrestricted callers.
+- Metrics: `iii.observer.activations.total{function_id,delivery}`,
+  `iii.observer.dropped.total{function_id,reason}`, `iii.observers{state}`,
+  `iii.observer.reports.total{function_id}`,
+  `iii.observer.activation.failures.total{function_id,reason}`; locally dispatched calls are counted
+  in `iii.invocations.total` with `dispatch="local"`.
+
 ## RBAC with `rbac-proxy`
 
 Keep the engine port internal and put the `rbac-proxy` worker in front of it when
@@ -97,6 +130,14 @@ rbac:
 
 RBAC is mandatory on untrusted networks: only the proxy's port may face one, never the engine port,
 and a public proxy must always set `auth_function_id`. Full schema: https://workers.iii.dev/workers/rbac-proxy.
+
+Observers under RBAC (0.25 engine): creating one requires that the session may invoke both the
+observed function and the target, or it fails with `FORBIDDEN`. The engine's `rbac:` settings
+accept `on_observer_registration_function_id`, a hook with the same contract as
+`on_trigger_registration_function_id`: an object answer may rewrite `function_id`,
+`target_function_id`, `args`, `filters`, and `metadata`; any other answer denies with `FORBIDDEN`.
+Sessions with a `middleware_function_id` get no local dispatch, so the middleware always runs.
+Check the rbac-proxy worker's docs for the version that forwards the observe messages.
 
 ## Directly supervised engine
 
@@ -146,5 +187,6 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 ## Boundaries
 
 - Project worker lifecycle belongs to Compose, not `config.yaml` or `iii worker`.
-- For function and trigger code, use `iii-core-primitives`.
+- For function and trigger code, use `iii-core-primitives`; for observer code and filters, use
+  `iii-observe`.
 - For worker-specific HTTP, queue, cron, state, or pubsub behavior, use that worker's docs.

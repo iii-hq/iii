@@ -2,6 +2,9 @@
 //!
 //! Requires a running III engine with WorkerModule RBAC configured on port 49135.
 
+// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
+#![allow(deprecated)]
+
 mod common;
 
 use std::collections::HashMap;

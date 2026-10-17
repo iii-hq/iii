@@ -1,0 +1,8 @@
+{
+  "description": "$or containing {} always matches",
+  "filters": {"$or": [{}, {"input.a": {"$eq": 1}}]},
+  "cases": [
+    { "doc": {}, "expect": true },
+    { "doc": {"input": {"a": 2}}, "expect": true }
+  ]
+}

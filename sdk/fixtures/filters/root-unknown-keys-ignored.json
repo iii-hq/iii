@@ -1,0 +1,8 @@
+{
+  "description": "document keys other than the five roots are ignored",
+  "filters": {"input.a": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"a": 1}, "args": {"a": 2}, "status": "ok"}, "expect": true },
+    { "doc": {"payload": {"a": 1}}, "expect": false }
+  ]
+}

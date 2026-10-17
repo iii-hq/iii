@@ -1,0 +1,17 @@
+{
+  "description": "operators keep their operands; $ne / $nin are not rewritten",
+  "cases": [
+    { "filters": {"input.a": {"$lte": 5, "$gte": 1, "$ne": 3}},
+      "normalized": {"$and": [{"input.a": {"$gte": 1, "$lte": 5, "$ne": 3}}]} },
+    { "filters": {"input.a": {"$nin": [3, 1, 2]}},
+      "normalized": {"$and": [{"input.a": {"$nin": [3, 1, 2]}}]},
+      "note": "$in / $nin order is kept" },
+    { "filters": {"input.a": {"$eq": 1.0}},
+      "normalized": {"$and": [{"input.a": {"$eq": 1.0}}]},
+      "note": "literals are kept as written" },
+    { "filters": {"input.a": {"$eq": {"y": [1, {"b": 2, "a": 1}], "x": null}}},
+      "normalized": {"$and": [{"input.a": {"$eq": {"x": null, "y": [1, {"a": 1, "b": 2}]}}}]} },
+    { "filters": {"input.a": {"$exists": false, "$prefix": "x"}},
+      "normalized": {"$and": [{"input.a": {"$exists": false, "$prefix": "x"}}]} }
+  ]
+}

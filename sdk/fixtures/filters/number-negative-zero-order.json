@@ -1,0 +1,9 @@
+{
+  "description": "-0 is not less than 0",
+  "filters": {"input.n": {"$lt": 0}},
+  "cases": [
+    { "doc": {"input": {"n": -0.0}}, "expect": false },
+    { "doc": {"input": {"n": -0}}, "expect": false },
+    { "doc": {"input": {"n": -1e-09}}, "expect": true }
+  ]
+}

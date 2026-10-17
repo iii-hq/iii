@@ -125,13 +125,13 @@ func TestGoldenFrames(t *testing.T) {
 			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"sync.call","result":{"ok":true}}`,
 		},
 		{
-			// request_format/response_format lack skip_serializing_if in the engine
-			// (engine/src/protocol.rs:75-76), so they serialize as null when unset.
-			name: "register function emits null formats",
+			// request_format/response_format are optional (skip_serializing_if in the
+			// engine since 0.25; it reads absent and null alike), so unset ones are omitted.
+			name: "register function omits absent formats",
 			msg: &RegisterFunctionMessage{
 				ID: "hello::greet",
 			},
-			want: `{"type":"registerfunction","id":"hello::greet","request_format":null,"response_format":null}`,
+			want: `{"type":"registerfunction","id":"hello::greet"}`,
 		},
 		{
 			// Payloadless variant (engine/src/protocol.rs:121).

@@ -1,0 +1,12 @@
+{
+  "description": "$gte with a number",
+  "filters": {"input.n": {"$gte": 100}},
+  "cases": [
+    { "doc": {"input": {"n": 100}}, "expect": true },
+    { "doc": {"input": {"n": 100.0}}, "expect": true },
+    { "doc": {"input": {"n": 1e2}}, "expect": true },
+    { "doc": {"input": {"n": 99.999}}, "expect": false },
+    { "doc": {"input": {"n": 1000}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

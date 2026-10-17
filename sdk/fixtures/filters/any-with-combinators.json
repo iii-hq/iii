@@ -1,0 +1,10 @@
+{
+  "description": "$or and $not inside an $any filter",
+  "filters": {"input.items": {"$any": {"$or": [{"@.kind": {"$eq": "a"}}, {"@.kind": {"$eq": "b"}}], "$not": {"@.void": {"$eq": true}}}}},
+  "cases": [
+    { "doc": {"input": {"items": [{"kind": "a"}]}}, "expect": true },
+    { "doc": {"input": {"items": [{"kind": "a", "void": true}]}}, "expect": false },
+    { "doc": {"input": {"items": [{"kind": "c"}, {"kind": "b", "void": false}]}}, "expect": true },
+    { "doc": {"input": {"items": [{"kind": "c"}]}}, "expect": false }
+  ]
+}

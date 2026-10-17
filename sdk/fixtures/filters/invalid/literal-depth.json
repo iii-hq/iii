@@ -1,0 +1,12 @@
+{
+  "description": "a literal nested deeper than 32 arrays / objects",
+  "cases": [
+    { "filters": {"input.a": {"$eq": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}, "code": "INVALID_FILTER", "note": "$eq, 33 arrays" },
+    { "filters": {"input.a": {"$ne": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": 1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}, "code": "INVALID_FILTER", "note": "$ne, 33 objects" },
+    { "filters": {"input.a": {"$eq": [[[[[[[[[[[[[[[[{"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": 1}}}}}}}}}}}}}}}}}]]]]]]]]]]]]]]]]}}, "code": "INVALID_FILTER", "note": "$eq, 16 arrays around 17 objects" },
+    { "filters": {"input.a": {"$in": [1, [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}, "code": "INVALID_FILTER", "note": "$in item, 33 arrays" },
+    { "filters": {"input.a": {"$nin": [{"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": {"k": 1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}]}}, "code": "INVALID_FILTER", "note": "$nin item, 33 objects" },
+    { "filters": {"input.a": {"$eq": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}, "code": "INVALID_FILTER", "note": "an empty array counts as a level: 32 arrays around []" },
+    { "filters": {"input.l": {"$any": {"$eq": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}}, "code": "INVALID_FILTER", "note": "inside $any" }
+  ]
+}

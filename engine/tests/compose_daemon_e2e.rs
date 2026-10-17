@@ -340,6 +340,8 @@ async fn subscribe_to_terminal_operation(
             }
         }),
     );
+    // `compose-operation` is still a trigger type of the compose daemon.
+    #[allow(deprecated)]
     let trigger = observer
         .register_trigger(
             RegisterTriggerInput::new(

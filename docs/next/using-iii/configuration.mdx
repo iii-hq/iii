@@ -159,6 +159,33 @@ The default is `5000 ms`. Set `III_NAMESPACE_GRACE_MS` in the engine process env
 worker environment. It applies to namespace resolution for all new worker connections and overrides
 `registration_namespace_grace_ms`.
 
+## Observers
+
+The top-level `observers:` section of `config.yaml` sets the engine's limits and timeouts for
+[observers](./observers). Every key is optional; an absent section uses the defaults below.
+
+```yaml config.yaml
+observers:
+  local_dispatch: true          # let workers run calls to their own functions in-process
+  max_per_connection: 1024      # observers one worker connection may create
+  max_per_function: 4096        # observers one function may have
+  max_observe_depth: 8          # activations deeper than this are dropped (LOOP_GUARD)
+  observer_grace_ms: 30000      # how long a disconnected worker's observers wait for it
+  disposed_retention_ms: 3600000 # how long a worker back later is told they were disposed
+  owner_ack_timeout_ms: 30000   # an owner that does not acknowledge in time fails the observer (OWNER_TIMEOUT)
+  activation_timeout_ms: 30000  # how long an activation may run before its slot is freed (TIMEOUT)
+  default_max_in_flight: 64     # max_in_flight of observers that set none
+  max_queue_per_observer: 1024  # activations queued behind max_in_flight before OVERFLOW
+```
+
+- The engine reads the section when it starts. Changing it needs an engine restart.
+- A limit of `0` (`max_per_connection`, `max_per_function`, `max_observe_depth`,
+  `default_max_in_flight`, `max_queue_per_observer`) stops the engine at startup with an
+  `invalid engine config` error. A timeout of `0` is accepted with a warning. Unknown keys are
+  rejected.
+- When Compose manages the engine, set the same keys under `engine.observers` in
+  `worker-compose.yaml`; Compose passes them to the engine as written.
+
 ## How changes apply
 
 Most settings apply the moment they change such as `http`'s CORS, timeout, and port changes. A few
@@ -196,3 +223,22 @@ function fires on every register, set, and delete, including file edits. This is
 workers use to hot-apply their own settings. See the
 [configuration worker docs](https://workers.iii.dev/workers/configuration) for the trigger's config
 fields and event types.
+
+From 0.25 you can observe `configuration::on-updated` instead, with a filter on the entry and the
+event type. The `configuration` trigger type keeps working.
+
+```typescript
+worker.observe(
+  {
+    function_id: "configuration::on-updated",
+    deliver: "input",
+    filters: {
+      "input.id": { $eq: "my-worker" },
+      "input.event_type": { $eq: "configuration:updated" },
+    },
+  },
+  "my-worker::reload",
+);
+```
+
+See [Engine-hosted event sources](./observers#engine-hosted-event-sources) for the event's fields.

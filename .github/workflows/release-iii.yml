@@ -332,62 +332,6 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
-  # Console Binary
-  # ──────────────────────────────────────────────────────────────
-
-  console-frontend:
-    name: Build Console Frontend
-    needs: [setup, create-iii-release]
-    if: ${{ !failure() && !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build frontend for binary embedding
-        run: pnpm --filter console-frontend build:binary
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: console-frontend-dist
-          path: console/packages/console-frontend/dist-binary/
-          retention-days: 1
-
-  console-release:
-    name: Console Binary Release
-    needs: [setup, create-iii-release, console-frontend]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_rust-binary.yml
-    with:
-      bin_name: iii-console
-      manifest_path: console/packages/console-rust/Cargo.toml
-      tag_name: ${{ needs.setup.outputs.tag }}
-      tag_prefix: iii/
-      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
-      skip_create_release: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      artifact_name: console-frontend-dist
-      artifact_dest: console/packages/console-rust/assets/
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: Console Binary
-    secrets:
-      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
-      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-
-  # ──────────────────────────────────────────────────────────────
   # SDK Publish
   # ──────────────────────────────────────────────────────────────
 
@@ -508,7 +452,10 @@ jobs:
 
   sdk-rust:
     name: SDK Rust Publish
-    needs: [setup, create-iii-release, observability-rust]
+    # iii-sdk depends on iii-helpers and iii-filter; cargo publish resolves
+    # them from crates.io, so they must be published first. Waiting for
+    # iii-observability as well keeps one order for the Rust crates.
+    needs: [setup, create-iii-release, helpers-rust, observability-rust, filter-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
@@ -572,6 +519,21 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  filter-rust:
+    name: Filter Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: crates/iii-filter
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Filter Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   # ──────────────────────────────────────────────────────────────
   # Docker
   # ──────────────────────────────────────────────────────────────
@@ -609,30 +571,6 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Homebrew (iii)
-    secrets:
-      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
-      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-
-  homebrew-console:
-    name: Homebrew Console
-    needs: [setup, console-release]
-    if: ${{ !failure() && !cancelled() && needs.setup.outputs.is_prerelease != 'true' }}
-    uses: ./.github/workflows/_homebrew.yml
-    with:
-      bin_name: iii-console
-      formula_class: IiiConsole
-      formula_path: Formula/iii-console.rb
-      description: Developer console for the iii engine
-      homepage: https://github.com/iii-hq/iii
-      release_repo: ${{ github.repository }}
-      release_tag: ${{ needs.setup.outputs.tag }}
-      version: ${{ needs.setup.outputs.version }}
-      include_linux: true
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: Homebrew (iii-console)
     secrets:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
       III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -699,7 +637,6 @@ jobs:
       - setup
       - engine-release
       - worker-release
-      - console-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -708,6 +645,8 @@ jobs:
       - observability-npm
       - observability-py
       - observability-rust
+      - helpers-rust
+      - filter-rust
       - publish-builtin-workers
       - publish-worker-skills
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
@@ -753,7 +692,6 @@ jobs:
       - setup
       - engine-release
       - worker-release
-      - console-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -762,6 +700,8 @@ jobs:
       - observability-npm
       - observability-py
       - observability-rust
+      - helpers-rust
+      - filter-rust
       - publish-builtin-workers
       - publish-worker-skills
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
@@ -841,7 +781,6 @@ jobs:
       - firmware-upload
       - engine-release
       - worker-release
-      - console-release
       - sdk-npm
       - sdk-npm-browser
       - sdk-py
@@ -853,9 +792,9 @@ jobs:
       - helpers-npm
       - helpers-py
       - helpers-rust
+      - filter-rust
       - docker-engine
       - homebrew-engine
-      - homebrew-console
       - publish-builtin-workers
       - publish-worker-skills
     runs-on: ubuntu-latest
@@ -871,7 +810,6 @@ jobs:
           FIRMWARE_RESULT: ${{ needs.firmware-upload.result }}
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           WORKER_RESULT: ${{ needs.worker-release.result }}
-          CONSOLE_RESULT: ${{ needs.console-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
           SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
           SDK_PY_RESULT: ${{ needs.sdk-py.result }}
@@ -883,9 +821,9 @@ jobs:
           HELPERS_NPM_RESULT: ${{ needs.helpers-npm.result }}
           HELPERS_PY_RESULT: ${{ needs.helpers-py.result }}
           HELPERS_RUST_RESULT: ${{ needs.helpers-rust.result }}
+          FILTER_RUST_RESULT: ${{ needs.filter-rust.result }}
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
-          BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
           BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
           WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
         run: |
@@ -904,7 +842,6 @@ jobs:
           LINES="$LINES$(icon "$FIRMWARE_RESULT") Firmware Assets\n"
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$WORKER_RESULT") Worker Binary\n"
-          LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
           LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
           LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
@@ -916,16 +853,16 @@ jobs:
           LINES="$LINES$(icon "$HELPERS_NPM_RESULT") Helpers Node\n"
           LINES="$LINES$(icon "$HELPERS_PY_RESULT") Helpers Python\n"
           LINES="$LINES$(icon "$HELPERS_RUST_RESULT") Helpers Rust\n"
+          LINES="$LINES$(icon "$FILTER_RUST_RESULT") Filter Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
           LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
             LINES="$LINES$(icon "$BREW_ENGINE_RESULT") Homebrew (iii)\n"
-            LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$FILTER_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

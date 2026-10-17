@@ -1,0 +1,10 @@
+{
+  "description": "$not negates the whole sub-filter, so it matches absent",
+  "filters": {"$not": {"input.a": {"$gt": 5}}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {"input": {"a": 6}}, "expect": false },
+    { "doc": {"input": {"a": 4}}, "expect": true },
+    { "doc": {"input": {"a": "x"}}, "expect": true, "note": "mixed type: inner false" }
+  ]
+}

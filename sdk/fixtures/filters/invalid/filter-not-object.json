@@ -1,0 +1,10 @@
+{
+  "description": "a filter is a JSON object",
+  "cases": [
+    { "filters": [], "code": "INVALID_FILTER", "note": "array" },
+    { "filters": "input.a", "code": "INVALID_FILTER", "note": "string" },
+    { "filters": null, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": 1, "code": "INVALID_FILTER", "note": "number" },
+    { "filters": true, "code": "INVALID_FILTER", "note": "boolean" }
+  ]
+}

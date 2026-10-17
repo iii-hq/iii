@@ -1,0 +1,10 @@
+{
+  "description": "$any inside $any with operator objects (arrays of arrays)",
+  "filters": {"input.matrix": {"$any": {"$any": {"$eq": 0}}}},
+  "cases": [
+    { "doc": {"input": {"matrix": [[1, 2], [3, 0]]}}, "expect": true },
+    { "doc": {"input": {"matrix": [[1], [2]]}}, "expect": false },
+    { "doc": {"input": {"matrix": [0]}}, "expect": false, "note": "elements are not arrays" },
+    { "doc": {"input": {"matrix": [[]]}}, "expect": false }
+  ]
+}

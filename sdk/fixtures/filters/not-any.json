@@ -1,0 +1,10 @@
+{
+  "description": "$not around $any matches absent and empty arrays",
+  "filters": {"$not": {"input.tags": {"$any": {"$eq": "spam"}}}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {"input": {"tags": []}}, "expect": true },
+    { "doc": {"input": {"tags": ["spam"]}}, "expect": false },
+    { "doc": {"input": {"tags": ["ok"]}}, "expect": true }
+  ]
+}

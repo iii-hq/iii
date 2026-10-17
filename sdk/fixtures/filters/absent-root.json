@@ -1,0 +1,9 @@
+{
+  "description": "a root can be absent or null",
+  "filters": {"output": {"$exists": false}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {"output": null}, "expect": false, "note": "null output is present" },
+    { "doc": {"output": {}}, "expect": false }
+  ]
+}

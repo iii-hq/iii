@@ -1,0 +1,12 @@
+{
+  "description": "non-ASCII ordering",
+  "filters": {"input.s": {"$lt": "é"}},
+  "cases": [
+    { "doc": {"input": {"s": "e"}}, "expect": true },
+    { "doc": {"input": {"s": "z"}}, "expect": true, "note": "0x7A < 0xE9" },
+    { "doc": {"input": {"s": "E"}}, "expect": true },
+    { "doc": {"input": {"s": "ê"}}, "expect": false },
+    { "doc": {"input": {"s": "é"}}, "expect": false },
+    { "doc": {"input": {"s": "é"}}, "expect": true, "note": "decomposed e + combining acute starts with 'e'" }
+  ]
+}

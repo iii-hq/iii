@@ -1,0 +1,10 @@
+{
+  "description": "index 0",
+  "filters": {"input.items.0": {"$eq": "first"}},
+  "cases": [
+    { "doc": {"input": {"items": ["first"]}}, "expect": true },
+    { "doc": {"input": {"items": []}}, "expect": false },
+    { "doc": {"input": {"items": {"0": "first"}}}, "expect": true },
+    { "doc": {"input": {"items": "first"}}, "expect": false, "note": "strings are not indexable" }
+  ]
+}

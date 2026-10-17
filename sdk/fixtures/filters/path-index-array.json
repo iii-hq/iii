@@ -1,0 +1,10 @@
+{
+  "description": "a numeric segment indexes an array and is a key on an object",
+  "filters": {"input.items.1.sku": {"$eq": "B"}},
+  "cases": [
+    { "doc": {"input": {"items": [{"sku": "A"}, {"sku": "B"}]}}, "expect": true },
+    { "doc": {"input": {"items": [{"sku": "B"}]}}, "expect": false, "note": "out of range is absent" },
+    { "doc": {"input": {"items": {"1": {"sku": "B"}}}}, "expect": true, "note": "object key '1'" },
+    { "doc": {"input": {"items": {"01": {"sku": "B"}}}}, "expect": false }
+  ]
+}

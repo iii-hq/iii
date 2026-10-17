@@ -59,6 +59,9 @@ pub enum ComposeError {
     #[error("engine.workers.{worker} must be a YAML mapping. Use {{}} to keep the worker defaults")]
     InvalidEngineWorkerConfig { worker: String },
 
+    #[error("engine.observers must be a YAML mapping of observer settings")]
+    InvalidEngineObservers,
+
     #[error("engine.url must not be blank when it is set")]
     InvalidManagedEngineUrl,
 
@@ -569,6 +572,7 @@ impl ComposeError {
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
+            Self::InvalidEngineObservers => "INVALID_ENGINE_OBSERVERS",
             Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::FileRequiresUp => "FILE_REQUIRES_UP",
             Self::FrozenRequiresUp => "FROZEN_REQUIRES_UP",

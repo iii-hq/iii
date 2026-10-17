@@ -1,0 +1,9 @@
+{
+  "description": "string equality is exact code point equality (no Unicode normalization)",
+  "filters": {"input.s": {"$eq": "é"}},
+  "cases": [
+    { "doc": {"input": {"s": "é"}}, "expect": true },
+    { "doc": {"input": {"s": "é"}}, "expect": false },
+    { "doc": {"input": {"s": "É"}}, "expect": false }
+  ]
+}

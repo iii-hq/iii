@@ -1,0 +1,8 @@
+{
+  "description": "$or with a single filter",
+  "filters": {"$or": [{"input.a": {"$exists": true}}]},
+  "cases": [
+    { "doc": {"input": {"a": null}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

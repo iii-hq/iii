@@ -850,6 +850,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Derived observe files match the Node SDK
+        run: python3 scripts/sync-browser-observe.py --check
+
       - name: Type check
         run: pnpm --filter iii-browser-sdk exec tsc --noEmit
 
@@ -961,10 +964,10 @@ jobs:
           shared-key: sdk-rust
 
       - name: Check formatting
-        run: cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -- --check
+        run: cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter -- --check
 
       - name: Run clippy
-        run: cargo clippy --locked -p iii-sdk -p iii-helpers -p iii-observability --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter --all-targets --all-features -- -D warnings
 
       - name: Download III binary
         uses: actions/download-artifact@v4
@@ -982,7 +985,7 @@ jobs:
         env:
           III_URL: ws://localhost:49199
           III_HTTP_URL: http://localhost:3199
-        run: cargo test --locked -p iii-sdk -p iii-helpers -p iii-observability --all-features
+        run: cargo test --locked -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter --all-features
 
       - name: Stop III Engine
         if: always()
@@ -1033,40 +1036,3 @@ jobs:
       - name: Stop III Engine
         if: always()
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
-
-  # ──────────────────────────────────────────────────────────────
-  # Console
-  # ──────────────────────────────────────────────────────────────
-
-  console-ci:
-    name: Console Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint frontend
-        run: pnpm --filter console-frontend lint
-
-      - name: Build frontend
-        run: pnpm --filter console-frontend build
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: console
-
-      - name: Build console binary
-        run: cargo build --locked -p iii-console --release

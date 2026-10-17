@@ -1,0 +1,9 @@
+{
+  "description": "\\\\ is a literal backslash inside a key",
+  "filters": {"input.a\\\\b.c": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"a\\b": {"c": 1}}}, "expect": true },
+    { "doc": {"input": {"ab": {"c": 1}}}, "expect": false },
+    { "doc": {"input": {"a\\\\b": {"c": 1}}}, "expect": false }
+  ]
+}

@@ -3331,6 +3331,31 @@ mod tests {
     #[cfg(unix)]
     use std::{process::Command, time::Instant};
 
+    /// Held by a child that runs under `ulimit -S -f`: on drop it raises the
+    /// soft file-size limit back to the hard one. The limit is for the test
+    /// body only; a coverage build writes its multi-MiB profile when the
+    /// child exits, and a capped write leaves a truncated profile that fails
+    /// the coverage merge.
+    #[cfg(unix)]
+    struct LiftFileSizeLimitOnDrop;
+
+    #[cfg(unix)]
+    impl Drop for LiftFileSizeLimitOnDrop {
+        fn drop(&mut self) {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit/setrlimit only read and write the owned struct.
+            unsafe {
+                if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) == 0 {
+                    limit.rlim_cur = limit.rlim_max;
+                    libc::setrlimit(libc::RLIMIT_FSIZE, &limit);
+                }
+            }
+        }
+    }
+
     fn test_config(directory: &Path) -> TraceStorageConfig {
         TraceStorageConfig {
             directory: directory.to_string_lossy().into_owned(),
@@ -3360,6 +3385,7 @@ mod tests {
             flags: None,
             trace_state: None,
             pending: false,
+            observe_depth: 0,
         }
     }
 
@@ -4081,6 +4107,7 @@ mod tests {
         const CHILD_DIRECTORY: &str = "III_TRACE_STORE_FILE_LIMIT_DIRECTORY";
 
         if std::env::var_os(CHILD_MARKER).is_some() {
+            let _lift = LiftFileSizeLimitOnDrop;
             let directory = PathBuf::from(
                 std::env::var_os(CHILD_DIRECTORY).expect("child trace directory must be provided"),
             );
@@ -4128,10 +4155,11 @@ mod tests {
         let output = Command::new("bash")
             .args([
                 "-c",
-                // `ulimit -f` applies only to the isolated child process.
+                // `ulimit -S -f` applies only to the isolated child process,
+                // which lifts it again before exiting (soft limit only).
                 // Ignore SIGXFSZ so SQLite receives EFBIG and the archive can
                 // report degradation instead of terminating the process.
-                "ulimit -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
+                "ulimit -S -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
                 "trace-store-file-limit-child",
             ])
             .arg(executable)
@@ -5054,6 +5082,7 @@ mod tests {
         if let Some(directory) = std::env::var_os(CHILD_DIRECTORY)
             && std::env::var_os(CHILD_MARKER).is_some()
         {
+            let _lift = LiftFileSizeLimitOnDrop;
             let directory = PathBuf::from(directory);
             let store = TraceDiskStore::open(&capped_config(&directory, 64 * MIB)).unwrap();
             let hot = hot_cache(8192, 1024 * MIB);
@@ -5100,7 +5129,7 @@ mod tests {
         let output = Command::new("bash")
             .args([
                 "-c",
-                "ulimit -f 20480; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
+                "ulimit -S -f 20480; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
                 "trace-store-scratch-limit-child",
             ])
             .arg(std::env::current_exe().unwrap())

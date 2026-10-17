@@ -176,6 +176,7 @@ Configuration for OpenTelemetry initialization
 | `service_namespace` | `Option<String>` | No | The service namespace to report. Defaults to the `SERVICE_NAMESPACE` env var. |
 | `service_instance_id` | `Option<String>` | No | The service instance ID to report. Defaults to the `SERVICE_INSTANCE_ID` env var or an auto-generated UUID. |
 | `engine_ws_url` | `Option<String>` | No | III Engine WebSocket URL. Defaults to the `III_URL` env var or "ws://localhost:49134". |
+| `engine_ws_headers` | `Option<HashMap<String, String>>` | No | HTTP headers sent on the telemetry WebSocket handshake (e.g. `Authorization`). |
 | `metrics_enabled` | `Option<bool>` | No | Whether metrics export is enabled. Defaults to true. Set to false or `OTEL_METRICS_ENABLED=false/0/no/off` to disable. |
 | `metrics_export_interval_ms` | `Option<u64>` | No | Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). |
 | `reconnection_config` | Option&lt;[`ReconnectionConfig`](#reconnectionconfig)&gt; | No | Optional reconnection configuration for the WebSocket connection. |

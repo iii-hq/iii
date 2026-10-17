@@ -1,0 +1,8 @@
+{
+  "description": "$and [{}] is {}",
+  "filters": {"$and": [{}]},
+  "cases": [
+    { "doc": {}, "expect": true },
+    { "doc": {"input": {"a": 1}}, "expect": true }
+  ]
+}

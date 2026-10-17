@@ -3,11 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", "dist-binary/**", ".next/**"]
-    },
-    "build:binary": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist-binary/**"]
+      "outputs": ["dist/**", ".next/**"]
     },
     "test": {
       "dependsOn": ["build"],

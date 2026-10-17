@@ -1,0 +1,13 @@
+{
+  "description": "a string bound orders strings only",
+  "filters": {"input.v": {"$gte": ""}},
+  "cases": [
+    { "doc": {"input": {"v": ""}}, "expect": true },
+    { "doc": {"input": {"v": "a"}}, "expect": true },
+    { "doc": {"input": {"v": 0}}, "expect": false },
+    { "doc": {"input": {"v": false}}, "expect": false },
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {"v": []}}, "expect": false },
+    { "doc": {"input": {"v": {}}}, "expect": false }
+  ]
+}

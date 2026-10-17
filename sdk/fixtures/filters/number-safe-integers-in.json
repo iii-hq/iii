@@ -1,0 +1,10 @@
+{
+  "description": "integers just inside ±2^53 stay exact",
+  "filters": {"input.id": {"$in": [9007199254740991, -9007199254740991]}},
+  "cases": [
+    { "doc": {"input": {"id": 9007199254740991}}, "expect": true },
+    { "doc": {"input": {"id": -9007199254740991}}, "expect": true },
+    { "doc": {"input": {"id": 9007199254740990}}, "expect": false },
+    { "doc": {"input": {"id": -9007199254740990}}, "expect": false }
+  ]
+}

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       bin_name:
-        description: 'Binary name (e.g., iii, iii-console)'
+        description: 'Binary name (e.g., iii, iii-worker)'
         required: true
         type: string
       manifest_path:
@@ -191,8 +191,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-    env:
-      SKIP_FRONTEND_BUILD: ${{ inputs.artifact_name != '' && '1' || '' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}

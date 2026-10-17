@@ -1,0 +1,12 @@
+{
+  "description": "nested $and / $or / $not across roots",
+  "filters": {"$and": [{"$or": [{"input.x": {"$eq": 1}}, {"$not": {"input.y": {"$exists": true}}}]}, {"$or": [{"caller.worker_name": {"$prefix": "bill"}}, {"metadata.force": {"$eq": true}}]}]},
+  "cases": [
+    { "doc": {"input": {"x": 1}, "caller": {"worker_name": "billing"}}, "expect": true },
+    { "doc": {"input": {"y": 0}, "caller": {"worker_name": "billing"}}, "expect": false },
+    { "doc": {"input": {}, "metadata": {"force": true}}, "expect": true },
+    { "doc": {"input": {"x": 2, "y": 1}, "metadata": {"force": true}}, "expect": false },
+    { "doc": {"input": {"x": 1}, "caller": {"worker_name": "shipping"}}, "expect": false },
+    { "doc": {}, "expect": false }
+  ]
+}

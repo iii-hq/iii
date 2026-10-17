@@ -1,0 +1,26 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "4a6c8e0b-2d4f-4a6c-9e1b-3d5f7a9c1e3b",
+  "function_id": "database::execute",
+  "data": {
+    "db": "primary",
+    "sql": "UPDATE invoices SET status = 'paid' WHERE id = $1",
+    "params": [
+      77
+    ]
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "caller": {
+    "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
+    "worker_name": "billing",
+    "function_id": "billing::close-invoice",
+    "invocation_id": "77e1c3a5-b7d9-4f1b-9d3f-5b7d9f1b3d5f",
+    "parent": {
+      "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
+      "worker_name": "checkout",
+      "function_id": "checkout::confirm",
+      "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
+    }
+  },
+  "observe_depth": 2
+}

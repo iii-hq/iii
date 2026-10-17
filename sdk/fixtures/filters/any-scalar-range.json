@@ -1,0 +1,12 @@
+{
+  "description": "all operators must hold for the same element",
+  "filters": {"input.scores": {"$any": {"$gte": 90, "$lt": 95}}},
+  "cases": [
+    { "doc": {"input": {"scores": [80, 91]}}, "expect": true },
+    { "doc": {"input": {"scores": [96, 89]}}, "expect": false, "note": "no single element in [90, 95)" },
+    { "doc": {"input": {"scores": [80, 95]}}, "expect": false },
+    { "doc": {"input": {"scores": ["92", 92]}}, "expect": true },
+    { "doc": {"input": {"scores": ["92"]}}, "expect": false },
+    { "doc": {"input": {"scores": []}}, "expect": false }
+  ]
+}

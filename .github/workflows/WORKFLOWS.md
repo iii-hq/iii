@@ -65,9 +65,8 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `sdk-node-ci` | `engine-build` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
 | `sdk-node-browser-ci` | `engine-build` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
 | `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability` against a live engine |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
 | `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
-| `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
 
@@ -163,7 +162,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
    - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
-**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Console, docker and homebrew are intentionally excluded.**
+**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Docker and Homebrew are intentionally excluded.**
 
 **Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`. The worker-publish job uses the same override to pin the engine CLI.
 
@@ -188,15 +187,12 @@ setup (parse tag metadata, Slack notification)
   │     │     │
   │     │     └─► homebrew-engine ► _homebrew.yml (stable only)
   │     │
-  │     ├─► console-frontend ───► Build React frontend for embedding
-  │     │     │
-  │     │     └─► console-release ► _rust-binary.yml (with embedded frontend)
-  │     │           │
-  │     │           └─► homebrew-console ► _homebrew.yml (stable only)
-  │     │
   │     ├─► sdk-npm ─────────────► _npm.yml
   │     ├─► sdk-py ──────────────► _py.yml
-  │     ├─► sdk-rust ────────────► _rust-cargo.yml
+  │     ├─► helpers-rust ────────► _rust-cargo.yml
+  │     │     └─► observability-rust ► _rust-cargo.yml
+  │     ├─► filter-rust ─────────► _rust-cargo.yml (crates/iii-filter)
+  │     ├─► sdk-rust ────────────► _rust-cargo.yml (after helpers-rust, observability-rust, filter-rust)
   │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
   │
   ├─► publish-builtin-workers ► _publish-engine-workers.yml
@@ -253,7 +249,7 @@ Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers a
 | Job | What it does |
 |-----|--------------|
 | `rust-advisories` | `cargo deny check advisories bans` over the workspace `Cargo.lock`, configured in `deny.toml` (vulnerabilities fail; unmaintained notices fail only for direct dependencies; duplicate versions warn) |
-| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website`, `console` or `docs` are reported without failing |
+| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website` or `docs` are reported without failing |
 
 Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm and GitHub Actions.
 
@@ -316,7 +312,7 @@ Cross-compiles a Rust binary for 9 platform targets and uploads them to a GitHub
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04` |
 | `armv7-unknown-linux-gnueabihf` | `ubuntu-22.04` |
 
-Supports downloading a pre-built artifact (used by console to embed the frontend build).
+Supports downloading a pre-built artifact into the build tree before compiling (optional `artifact_name` / `artifact_dest` inputs).
 
 Uses `taiki-e/upload-rust-binary-action` for building and uploading.
 

@@ -412,6 +412,26 @@ pub struct StoredSpan {
     /// By convention `end_time_unix_nano == 0` while pending.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// The observe depth of what produced the span (the engine invocation it
+    /// records, from its `iii.observe_depth` attribute; or, for a worker's
+    /// span, the deepest invocation its connection was running when the
+    /// span arrived): `observability::on-span` events take the deepest of
+    /// their window, so a span loop stops at `observers.max_observe_depth`.
+    /// Not part of the span.
+    #[serde(skip)]
+    pub observe_depth: u32,
+}
+
+/// The `iii.observe_depth` attribute the engine records on an invocation's
+/// span at depth > 0.
+pub const OBSERVE_DEPTH_ATTRIBUTE: &str = "iii.observe_depth";
+
+fn observe_depth_of(span: &SpanData) -> u32 {
+    span.attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == OBSERVE_DEPTH_ATTRIBUTE)
+        .and_then(|kv| kv.value.to_string().parse().ok())
+        .unwrap_or(0)
 }
 
 impl StoredSpan {
@@ -512,6 +532,7 @@ impl StoredSpan {
                 if ts.is_empty() { None } else { Some(ts) }
             },
             pending: false,
+            observe_depth: observe_depth_of(span),
         }
     }
 
@@ -4513,6 +4534,7 @@ async fn ingest_otlp_request(mut request: OtlpExportTraceServiceRequest) -> anyh
                         // OTLP-ingested spans don't currently carry tracestate.
                         trace_state: None,
                         pending: is_start_snapshot,
+                        observe_depth: crate::observer::InvocationCtx::current_depth(),
                     };
 
                     if is_start_snapshot {
@@ -4962,6 +4984,13 @@ pub struct StoredLog {
     /// Instrumentation scope version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instrumentation_scope_version: Option<String>,
+    /// The observe depth of what produced the record (the invocation it was
+    /// logged from, or the activation its worker was running when it
+    /// arrived): `observability::on-log` events take it, so a target that
+    /// logs on every activation stops at `observers.max_observe_depth`. Not
+    /// part of the record.
+    #[serde(skip)]
+    pub observe_depth: u32,
 }
 
 /// In-memory log storage with circular buffer and broadcast channel.
@@ -5465,6 +5494,7 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
                     service_name: service_name.clone(),
                     instrumentation_scope_name: scope_name.clone(),
                     instrumentation_scope_version: scope_version.clone(),
+                    observe_depth: crate::observer::InvocationCtx::current_depth(),
                 };
 
                 // Emit to console if enabled
@@ -6115,6 +6145,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
         assert_eq!(storage.len(), 5);
@@ -6200,6 +6231,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
         assert_eq!(storage.len(), 3, "retuned cap must bound the live store");
@@ -6832,6 +6864,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
 
@@ -6857,6 +6890,7 @@ mod tests {
             service_name: "test".to_string(),
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
+            observe_depth: 0,
         }
     }
 
@@ -7083,6 +7117,7 @@ mod tests {
             flags: None,
             trace_state: None,
             pending: false,
+            observe_depth: 0,
         }
     }
 
@@ -8907,6 +8942,49 @@ mod tests {
         assert_eq!(spans[0].attributes[0].0, "key");
     }
 
+    /// An engine invocation's span records its observe depth at depth > 0;
+    /// the stored span carries it for `observability::on-span`.
+    #[test]
+    fn stored_span_from_span_data_carries_the_observe_depth() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let span = |attributes: Vec<opentelemetry::KeyValue>| SpanData {
+            span_context: SpanContext::new(
+                TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+                SpanId::from_hex("b7ad6b7169203331").unwrap(),
+                TraceFlags::SAMPLED,
+                true,
+                TraceState::NONE,
+            ),
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Server,
+            name: Cow::Borrowed("call orders::create"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1000),
+            end_time: UNIX_EPOCH + Duration::from_secs(1001),
+            attributes,
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Ok,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+        let deep = StoredSpan::from_span_data(
+            &span(vec![opentelemetry::KeyValue::new(
+                OBSERVE_DEPTH_ATTRIBUTE,
+                2i64,
+            )]),
+            "engine",
+        );
+        assert_eq!(deep.observe_depth, 2);
+        let plain = StoredSpan::from_span_data(&span(Vec::new()), "engine");
+        assert_eq!(plain.observe_depth, 0);
+    }
+
     #[test]
     fn stored_span_from_span_data_carries_tracestate() {
         use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
@@ -9890,6 +9968,7 @@ mod tests {
             service_name: "test-service".to_string(),
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
+            observe_depth: 0,
         }
     }
 
@@ -10109,6 +10188,7 @@ mod tests {
             flags: None,
             trace_state: None,
             pending: false,
+            observe_depth: 0,
         }
     }
 

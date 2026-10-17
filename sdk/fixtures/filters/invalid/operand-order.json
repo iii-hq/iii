@@ -1,0 +1,12 @@
+{
+  "description": "$gt / $gte / $lt / $lte take a number or a string",
+  "cases": [
+    { "filters": {"input.a": {"$gt": {}}}, "code": "INVALID_FILTER", "note": "object" },
+    { "filters": {"input.a": {"$gt": true}}, "code": "INVALID_FILTER", "note": "boolean" },
+    { "filters": {"input.a": {"$gt": null}}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"input.a": {"$gte": [1]}}, "code": "INVALID_FILTER", "note": "array" },
+    { "filters": {"input.a": {"$lt": {"a": 1}}}, "code": "INVALID_FILTER", "note": "object" },
+    { "filters": {"input.a": {"$lte": false}}, "code": "INVALID_FILTER", "note": "boolean" },
+    { "filters": {"input.a": {"$lte": null}}, "code": "INVALID_FILTER", "note": "null" }
+  ]
+}

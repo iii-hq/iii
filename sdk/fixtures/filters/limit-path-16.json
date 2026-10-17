@@ -1,0 +1,8 @@
+{
+  "description": "16 segments after the root",
+  "filters": {"input.s0.s1.s2.s3.s4.s5.s6.s7.s8.s9.s10.s11.s12.s13.s14.s15": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"s0": {"s1": {"s2": {"s3": {"s4": {"s5": {"s6": {"s7": {"s8": {"s9": {"s10": {"s11": {"s12": {"s13": {"s14": {"s15": 1}}}}}}}}}}}}}}}}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

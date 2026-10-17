@@ -1,0 +1,44 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "f1a3c5e7-9b1d-4f3a-8c5e-7a9b1d3f5a7c",
+  "function_id": "alerts::payment-failed",
+  "data": {
+    "observer_id": "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60",
+    "activation_id": "2d4f6a8c-0e2b-4d6f-9a1c-3e5a7c9e1b3d",
+    "function_id": "payments::charge",
+    "namespace": "default",
+    "invocation_id": "0d4b6f81-3a5c-4e7d-9b1f-2c4e6a8b0d13",
+    "status": "error",
+    "input": {
+      "customer_id": "cus_8812",
+      "amount": 1250,
+      "currency": "EUR"
+    },
+    "error": {
+      "code": "CARD_DECLINED",
+      "message": "card declined by issuer"
+    },
+    "caller": {
+      "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
+      "worker_name": "checkout",
+      "function_id": "checkout::confirm",
+      "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
+    },
+    "started_at_ms": 1760350000123,
+    "duration_ms": 12.75
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "metadata": {
+    "team": "payments-oncall"
+  },
+  "caller": {
+    "worker_name": "iii-engine",
+    "function_id": "payments::charge",
+    "invocation_id": "0d4b6f81-3a5c-4e7d-9b1f-2c4e6a8b0d13"
+  },
+  "observe_depth": 1,
+  "activation": {
+    "observer_id": "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60",
+    "activation_id": "2d4f6a8c-0e2b-4d6f-9a1c-3e5a7c9e1b3d"
+  }
+}

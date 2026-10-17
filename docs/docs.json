@@ -89,6 +89,7 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-24-x",
                   "next/upgrading/workers-to-compose",
                   "next/upgrading/from-0-22-x"
                 ]
@@ -99,6 +100,7 @@
                   "next/using-iii/workers",
                   "next/using-iii/workers-registry",
                   "next/using-iii/triggers",
+                  "next/using-iii/observers",
                   "next/using-iii/functions",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
@@ -137,6 +139,7 @@
                   "next/creating-workers/workers",
                   "next/creating-workers/worker-manifest",
                   "next/creating-workers/triggers",
+                  "next/creating-workers/observable-functions",
                   "next/creating-workers/functions",
                   "next/creating-workers/channels"
                 ]
@@ -168,7 +171,8 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "next/reference/engine-protocol"
+                  "next/reference/engine-protocol",
+                  "next/reference/filters"
                 ]
               },
               {

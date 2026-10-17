@@ -7,7 +7,7 @@
 pub mod traits;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     str::FromStr,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -23,7 +23,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     engine::Outbound,
-    protocol::{DEFAULT_NAMESPACE, ErrorBody, effective_namespace},
+    protocol::{
+        DEFAULT_NAMESPACE, ErrorBody, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_V1,
+        effective_namespace,
+    },
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
 
@@ -186,6 +189,15 @@ impl WorkerConnectionRegistry {
         }
     }
 
+    /// Records the protocol features `worker_id` declared on
+    /// `engine::workers::register`. Every clone of the connection sees them.
+    /// Returns whether the declaration was kept ([`WorkerFeatures::set`]).
+    pub fn set_worker_features(&self, worker_id: &Uuid, features: &[String]) -> bool {
+        self.workers
+            .get(worker_id)
+            .is_some_and(|worker| worker.features.set(features))
+    }
+
     pub fn update_worker_status(&self, worker_id: &Uuid, status: WorkerConnectionStatus) {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.status = status;
@@ -236,6 +248,76 @@ impl FromStr for WorkerConnectionStatus {
             "disconnected" => WorkerConnectionStatus::Disconnected,
             _ => WorkerConnectionStatus::Connected,
         })
+    }
+}
+
+/// Protocol features a connection declared on `engine::workers::register`
+/// (protocol.md §1). Empty until then, and for SDKs older than 0.25.
+///
+/// Shared by every clone of the connection: `engine::workers::register` writes
+/// through the registry's copy while `router_msg` and `cleanup_worker` hold the
+/// snapshot taken at connect time, and both must see the same answer.
+///
+/// Set once (CONTRACT D17): the first declaration that lists any feature fixes
+/// them; later ones are ignored. The list and the flags the engine acts on are
+/// written together, and reading a flag is one atomic load.
+#[derive(Debug, Default)]
+pub struct WorkerFeatures {
+    declared: std::sync::OnceLock<DeclaredFeatures>,
+}
+
+#[derive(Debug)]
+struct DeclaredFeatures {
+    list: Vec<String>,
+    observe_v1: bool,
+    local_dispatch_v1: bool,
+}
+
+impl WorkerFeatures {
+    /// Features kept per connection.
+    pub const MAX_FEATURES: usize = 32;
+    /// Longest feature name kept.
+    pub const MAX_FEATURE_LEN: usize = 64;
+
+    /// Records the declared features. Returns whether this declaration was
+    /// kept: `false` when it lists none, or when an earlier one already fixed
+    /// them. Names longer than [`Self::MAX_FEATURE_LEN`] are dropped and at
+    /// most [`Self::MAX_FEATURES`] are kept.
+    pub fn set(&self, features: &[String]) -> bool {
+        let list: Vec<String> = features
+            .iter()
+            .filter(|feature| !feature.is_empty() && feature.len() <= Self::MAX_FEATURE_LEN)
+            .take(Self::MAX_FEATURES)
+            .cloned()
+            .collect();
+        if list.is_empty() {
+            return false;
+        }
+        let has = |name: &str| list.iter().any(|feature| feature == name);
+        let declared = DeclaredFeatures {
+            observe_v1: has(FEATURE_OBSERVE_V1),
+            local_dispatch_v1: has(FEATURE_LOCAL_DISPATCH_V1),
+            list,
+        };
+        self.declared.set(declared).is_ok()
+    }
+
+    /// The connection speaks observe: the engine may push the observe
+    /// messages to it (CONTRACT D2).
+    pub fn observe_v1(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.observe_v1)
+    }
+
+    pub fn local_dispatch_v1(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.local_dispatch_v1)
+    }
+
+    /// The list as kept, unknown features included.
+    pub fn declared(&self) -> Vec<String> {
+        self.declared
+            .get()
+            .map(|d| d.list.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -292,6 +374,18 @@ pub struct WorkerConnection {
     /// public (`engine::workers::list`, the workers-available trigger) and
     /// must not suffice to evict a live worker.
     pub reattach_token: Uuid,
+    /// Protocol features declared on `engine::workers::register`.
+    pub features: Arc<WorkerFeatures>,
+    /// The id each `RegisterTriggerType` this connection sent was filed under,
+    /// by `(namespace, requested id)`: the registration hook may rename it,
+    /// and `UnregisterTriggerType` names the type as the worker knows it.
+    pub filed_trigger_types: Arc<DashMap<(String, String), String>>,
+    /// The observe depth of each in-flight invocation forwarded to this
+    /// connection at depth > 0: the loop guard's stand-in for the depth of
+    /// what the connection does meanwhile without saying (calls from a worker
+    /// without `observe.v1`, registrations, telemetry; see
+    /// [`WorkerConnection::inflight_depth`]).
+    pub inflight_depths: Arc<std::sync::Mutex<HashMap<Uuid, u32>>>,
 }
 
 impl WorkerConnection {
@@ -321,6 +415,9 @@ impl WorkerConnection {
             cleanup_claimed: Arc::new(AtomicBool::new(false)),
             cleanup_done: Arc::new(watch::channel(false).0),
             reattach_token: Uuid::new_v4(),
+            features: Arc::new(WorkerFeatures::default()),
+            filed_trigger_types: Arc::new(DashMap::new()),
+            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -350,6 +447,9 @@ impl WorkerConnection {
             cleanup_claimed: Arc::new(AtomicBool::new(false)),
             cleanup_done: Arc::new(watch::channel(false).0),
             reattach_token: Uuid::new_v4(),
+            features: Arc::new(WorkerFeatures::default()),
+            filed_trigger_types: Arc::new(DashMap::new()),
+            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -417,6 +517,44 @@ impl WorkerConnection {
 
     pub async fn remove_invocation(&self, invocation_id: &Uuid) {
         self.invocations.write().await.remove(invocation_id);
+        self.forget_inflight_depth(invocation_id);
+    }
+
+    /// Records that `invocation_id`, forwarded to this connection, runs at
+    /// `depth` (> 0).
+    pub fn remember_inflight_depth(&self, invocation_id: Uuid, depth: u32) {
+        self.inflight_depths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(invocation_id, depth);
+    }
+
+    pub fn forget_inflight_depth(&self, invocation_id: &Uuid) {
+        let mut depths = self
+            .inflight_depths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !depths.is_empty() {
+            depths.remove(invocation_id);
+        }
+    }
+
+    /// The loop guard's heuristic for what this connection does without
+    /// carrying `observe_depth` (calls from a worker without `observe.v1`,
+    /// function registrations, telemetry): it is taken to be at the deepest
+    /// depth among the invocations it is running. A false positive is
+    /// possible only when the worker handles a deep activation and,
+    /// meanwhile, does something unrelated. An invocation's depth stays
+    /// until the worker answers it, the connection closes, or an activation
+    /// timeout abandons it; a caller that gives up any other way does not
+    /// clear it, so a hung handler pins its depth until then.
+    pub fn inflight_depth(&self) -> Option<u32> {
+        self.inflight_depths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .copied()
+            .max()
     }
 }
 #[cfg(test)]
@@ -434,6 +572,65 @@ mod tests {
     fn worker_pid_defaults_to_none() {
         let worker = make_worker();
         assert!(worker.pid.is_none());
+    }
+
+    #[test]
+    fn worker_features_are_fixed_by_the_first_declaration_that_lists_any() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_v1());
+        assert!(!worker.features.local_dispatch_v1());
+
+        assert!(
+            !worker.features.set(&[]),
+            "an empty declaration fixes nothing"
+        );
+        assert!(worker.features.set(&["observe.v1".to_string()]));
+        assert!(worker.features.observe_v1());
+        assert!(!worker.features.local_dispatch_v1());
+
+        assert!(
+            !worker.features.set(&["local-dispatch.v1".to_string()]),
+            "a later declaration is ignored"
+        );
+        assert!(worker.features.observe_v1());
+        assert!(!worker.features.local_dispatch_v1());
+        assert_eq!(worker.features.declared(), vec!["observe.v1"]);
+    }
+
+    #[test]
+    fn worker_features_are_bounded() {
+        let worker = make_worker();
+        let mut features: Vec<String> = (0..40).map(|i| format!("feature.{i}")).collect();
+        features.insert(0, "x".repeat(WorkerFeatures::MAX_FEATURE_LEN + 1));
+        features.push("observe.v1".to_string());
+        assert!(worker.features.set(&features));
+        let kept = worker.features.declared();
+        assert_eq!(kept.len(), WorkerFeatures::MAX_FEATURES);
+        assert!(
+            kept.iter()
+                .all(|f| f.len() <= WorkerFeatures::MAX_FEATURE_LEN)
+        );
+        assert_eq!(
+            kept[0], "feature.0",
+            "an over-long name is dropped, not truncated"
+        );
+        assert!(
+            !worker.features.observe_v1(),
+            "only what was kept counts: observe.v1 came after the first 32"
+        );
+    }
+
+    #[test]
+    fn set_worker_features_reaches_every_clone() {
+        crate::workers::observability::metrics::ensure_default_meter();
+        let registry = WorkerConnectionRegistry::new();
+        let worker = make_worker();
+        let snapshot = worker.clone();
+        registry.register_worker(worker);
+
+        registry.set_worker_features(&snapshot.id, &["observe.v1".to_string()]);
+
+        assert!(snapshot.features.observe_v1());
     }
 
     #[test]

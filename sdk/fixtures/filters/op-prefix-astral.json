@@ -1,0 +1,9 @@
+{
+  "description": "$prefix with a character outside the BMP",
+  "filters": {"input.s": {"$prefix": "😀"}},
+  "cases": [
+    { "doc": {"input": {"s": "😀 hi"}}, "expect": true },
+    { "doc": {"input": {"s": "😁"}}, "expect": false, "note": "shares the UTF-16 high surrogate only" },
+    { "doc": {"input": {"s": "hi 😀"}}, "expect": false }
+  ]
+}

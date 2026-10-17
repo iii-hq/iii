@@ -1,0 +1,11 @@
+{
+  "description": "$or: at least one filter matches",
+  "filters": {"$or": [{"input.a": {"$eq": 1}}, {"input.b": {"$eq": 2}}]},
+  "cases": [
+    { "doc": {"input": {"a": 1}}, "expect": true },
+    { "doc": {"input": {"b": 2}}, "expect": true },
+    { "doc": {"input": {"a": 1, "b": 2}}, "expect": true },
+    { "doc": {"input": {"a": 2, "b": 1}}, "expect": false },
+    { "doc": {}, "expect": false }
+  ]
+}

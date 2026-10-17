@@ -641,6 +641,7 @@ containers:
 | --------------------------------- | ------- | ---------------------- | ---------------------------------------------------------------------------------------- |
 | `url`                             | string  | `ws://127.0.0.1:49134` | Managed engine endpoint used by Compose and its workers.                                 |
 | `registration_namespace_grace_ms` | integer | engine default         | Namespace-registration grace passed to the engine.                                       |
+| `observers`                       | map     | engine defaults        | Observer limits and timeouts passed to the engine as written. See [Observers](./configuration#observers). |
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
 
 Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,

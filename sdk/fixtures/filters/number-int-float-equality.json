@@ -1,0 +1,14 @@
+{
+  "description": "integers and floats are the same numbers",
+  "filters": {"input.n": {"$in": [0, 2, 3.5]}},
+  "cases": [
+    { "doc": {"input": {"n": 0.0}}, "expect": true },
+    { "doc": {"input": {"n": -0.0}}, "expect": true },
+    { "doc": {"input": {"n": 2.0}}, "expect": true },
+    { "doc": {"input": {"n": 2.00}}, "expect": true },
+    { "doc": {"input": {"n": 2e0}}, "expect": true },
+    { "doc": {"input": {"n": 20e-1}}, "expect": true },
+    { "doc": {"input": {"n": 3.50}}, "expect": true },
+    { "doc": {"input": {"n": 3}}, "expect": false }
+  ]
+}

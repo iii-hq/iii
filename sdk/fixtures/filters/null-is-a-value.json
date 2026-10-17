@@ -1,0 +1,9 @@
+{
+  "description": "null is a value: $in [null] matches null but not absent",
+  "filters": {"input.v": {"$in": [null]}},
+  "cases": [
+    { "doc": {"input": {"v": null}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": null}, "expect": false, "note": "input.v under a null input is absent" }
+  ]
+}

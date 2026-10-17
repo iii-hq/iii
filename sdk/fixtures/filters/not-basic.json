@@ -1,0 +1,9 @@
+{
+  "description": "$not negates the AND of its clauses",
+  "filters": {"$not": {"input.a": {"$eq": 1}, "input.b": {"$eq": 2}}},
+  "cases": [
+    { "doc": {"input": {"a": 1, "b": 2}}, "expect": false },
+    { "doc": {"input": {"a": 1}}, "expect": true },
+    { "doc": {}, "expect": true }
+  ]
+}

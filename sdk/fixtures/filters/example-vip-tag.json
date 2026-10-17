@@ -1,0 +1,8 @@
+{
+  "description": "filters.md §2.1: scalar elements",
+  "filters": {"input.tags": {"$any": {"$eq": "vip"}}},
+  "cases": [
+    { "doc": {"input": {"tags": ["new", "vip"]}}, "expect": true },
+    { "doc": {"input": {"tags": ["new"]}}, "expect": false }
+  ]
+}

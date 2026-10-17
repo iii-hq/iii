@@ -1,0 +1,9 @@
+{
+  "description": "error root (failure path)",
+  "filters": {"error.code": {"$eq": "TIMEOUT"}},
+  "cases": [
+    { "doc": {"input": {}, "error": {"code": "TIMEOUT", "message": "took too long"}}, "expect": true },
+    { "doc": {"input": {}, "error": {"code": "BOOM", "message": "x"}}, "expect": false },
+    { "doc": {"input": {}, "output": {"code": "TIMEOUT"}}, "expect": false }
+  ]
+}

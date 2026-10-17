@@ -1,0 +1,10 @@
+{
+  "description": "stepping into null, numbers and booleans is absent",
+  "filters": {"input.a.b": {"$ne": 1}},
+  "cases": [
+    { "doc": {"input": {"a": null}}, "expect": true },
+    { "doc": {"input": {"a": {"b": 1}}}, "expect": false },
+    { "doc": {"input": {"a": 5}}, "expect": true },
+    { "doc": {"input": {"a": true}}, "expect": true }
+  ]
+}

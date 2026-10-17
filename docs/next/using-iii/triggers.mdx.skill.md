@@ -9,6 +9,14 @@
   such as registering (binding) Triggers to Functions, gating triggers, and unregistering them.
 </Note>
 
+<Warning>
+  `registerTrigger` is deprecated in 0.25 and will be removed in a future release. It keeps working
+  and logs one warning per process. It is still how you bind functions to the http, cron, queue,
+  state, stream, pubsub, and database workers, which publish trigger types in 0.25. For engine events
+  and any other function, use [observers](./observers) (`iii.observe`). See [Upgrading from
+  0.24.x](../upgrading/from-0-24-x).
+</Warning>
+
 ## Register a trigger
 
 <Note>
@@ -74,12 +82,11 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
         },
     );
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "math::add".into(),
-        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "math::add",
+        json!({ "api_path": "/math/add", "http_method": "POST" }),
+    ))?;
     ```
 
   </Tab>
@@ -90,7 +97,7 @@ Per-type configuration is documented in each worker's Worker Docs (e.g.
 
 ### Trigger metadata
 
-The optional `metadata` field on a trigger registration (`null` / `None` in the examples above) is
+The optional `metadata` field on a trigger registration (omitted in the examples above) is
 arbitrary JSON stored with the trigger and delivered to the receiving function as a distinct
 argument alongside the payload. It is useful for providing contextual information about the trigger
 or execution context to the receiving function.
@@ -143,12 +150,11 @@ registration and stores it:
     use serde_json::json;
 
     // http worker not started
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "math::add".into(),
-        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "math::add",
+        json!({ "api_path": "/math/add", "http_method": "POST" }),
+    ))?;
     ```
   </Tab>
 </Tabs>
@@ -176,6 +182,11 @@ type at [workers.iii.dev](https://workers.iii.dev).
 A registration fails when an active provider rejects the config it was given (for example, an
 invalid trigger config). The engine then sends a `TriggerRegistrationResult` with an `error` body
 back to the worker that initiated the request and logs it.
+
+When no worker provides the type the old way, but a function declares it as its
+`legacy_trigger_type`, the engine turns the registration into an observer of that function and
+answers with its outcome. The registration keeps working unchanged; see
+[Accept old triggers](../creating-workers/observable-functions#accept-old-triggers).
 
 ## Bind multiple triggers to one function
 
@@ -223,19 +234,17 @@ a queue message.
     use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "reports::generate".into(),
-        config: json!({ "api_path": "/reports/generate", "http_method": "POST" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "reports::generate",
+        json!({ "api_path": "/reports/generate", "http_method": "POST" }),
+    ))?;
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".into(),
-        function_id: "reports::generate".into(),
-        config: json!({ "expression": "0 0 9 * * 1" }), // Every Monday at 09:00
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "cron",
+        "reports::generate",
+        json!({ "expression": "0 0 9 * * 1" }), // Every Monday at 09:00
+    ))?;
     ```
 
   </Tab>
@@ -247,6 +256,14 @@ A trigger can carry an optional `condition_function_id` (set inside the trigger'
 the trigger fires, the engine invokes the condition function first with the same payload the handler
 would receive; the target `function_id` only runs when the condition returns truthy. The condition
 is a regular registered function.
+
+<Tip>
+  When an observer's source is a function, a condition you can state over the event becomes a
+  declarative [filter](../reference/filters), evaluated without an extra function call:
+  `filters: { "input.customer_tier": { "$eq": "gold" } }`. A condition that needs code (a lookup, an
+  auth check) has no filter form: keep `condition_function_id`, which works in 0.25, or move the
+  check into the target function.
+</Tip>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -305,16 +322,15 @@ is a regular registered function.
         },
     ));
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "orders::expedite".into(),
-        config: json!({
+    worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "orders::expedite",
+        json!({
             "api_path": "/orders/expedite",
             "http_method": "POST",
             "condition_function_id": "orders::is-priority",
         }),
-        metadata: None,
-    })?;
+    ))?;
     ```
 
   </Tab>
@@ -355,12 +371,11 @@ runtime; when the worker disconnects, all of its triggers are removed automatica
     use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
-    let trigger = worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "math::add".into(),
-        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
-        metadata: None,
-    })?;
+    let trigger = worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "math::add",
+        json!({ "api_path": "/math/add", "http_method": "POST" }),
+    ))?;
 
     trigger.unregister();
     ```

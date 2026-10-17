@@ -89,6 +89,7 @@ fn restrictive_rbac() -> RbacConfig {
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
+        on_observer_registration_function_id: None,
     }
 }
 
@@ -110,6 +111,9 @@ async fn expect_result(
         action: None,
         metadata: None,
         namespace: None,
+        caller: None,
+        observe_depth: None,
+        activation: None,
     };
     engine
         .router_msg(worker, &msg)
@@ -310,6 +314,7 @@ async fn listener_middleware_runs_in_caller_namespace() {
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
+        on_observer_registration_function_id: None,
     };
     let session = session_with(
         engine.clone(),
@@ -329,6 +334,9 @@ async fn listener_middleware_runs_in_caller_namespace() {
         action: None,
         metadata: None,
         namespace: Some("orders".to_string()),
+        caller: None,
+        observe_depth: None,
+        activation: None,
     };
     engine
         .router_msg(&worker, &msg)
@@ -442,6 +450,7 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             },
         )
         .await
@@ -473,6 +482,7 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
+        on_observer_registration_function_id: None,
     };
     let (tx, mut rx) = mpsc::channel::<Outbound>(16);
     let session = session_with(engine.clone(), rbac, vec![], Some("mw::guard".to_string()));

@@ -232,6 +232,12 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 The same functions that respond to `iii trigger` now also respond to HTTP requests with no code
 changes to the handlers themselves.
 
+<Note>
+  The worker logs a deprecation warning for `registerTrigger` once. In 0.25 it is still the way to
+  bind HTTP routes, because the http worker publishes the `http` trigger type; the warning is
+  informational. See [Upgrading from 0.24.x](./upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
+
 ## How it works
 
 For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together,

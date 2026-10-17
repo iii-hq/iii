@@ -5,13 +5,7 @@ import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
  * wire values (Rust `serde_json::Value`). Used where the wire contract is
  * "any JSON", e.g. per-invocation `metadata`.
  */
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue }
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
 export enum MessageType {
   RegisterFunction = 'registerfunction',
@@ -26,8 +20,227 @@ export enum MessageType {
   WorkerRegistered = 'workerregistered',
   RegistrationRejected = 'registrationrejected',
   Reattach = 'reattach',
+  /** Observing worker → engine: create (or idempotently replay) an observer. */
+  Observe = 'observe',
+  /** Observing worker → engine: dispose an observer this connection owns. */
+  Unobserve = 'unobserve',
+  /** Engine → observing worker: the reply to `observe` (also on replay). */
+  ObserveResult = 'observeresult',
+  /** Engine → observing worker: an observer's lifecycle transition. */
+  ObserverStateChanged = 'observerstatechanged',
+  /** Engine → owner: the `registerfunction` ack, with the function's full observer set. */
+  FunctionRegistered = 'functionregistered',
+  /** Engine → owner: one observer attached to a function this connection hosts. */
+  ObserverAdded = 'observeradded',
+  /** Engine → owner: one observer detached. */
+  ObserverRemoved = 'observerremoved',
+  /** Owner → engine: accept (or reject) an added observer. */
+  ObserverAck = 'observerack',
+  /** Owner → engine: matched local invocations and `obs.emit` events, batched. */
+  InvocationsObserved = 'invocationsobserved',
+  /** Owner → engine: periodic counts of local invocations and report drops. */
+  LocalInvocationStats = 'localinvocationstats',
 }
 
+/**
+ * Protocol features (`WorkerRegistered.features` from the engine,
+ * `engine::workers::register` `features` from the SDK).
+ */
+export const FEATURE_OBSERVE_V1 = 'observe.v1'
+export const FEATURE_LOCAL_DISPATCH_V1 = 'local-dispatch.v1'
+/** What this SDK declares in `engine::workers::register`. */
+export const SDK_FEATURES: readonly string[] = [FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1]
+
+/**
+ * A wire enum that a newer peer may extend: decoders keep a value they do not
+ * know instead of failing the frame.
+ */
+export type OpenEnum<T extends string> = T | (string & {})
+
+/** What an observer ships to its target (`capture`). */
+export type CaptureWire = OpenEnum<'input' | 'output' | 'error' | 'caller' | 'metadata'>
+/** When an auto observer fires (`on`). */
+export type ObserveOnWire = OpenEnum<'success' | 'error' | 'complete'>
+/** What the target receives (`deliver`). */
+export type ObserveDeliverWire = OpenEnum<'envelope' | 'input' | 'output'>
+/** Observer lifecycle state. */
+export type ObserverStateWire = OpenEnum<'pending' | 'active' | 'suspended' | 'error' | 'disposed'>
+
+/**
+ * Who started an invocation. Engine → worker: `worker_id` / `worker_name`
+ * are stamped by the engine from the calling connection. Worker → engine:
+ * the SDK sends `function_id`, `invocation_id` and `parent` (the caller of the
+ * handler the call was made from, one level only).
+ */
+export type CallerWire = {
+  worker_id?: string
+  worker_name?: string
+  function_id?: string
+  invocation_id?: string
+  parent?: Omit<CallerWire, 'parent'>
+}
+
+/** `InvokeFunction.activation`: present on every activation of an observer's target. */
+export type ActivationWire = {
+  observer_id: string
+  activation_id?: string
+}
+
+/** `RegisterFunction.observe`: the part of the observe hooks that travels. Callbacks never do. */
+export type ObserveDescriptorWire = {
+  /** `auto` (default) or `owner`. */
+  delivery?: OpenEnum<'auto' | 'owner'>
+  /** Owner only: validates the observers' `args` in the engine (`INVALID_ARGS`). */
+  args_format?: RegisterFunctionFormat
+  /** Phase 5 shim: accept old `registertrigger { trigger_type }` for this type. */
+  legacy_trigger_type?: string
+  /** Default `true`; `false` makes every `observe` on it fail with `NOT_OBSERVABLE`. */
+  allow?: boolean
+}
+
+/** `observe.source`: the left side of `iii.observe`. */
+export type ObserveSourceWire = {
+  function_id: string
+  namespace?: string
+  args?: Record<string, unknown>
+  filters?: Record<string, unknown>
+  capture?: CaptureWire[]
+  on?: ObserveOnWire
+  deliver?: ObserveDeliverWire
+}
+
+export type ObserveMessage = {
+  message_type: MessageType.Observe
+  /** Client-generated UUID, stable across replays. */
+  id: string
+  source: ObserveSourceWire
+  target: { function_id: string; namespace?: string }
+  metadata?: Record<string, unknown>
+  max_fires?: number
+  expires_in_ms?: number
+  max_in_flight?: number
+}
+
+export type UnobserveMessage = {
+  message_type: MessageType.Unobserve
+  id: string
+}
+
+export type ObserveResultMessage = {
+  message_type: MessageType.ObserveResult
+  id: string
+  state: ObserverStateWire
+  error?: ErrorBody
+  warnings?: string[]
+}
+
+export type ObserverStateChangedMessage = {
+  message_type: MessageType.ObserverStateChanged
+  id: string
+  state: ObserverStateWire
+  reason?: ErrorBody
+  fires: number
+}
+
+/**
+ * An observer as its function's owner sees it: never the observer's metadata,
+ * policy or connection. `target` is the target function id.
+ */
+export type ObserverInfoWire = {
+  id: string
+  args: Record<string, unknown>
+  /** The observer's filters, normalized by the engine. `{}` matches every event. */
+  filters: Record<string, unknown>
+  target: string
+  capture: CaptureWire[]
+  on: ObserveOnWire
+  /** Phase 5 shim only: the old trigger config the owner reads as args. */
+  legacy?: { trigger_type: string; config: unknown }
+}
+
+export type FunctionRegisteredMessage = {
+  message_type: MessageType.FunctionRegistered
+  id: string
+  namespace: string
+  revision: number
+  local_dispatch: boolean
+  observers: ObserverInfoWire[]
+}
+
+export type ObserverAddedMessage = {
+  message_type: MessageType.ObserverAdded
+  function_id: string
+  namespace: string
+  revision: number
+  observer: ObserverInfoWire
+}
+
+export type ObserverRemovedMessage = {
+  message_type: MessageType.ObserverRemoved
+  function_id: string
+  namespace: string
+  revision: number
+  id: string
+}
+
+export type ObserverAckMessage = {
+  message_type: MessageType.ObserverAck
+  function_id: string
+  namespace?: string
+  id: string
+  revision: number
+  /** Rejects the observer (also a late rejection of an active one). */
+  error?: ErrorBody
+}
+
+/** One matched local invocation (auto) or one `obs.emit` event (owner). */
+export type ObservedItemWire = {
+  function_id: string
+  namespace?: string
+  invocation_id: string
+  /** Observer ids whose filters matched (the same event coalesced for several). */
+  matched: string[]
+  status: OpenEnum<'success' | 'error'>
+  /** `null` is a value here: absent means not captured or does not exist. */
+  input?: unknown
+  output?: unknown
+  error?: unknown
+  caller?: CallerWire
+  metadata?: unknown
+  started_at_ms: number
+  duration_ms: number
+  observe_depth?: number
+  traceparent?: string
+  baggage?: string
+}
+
+export type InvocationsObservedMessage = {
+  message_type: MessageType.InvocationsObserved
+  items: ObservedItemWire[]
+}
+
+export type LocalFunctionStatsWire = {
+  function_id: string
+  count: number
+  errors?: number
+  duration_ms_sum?: number
+}
+
+export type DroppedReportStatsWire = {
+  function_id: string
+  /** `BUFFER_FULL` | `TOO_LARGE` (SDK-side drops). */
+  reason: string
+  count: number
+}
+
+export type LocalInvocationStatsMessage = {
+  message_type: MessageType.LocalInvocationStats
+  window_ms: number
+  functions: LocalFunctionStatsWire[]
+  dropped_reports: DroppedReportStatsWire[]
+}
+
+/** @deprecated Trigger types are replaced by functions with an observe descriptor (`RegisterFunctionMessage.observe`). */
 export type RegisterTriggerTypeMessage = {
   message_type: MessageType.RegisterTriggerType
   /** Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). */
@@ -67,6 +280,7 @@ export type TriggerRegistrationResultMessage = {
   error?: ErrorBody
 }
 
+/** @deprecated Replaced by {@link ObserveMessage} (`iii.observe`). */
 export type RegisterTriggerMessage = {
   /** Wire discriminator; always `MessageType.RegisterTrigger`. */
   message_type: MessageType.RegisterTrigger
@@ -155,6 +369,11 @@ export type RegisterFunctionMessage = {
    * HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.).
    */
   invocation?: HttpInvocationConfig
+  /**
+   * The observe descriptor: how observers of this function are delivered.
+   * Only these four fields travel; the hooks stay in the SDK.
+   */
+  observe?: ObserveDescriptorWire
 }
 
 /**
@@ -209,6 +428,12 @@ export type TriggerRequest<TInput = unknown> = {
    * {@link InvokeFunctionMessage} `namespace` field.
    */
   namespace?: string
+  /**
+   * `auto` (default) runs a function this worker hosts in-process when the
+   * engine confirmed it for local dispatch; `remote` always goes through the
+   * engine. Tests use it, and so do callers that rely on engine-side effects.
+   */
+  dispatch?: 'auto' | 'remote'
 }
 
 export type InvokeFunctionMessage = {
@@ -252,6 +477,15 @@ export type InvokeFunctionMessage = {
    * from this worker's namespace unless the request names one.
    */
   namespace?: string
+  /**
+   * Who made the call. Sent by the SDK when the call is made inside a handler;
+   * on inbound calls `worker_id` / `worker_name` are stamped by the engine.
+   */
+  caller?: CallerWire
+  /** Depth of the causal chain in observe hops; omitted when 0. */
+  observe_depth?: number
+  /** Present on every activation of an observer's target; marks an owner delivery (`obs.call`) outbound. */
+  activation?: ActivationWire
 }
 
 export type InvocationResultMessage = {
@@ -281,6 +515,8 @@ export type WorkerRegisteredMessage = {
   worker_id: string
   /** Secret to present in a reattach frame on reconnect; absent on older engines. */
   reattach_token?: string
+  /** Protocol features the engine supports (`observe.v1`, `local-dispatch.v1`); absent on engines older than 0.25. */
+  features?: string[]
 }
 
 /**
@@ -339,3 +575,13 @@ export type IIIMessage =
   | TriggerRegistrationResultMessage
   | WorkerRegisteredMessage
   | RegistrationRejectedMessage
+  | ObserveMessage
+  | UnobserveMessage
+  | ObserveResultMessage
+  | ObserverStateChangedMessage
+  | FunctionRegisteredMessage
+  | ObserverAddedMessage
+  | ObserverRemovedMessage
+  | ObserverAckMessage
+  | InvocationsObservedMessage
+  | LocalInvocationStatsMessage

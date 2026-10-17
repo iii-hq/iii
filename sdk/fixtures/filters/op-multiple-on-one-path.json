@@ -1,0 +1,11 @@
+{
+  "description": "every operator of an operator object must match",
+  "filters": {"input.n": {"$gt": 1, "$lt": 10, "$ne": 5}},
+  "cases": [
+    { "doc": {"input": {"n": 2}}, "expect": true },
+    { "doc": {"input": {"n": 5}}, "expect": false },
+    { "doc": {"input": {"n": 1}}, "expect": false },
+    { "doc": {"input": {"n": 10}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false, "note": "$ne alone would match, $gt does not" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "$eq with a float literal",
+  "filters": {"input.n": {"$eq": 2.0}},
+  "cases": [
+    { "doc": {"input": {"n": 2}}, "expect": true },
+    { "doc": {"input": {"n": 2.0}}, "expect": true },
+    { "doc": {"input": {"n": 2.00}}, "expect": true },
+    { "doc": {"input": {"n": 20e-1}}, "expect": true },
+    { "doc": {"input": {"n": 2.5}}, "expect": false }
+  ]
+}

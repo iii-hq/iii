@@ -20,6 +20,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 response_format: None,
                 metadata: Some(json!({"version": "1.0"})),
                 invocation: None,
+                observe: None,
             },
         ),
         (
@@ -47,6 +48,9 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 action: None,
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             },
         ),
         (
@@ -82,6 +86,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
             Message::WorkerRegistered {
                 worker_id: Uuid::new_v4().to_string(),
                 reattach_token: Some(Uuid::new_v4().to_string()),
+                features: Vec::new(),
             },
         ),
     ]

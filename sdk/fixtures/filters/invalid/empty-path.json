@@ -1,0 +1,12 @@
+{
+  "description": "paths and segments are never empty",
+  "cases": [
+    { "filters": {"": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "empty path" },
+    { "filters": {"input.": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "trailing dot" },
+    { "filters": {".input": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "leading dot" },
+    { "filters": {"input..a": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "empty middle segment" },
+    { "filters": {".": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "lone dot" },
+    { "filters": {"input.l": {"$any": {"@.": {"$eq": 1}}}}, "code": "INVALID_FILTER", "note": "empty segment after @" },
+    { "filters": {"input.l": {"$any": {"": {"$eq": 1}}}}, "code": "INVALID_FILTER", "note": "empty path inside $any" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "$eq on an array: same length, same order, deep-equal elements",
+  "filters": {"input.list": {"$eq": [1, "two", null, {"k": [true]}]}},
+  "cases": [
+    { "doc": {"input": {"list": [1, "two", null, {"k": [true]}]}}, "expect": true },
+    { "doc": {"input": {"list": [1.0, "two", null, {"k": [true]}]}}, "expect": true },
+    { "doc": {"input": {"list": ["two", 1, null, {"k": [true]}]}}, "expect": false, "note": "order matters" },
+    { "doc": {"input": {"list": [1, "two", null]}}, "expect": false, "note": "shorter" },
+    { "doc": {"input": {"list": [1, "two", null, {"k": [true]}, 5]}}, "expect": false, "note": "longer" },
+    { "doc": {"input": {"list": [1, "two", {"k": [true]}]}}, "expect": false, "note": "null is an element" },
+    { "doc": {"input": {"list": 1}}, "expect": false, "note": "no fan-out: a scalar is not the array" }
+  ]
+}

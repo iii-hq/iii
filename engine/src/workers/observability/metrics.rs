@@ -260,6 +260,21 @@ pub struct EngineMetrics {
     pub worker_cpu_percent: Gauge<f64>,
     pub worker_event_loop_lag_ms: Gauge<f64>,
     pub worker_uptime_seconds: Gauge<i64>,
+    // Observers (protocol.md §3.6). Per function, not per observer, to bound
+    // cardinality.
+    /// Activations started, by observed `function_id` and `delivery`.
+    pub observer_activations_total: Counter<u64>,
+    /// Events not delivered to an observer, by observed `function_id` and
+    /// drop `reason`.
+    pub observer_dropped_total: Counter<u64>,
+    /// Live observers by `state`.
+    pub observers: Gauge<i64>,
+    /// `invocationsobserved` items accepted, by observed `function_id`.
+    pub observer_reports_total: Counter<u64>,
+    /// Activations that started and did not complete, by observed
+    /// `function_id` and `reason` (`TIMEOUT`, `TARGET_UNAVAILABLE`,
+    /// `TARGET_ERROR`).
+    pub observer_activation_failures_total: Counter<u64>,
 }
 
 impl EngineMetrics {
@@ -331,6 +346,35 @@ impl EngineMetrics {
                 .i64_gauge("iii.worker.uptime.seconds")
                 .with_description("Worker uptime in seconds")
                 .with_unit("s")
+                .build(),
+            observer_activations_total: meter
+                .u64_counter("iii.observer.activations.total")
+                .with_description("Observer activations started, by observed function and delivery")
+                .with_unit("activations")
+                .build(),
+            observer_dropped_total: meter
+                .u64_counter("iii.observer.dropped.total")
+                .with_description(
+                    "Events not delivered to an observer, by observed function and reason",
+                )
+                .with_unit("events")
+                .build(),
+            observers: meter
+                .i64_gauge("iii.observers")
+                .with_description("Live observers by state")
+                .with_unit("observers")
+                .build(),
+            observer_reports_total: meter
+                .u64_counter("iii.observer.reports.total")
+                .with_description("Reported invocations and emits accepted, by observed function")
+                .with_unit("reports")
+                .build(),
+            observer_activation_failures_total: meter
+                .u64_counter("iii.observer.activation.failures.total")
+                .with_description(
+                    "Activations that did not complete, by observed function and reason",
+                )
+                .with_unit("activations")
                 .build(),
         }
     }
@@ -408,10 +452,16 @@ impl MetricsAccumulator {
 
     /// Increment invocation count for a specific function
     pub fn increment_function(&self, function_id: &str) {
+        self.add_function_invocations(function_id, 1);
+    }
+
+    /// Adds `count` invocations of `function_id` at once (local invocations
+    /// an SDK reports in `localinvocationstats`).
+    pub fn add_function_invocations(&self, function_id: &str, count: u64) {
         self.invocations_by_function
             .entry(function_id.to_string())
-            .and_modify(|count| *count += 1)
-            .or_insert(1);
+            .and_modify(|total| *total = total.saturating_add(count))
+            .or_insert(count);
     }
 }
 

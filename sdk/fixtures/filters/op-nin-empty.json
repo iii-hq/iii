@@ -1,0 +1,9 @@
+{
+  "description": "$nin [] matches everything, absent included",
+  "filters": {"input.op": {"$nin": []}},
+  "cases": [
+    { "doc": {"input": {"op": "x"}}, "expect": true },
+    { "doc": {"input": {"op": null}}, "expect": true },
+    { "doc": {"input": {}}, "expect": true }
+  ]
+}

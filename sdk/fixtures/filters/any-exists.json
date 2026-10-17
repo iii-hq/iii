@@ -1,0 +1,9 @@
+{
+  "description": "$exists inside $any: every element is present",
+  "filters": {"input.l": {"$any": {"$exists": true}}},
+  "cases": [
+    { "doc": {"input": {"l": [null]}}, "expect": true },
+    { "doc": {"input": {"l": []}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

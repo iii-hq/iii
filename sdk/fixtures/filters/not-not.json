@@ -1,0 +1,8 @@
+{
+  "description": "double negation",
+  "filters": {"$not": {"$not": {"input.a": {"$exists": true}}}},
+  "cases": [
+    { "doc": {"input": {"a": 0}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

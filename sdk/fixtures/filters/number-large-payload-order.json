@@ -1,0 +1,12 @@
+{
+  "description": "payload integers above 2^53 are ordered as f64",
+  "filters": {"input.n": {"$gt": 9007199254740992}},
+  "cases": [
+    { "doc": {"input": {"n": 9007199254740993}}, "expect": false, "note": "equal as f64" },
+    { "doc": {"input": {"n": 9007199254740994}}, "expect": true },
+    { "doc": {"input": {"n": 18446744073709551615}}, "expect": true },
+    { "doc": {"input": {"n": 18446744073709551616}}, "expect": true, "note": "beyond u64" },
+    { "doc": {"input": {"n": 1e300}}, "expect": true },
+    { "doc": {"input": {"n": -9223372036854775808}}, "expect": false }
+  ]
+}

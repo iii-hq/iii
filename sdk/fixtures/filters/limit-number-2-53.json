@@ -1,0 +1,9 @@
+{
+  "description": "numeric literals of exactly ±2^53 are allowed",
+  "filters": {"input.n": {"$in": [9007199254740992, -9007199254740992, 9007199254740992.0]}},
+  "cases": [
+    { "doc": {"input": {"n": 9007199254740992}}, "expect": true },
+    { "doc": {"input": {"n": -9007199254740992}}, "expect": true },
+    { "doc": {"input": {"n": 0}}, "expect": false }
+  ]
+}

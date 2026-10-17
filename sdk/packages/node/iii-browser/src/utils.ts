@@ -98,3 +98,32 @@ export function randomUUID(): string {
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
+
+/** UTF-8 byte length of a string, without `Buffer` or an encoder allocation. */
+export function utf8ByteLength(s: string): number {
+  let bytes = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x80) bytes += 1
+    else if (c < 0x800) bytes += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        bytes += 4
+        i++
+      } else {
+        bytes += 3
+      }
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/**
+ * Lets a timer not hold the process open where timers can be unreferenced
+ * (Node, which runs this SDK in tests and server-side rendering). A no-op in
+ * a browser, where a timer is a number.
+ */
+export function unrefTimer(timer: unknown): void {
+  ;(timer as { unref?: () => void } | undefined)?.unref?.()
+}

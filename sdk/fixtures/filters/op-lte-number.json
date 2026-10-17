@@ -1,0 +1,10 @@
+{
+  "description": "$lte with a float literal",
+  "filters": {"input.n": {"$lte": -2.5}},
+  "cases": [
+    { "doc": {"input": {"n": -2.5}}, "expect": true },
+    { "doc": {"input": {"n": -3}}, "expect": true },
+    { "doc": {"input": {"n": -2}}, "expect": false },
+    { "doc": {"input": {"n": -2.4999}}, "expect": false }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "description": "$gt with a string: strings only, by code point",
+  "filters": {"input.s": {"$gt": "b"}},
+  "cases": [
+    { "doc": {"input": {"s": "c"}}, "expect": true },
+    { "doc": {"input": {"s": "b"}}, "expect": false },
+    { "doc": {"input": {"s": "ba"}}, "expect": true, "note": "longer with equal prefix is greater" },
+    { "doc": {"input": {"s": "a"}}, "expect": false },
+    { "doc": {"input": {"s": "B"}}, "expect": false, "note": "uppercase sorts before lowercase" },
+    { "doc": {"input": {"s": ""}}, "expect": false },
+    { "doc": {"input": {"s": 5}}, "expect": false },
+    { "doc": {"input": {"s": null}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

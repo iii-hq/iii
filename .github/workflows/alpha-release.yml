@@ -11,7 +11,7 @@ name: Alpha Release
 #     prerelease on the iii-alpha/v* tag.
 #   * Builtin workers + skills — to the workers registry under a dedicated
 #     `alpha` tag (never rc/latest).
-#   Console, docker and homebrew are intentionally excluded.
+#   Docker and homebrew are intentionally excluded.
 #
 # Isolation guarantees:
 #   * Tags live under the iii-alpha/v* namespace, so release-iii.yml
@@ -85,6 +85,9 @@ jobs:
           git config user.name "iii-ci[bot]"
           git config user.email "iii-ci[bot]@users.noreply.github.com"
 
+      # Exact Rust pins: an alpha anchors on the latest stable, and a caret
+      # requirement on it (^0.24.5-alpha.1) also accepts that stable, so
+      # iii-sdk would build against the stable iii-helpers instead.
       - name: Bump all manifests in lockstep
         env:
           VERSION: ${{ steps.versions.outputs.version }}
@@ -93,7 +96,8 @@ jobs:
           python3 .github/scripts/bump_manifests.py \
             --root . \
             --version "$VERSION" \
-            --python-version "$PY_VERSION"
+            --python-version "$PY_VERSION" \
+            --exact-internal-pins
 
       - name: Sync Cargo.lock
         run: cargo update --workspace
@@ -236,11 +240,24 @@ jobs:
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  filter-rust:
+    name: Filter Rust (cargo)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: crates/iii-filter
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   sdk-rust:
     name: SDK Rust (cargo)
-    # iii-sdk depends on both iii-observability and iii-helpers; cargo
-    # publish resolves those from crates.io, so both must be published first.
-    needs: [prepare, observability-rust, helpers-rust]
+    # iii-sdk depends on iii-helpers and iii-filter; cargo publish resolves
+    # them from crates.io, so they must be published first. Waiting for
+    # iii-observability as well keeps one order for the Rust crates.
+    needs: [prepare, helpers-rust, observability-rust, filter-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
@@ -266,7 +283,7 @@ jobs:
   # Engine pipeline (isolated): binaries -> GitHub prerelease on the
   # iii-alpha/v* tag, builtin workers -> dedicated `alpha` registry tag.
   # Nothing here touches the official iii/v* releases or the rc/latest
-  # worker channels. Console, docker and homebrew are intentionally out.
+  # worker channels. Docker and homebrew are intentionally out.
   # ──────────────────────────────────────────────────────────────
 
   create-alpha-release:

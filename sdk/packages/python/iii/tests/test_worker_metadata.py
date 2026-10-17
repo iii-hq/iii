@@ -132,7 +132,15 @@ def _capture_triggered_message(request: dict[str, object]) -> dict[str, object]:
         captured["wire"] = stub._to_dict(msg)
 
     stub._send = fake_send  # type: ignore[method-assign]
-    asyncio.run(stub.trigger_async(request))
+    # observe state a bare instance lacks (no local function, no engine features)
+    stub._functions = {}
+    stub._engine_features = frozenset()
+
+    async def run() -> None:
+        stub._loop = asyncio.get_running_loop()  # the SDK loop the remote path runs on
+        await stub.trigger_async(request)
+
+    asyncio.run(run())
     return captured["wire"]  # type: ignore[return-value]
 
 
@@ -171,6 +179,7 @@ def test_registration_rejected_is_fatal_and_does_not_reconnect() -> None:
     stub._connection_state = "connected"
     stub._connected_event = threading.Event()
     stub._connection_listeners = []
+    stub._functions = {}
     observed: list[str] = []
     stub._connection_listeners.append(lambda state: observed.append(state))
 
@@ -245,6 +254,7 @@ def test_function_namespace_conflict_keeps_worker_serving() -> None:
     stub._connection_state = "connected"
     stub._connected_event = threading.Event()
     stub._connection_listeners = []
+    stub._functions = {}
     observed: list[str] = []
     stub._connection_listeners.append(lambda state: observed.append(state))
 

@@ -1,0 +1,11 @@
+{
+  "description": "$prefix '' matches every string",
+  "filters": {"input.s": {"$prefix": ""}},
+  "cases": [
+    { "doc": {"input": {"s": ""}}, "expect": true },
+    { "doc": {"input": {"s": "x"}}, "expect": true },
+    { "doc": {"input": {"s": 0}}, "expect": false },
+    { "doc": {"input": {"s": null}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

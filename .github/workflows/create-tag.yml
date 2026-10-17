@@ -96,7 +96,7 @@ jobs:
                      sdk/packages/python/iii/pyproject.toml \
                      sdk/packages/python/observability/pyproject.toml \
                      sdk/packages/python/helpers/pyproject.toml \
-                     console/packages/console-rust/Cargo.toml \
+                     crates/iii-filter/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
               if [[ ! -f "$f" ]]; then
@@ -248,13 +248,14 @@ jobs:
           }
 
           check_workspace_dep() {
-            local actual
-            actual=$(grep -E "^iii-observability\s*=" "$1" | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
+            # $1=file $2=expected_version $3=dep_name (default iii-observability)
+            local actual dep="${3:-iii-observability}"
+            actual=$(grep -E "^${dep}\s*=" "$1" | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
             if [[ "$actual" != "$2" ]]; then
-              echo "::error::$1 iii-observability dep version mismatch: expected $2, got $actual"
+              echo "::error::$1 ${dep} dep version mismatch: expected $2, got $actual"
               exit 1
             fi
-            echo "  $1 iii-observability -> $actual"
+            echo "  $1 ${dep} -> $actual"
           }
 
           check_pep440_pin() {
@@ -282,9 +283,9 @@ jobs:
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/observability/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/helpers/pyproject.toml" "$PY_VERSION"
-            check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"
+            check_workspace_dep "Cargo.toml" "$VERSION" "iii-filter"
             check_pep440_pin "sdk/packages/python/iii/pyproject.toml" "iii-helpers" "$PY_VERSION"
             check_pep440_pin "sdk/packages/python/observability/pyproject.toml" "iii-helpers" "$PY_VERSION"
           fi

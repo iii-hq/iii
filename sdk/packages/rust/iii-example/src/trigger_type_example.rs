@@ -1,7 +1,20 @@
+//! A worker-owned event source: an observable function whose owner reads
+//! each observer's args and hands every event to the observers it belongs
+//! to. This is what `register_trigger_type` + `register_trigger` did before
+//! 0.25.
+
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, IIIClient, RegisterTriggerType};
+use iii_sdk::{
+    Error, IIIClient, Observe, ObserveHandler, ObserveRejection, Observed, Observer,
+    RegisterFunction, Source,
+};
 use serde::Deserialize;
+use serde_json::json;
 
 /// Minimal deserialization target for `engine::triggers::list` rows used
 /// only by this example. The SDK no longer carries a hand-written type for
@@ -13,78 +26,110 @@ struct TriggerTypeRow {
     description: String,
 }
 
-// ── Custom trigger type config & call request as typed structs ──────────
+// ── The observers' args and the event, as typed structs ─────────────────
 
+/// What an observer of `example::on-webhook` asks for (was the trigger
+/// config). The engine validates it against this schema (`INVALID_ARGS`).
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct WebhookTriggerConfig {
+#[serde(deny_unknown_fields)]
+pub struct WebhookArgs {
     /// URL to listen for incoming webhooks
     pub url: String,
     /// Optional secret for HMAC signature verification
     pub secret: Option<String>,
-    /// HTTP methods to accept (defaults to POST)
-    pub methods: Option<Vec<String>>,
 }
 
+/// One incoming webhook: the function's input, what filters read as `input.*`.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct WebhookCallRequest {
+pub struct WebhookEvent {
+    /// The URL it arrived on
+    pub url: String,
     /// HTTP method of the incoming webhook
     pub method: String,
     /// Request headers
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: HashMap<String, String>,
     /// Request body
     pub body: serde_json::Value,
     /// Whether the HMAC signature was verified
     pub signature_verified: bool,
 }
 
-// ── Handler implementation ──────────────────────────────────────────────
+// ── The owner's index: url → observers ──────────────────────────────────
 
-struct WebhookHandler;
+#[derive(Clone, Default)]
+struct WebhookRoutes(Arc<Mutex<HashMap<String, Vec<Observer>>>>);
+
+impl WebhookRoutes {
+    fn observers(&self, url: &str) -> Vec<Observer> {
+        self.0.lock().unwrap().get(url).cloned().unwrap_or_default()
+    }
+}
 
 #[async_trait::async_trait]
-impl TriggerHandler for WebhookHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        println!(
-            "[webhook] Registered trigger {} for function {} with config: {}",
-            config.id, config.function_id, config.config
-        );
+impl ObserveHandler for WebhookRoutes {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let WebhookArgs { url, .. } = obs.args()?;
+        println!("[webhook] {} now receives webhooks on {url}", obs.target());
+        self.0
+            .lock()
+            .unwrap()
+            .entry(url)
+            .or_default()
+            .push(obs.clone());
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        println!("[webhook] Unregistered trigger {}", config.id);
-        Ok(())
+    async fn on_observer_removed(&self, obs: &Observer) {
+        println!("[webhook] observer {} removed", obs.id());
+        for observers in self.0.lock().unwrap().values_mut() {
+            observers.retain(|o| o != obs);
+        }
     }
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
 pub fn setup(iii: &IIIClient) {
-    // Register trigger type — returns a typed handle
-    let webhook = iii.register_trigger_type(
-        RegisterTriggerType::new("webhook", "Incoming webhook trigger", WebhookHandler)
-            .trigger_request_format::<WebhookTriggerConfig>()
-            .call_request_format::<WebhookCallRequest>(),
+    let routes = WebhookRoutes::default();
+
+    // The source: one invocation per incoming webhook. Its handler routes the
+    // event to the observers of that URL; their filters are checked in emit.
+    iii.register_function(
+        "example::on-webhook",
+        RegisterFunction::new({
+            let routes = routes.clone();
+            move |event: WebhookEvent| {
+                for obs in routes.observers(&event.url) {
+                    obs.emit(&event)?;
+                }
+                Ok::<_, Error>(())
+            }
+        })
+        .description("Invoked once per incoming webhook. Observe it with args { url, secret? }.")
+        .observe(
+            Observe::owner()
+                .args_format::<WebhookArgs>()
+                .handler(routes),
+        ),
     );
 
-    // register_function on the handle: enforces Fn(WebhookCallRequest) -> ...
-    webhook.register_function("example::webhook_handler", handle_webhook);
-
-    // register_trigger on the handle: enforces WebhookTriggerConfig
-    webhook
-        .register_trigger(
-            "example::webhook_handler",
-            WebhookTriggerConfig {
-                url: "/hooks/my-service".into(),
-                secret: Some("my-secret-key".into()),
-                methods: Some(vec!["POST".into(), "PUT".into()]),
-            },
-        )
-        .expect("failed to register webhook trigger");
+    // The target, and the observer that connects them: args for the owner,
+    // filters for which webhooks reach the target.
+    iii.register_function(
+        "example::webhook_handler",
+        RegisterFunction::new(handle_webhook),
+    );
+    iii.observe(
+        Source::function("example::on-webhook")
+            .args(json!({ "url": "/hooks/my-service", "secret": "my-secret-key" }))
+            .filters(json!({ "input.method": { "$in": ["POST", "PUT"] } })),
+        "example::webhook_handler",
+    );
 }
 
-fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, Error> {
-    Ok(serde_json::json!({
+fn handle_webhook(event: Observed<WebhookEvent>) -> Result<serde_json::Value, Error> {
+    let input = event.input.ok_or("the observer captures the input")?;
+    Ok(json!({
         "processed": true,
         "method": input.method,
         "body": input.body,

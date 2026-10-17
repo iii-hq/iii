@@ -1,0 +1,10 @@
+{
+  "description": "deep equality through nested arrays and objects",
+  "filters": {"input.o": {"$eq": {"a": [{"b": 1, "c": [1.5, {"d": null}]}], "e": {}}}},
+  "cases": [
+    { "doc": {"input": {"o": {"e": {}, "a": [{"c": [1.5, {"d": null}], "b": 1.0}]}}}, "expect": true },
+    { "doc": {"input": {"o": {"a": [{"b": 1, "c": [{"d": null}, 1.5]}], "e": {}}}}, "expect": false, "note": "nested array order" },
+    { "doc": {"input": {"o": {"a": [{"b": 1, "c": [1.5, {}]}], "e": {}}}}, "expect": false, "note": "null vs absent inside a value" },
+    { "doc": {"input": {"o": {"a": [{"b": 1, "c": [1.5, {"d": null}]}], "e": []}}}, "expect": false, "note": "{} vs []" }
+  ]
+}

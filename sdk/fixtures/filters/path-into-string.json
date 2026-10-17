@@ -1,0 +1,9 @@
+{
+  "description": "stepping into a string is absent (no length, no characters)",
+  "filters": {"input.s.length": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"s": "abc"}}, "expect": false },
+    { "doc": {"input": {"s": [1, 2]}}, "expect": false, "note": "arrays have no 'length' key" },
+    { "doc": {"input": {"s": {"length": 3}}}, "expect": true }
+  ]
+}

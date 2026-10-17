@@ -1,0 +1,9 @@
+{
+  "description": "only own JSON keys exist (no inherited properties)",
+  "filters": {"input.constructor": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": {"constructor": 1}}, "expect": true },
+    { "doc": {"input": []}, "expect": false }
+  ]
+}

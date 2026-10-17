@@ -65,6 +65,14 @@ and returns the result.
   </Tab>
 </Tabs>
 
+### Every function is observable
+
+Any worker allowed to invoke a function can also observe it: `iii.observe` invokes another function
+for each invocation that passes declarative filters, with no code in the observed function's worker.
+A function can declare how it is observed, or refuse observers, with the `observe` option of
+`registerFunction`. See [Observers](./observers) and
+[Observable functions](../creating-workers/observable-functions).
+
 ## Triggering (Invoking) functions
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
@@ -151,6 +159,14 @@ Some common actions are:
   more information on namespaces and triggering functions from a specific namespace.
 </Info>
 
+<Note>
+  A call to a function that the calling worker registered itself runs in-process once the engine
+  confirmed the registration (local dispatch), with the same result, errors, and timeout as a call
+  through the engine. Pass `dispatch: "remote"` (Python `"dispatch": "remote"`, Rust
+  `.dispatch(Dispatch::Remote)`, Go `Dispatch: iii.DispatchRemote`) to send one call through the
+  engine anyway. See [Local dispatch](./observers#local-dispatch).
+</Note>
+
 ### Routing to a namespace
 
 Workers and their associated functions can be namespaced. A function id is unique per namespace, not
@@ -169,7 +185,8 @@ naming the namespaces where the id does exist.
 <Note>
   Functions can also be registered (or bound) to Triggers such as an `http` request, a `cron`
   schedule, a `state` change, and so on. To bind a function to an event source, see [Triggers /
-  Register a trigger](./triggers#register-a-trigger).
+  Register a trigger](./triggers#register-a-trigger). To run a function when another function is
+  invoked, or on an engine event, see [Observers](./observers).
 </Note>
 
 <Note>
@@ -227,6 +244,9 @@ response schemas are in the
 | `engine::registered-triggers::list` | List every registered trigger instance (binding).                                                                                                             |
 | `engine::channels::create`          | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.             |
 | `engine::workers::register`         | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect. |
+| `engine::observers::list`           | List observers. Pass `{ function_id, namespace, worker }` to narrow the list. See [Inspect observers](./observers#inspect-observers).                       |
+| `engine::observers::get`            | Read one observer by `{ id }`.                                                                                                                                |
+| `engine::observers::dispose`        | Remove an observer by `{ id }`. Only its observing worker, or a caller without RBAC restrictions, may do it.                                                |
 
 The engine also publishes two subscription triggers in the same family. Bind a function to one of
 these to react to the registry changing:
@@ -235,6 +255,10 @@ these to react to the registry changing:
 | ----------------------------- | ----------------------------------------- |
 | `engine::functions-available` | A function is registered or unregistered. |
 | `engine::workers-available`   | A worker connects or disconnects.         |
+
+From 0.25, observe the equivalent event sources instead: `engine::on-functions-changed` and
+`engine::on-workers-changed`, with `deliver: "input"` so the target receives the same payload. See
+[Engine-hosted event sources](./observers#engine-hosted-event-sources).
 
 ### Common workers
 

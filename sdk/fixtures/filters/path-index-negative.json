@@ -1,0 +1,8 @@
+{
+  "description": "-1 is a key, never an index from the end",
+  "filters": {"input.items.-1": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"items": ["a"]}}, "expect": false },
+    { "doc": {"input": {"items": {"-1": 0}}}, "expect": true }
+  ]
+}

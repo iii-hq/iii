@@ -286,6 +286,7 @@ impl StreamAdapter for BridgeAdapter {
             }),
         );
 
+        #[allow(deprecated)]
         let _ = self.bridge.register_trigger(RegisterTriggerInput::new(
             "subscribe".to_string(),
             handler_function_id,

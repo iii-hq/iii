@@ -1,0 +1,9 @@
+{
+  "description": "one clause per root",
+  "filters": {"input.a": {"$eq": 1}, "output.b": {"$eq": 2}, "error": {"$exists": false}, "caller.worker_name": {"$eq": "w"}, "metadata.m": {"$eq": true}},
+  "cases": [
+    { "doc": {"input": {"a": 1}, "output": {"b": 2}, "caller": {"worker_name": "w"}, "metadata": {"m": true}}, "expect": true },
+    { "doc": {"input": {"a": 1}, "output": {"b": 2}, "caller": {"worker_name": "w"}, "metadata": {"m": true}, "error": null}, "expect": false },
+    { "doc": {"input": {"a": 1}, "output": {"b": 2}, "caller": {"worker_name": "w"}}, "expect": false }
+  ]
+}

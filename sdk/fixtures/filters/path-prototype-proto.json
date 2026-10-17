@@ -1,0 +1,8 @@
+{
+  "description": "__proto__ is an ordinary key",
+  "filters": {"input.__proto__": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": {"__proto__": {"x": 1}}}, "expect": true }
+  ]
+}

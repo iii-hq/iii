@@ -5,6 +5,159 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.25.0" description="October 2026">
+  ## Observe: every function is observable
+
+  - `iii.observe(source, target, options?)` creates an observer: every invocation of the `source`
+    function that passes its `filters` invokes the `target`, a registered function. It is available
+    in the Node, browser, Python, Rust, and Go SDKs. Any worker can observe any function it may
+    invoke, and the observed function's worker needs no code for it.
+  - The source chooses what the target receives: `on` (`success`, `error`, or `complete`),
+    `capture` (`input`, `output`, `error`, `caller`, `metadata`), and `deliver` (the `Observed`
+    envelope, or the observed `input` or `output` alone). Options set the observer's id,
+    `max_fires`, `expires_in_ms`, `max_in_flight`, and `metadata`, which reaches the target as the
+    activation's metadata sidecar.
+  - `observe` returns a handle at once. It reports the observer's state (`pending`, `active`,
+    `suspended`, `error`, `disposed`), resolves `ready()` once the observer is active, and replays the
+    observer with the same id after a reconnect. An observer outlives a disconnect of its worker for
+    30 seconds by default.
+  - Every invocation carries a `caller`: the calling worker, stamped by the engine, and the function
+    and invocation it was made from, with its own caller as `caller.parent`. Filters can read it, and
+    `iii.currentInvocation()` returns it inside any handler.
+  - Every invocation also carries an observe depth. Activations deeper than 8 hops are dropped as
+    `LOOP_GUARD`, and an observer whose target is the observed function is rejected with
+    `SELF_TARGET`.
+
+  See [Observers](/using-iii/observers).
+
+  ## Observable functions
+
+  - `registerFunction(id, handler, { observe })` declares how a function is observed. Hooks
+    (`onObserverAdded`, `onObserverRemoved`) run when an observer is added or removed, before the
+    engine marks it `active`; throwing rejects the observer with your own code.
+  - With `delivery: "owner"`, the function's worker routes events itself: it reads each observer's
+    `args`, validated by the engine against `args_format`, and hands each event to the observers it
+    belongs to with `obs.emit(event)` (fire-and-forget) or `obs.call(payload)` (request/response,
+    returning the target's result). The SDK applies each observer's filters in both.
+  - `legacy_trigger_type` lets a function stand in for a trigger type: the engine turns old
+    `registerTrigger` calls of that type into observers of the function, so existing consumers keep
+    working while the provider moves to a function.
+  - `observe: { allow: false }` refuses every observer (`NOT_OBSERVABLE`). `FunctionRef.isObserved()`
+    and `observers()` report the function's active observers.
+
+  See [Observable functions](/creating-workers/observable-functions).
+
+  ## Filters
+
+  - Observer filters are declarative JSON objects over `input`, `output`, `error`, `caller`, and
+    `metadata`, with explicit operators only: `$eq`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`,
+    `$lte`, `$exists`, `$prefix`, `$any`, `$and`, `$or`, and `$not`.
+  - The new `iii-filter` crate is the evaluator of the engine and the Rust SDK. The Node, browser,
+    Python, and Go SDKs ship evaluators with the same semantics, and every implementation runs the
+    shared conformance vectors in `sdk/fixtures/filters`.
+  - The engine validates filters when an observer is created (`INVALID_FILTER`) and checks their
+    paths against the function's `request_format` and `response_format` (`INVALID_FILTER_PATH`).
+    Limits: depth 8, 64 operators, 256 items per `$in` / `$nin`, 16 path segments, and 8 KiB.
+
+  See [Filter language](/reference/filters).
+
+  ## Local dispatch
+
+  - A worker that calls a function it registered itself runs the handler in-process once the engine
+    confirmed the registration. An unobserved local call puts nothing on the wire; when observers
+    match, the SDK reports the call to the engine in batches.
+  - Turn it off per function (`localDispatch: false`), per call (`dispatch: "remote"`), or for the
+    engine (`observers.local_dispatch: false`). It is off for sessions with an RBAC
+    `middleware_function_id`.
+
+  <Callout type="warning">
+    Local calls skip the 16 MiB message limit and the engine's call span and metrics; their counts
+    reach `iii.invocations.total` with `dispatch="local"` every 10 seconds. In Rust, a sync handler
+    called locally runs inline on the caller's task. See
+    [Upgrading from 0.24.x](/upgrading/from-0-24-x#local-dispatch).
+  </Callout>
+
+  ## Engine
+
+  - A new top-level `observers:` section in `config.yaml` (and `engine.observers` in
+    `worker-compose.yaml`) sets `local_dispatch`, per-connection and per-function limits,
+    `max_observe_depth`, the observer grace period, the owner acknowledgement and activation
+    timeouts, and the default `max_in_flight` and queue size. Zero limits are rejected at startup.
+    See [Configuration](/using-iii/configuration#observers).
+  - Built-in functions `engine::observers::list`, `engine::observers::get`, and
+    `engine::observers::dispose` inspect and remove observers. Results are filtered by what the
+    caller may invoke and never include an observer's metadata.
+  - New metrics: `iii.observer.activations.total`, `iii.observer.dropped.total`, `iii.observers`,
+    `iii.observer.reports.total`, and `iii.observer.activation.failures.total`. Dropped events are
+    counted per function and reason.
+  - Creating an observer requires that the session may invoke both the observed function and the
+    target. The RBAC hook `on_observer_registration_function_id` can rewrite or deny observers, with
+    the same contract as `on_trigger_registration_function_id`.
+  - The engine hosts event sources as functions: `engine::on-functions-changed`,
+    `engine::on-workers-changed`, `configuration::on-updated`, `observability::on-log`, and
+    `observability::on-span`. The trigger types they replace keep firing.
+  - The protocol gains feature negotiation (`observe.v1`, `local-dispatch.v1`) and the messages
+    `observe`, `unobserve`, `observeresult`, `observerstatechanged`, `functionregistered`,
+    `observeradded`, `observerremoved`, `observerack`, `invocationsobserved`, and
+    `localinvocationstats`. The engine sends them only to workers that declared `observe.v1`. See
+    [Engine protocol](/reference/engine-protocol).
+
+  <Callout type="warning">
+    The engine now handles `UnregisterTriggerType`, which every SDK sent and earlier engines ignored:
+    the trigger type is removed when the sending worker is its provider, and its triggers move to
+    another provider or wait for one. Remove `unregisterTriggerType` calls that expected the type to
+    stay registered.
+  </Callout>
+
+  ## SDKs
+
+  - **Node:** `iii.observe`, the `observe` and `localDispatch` options of `registerFunction`,
+    `trigger({ dispatch })`, `iii.currentInvocation()` (carried across `await`), and the
+    `ObserveRejection` error.
+  - **Browser:** the same API. `trigger` now sends `metadata`, `traceparent`, and `baggage`, and
+    handlers receive the metadata as their second argument. The current invocation is known until a
+    handler's first `await`; `iii.withInvocation(inv, fn)` carries it further.
+  - **Python:** `iii.observe` returns a handle with `ready()` (blocking) and `ready_async()`. Hooks
+    are declared with `ObserveHooks`, by keyword or in a subclass, sync or async. `Observer.call` has
+    an async twin, `call_async`. The invocation context reaches sync handlers' threads, and
+    `iii.filter.compile_filter` evaluates filters in tests.
+  - **Rust:** `iii.observe(Source::function(..), target)` and `observe_with(.., ObserverOptions)`,
+    `RegisterFunction::observe(Observe::owner()..)` with an `ObserveHandler`,
+    `RegisterFunction::local_dispatch`, `TriggerRequest::dispatch`, and
+    `iii_sdk::{current_invocation, scope}`. The SDK depends on the new `iii-filter` crate.
+  - **Go:** `client.Observe(iii.Source{..}, target, opts)`, `RegisterFunctionOptions.Observe`
+    (`iii.ObserveHooks`) and `LocalDispatch`, `TriggerRequest.Dispatch`,
+    `iii.InvocationFromContext(ctx)`, `client.IsObserved` / `client.Observers`, and the `filter`
+    subpackage.
+
+  <Callout type="warning">
+    Rust: public protocol structs gained fields and `Message` gained variants, so struct literals of
+    them and exhaustive matches need updating. The connection state turns `Reconnecting` as soon as
+    the link drops, a panicking handler returns `invocation_failed` instead of leaving its caller to
+    time out, and an absent `invocation_id` is omitted instead of sent as `null`.
+  </Callout>
+
+  ## Deprecations
+
+  - `registerTrigger` and `registerTriggerType` (and their spellings in every SDK, including the
+    `TriggerTypeRef` helpers) are deprecated and will be removed in a future release. They keep
+    working in 0.25 and log one warning per process per API. Use `iii.observe` and
+    `registerFunction` with an `observe` descriptor instead.
+  - The http, cron, queue, state, stream, pubsub, and database workers still publish trigger types in
+    0.25. Keep using `registerTrigger` for them until they ship source functions.
+
+  <Callout type="warning">
+    Rust marks the deprecated methods `#[deprecated(since = "0.25.0")]`. Crates built with
+    `-D warnings` must allow the deprecation or migrate. See
+    [Upgrading from 0.24.x](/upgrading/from-0-24-x).
+  </Callout>
+
+  ## Removed
+
+  - The legacy console package (the `iii-console` binary and its frontend) is no longer built or
+    released from this repository.
+</Update>
+
 <Update label="0.24.5" description="October 2026">
   ## Namespace routing in the SDKs
 

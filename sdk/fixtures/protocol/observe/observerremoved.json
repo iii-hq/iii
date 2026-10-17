@@ -1,0 +1,7 @@
+{
+  "type": "observerremoved",
+  "function_id": "cron::on-tick",
+  "namespace": "default",
+  "revision": 14,
+  "id": "a07d4c2e-6b1f-4a3d-9e8c-5f2a1b3c4d5e"
+}

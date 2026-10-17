@@ -273,6 +273,8 @@ def test_pending_entry_released_when_send_does_not_complete(failure: str) -> Non
         client._loop = asyncio.get_running_loop()
         client._inject_traceparent = lambda: None
         client._inject_baggage = lambda: None
+        client._functions = {}
+        client._engine_features = frozenset()
         entered = asyncio.Event()
 
         async def send(message: Any) -> None:

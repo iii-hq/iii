@@ -1,0 +1,9 @@
+{
+  "description": "null input root vs absent input root",
+  "filters": {"input": {"$eq": null}},
+  "cases": [
+    { "doc": {"input": null}, "expect": true },
+    { "doc": {}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

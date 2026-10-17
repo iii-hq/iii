@@ -1,0 +1,10 @@
+{
+  "description": "caller.parent.* (filters.md §6: stop echo loops)",
+  "filters": {"caller.parent.worker_name": {"$ne": "search-indexer"}},
+  "cases": [
+    { "doc": {"caller": {"worker_name": "database", "parent": {"worker_name": "search-indexer", "function_id": "search::index"}}}, "expect": false },
+    { "doc": {"caller": {"worker_name": "database", "parent": {"worker_name": "billing"}}}, "expect": true },
+    { "doc": {"caller": {"worker_name": "database"}}, "expect": true, "note": "no parent" },
+    { "doc": {}, "expect": true, "note": "no caller" }
+  ]
+}

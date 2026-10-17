@@ -211,6 +211,9 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("iii-queue::")
         || id.starts_with("iii-observability::")
         || id.starts_with("iii-telemetry::")
+        // The engine-hosted event sources of the observability worker.
+        || id == crate::observer::events::OBSERVABILITY_ON_LOG
+        || id == crate::observer::events::OBSERVABILITY_ON_SPAN
         || id.starts_with("bridge.")
         || id.starts_with("motia::")
         || id == "publish"

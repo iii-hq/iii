@@ -1324,6 +1324,7 @@ mod tests {
                     })),
                 },
             ],
+            observers: Default::default(),
         }
     }
 

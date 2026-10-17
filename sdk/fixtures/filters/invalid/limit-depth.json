@@ -1,0 +1,9 @@
+{
+  "description": "nesting depth above 8",
+  "cases": [
+    { "filters": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"input.a": {"$eq": 1}}}}}}}}}}, "code": "INVALID_FILTER", "note": "eight nested $not: the innermost filter is at depth 9" },
+    { "filters": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {}}}}}}}}}, "code": "INVALID_FILTER", "note": "the innermost {} is at depth 9" },
+    { "filters": {"input.m": {"$any": {"$any": {"$any": {"$any": {"$any": {"$any": {"$any": {"$any": {"$eq": 0}}}}}}}}}}, "code": "INVALID_FILTER", "note": "eight nested $any: the innermost operand is at depth 9" },
+    { "filters": {"$or": [{"$and": [{"$not": {"input.l": {"$any": {"@.m": {"$any": {"$and": [{"$or": [{"$not": {"@.k": {"$any": {"@": {"$any": {"$eq": 1}}}}}}]}]}}}}}}]}]}, "code": "INVALID_FILTER", "note": "mixed chain reaching depth 9" }
+  ]
+}
