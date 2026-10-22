@@ -66,9 +66,17 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub mount: Vec<String>,
 
-    /// Environment variables (KEY=VALUE)
+    /// Environment variables (KEY=VALUE). Visible to every local user in
+    /// `ps`; launchers pass the worker env with `--env-stdin` instead.
     #[arg(long)]
     pub env: Vec<String>,
+
+    /// Read more environment variables from stdin until EOF, as the JSON
+    /// payload of `iii_supervisor::env_channel::encode_payload`. Keeps the
+    /// worker env (credentials included) out of this process's argv, where
+    /// `ps` shows it to every local user (MOT-5492). Applied after `--env`.
+    #[arg(long)]
+    pub env_stdin: bool,
 
     /// PID file to clean up on VM exit (managed workers only)
     #[arg(long)]
@@ -680,6 +688,95 @@ fn spawn_control_proxy(
 
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
 /// This function does NOT return -- `krun_start_enter` replaces the process.
+/// Reads the `--env-stdin` payload to EOF, then points stdin at /dev/null so
+/// the detached VM does not keep the launcher's pipe open. An empty or
+/// truncated payload (launcher died mid-write) is an error: booting a worker
+/// without its env fails later and less clearly.
+fn read_env_stdin() -> Result<Vec<(String, String)>, String> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    let mut payload = Vec::new();
+    std::io::stdin()
+        .lock()
+        .read_to_end(&mut payload)
+        .map_err(|e| format!("--env-stdin: reading stdin: {e}"))?;
+    let pairs = iii_supervisor::env_channel::decode_payload(&payload)
+        .map_err(|e| format!("--env-stdin: {e}"))?;
+    if let Ok(devnull) = std::fs::File::open("/dev/null") {
+        // SAFETY: dup2 onto fd 0 with a valid open fd; `devnull` closes its
+        // own copy on drop.
+        unsafe {
+            nix::libc::dup2(devnull.as_raw_fd(), 0);
+        }
+    }
+    Ok(pairs)
+}
+
+/// Writes the env frame into the host end of the `iii.env` port on its own
+/// thread (a socketpair buffer can be smaller than the frame, and the guest
+/// only drains it once iii-init runs), then keeps that end open for the VM's
+/// lifetime: closing it would hang the port up under the guest.
+#[cfg(unix)]
+fn spawn_env_writer(
+    mut host_end: std::os::unix::net::UnixStream,
+    frame: Vec<u8>,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    std::thread::Builder::new()
+        .name("iii-env-port".to_string())
+        .spawn(move || {
+            if let Err(e) = host_end.write_all(&frame) {
+                eprintln!("error: cannot send the worker environment to the VM: {e}");
+                return;
+            }
+            drop(frame);
+            let mut sink = [0u8; 64];
+            while matches!(host_end.read(&mut sink), Ok(n) if n > 0) {}
+        })
+        .map(|_| ())
+        .map_err(|e| format!("cannot start the env writer thread: {e}"))
+}
+
+/// Budget for env pairs on the kernel command line. msb_krun's limit is
+/// 16 KiB for the whole line; the prolog, init path, rlimits and iii's own
+/// variables need the rest.
+const CMDLINE_ENV_BUDGET: usize = 12 * 1024;
+
+/// Legacy transport check (on-disk init without the `iii.env` port).
+/// msb_krun writes each pair as ` KEY="VALUE"` and unwraps the insert, so a
+/// character outside printable ASCII panics the boot (`InvalidAscii`,
+/// MOT-5493) and an embedded `"` silently splits the value. Rejects those up
+/// front, naming the key and never the value.
+fn validate_cmdline_env(env: &[(String, String)]) -> Result<(), String> {
+    let carriable = |s: &str| s.chars().all(|c| matches!(c, ' '..='~') && c != '"');
+    for (key, value) in env {
+        if !carriable(key) || key.contains(' ') {
+            return Err(format!(
+                "environment variable name {key:?} cannot be passed to the VM \
+                 (kernel command line: printable ASCII only, no spaces or quotes)"
+            ));
+        }
+        if !carriable(value) {
+            return Err(format!(
+                "the value of environment variable {key} cannot be passed to the VM: \
+                 this init binary only accepts printable ASCII without '\"' on the \
+                 kernel command line. Use an iii-worker built with an embedded init \
+                 (it sends the env over the iii.env channel)."
+            ));
+        }
+    }
+    let total: usize = env.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
+    if total > CMDLINE_ENV_BUDGET {
+        return Err(format!(
+            "the worker environment is {total} bytes, over the {CMDLINE_ENV_BUDGET}-byte \
+             budget of the VM kernel command line"
+        ));
+    }
+    Ok(())
+}
+
 pub fn run(args: &VmBootArgs) -> ! {
     if !std::path::Path::new(&args.rootfs).exists() {
         eprintln!("error: rootfs path does not exist: {}", args.rootfs);
@@ -706,6 +803,17 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     }
 
     raise_fd_limit();
+
+    // Worker env: argv `--env` pairs (manual runs, tests) plus the payload a
+    // launcher piped in with `--env-stdin`. Later entries win.
+    let mut worker_env: Vec<String> = args.env.clone();
+    if args.env_stdin {
+        worker_env.extend(
+            read_env_stdin()?
+                .into_iter()
+                .map(|(key, value)| format!("{key}={value}")),
+        );
+    }
 
     // Pre-boot validation: ensure init binary is available either embedded or on-disk
     if !iii_filesystem::init::has_init() {
@@ -956,6 +1064,30 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             }
         }
     }
+    // Worker env transport (MOT-5493). The kernel command line only carries
+    // printable ASCII without quotes and msb_krun panics on anything else,
+    // so the env crosses the `iii.env` virtio-console port instead and
+    // iii-init exports it before starting the worker. Only an embedded init
+    // is guaranteed to be this build's and to know the port; an on-disk
+    // init may predate it, so that case keeps the command line, validated
+    // up front so a bad value is a clear error rather than a panic.
+    let worker_env_pairs: Vec<(String, String)> = worker_env
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(key, value)| (key.to_string(), rewrite_localhost(value)))
+        .collect();
+    let use_env_port = iii_filesystem::init::has_init() && !worker_env_pairs.is_empty();
+    let mut guest_env_fd: Option<i32> = None;
+    if use_env_port {
+        let frame = iii_supervisor::env_channel::encode_frame(&worker_env_pairs)
+            .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
+        let (host_end, guest_fd) = setup_control_socketpair()?;
+        spawn_env_writer(host_end, frame)?;
+        guest_env_fd = Some(guest_fd);
+    } else {
+        validate_cmdline_env(&worker_env_pairs)?;
+    }
+
     let control_workdir = args.workdir.clone();
     let nofile_limit = args.nofile_limit;
 
@@ -1027,10 +1159,14 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             e = e.env("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env);
         }
 
-        for env_str in &args.env {
-            if let Some((key, value)) = env_str.split_once('=') {
-                let rewritten_value = rewrite_localhost(value);
-                e = e.env(key, &rewritten_value);
+        if use_env_port {
+            e = e.env(
+                iii_supervisor::env_channel::ENV_PORT_ENV,
+                iii_supervisor::env_channel::ENV_PORT_NAME,
+            );
+        } else {
+            for (key, value) in &worker_env_pairs {
+                e = e.env(key, value);
             }
         }
         // Fallback PATH for rootfs caches that pre-date the
@@ -1040,7 +1176,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         // resolve binaries that live in /usr/local/bin. The check runs
         // after the caller loop so an explicit `--env PATH=...` (or an
         // OCI image that does ship PATH) always wins.
-        if !env_has_path(&args.env) {
+        if !env_has_path(&worker_env) {
             e = e.env("PATH", DEFAULT_GUEST_PATH);
         }
         e
@@ -1088,6 +1224,9 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         }
         if let Some(fd) = guest_source_sync_fd {
             c = c.port(iii_supervisor::source_sync::SOURCE_SYNC_PORT_NAME, fd, fd);
+        }
+        if let Some(fd) = guest_env_fd {
+            c = c.port(iii_supervisor::env_channel::ENV_PORT_NAME, fd, fd);
         }
         c
     });
@@ -1417,6 +1556,66 @@ mod tests {
         // paths). Don't override it.
         let env = vec!["PATH=".to_string()];
         assert!(env_has_path(&env));
+    }
+
+    // --- MOT-5493: legacy kernel-cmdline transport must refuse, not panic.
+
+    fn pair(key: &str, value: &str) -> Vec<(String, String)> {
+        vec![(key.to_string(), value.to_string())]
+    }
+
+    #[test]
+    fn cmdline_env_accepts_printable_ascii() {
+        assert!(validate_cmdline_env(&pair("III_URL", "ws://10.0.2.2:49134")).is_ok());
+        assert!(validate_cmdline_env(&pair("EMPTY", "")).is_ok());
+        assert!(validate_cmdline_env(&pair("SPACES", "a b c")).is_ok());
+    }
+
+    #[test]
+    fn cmdline_env_rejects_what_msb_krun_cannot_carry_naming_only_the_key() {
+        for value in [
+            "Ol\u{e1}",
+            "\u{1f496}",
+            "line1\nline2",
+            "tab\there",
+            r#"say "hi""#,
+        ] {
+            let err = validate_cmdline_env(&pair("API_KEY", value)).unwrap_err();
+            assert!(err.contains("API_KEY"), "{err}");
+            assert!(!err.contains(value), "value leaked into: {err}");
+        }
+    }
+
+    #[test]
+    fn cmdline_env_rejects_bad_names() {
+        assert!(validate_cmdline_env(&pair("A B", "x")).is_err());
+        assert!(validate_cmdline_env(&pair("CH\u{c3}VE", "x")).is_err());
+    }
+
+    #[test]
+    fn cmdline_env_rejects_oversized_env() {
+        let big = "x".repeat(CMDLINE_ENV_BUDGET);
+        assert!(validate_cmdline_env(&pair("BIG", &big)).is_err());
+    }
+
+    #[test]
+    fn env_stdin_flag_parses() {
+        #[derive(clap::Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+        use clap::Parser;
+        let cli = TestCli::parse_from([
+            "test",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/bin/sh",
+            "--env-stdin",
+        ]);
+        assert!(cli.args.env_stdin);
+        assert!(cli.args.env.is_empty());
     }
 
     #[test]

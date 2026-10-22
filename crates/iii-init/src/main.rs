@@ -43,6 +43,10 @@ fn run() -> Result<(), iii_init::InitError> {
     if let Err(e) = iii_init::network::write_resolv_conf() {
         eprintln!("iii-init: warning: {e} (DNS may use existing resolv.conf)");
     }
+    // Worker env arrives over the `iii.env` port, not the kernel cmdline
+    // (MOT-5493). Must stay before exec_worker: it mutates the process
+    // environment and exec_worker is where helper threads start.
+    iii_init::worker_env::load_worker_env()?;
     iii_init::supervisor::exec_worker()?;
     Ok(())
 }
