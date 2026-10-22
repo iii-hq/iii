@@ -360,13 +360,6 @@ pub fn rewrite_localhost(s: &str, gateway_ip: &str) -> String {
 /// `PATH`, this constant is not used.
 pub const DEFAULT_GUEST_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/// True when any `KEY=VALUE` entry in `env` has the literal key `PATH`.
-/// Case-sensitive: env var names are case-sensitive on Unix.
-pub fn env_has_path(env: &[String]) -> bool {
-    env.iter()
-        .any(|kv| matches!(kv.split_once('='), Some(("PATH", _))))
-}
-
 /// Conditionally rewrite localhost/loopback URLs.
 ///
 /// `None` means networking is disabled — no virtio-net device is attached,
@@ -1607,57 +1600,10 @@ mod tests {
         assert_eq!(result, "'it'\\''s a test'");
     }
 
-    // --- 6.3: env_has_path / DEFAULT_GUEST_PATH (guards the npm
-    // shebang fallback added when a rootfs cache lacks
-    // `.oci-config.json`). See the `DEFAULT_GUEST_PATH` docstring for
-    // the full rationale.
-    #[test]
-    fn env_has_path_detects_present() {
-        let env = vec![
-            "FOO=bar".to_string(),
-            "PATH=/usr/bin".to_string(),
-            "QUX=quux".to_string(),
-        ];
-        assert!(env_has_path(&env));
-    }
-
-    #[test]
-    fn env_has_path_returns_false_when_missing() {
-        let env = vec!["FOO=bar".to_string(), "QUX=quux".to_string()];
-        assert!(!env_has_path(&env));
-    }
-
-    #[test]
-    fn env_has_path_empty_is_false() {
-        let env: Vec<String> = vec![];
-        assert!(!env_has_path(&env));
-    }
-
-    #[test]
-    fn env_has_path_is_case_sensitive() {
-        // Unix env names are case-sensitive; `Path` and `path` must not
-        // mask the missing `PATH` and suppress the fallback.
-        let env = vec!["Path=/usr/bin".to_string(), "path=/bin".to_string()];
-        assert!(!env_has_path(&env));
-    }
-
-    #[test]
-    fn env_has_path_ignores_path_prefix_keys() {
-        // `PATHFOO=...` and `MY_PATH=...` must not be confused with the
-        // literal `PATH` key — split_once('=') anchors the comparison.
-        let env = vec!["PATHFOO=/x".to_string(), "MY_PATH=/y".to_string()];
-        assert!(!env_has_path(&env));
-    }
-
-    #[test]
-    fn env_has_path_handles_empty_value() {
-        // `PATH=` (empty value) is technically a set PATH — exporting
-        // an empty PATH is a real user choice (e.g. forcing absolute
-        // paths). Don't override it.
-        let env = vec!["PATH=".to_string()];
-        assert!(env_has_path(&env));
-    }
-
+    // --- 6.3: DEFAULT_GUEST_PATH (guards the npm shebang fallback added
+    // when a rootfs cache lacks `.oci-config.json`). The fallback condition
+    // itself is tested through `split_vm_env`. See the `DEFAULT_GUEST_PATH`
+    // docstring for the full rationale.
     // --- MOT-5493: legacy kernel-cmdline transport must refuse, not panic.
 
     fn pair(key: &str, value: &str) -> Vec<(String, String)> {
@@ -1817,6 +1763,21 @@ mod tests {
                 .unwrap()
                 .contains(&("PATH".to_string(), "/x".to_string()))
         );
+        // Exact, case-sensitive name: `path` and `PATHEXT` are not PATH.
+        let lookalikes = split_vm_env(
+            vec![],
+            kvs(&[("path", "/x"), ("PATHEXT", "y")]),
+            "run",
+            true,
+        );
+        assert!(
+            lookalikes
+                .cmdline
+                .contains(&("PATH".to_string(), DEFAULT_GUEST_PATH.to_string()))
+        );
+        // An empty PATH is still the worker's own choice.
+        let empty = split_vm_env(vec![], kvs(&[("PATH", "")]), "run", true);
+        assert!(!empty.cmdline.iter().any(|(k, _)| k == "PATH"));
         let without = split_vm_env(vec![], vec![], "run", true);
         assert!(
             without
