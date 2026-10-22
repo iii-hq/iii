@@ -701,8 +701,7 @@ fn read_env_stdin() -> Result<Vec<(String, String)>, String> {
         .lock()
         .read_to_end(&mut payload)
         .map_err(|e| format!("--env-stdin: reading stdin: {e}"))?;
-    let pairs = iii_supervisor::env_channel::decode_payload(&payload)
-        .map_err(|e| format!("--env-stdin: {e}"))?;
+    let pairs = parse_env_stdin(&payload)?;
     if let Ok(devnull) = std::fs::File::open("/dev/null") {
         // SAFETY: dup2 onto fd 0 with a valid open fd; `devnull` closes its
         // own copy on drop.
@@ -711,6 +710,22 @@ fn read_env_stdin() -> Result<Vec<(String, String)>, String> {
         }
     }
     Ok(pairs)
+}
+
+/// Parses the `--env-stdin` payload. Nothing at all on stdin means the
+/// launcher never wrote it: a compose from an older release than this
+/// iii-worker, which spawns the boot command with a null stdin. Said so,
+/// rather than reported as malformed JSON.
+fn parse_env_stdin(payload: &[u8]) -> Result<Vec<(String, String)>, String> {
+    if payload.iter().all(u8::is_ascii_whitespace) {
+        return Err(
+            "--env-stdin: no worker environment on stdin. The program that started \
+                    this VM did not send it, which happens when it is older than this \
+                    iii-worker. Install iii and iii-worker from the same release."
+                .to_string(),
+        );
+    }
+    iii_supervisor::env_channel::decode_payload(payload).map_err(|e| format!("--env-stdin: {e}"))
 }
 
 /// Writes the env frame into the host end of the `iii.env` port on its own
@@ -778,12 +793,26 @@ fn validate_cmdline_env(env: &[(String, String)]) -> Result<(), String> {
 }
 
 pub fn run(args: &VmBootArgs) -> ! {
+    // Drain the launcher's env pipe before anything else can make us exit:
+    // a launcher blocked writing a large payload must not outlive us.
+    let stdin_env = if args.env_stdin {
+        match read_env_stdin() {
+            Ok(pairs) => pairs,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     if !std::path::Path::new(&args.rootfs).exists() {
         eprintln!("error: rootfs path does not exist: {}", args.rootfs);
         std::process::exit(1);
     }
 
-    match boot_vm(args) {
+    match boot_vm(args, stdin_env) {
         Ok(infallible) => match infallible {},
         Err(e) => {
             eprintln!("error: VM execution failed: {}", e);
@@ -792,7 +821,10 @@ pub fn run(args: &VmBootArgs) -> ! {
     }
 }
 
-fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
+fn boot_vm(
+    args: &VmBootArgs,
+    stdin_env: Vec<(String, String)>,
+) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
 
     #[cfg(target_os = "linux")]
@@ -807,13 +839,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Worker env: argv `--env` pairs (manual runs, tests) plus the payload a
     // launcher piped in with `--env-stdin`. Later entries win.
     let mut worker_env: Vec<String> = args.env.clone();
-    if args.env_stdin {
-        worker_env.extend(
-            read_env_stdin()?
-                .into_iter()
-                .map(|(key, value)| format!("{key}={value}")),
-        );
-    }
+    worker_env.extend(
+        stdin_env
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    );
 
     // Pre-boot validation: ensure init binary is available either embedded or on-disk
     if !iii_filesystem::init::has_init() {
@@ -1596,6 +1626,27 @@ mod tests {
     fn cmdline_env_rejects_oversized_env() {
         let big = "x".repeat(CMDLINE_ENV_BUDGET);
         assert!(validate_cmdline_env(&pair("BIG", &big)).is_err());
+    }
+
+    #[test]
+    fn empty_env_stdin_points_at_mismatched_releases() {
+        let err = parse_env_stdin(b"").unwrap_err();
+        assert!(err.contains("same release"), "{err}");
+        assert!(parse_env_stdin(b"\n").unwrap_err().contains("same release"));
+    }
+
+    #[test]
+    fn env_stdin_payload_parses() {
+        let pairs = parse_env_stdin(br#"[["GREETING","Ol\u00e1"]]"#).unwrap();
+        assert_eq!(
+            pairs,
+            vec![("GREETING".to_string(), "Ol\u{e1}".to_string())]
+        );
+        assert!(
+            parse_env_stdin(b"[[")
+                .unwrap_err()
+                .starts_with("--env-stdin: malformed")
+        );
     }
 
     #[test]

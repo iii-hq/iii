@@ -1114,8 +1114,9 @@ async fn start_one_until_shutdown(
     }
 
     let plan = spawn_plan(&spawn_ctx);
-    let command = match plan.command() {
-        Some(command) => command,
+    // A VM boot process also takes the worker env on stdin (MOT-5492).
+    let (command, boot_stdin) = match plan.command() {
+        Some(command) => (command, None),
         // A VM worker is booted instead of run here. The handle that comes
         // back is an ordinary child, so readiness, stop, crash cascade and log
         // capture below are unchanged.
@@ -1139,11 +1140,14 @@ async fn start_one_until_shutdown(
         return Err(StartFailure::Interrupted);
     }
 
-    let (child, output) =
-        spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
-            container: key.to_string(),
-            message: err.to_string(),
-        })?;
+    let spawned = match boot_stdin {
+        None => spawn_supervised_piped(command),
+        Some(payload) => spawn_vm_with_env(command, payload).await,
+    };
+    let (child, output) = spawned.map_err(|err| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: err.to_string(),
+    })?;
     report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
@@ -1212,7 +1216,7 @@ async fn vm_command(
     key: &str,
     start: &StartSpec,
     plan: &crate::spawn::SpawnPlan,
-) -> std::result::Result<tokio::process::Command, String> {
+) -> std::result::Result<(tokio::process::Command, Option<Vec<u8>>), String> {
     let (worker_dir, run_override, prepare_command) = match start {
         StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
         StartSpec::Vm(VmSpec::Local {
@@ -1243,8 +1247,38 @@ async fn vm_command(
     for name in &plan.env_remove {
         command.env_remove(name);
     }
-    command.stdin(std::process::Stdio::null());
-    Ok(command)
+    let stdin = plan.stdin.map(String::into_bytes);
+    command.stdin(if stdin.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    });
+    Ok((command, stdin))
+}
+
+/// Spawns a VM boot process and writes the worker env to its stdin
+/// (`__vm-boot --env-stdin`); in argv every local user could read it with
+/// `ps` (MOT-5492). `__vm-boot` drains stdin before anything else, so the
+/// write does not wait on the boot. If it fails, the child is left with a
+/// truncated payload and exits by itself with the reason on stderr, which
+/// the readiness wait reports like any other crash.
+async fn spawn_vm_with_env(
+    command: tokio::process::Command,
+    payload: Vec<u8>,
+) -> std::io::Result<(Supervised, crate::process::ChildOutput)> {
+    use tokio::io::AsyncWriteExt;
+
+    let (child, output, mut stdin) = crate::process::spawn_supervised_piped_with_stdin(command)?;
+    let written = async {
+        stdin.write_all(&payload).await?;
+        stdin.shutdown().await
+    }
+    .await;
+    drop(stdin);
+    if let Err(err) = written {
+        eprintln!("warning: cannot send the worker environment to the VM: {err}");
+    }
+    Ok((child, output))
 }
 
 /// What an `iii-worker` VM prepare command answers: a program, its arguments, and
@@ -1257,6 +1291,10 @@ struct VmPlan {
     env: BTreeMap<String, String>,
     #[serde(default)]
     env_remove: Vec<String>,
+    /// Worker env for the boot process's stdin (MOT-5492). An older
+    /// iii-worker leaves it out and keeps the env in `args`.
+    #[serde(default)]
+    stdin: Option<String>,
 }
 
 /// Runs an `iii-worker` VM prepare command and reads the plan back.
