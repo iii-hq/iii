@@ -7,57 +7,67 @@
 //! Loads the worker environment the host sends over the `iii.env`
 //! virtio-console port (see `iii_supervisor::env_channel`).
 //!
-//! Only iii-init's own plumbing (`III_WORKER_CMD`, `III_BLOCK_ROOT_*`, ...)
-//! still arrives on the kernel command line. The worker's variables are read
-//! here, exported into PID 1's environment, and inherited from there by the
-//! worker, by supervisor restarts and by `iii worker exec` sessions.
+//! The frame carries the worker's variables and the worker command
+//! (`III_WORKER_CMD`). The rest of iii-init's plumbing (`III_BLOCK_ROOT_*`,
+//! `III_WORKER_WORKDIR`, ...) still arrives on the kernel command line. The
+//! frame is exported into PID 1's environment, and the worker, supervisor
+//! restarts and `iii worker exec` sessions inherit it from there.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Read};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use iii_supervisor::env_channel::{ENV_PORT_ENV, decode_payload, frame_len};
 
 use crate::InitError;
 
-/// How long to wait for the host's frame. The host writes it as soon as the
-/// VM starts, so hitting this means the host side is broken.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to wait for the port to appear and for the host's frame. The
+/// host writes the frame as soon as the VM starts, so hitting this means
+/// the host side is broken.
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pause between retries while the port is missing or reads as EOF.
+const RETRY: Duration = Duration::from_millis(25);
 
 /// Reads the env frame when the host announced one via `III_ENV_PORT` and
-/// exports it. No-op when the variable is absent (older hosts, or a VM
-/// started without worker env).
+/// exports it. No-op when the variable is absent (older hosts).
 ///
-/// Fails closed: a worker started without the environment it was given
-/// (credentials, engine URL) would misbehave in ways that are much harder
-/// to diagnose than a boot error naming the port.
+/// Fails closed: a worker started without the environment and command it
+/// was given would fail later, and much less clearly, than a boot error
+/// naming the port.
 ///
-/// Must run while iii-init is still single-threaded (before
-/// `supervisor::exec_worker` spawns its helper threads): it mutates the
-/// process environment.
+/// Needs `/sys` and `/dev` (mounted by `mount::mount_filesystems`), and must
+/// run while iii-init is still single-threaded (before
+/// `supervisor::exec_worker` spawns its helper threads), because it mutates
+/// the process environment. `main::run` calls it right after
+/// `mount_filesystems`, so the worker env is visible to every later boot
+/// step, as it was when the env rode the kernel command line.
 pub fn load_worker_env() -> Result<(), InitError> {
     let port_name = match std::env::var(ENV_PORT_ENV) {
         Ok(name) => name,
         Err(_) => return Ok(()),
     };
+    let deadline = Instant::now() + TIMEOUT;
 
-    let port_path =
-        iii_supervisor::control::find_virtio_port_by_name(&port_name).ok_or_else(|| {
-            InitError::WorkerEnv(format!(
-                "{ENV_PORT_ENV}={port_name} but no such port in /sys/class/virtio-ports"
-            ))
-        })?;
+    let port_path = wait_for_port(&port_name, deadline).ok_or_else(|| {
+        InitError::WorkerEnv(format!(
+            "{ENV_PORT_ENV}={port_name} but no such port appeared in /sys/class/virtio-ports \
+             within {}s",
+            TIMEOUT.as_secs()
+        ))
+    })?;
 
-    let pairs = read_env_frame(&port_path, READ_TIMEOUT)
+    let pairs = read_env_frame(&port_path, deadline)
         .map_err(|e| InitError::WorkerEnv(format!("reading {}: {e}", port_path.display())))?;
 
     // SAFETY: iii-init is single-threaded at this point. `main::run` calls
     // this before `exec_worker`, which is where the shell-dispatcher and
     // source-sync threads are spawned, so nothing can read the environment
-    // concurrently.
+    // concurrently. `decode_payload` has already rejected the inputs that
+    // make `set_var` panic (empty name, '=' in the name, NUL).
     unsafe {
         for (key, value) in &pairs {
             std::env::set_var(key, value);
@@ -68,25 +78,50 @@ pub fn load_worker_env() -> Result<(), InitError> {
     Ok(())
 }
 
-/// Reads one frame from the port, tolerating the transient EOF a
-/// virtio-console port reports before its host backend is connected, and
-/// giving up at `timeout`.
-fn read_env_frame(port_path: &Path, timeout: Duration) -> io::Result<Vec<(String, String)>> {
+/// Port add/name events are asynchronous virtio control traffic, handled by
+/// a kernel workqueue; a slow host can still be announcing the port when
+/// iii-init gets here.
+fn wait_for_port(name: &str, deadline: Instant) -> Option<PathBuf> {
+    loop {
+        if let Some(path) = iii_supervisor::control::find_virtio_port_by_name(name) {
+            return Some(path);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(RETRY);
+    }
+}
+
+fn read_env_frame(port_path: &Path, deadline: Instant) -> io::Result<Vec<(String, String)>> {
     let mut port = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(port_path)?;
-    let deadline = Instant::now() + timeout;
+    read_frame_patient(&mut port, deadline)
+}
 
+/// Reads one frame from a non-blocking reader, tolerating the transient EOF
+/// a virtio-console port reports before its host backend is connected, and
+/// giving up at `deadline`.
+fn read_frame_patient<R: Read + AsRawFd>(
+    port: &mut R,
+    deadline: Instant,
+) -> io::Result<Vec<(String, String)>> {
     let mut header = [0u8; 4];
-    read_exact_patient(&mut port, &mut header, deadline)?;
+    read_exact_patient(port, &mut header, deadline)?;
     let mut payload = vec![0u8; frame_len(header)?];
-    read_exact_patient(&mut port, &mut payload, deadline)?;
+    read_exact_patient(port, &mut payload, deadline)?;
     decode_payload(&payload)
 }
 
-fn read_exact_patient(port: &mut File, buf: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn read_exact_patient<R: Read + AsRawFd>(
+    port: &mut R,
+    buf: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let started = Instant::now();
     let mut filled = 0;
     while filled < buf.len() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -94,8 +129,8 @@ fn read_exact_patient(port: &mut File, buf: &mut [u8], deadline: Instant) -> io:
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "no env frame from the host after {}s ({filled} of {} bytes)",
-                    READ_TIMEOUT.as_secs(),
+                    "no complete env frame from the host after {:.1}s ({filled} of {} bytes)",
+                    started.elapsed().as_secs_f32(),
                     buf.len()
                 ),
             ));
@@ -103,18 +138,20 @@ fn read_exact_patient(port: &mut File, buf: &mut [u8], deadline: Instant) -> io:
         match port.read(&mut buf[filled..]) {
             Ok(n) if n > 0 => filled += n,
             // Host backend not connected yet: the port reads as EOF.
-            Ok(_) => std::thread::sleep(Duration::from_millis(25)),
+            Ok(_) => std::thread::sleep(RETRY),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_readable(port, remaining)?,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                wait_readable(port.as_raw_fd(), remaining)?
+            }
             Err(e) => return Err(e),
         }
     }
     Ok(())
 }
 
-fn wait_readable(port: &File, remaining: Duration) -> io::Result<()> {
+fn wait_readable(fd: RawFd, remaining: Duration) -> io::Result<()> {
     let mut pollfd = libc::pollfd {
-        fd: port.as_raw_fd(),
+        fd,
         events: libc::POLLIN,
         revents: 0,
     };
@@ -130,7 +167,133 @@ fn wait_readable(port: &File, remaining: Duration) -> io::Result<()> {
         }
     }
     if rc > 0 && pollfd.revents & libc::POLLHUP != 0 && pollfd.revents & libc::POLLIN == 0 {
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(RETRY);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iii_supervisor::env_channel::encode_frame;
+    use std::collections::VecDeque;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    fn env() -> Vec<(String, String)> {
+        vec![
+            ("GREETING".to_string(), "Ol\u{e1} \u{1f496}".to_string()),
+            ("PEM".to_string(), "a\nb".to_string()),
+            (
+                "III_WORKER_CMD".to_string(),
+                "exec bash /opt/iii/dev-run.sh".to_string(),
+            ),
+        ]
+    }
+
+    fn soon(ms: u64) -> Instant {
+        Instant::now() + Duration::from_millis(ms)
+    }
+
+    /// Scripted reads: `Ok(0)` entries model the transient EOF of a port
+    /// whose host backend is not connected yet.
+    struct Scripted(VecDeque<io::Result<Vec<u8>>>);
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.0.pop_front() {
+                None => Ok(0),
+                Some(Err(e)) => Err(e),
+                Some(Ok(mut chunk)) => {
+                    let n = chunk.len().min(buf.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    if n < chunk.len() {
+                        self.0.push_front(Ok(chunk.split_off(n)));
+                    }
+                    Ok(n)
+                }
+            }
+        }
+    }
+
+    impl AsRawFd for Scripted {
+        fn as_raw_fd(&self) -> RawFd {
+            -1 // poll ignores negative fds
+        }
+    }
+
+    #[test]
+    fn frame_split_across_reads_on_a_nonblocking_socket() {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        guest.set_nonblocking(true).unwrap();
+        let frame = encode_frame(&env()).unwrap();
+        let writer = std::thread::spawn(move || {
+            for chunk in [&frame[..2], &frame[2..7], &frame[7..]] {
+                host.write_all(chunk).unwrap();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            host
+        });
+        assert_eq!(read_frame_patient(&mut guest, soon(5_000)).unwrap(), env());
+        drop(writer.join().unwrap());
+    }
+
+    #[test]
+    fn frame_larger_than_the_socket_buffer_arrives_whole() {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        guest.set_nonblocking(true).unwrap();
+        let big = vec![("BIG".to_string(), "x".repeat(100 * 1024))];
+        let frame = encode_frame(&big).unwrap();
+        let writer = std::thread::spawn(move || host.write_all(&frame).map(|_| host));
+        assert_eq!(read_frame_patient(&mut guest, soon(5_000)).unwrap(), big);
+        drop(writer.join().unwrap().unwrap());
+    }
+
+    #[test]
+    fn transient_eof_before_the_host_connects_is_retried() {
+        let frame = encode_frame(&env()).unwrap();
+        let mut port = Scripted(VecDeque::from(vec![
+            Ok(vec![]),
+            Err(io::ErrorKind::Interrupted.into()),
+            Ok(vec![]),
+            Ok(frame[..3].to_vec()),
+            Ok(vec![]),
+            Ok(frame[3..].to_vec()),
+        ]));
+        assert_eq!(read_frame_patient(&mut port, soon(5_000)).unwrap(), env());
+    }
+
+    #[test]
+    fn incomplete_frame_times_out_without_echoing_the_payload() {
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        guest.set_nonblocking(true).unwrap();
+        let frame = encode_frame(&[("API_KEY".to_string(), "sk-secret".to_string())]).unwrap();
+        host.write_all(&frame[..frame.len() - 3]).unwrap();
+        let err = read_frame_patient(&mut guest, soon(300)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        let message = err.to_string();
+        assert!(message.contains("bytes"), "{message}");
+        assert!(!message.contains("sk-secret"), "{message}");
+        drop(host);
+    }
+
+    #[test]
+    fn closed_host_end_times_out_instead_of_spinning_forever() {
+        let mut port = Scripted(VecDeque::new()); // EOF on every read
+        let err = read_frame_patient(&mut port, soon(150)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn oversized_header_is_rejected() {
+        let header = (u32::MAX).to_be_bytes().to_vec();
+        let mut port = Scripted(VecDeque::from(vec![Ok(header)]));
+        let err = read_frame_patient(&mut port, soon(1_000)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn missing_port_gives_up_at_the_deadline() {
+        assert!(wait_for_port("iii.env-test-does-not-exist", soon(60)).is_none());
+    }
 }

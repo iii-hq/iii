@@ -96,7 +96,7 @@ pub fn spawn_supervised_piped_with_stdin(
     command: tokio::process::Command,
 ) -> std::io::Result<(Supervised, ChildOutput, tokio::process::ChildStdin)> {
     let (child, output, stdin) = spawn_supervised_inner(command, true, true)?;
-    let stdin = stdin.ok_or_else(|| std::io::Error::other("managed engine stdin was not piped"))?;
+    let stdin = stdin.ok_or_else(|| std::io::Error::other("child stdin was not piped"))?;
     Ok((child, output, stdin))
 }
 

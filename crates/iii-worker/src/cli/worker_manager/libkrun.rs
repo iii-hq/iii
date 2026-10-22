@@ -990,14 +990,20 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.stdin(std::process::Stdio::piped());
 
         let mut child = cmd.spawn().context("failed to spawn VM boot process")?;
-        // `__vm-boot` drains stdin first thing, so this small blocking write
-        // does not wait on the boot. If it fails the child is left with a
-        // truncated payload and exits on its own.
+        // `__vm-boot` drains stdin first thing and the payload is capped at
+        // `env_channel::MAX_ENV_BYTES`, so this blocking write does not wait
+        // on the boot.
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
-            stdin
-                .write_all(&env_stdin)
-                .context("cannot send the worker environment to the VM")?;
+            if let Err(e) = stdin.write_all(&env_stdin) {
+                drop(stdin);
+                // No half-fed VM left running untracked, and no zombie.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    anyhow::Error::new(e).context("cannot send the worker environment to the VM")
+                );
+            }
         }
 
         let pid = child.id();
@@ -1113,6 +1119,25 @@ fn fs_dir_size(path: &std::path::Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn feed_env_stdin_writes_the_payload_and_closes_the_pipe() {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let payload = br#"[["API_KEY","sk-secret"]]"#;
+        feed_env_stdin(child.stdin.take(), payload).await.unwrap();
+        // `cat` only exits once it sees EOF, so this also proves the close.
+        let out = child.wait_with_output().await.unwrap();
+        assert_eq!(out.stdout, payload);
+    }
+
+    #[tokio::test]
+    async fn feed_env_stdin_without_a_pipe_is_an_error() {
+        assert!(feed_env_stdin(None, b"[]").await.is_err());
+    }
 
     #[test]
     fn test_logs_dir_path() {

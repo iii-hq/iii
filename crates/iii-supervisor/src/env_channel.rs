@@ -32,6 +32,17 @@ pub const ENV_PORT_ENV: &str = "III_ENV_PORT";
 /// corrupt frame rather than an allocation request.
 pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
+/// Longest `KEY=VALUE` string execve accepts (Linux `MAX_ARG_STRLEN`, NUL
+/// included). A longer variable crosses the port fine, then makes the
+/// worker spawn fail with E2BIG and a message that names nothing.
+pub const MAX_VAR_BYTES: usize = 128 * 1024;
+
+/// Total env budget, counted as execve does (`KEY=VALUE` plus NUL). execve
+/// caps argv + envp at a quarter of the stack limit, about 2 MiB with the
+/// usual 8 MiB stack; half of that leaves room for the worker's own argv
+/// and whatever its launch script adds.
+pub const MAX_ENV_BYTES: usize = 1024 * 1024;
+
 /// Ordered `(key, value)` pairs.
 pub type EnvPairs = Vec<(String, String)>;
 
@@ -54,15 +65,35 @@ pub fn validate_pair(key: &str, value: &str) -> Result<(), String> {
             "the value of environment variable {key} contains a NUL byte"
         ));
     }
+    let size = key.len() + value.len() + 2;
+    if size > MAX_VAR_BYTES {
+        return Err(format!(
+            "environment variable {key} is {size} bytes, over the {MAX_VAR_BYTES}-byte limit \
+             for one variable of a process"
+        ));
+    }
+    Ok(())
+}
+
+/// Validates every pair and the total size a process would receive.
+pub fn validate_env(env: &[(String, String)]) -> Result<(), String> {
+    for (key, value) in env {
+        validate_pair(key, value)?;
+    }
+    let total: usize = env.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
+    if total > MAX_ENV_BYTES {
+        return Err(format!(
+            "the worker environment is {total} bytes, over the {MAX_ENV_BYTES}-byte limit \
+             a process can reliably receive"
+        ));
+    }
     Ok(())
 }
 
 /// Serialises `env` as the JSON payload (no length prefix). This is also
 /// the format `__vm-boot --env-stdin` reads to EOF.
 pub fn encode_payload(env: &[(String, String)]) -> io::Result<Vec<u8>> {
-    for (key, value) in env {
-        validate_pair(key, value).map_err(invalid)?;
-    }
+    validate_env(env).map_err(invalid)?;
     let json = serde_json::to_vec(env).map_err(|e| invalid(format!("encode env: {e}")))?;
     if json.len() > MAX_PAYLOAD_BYTES {
         return Err(invalid(format!(
@@ -89,9 +120,7 @@ pub fn decode_payload(bytes: &[u8]) -> io::Result<EnvPairs> {
             e.column()
         ))
     })?;
-    for (key, value) in &pairs {
-        validate_pair(key, value).map_err(invalid)?;
-    }
+    validate_env(&pairs).map_err(invalid)?;
     Ok(pairs)
 }
 
@@ -196,6 +225,25 @@ mod tests {
         assert!(!err.to_string().contains("sk-secret"), "{err}");
         let err = decode_payload(br#"{"API_KEY": "sk-secret"}"#).unwrap_err();
         assert!(!err.to_string().contains("sk-secret"), "{err}");
+    }
+
+    #[test]
+    fn a_variable_execve_cannot_take_is_rejected_naming_the_key() {
+        let value = "x".repeat(MAX_VAR_BYTES);
+        let err = encode_payload(&pairs(&[("HUGE", &value)])).unwrap_err();
+        assert!(err.to_string().contains("HUGE"), "{err}");
+        let just_fits = "x".repeat(MAX_VAR_BYTES - "HUGE".len() - 2);
+        assert!(encode_payload(&pairs(&[("HUGE", &just_fits)])).is_ok());
+    }
+
+    #[test]
+    fn an_env_too_large_for_execve_is_rejected() {
+        let value = "x".repeat(100 * 1024);
+        let env: EnvPairs = (0..11).map(|i| (format!("V{i}"), value.clone())).collect();
+        let err = encode_payload(&env).unwrap_err();
+        assert!(err.to_string().contains("limit"), "{err}");
+        let payload = serde_json::to_vec(&env).unwrap();
+        assert!(decode_payload(&payload).is_err(), "decode enforces it too");
     }
 
     #[test]

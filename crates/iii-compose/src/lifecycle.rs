@@ -1904,3 +1904,36 @@ containers:
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod vm_env_stdin_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_vm_boot_child_receives_the_plan_env_on_stdin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("stdin.json");
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!("cat > '{}'", out.display()))
+            .stdin(std::process::Stdio::piped());
+        let payload = br#"[["API_KEY","sk-secret"]]"#.to_vec();
+        let (child, _output) = spawn_vm_with_env(command, payload.clone()).await.unwrap();
+        // `cat` exits only at EOF: this also proves compose closed the pipe.
+        child.wait().await;
+        assert_eq!(std::fs::read(&out).unwrap(), payload);
+    }
+
+    #[test]
+    fn the_plan_stdin_is_optional_for_an_older_iii_worker() {
+        let old: VmPlan =
+            serde_json::from_str(r#"{"program":"/bin/iii-worker","args":["__vm-boot"]}"#).unwrap();
+        assert!(old.stdin.is_none());
+        let new: VmPlan = serde_json::from_str(
+            r#"{"program":"/bin/iii-worker","args":["__vm-boot","--env-stdin"],"stdin":"[]"}"#,
+        )
+        .unwrap();
+        assert_eq!(new.stdin.as_deref(), Some("[]"));
+    }
+}

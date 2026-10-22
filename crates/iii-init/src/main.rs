@@ -31,6 +31,12 @@ fn run() -> Result<(), iii_init::InitError> {
         iii_init::root_pivot::pivot_to_tmpfs_root()?;
     }
     iii_init::mount::mount_filesystems()?;
+    // Worker env and command arrive over the `iii.env` port, not the kernel
+    // cmdline (MOT-5493). Here, not later: it needs /sys and /dev, every
+    // following step must see the worker env as it did when the env rode
+    // the cmdline, and it mutates the process environment, so it has to
+    // run before exec_worker starts helper threads.
+    iii_init::worker_env::load_worker_env()?;
     iii_init::mount::mount_virtiofs_shares();
     // Fakes `/proc/meminfo::MemTotal` to the per-worker cap so Bun's
     // Zig allocator — which reads MemTotal directly and ignores
@@ -43,10 +49,6 @@ fn run() -> Result<(), iii_init::InitError> {
     if let Err(e) = iii_init::network::write_resolv_conf() {
         eprintln!("iii-init: warning: {e} (DNS may use existing resolv.conf)");
     }
-    // Worker env arrives over the `iii.env` port, not the kernel cmdline
-    // (MOT-5493). Must stay before exec_worker: it mutates the process
-    // environment and exec_worker is where helper threads start.
-    iii_init::worker_env::load_worker_env()?;
     iii_init::supervisor::exec_worker()?;
     Ok(())
 }
