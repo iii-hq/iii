@@ -1140,10 +1140,7 @@ async fn start_one_until_shutdown(
         return Err(StartFailure::Interrupted);
     }
 
-    let spawned = match boot_stdin {
-        None => spawn_supervised_piped(command),
-        Some(payload) => spawn_vm_with_env(command, payload).await,
-    };
+    let spawned = spawn_with_boot_stdin(command, boot_stdin).await;
     let (child, output) = spawned.map_err(|err| ComposeError::SpawnFailed {
         container: key.to_string(),
         message: err.to_string(),
@@ -1237,6 +1234,13 @@ async fn vm_command(
     });
 
     let plan = prepare_vm(prepare_command, &request).await?;
+    Ok(boot_command(plan))
+}
+
+/// The boot command for a prepared plan, and the worker env to write to its
+/// stdin when the plan carries one (an older iii-worker's plan does not, and
+/// gets a null stdin).
+fn boot_command(plan: VmPlan) -> (tokio::process::Command, Option<Vec<u8>>) {
     let mut command = tokio::process::Command::new(&plan.program);
     command.args(&plan.args);
     for (name, value) in &plan.env {
@@ -1253,7 +1257,19 @@ async fn vm_command(
     } else {
         std::process::Stdio::null()
     });
-    Ok((command, stdin))
+    (command, stdin)
+}
+
+/// Spawns a container's command; a VM boot command with a plan `stdin` also
+/// gets the worker env written to it.
+async fn spawn_with_boot_stdin(
+    command: tokio::process::Command,
+    boot_stdin: Option<Vec<u8>>,
+) -> std::io::Result<(Supervised, crate::process::ChildOutput)> {
+    match boot_stdin {
+        None => spawn_supervised_piped(command),
+        Some(payload) => spawn_vm_with_env(command, payload).await,
+    }
 }
 
 /// Spawns a VM boot process and writes the worker env to its stdin
@@ -1910,19 +1926,31 @@ mod vm_env_stdin_tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_vm_boot_child_receives_the_plan_env_on_stdin() {
+    async fn a_plan_with_stdin_gets_its_env_written_and_one_without_a_null_stdin() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = tmp.path().join("stdin.json");
-        let mut command = tokio::process::Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(format!("cat > '{}'", out.display()))
-            .stdin(std::process::Stdio::piped());
-        let payload = br#"[["API_KEY","sk-secret"]]"#.to_vec();
-        let (child, _output) = spawn_vm_with_env(command, payload.clone()).await.unwrap();
-        // `cat` exits only at EOF: this also proves compose closed the pipe.
-        child.wait().await;
-        assert_eq!(std::fs::read(&out).unwrap(), payload);
+        for (name, stdin) in [
+            ("with", Some(r#"[["API_KEY","sk-secret"]]"#)),
+            ("without", None),
+        ] {
+            let out = tmp.path().join(name);
+            let plan = VmPlan {
+                program: "/bin/sh".into(),
+                args: vec!["-c".to_string(), format!("cat > '{}'", out.display())],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                stdin: stdin.map(str::to_string),
+            };
+            let (command, boot_stdin) = boot_command(plan);
+            let (child, _output) = spawn_with_boot_stdin(command, boot_stdin).await.unwrap();
+            // `cat` exits only at EOF: the pipe was closed after the write,
+            // or stdin was /dev/null (an inherited stdin would hang here).
+            child.wait().await;
+            assert_eq!(
+                std::fs::read_to_string(&out).unwrap(),
+                stdin.unwrap_or(""),
+                "{name}"
+            );
+        }
     }
 
     #[test]

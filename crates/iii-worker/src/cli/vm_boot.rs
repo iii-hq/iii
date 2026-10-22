@@ -755,9 +755,73 @@ fn spawn_env_writer(
 }
 
 /// Budget for what iii adds to the kernel command line. msb_krun's limit is
-/// 16 KiB for the whole line, and it unwraps the insert (`TooLarge` panics);
-/// the prolog, init path and rlimits need the rest.
-const CMDLINE_ENV_BUDGET: usize = 12 * 1024;
+/// 16 KiB for the whole line, and it unwraps the insert (`TooLarge` panics).
+/// Its own part (default cmdline, root/init, KRUN_INIT, KRUN_RLIMITS,
+/// KRUN_BOOT_START_NS, the `--` epilog) is about 260 bytes; 1 KiB is left
+/// for it.
+const CMDLINE_ENV_BUDGET: usize = 15 * 1024;
+
+/// Variables iii-init owns that a worker env must never set: the worker
+/// command and the port announcement. Compose forwards the whole machine
+/// env, so a stray one there would otherwise replace them (on the legacy
+/// command line the last duplicate wins).
+const RESERVED_WORKER_ENV: &[&str] = &["III_WORKER_CMD", iii_supervisor::env_channel::ENV_PORT_ENV];
+
+/// Where each variable reaches the guest.
+#[derive(Debug, PartialEq)]
+struct VmEnvPlan {
+    /// Kernel command line: iii-init's plumbing, plus the worker command and
+    /// env on the legacy path.
+    cmdline: Vec<(String, String)>,
+    /// The `iii.env` frame (port path only): the worker env, then the worker
+    /// command last.
+    frame: Option<Vec<(String, String)>>,
+}
+
+/// Splits the guest environment between the kernel command line and the
+/// `iii.env` frame (MOT-5493). `plumbing` is iii-init's own configuration,
+/// in order; `worker_pairs` is the worker env, already localhost-rewritten.
+fn split_vm_env(
+    plumbing: Vec<(String, String)>,
+    worker_pairs: Vec<(String, String)>,
+    worker_cmd: &str,
+    use_env_port: bool,
+) -> VmEnvPlan {
+    let worker_pairs: Vec<(String, String)> = worker_pairs
+        .into_iter()
+        .filter(|(key, _)| !RESERVED_WORKER_ENV.contains(&key.as_str()))
+        .collect();
+    // Fallback PATH for rootfs caches that pre-date the
+    // `.oci-config.json` write step (`oci.rs:604`) — `read_oci_env`
+    // returns [] on those, so PATH never makes it into `args.env`,
+    // and shebang scripts like `#!/usr/bin/env node` then fail to
+    // resolve binaries that live in /usr/local/bin. An explicit
+    // `--env PATH=...` (or an OCI image that does ship PATH) always wins.
+    let needs_path = !worker_pairs.iter().any(|(key, _)| key == "PATH");
+    let command = ("III_WORKER_CMD".to_string(), worker_cmd.to_string());
+
+    let mut cmdline = Vec::new();
+    let frame = if use_env_port {
+        cmdline.extend(plumbing);
+        cmdline.push((
+            iii_supervisor::env_channel::ENV_PORT_ENV.to_string(),
+            iii_supervisor::env_channel::ENV_PORT_NAME.to_string(),
+        ));
+        let mut frame = worker_pairs;
+        frame.push(command);
+        Some(frame)
+    } else {
+        // The order the exec closure always used.
+        cmdline.push(command);
+        cmdline.extend(plumbing);
+        cmdline.extend(worker_pairs);
+        None
+    };
+    if needs_path {
+        cmdline.push(("PATH".to_string(), DEFAULT_GUEST_PATH.to_string()));
+    }
+    VmEnvPlan { cmdline, frame }
+}
 
 /// Checks everything iii puts on the kernel command line before msb_krun
 /// unwraps the insert. msb_krun writes each pair as ` KEY="VALUE"` and only
@@ -1109,11 +1173,9 @@ fn boot_vm(
     let control_workdir = args.workdir.clone();
     let kv = |key: &str, value: &str| (key.to_string(), value.to_string());
 
-    // iii-init's plumbing, in the order the old exec closure set it.
-    let mut cmdline_env: Vec<(String, String)> = Vec::new();
-    if !use_env_port {
-        cmdline_env.push(kv("III_WORKER_CMD", &worker_cmd));
-    }
+    // iii-init's plumbing, in the order the old exec closure set it
+    // (`split_vm_env` adds the worker command, the env and PATH).
+    let mut plumbing: Vec<(String, String)> = Vec::new();
     // III_INIT_* are only meaningful when the smoltcp stack is wired up.
     // Leaving them unset makes iii-init's configure_network() a no-op.
     if let (Some(dns), Some(ip), Some(gw)) = (
@@ -1121,12 +1183,12 @@ fn boot_vm(
         guest_ip.as_deref(),
         gateway_ip.as_deref(),
     ) {
-        cmdline_env.push(kv("III_INIT_DNS", dns));
-        cmdline_env.push(kv("III_INIT_IP", ip));
-        cmdline_env.push(kv("III_INIT_GW", gw));
-        cmdline_env.push(kv("III_INIT_CIDR", "30"));
+        plumbing.push(kv("III_INIT_DNS", dns));
+        plumbing.push(kv("III_INIT_IP", ip));
+        plumbing.push(kv("III_INIT_GW", gw));
+        plumbing.push(kv("III_INIT_CIDR", "30"));
     }
-    cmdline_env.push(kv("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string()));
+    plumbing.push(kv("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string()));
     // Overlay rootfs: tell iii-init to build `/` from the read-only base
     // disk (/dev/vda) + a writable upper instead of the virtiofs root.
     // The upper is a pre-formatted ext4 image on /dev/vdb (materialized
@@ -1135,69 +1197,58 @@ fn boot_vm(
     // builds without the embedded golden), fall back to a non-persistent
     // tmpfs upper so the overlay still boots — deps just don't persist.
     if overlay_mode {
-        cmdline_env.push(kv("III_BLOCK_ROOT_LOWER", "/dev/vda"));
-        cmdline_env.push(kv("III_BLOCK_ROOT_LOWER_FSTYPE", "erofs"));
+        plumbing.push(kv("III_BLOCK_ROOT_LOWER", "/dev/vda"));
+        plumbing.push(kv("III_BLOCK_ROOT_LOWER_FSTYPE", "erofs"));
         if args.rootfs_upper.is_some() {
-            cmdline_env.push(kv("III_BLOCK_ROOT_UPPER", "/dev/vdb"));
-            cmdline_env.push(kv("III_BLOCK_ROOT_UPPER_FSTYPE", "ext4"));
+            plumbing.push(kv("III_BLOCK_ROOT_UPPER", "/dev/vdb"));
+            plumbing.push(kv("III_BLOCK_ROOT_UPPER_FSTYPE", "ext4"));
         } else {
-            cmdline_env.push(kv("III_BLOCK_ROOT_UPPER", "tmpfs"));
+            plumbing.push(kv("III_BLOCK_ROOT_UPPER", "tmpfs"));
         }
     }
     if control_port_env {
-        cmdline_env.push(kv(
+        plumbing.push(kv(
             "III_CONTROL_PORT",
             iii_supervisor::protocol::CONTROL_PORT_NAME,
         ));
-        cmdline_env.push(kv("III_WORKER_WORKDIR", &control_workdir));
+        plumbing.push(kv("III_WORKER_WORKDIR", &control_workdir));
     }
     if shell_port_env {
-        cmdline_env.push(kv(
+        plumbing.push(kv(
             "III_SHELL_PORT",
             iii_supervisor::shell_protocol::SHELL_PORT_NAME,
         ));
     }
     if source_sync_port_env {
-        cmdline_env.push(kv(
+        plumbing.push(kv(
             "III_SOURCE_SYNC_PORT",
             iii_supervisor::source_sync::SOURCE_SYNC_PORT_NAME,
         ));
-        cmdline_env.push(kv("III_SOURCE_SYNC_ROOT", "/workspace"));
-        cmdline_env.push(kv("III_SOURCE_SYNC_READY", "/run/iii/source-ready"));
+        plumbing.push(kv("III_SOURCE_SYNC_ROOT", "/workspace"));
+        plumbing.push(kv("III_SOURCE_SYNC_READY", "/run/iii/source-ready"));
     }
     if !virtiofs_mount_env.is_empty() {
-        cmdline_env.push(kv("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env));
+        plumbing.push(kv("III_VIRTIOFS_MOUNTS", &virtiofs_mount_env));
     }
 
+    let VmEnvPlan {
+        cmdline: cmdline_env,
+        frame,
+    } = split_vm_env(plumbing, worker_env_pairs, &worker_cmd, use_env_port);
     let mut guest_env_fd: Option<i32> = None;
-    if use_env_port {
-        // The worker command goes last in the frame, so a stray
-        // III_WORKER_CMD in the forwarded machine env cannot replace it.
-        let mut frame_env = worker_env_pairs.clone();
-        frame_env.push(kv("III_WORKER_CMD", &worker_cmd));
+    if let Some(frame_env) = frame {
         let frame = iii_supervisor::env_channel::encode_frame(&frame_env)
             .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
         let (host_end, guest_fd) = setup_control_socketpair()?;
         spawn_env_writer(host_end, frame)?;
         guest_env_fd = Some(guest_fd);
-        cmdline_env.push(kv(
-            iii_supervisor::env_channel::ENV_PORT_ENV,
-            iii_supervisor::env_channel::ENV_PORT_NAME,
-        ));
-    } else {
-        cmdline_env.extend(worker_env_pairs.iter().cloned());
-    }
-    // Fallback PATH for rootfs caches that pre-date the
-    // `.oci-config.json` write step (`oci.rs:604`) — `read_oci_env`
-    // returns [] on those, so PATH never makes it into `args.env`,
-    // and shebang scripts like `#!/usr/bin/env node` then fail to
-    // resolve binaries that live in /usr/local/bin. An explicit
-    // `--env PATH=...` (or an OCI image that does ship PATH) always wins.
-    if !env_has_path(&worker_env) {
-        cmdline_env.push(kv("PATH", DEFAULT_GUEST_PATH));
     }
 
-    // msb_krun also writes the workdir there, unquoted, as KRUN_WORKDIR.
+    // msb_krun also writes the workdir there, as KRUN_WORKDIR. It is not
+    // quoted, so a space splits it into a stray token. That is harmless and
+    // deliberately not rejected (it would refuse workdirs that boot today):
+    // nothing in the guest reads KRUN_WORKDIR, and iii-init takes the
+    // worker's directory from III_WORKER_WORKDIR, which is quoted.
     let mut on_cmdline = cmdline_env.clone();
     on_cmdline.push(kv("KRUN_WORKDIR", &args.workdir));
     validate_cmdline_env(&on_cmdline).map_err(|e| {
@@ -1671,13 +1722,15 @@ mod tests {
     #[test]
     fn env_writer_delivers_a_frame_larger_than_the_socket_buffer() {
         let (host, mut guest) = std::os::unix::net::UnixStream::pair().unwrap();
-        let env = vec![
-            ("BIG".to_string(), "x".repeat(120 * 1024)),
-            (
-                "III_WORKER_CMD".to_string(),
-                "exec bash /opt/iii/dev-run.sh".to_string(),
-            ),
-        ];
+        // Over a Linux socketpair's ~180 KiB, so the writer really blocks;
+        // each variable stays under the 128 KiB execve limit.
+        let mut env: Vec<(String, String)> = (0..3)
+            .map(|i| (format!("BIG{i}"), "x".repeat(100 * 1024)))
+            .collect();
+        env.push((
+            "III_WORKER_CMD".to_string(),
+            "exec bash /opt/iii/dev-run.sh".to_string(),
+        ));
         let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
         spawn_env_writer(host, frame).unwrap();
         assert_eq!(
@@ -1692,6 +1745,84 @@ mod tests {
         let err = validate_cmdline_env(&[("KRUN_WORKDIR".to_string(), "/s\u{e3}o".to_string())])
             .unwrap_err();
         assert!(err.contains("KRUN_WORKDIR"), "{err}");
+    }
+
+    fn kvs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn port_path_keeps_worker_values_and_the_command_off_the_cmdline() {
+        let plan = split_vm_env(
+            kvs(&[("III_WORKER_MEM_BYTES", "1")]),
+            kvs(&[
+                ("API_KEY", "sk-secret"),
+                ("III_WORKER_CMD", "echo HIJACKED"),
+                ("III_ENV_PORT", "evil"),
+            ]),
+            "exec bash /opt/iii/dev-run.sh",
+            true,
+        );
+        assert!(
+            !plan
+                .cmdline
+                .iter()
+                .any(|(k, v)| k == "API_KEY" || k == "III_WORKER_CMD" || v.contains("sk-secret")),
+            "{:?}",
+            plan.cmdline
+        );
+        assert!(
+            plan.cmdline
+                .contains(&("III_ENV_PORT".to_string(), "iii.env".to_string()))
+        );
+        let frame = plan.frame.expect("frame on the port path");
+        assert_eq!(
+            frame,
+            kvs(&[
+                ("API_KEY", "sk-secret"),
+                ("III_WORKER_CMD", "exec bash /opt/iii/dev-run.sh"),
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_path_keeps_the_old_order_and_drops_a_forwarded_command() {
+        let plan = split_vm_env(
+            kvs(&[("III_WORKER_MEM_BYTES", "1")]),
+            kvs(&[("A", "1"), ("III_WORKER_CMD", "echo HIJACKED")]),
+            "run",
+            false,
+        );
+        assert!(plan.frame.is_none());
+        assert_eq!(
+            plan.cmdline,
+            kvs(&[
+                ("III_WORKER_CMD", "run"),
+                ("III_WORKER_MEM_BYTES", "1"),
+                ("A", "1"),
+                ("PATH", DEFAULT_GUEST_PATH),
+            ])
+        );
+    }
+
+    #[test]
+    fn path_fallback_only_when_the_worker_env_has_none() {
+        let with = split_vm_env(vec![], kvs(&[("PATH", "/x")]), "run", true);
+        assert!(!with.cmdline.iter().any(|(k, _)| k == "PATH"));
+        assert!(
+            with.frame
+                .unwrap()
+                .contains(&("PATH".to_string(), "/x".to_string()))
+        );
+        let without = split_vm_env(vec![], vec![], "run", true);
+        assert!(
+            without
+                .cmdline
+                .contains(&("PATH".to_string(), DEFAULT_GUEST_PATH.to_string()))
+        );
     }
 
     #[test]

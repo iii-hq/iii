@@ -80,7 +80,15 @@ pub fn validate_env(env: &[(String, String)]) -> Result<(), String> {
     for (key, value) in env {
         validate_pair(key, value)?;
     }
-    let total: usize = env.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
+    // Count each name once, as the process ends up with it: `set_var` keeps
+    // the last occurrence.
+    let mut seen = std::collections::HashSet::new();
+    let total: usize = env
+        .iter()
+        .rev()
+        .filter(|(key, _)| seen.insert(key.as_str()))
+        .map(|(k, v)| k.len() + v.len() + 2)
+        .sum();
     if total > MAX_ENV_BYTES {
         return Err(format!(
             "the worker environment is {total} bytes, over the {MAX_ENV_BYTES}-byte limit \
@@ -244,6 +252,15 @@ mod tests {
         assert!(err.to_string().contains("limit"), "{err}");
         let payload = serde_json::to_vec(&env).unwrap();
         assert!(decode_payload(&payload).is_err(), "decode enforces it too");
+    }
+
+    #[test]
+    fn a_repeated_name_counts_once_toward_the_total() {
+        let value = "x".repeat(120 * 1024);
+        let env: EnvPairs = (0..9)
+            .map(|_| ("SAME".to_string(), value.clone()))
+            .collect();
+        assert!(encode_payload(&env).is_ok());
     }
 
     #[test]

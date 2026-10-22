@@ -50,7 +50,8 @@ pub fn load_worker_env() -> Result<(), InitError> {
         Ok(name) => name,
         Err(_) => return Ok(()),
     };
-    let deadline = Instant::now() + TIMEOUT;
+    let started = Instant::now();
+    let deadline = started + TIMEOUT;
 
     let port_path = wait_for_port(&port_name, deadline).ok_or_else(|| {
         InitError::WorkerEnv(format!(
@@ -60,7 +61,7 @@ pub fn load_worker_env() -> Result<(), InitError> {
         ))
     })?;
 
-    let pairs = read_env_frame(&port_path, deadline)
+    let pairs = read_env_frame(&port_path, started, deadline)
         .map_err(|e| InitError::WorkerEnv(format!("reading {}: {e}", port_path.display())))?;
 
     // SAFETY: iii-init is single-threaded at this point. `main::run` calls
@@ -93,35 +94,41 @@ fn wait_for_port(name: &str, deadline: Instant) -> Option<PathBuf> {
     }
 }
 
-fn read_env_frame(port_path: &Path, deadline: Instant) -> io::Result<Vec<(String, String)>> {
+fn read_env_frame(
+    port_path: &Path,
+    started: Instant,
+    deadline: Instant,
+) -> io::Result<Vec<(String, String)>> {
     let mut port = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(port_path)?;
-    read_frame_patient(&mut port, deadline)
+    read_frame_patient(&mut port, started, deadline)
 }
 
 /// Reads one frame from a non-blocking reader, tolerating the transient EOF
 /// a virtio-console port reports before its host backend is connected, and
-/// giving up at `deadline`.
+/// giving up at `deadline`. `started` is when the whole load began (port
+/// lookup included), for the timeout message.
 fn read_frame_patient<R: Read + AsRawFd>(
     port: &mut R,
+    started: Instant,
     deadline: Instant,
 ) -> io::Result<Vec<(String, String)>> {
     let mut header = [0u8; 4];
-    read_exact_patient(port, &mut header, deadline)?;
+    read_exact_patient(port, &mut header, started, deadline)?;
     let mut payload = vec![0u8; frame_len(header)?];
-    read_exact_patient(port, &mut payload, deadline)?;
+    read_exact_patient(port, &mut payload, started, deadline)?;
     decode_payload(&payload)
 }
 
 fn read_exact_patient<R: Read + AsRawFd>(
     port: &mut R,
     buf: &mut [u8],
+    started: Instant,
     deadline: Instant,
 ) -> io::Result<()> {
-    let started = Instant::now();
     let mut filled = 0;
     while filled < buf.len() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -191,8 +198,9 @@ mod tests {
         ]
     }
 
-    fn soon(ms: u64) -> Instant {
-        Instant::now() + Duration::from_millis(ms)
+    fn read_within<R: Read + AsRawFd>(port: &mut R, ms: u64) -> io::Result<Vec<(String, String)>> {
+        let now = Instant::now();
+        read_frame_patient(port, now, now + Duration::from_millis(ms))
     }
 
     /// Scripted reads: `Ok(0)` entries model the transient EOF of a port
@@ -234,7 +242,7 @@ mod tests {
             }
             host
         });
-        assert_eq!(read_frame_patient(&mut guest, soon(5_000)).unwrap(), env());
+        assert_eq!(read_within(&mut guest, 5_000).unwrap(), env());
         drop(writer.join().unwrap());
     }
 
@@ -242,10 +250,14 @@ mod tests {
     fn frame_larger_than_the_socket_buffer_arrives_whole() {
         let (mut host, mut guest) = UnixStream::pair().unwrap();
         guest.set_nonblocking(true).unwrap();
-        let big = vec![("BIG".to_string(), "x".repeat(100 * 1024))];
+        // Over a Linux socketpair's ~180 KiB, so the writer really blocks;
+        // each variable stays under the 128 KiB execve limit.
+        let big: Vec<(String, String)> = (0..3)
+            .map(|i| (format!("BIG{i}"), "x".repeat(100 * 1024)))
+            .collect();
         let frame = encode_frame(&big).unwrap();
         let writer = std::thread::spawn(move || host.write_all(&frame).map(|_| host));
-        assert_eq!(read_frame_patient(&mut guest, soon(5_000)).unwrap(), big);
+        assert_eq!(read_within(&mut guest, 5_000).unwrap(), big);
         drop(writer.join().unwrap().unwrap());
     }
 
@@ -260,7 +272,7 @@ mod tests {
             Ok(vec![]),
             Ok(frame[3..].to_vec()),
         ]));
-        assert_eq!(read_frame_patient(&mut port, soon(5_000)).unwrap(), env());
+        assert_eq!(read_within(&mut port, 5_000).unwrap(), env());
     }
 
     #[test]
@@ -269,7 +281,7 @@ mod tests {
         guest.set_nonblocking(true).unwrap();
         let frame = encode_frame(&[("API_KEY".to_string(), "sk-secret".to_string())]).unwrap();
         host.write_all(&frame[..frame.len() - 3]).unwrap();
-        let err = read_frame_patient(&mut guest, soon(300)).unwrap_err();
+        let err = read_within(&mut guest, 300).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         let message = err.to_string();
         assert!(message.contains("bytes"), "{message}");
@@ -280,7 +292,7 @@ mod tests {
     #[test]
     fn closed_host_end_times_out_instead_of_spinning_forever() {
         let mut port = Scripted(VecDeque::new()); // EOF on every read
-        let err = read_frame_patient(&mut port, soon(150)).unwrap_err();
+        let err = read_within(&mut port, 150).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
     }
 
@@ -288,12 +300,18 @@ mod tests {
     fn oversized_header_is_rejected() {
         let header = (u32::MAX).to_be_bytes().to_vec();
         let mut port = Scripted(VecDeque::from(vec![Ok(header)]));
-        let err = read_frame_patient(&mut port, soon(1_000)).unwrap_err();
+        let err = read_within(&mut port, 1_000).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
     fn missing_port_gives_up_at_the_deadline() {
-        assert!(wait_for_port("iii.env-test-does-not-exist", soon(60)).is_none());
+        assert!(
+            wait_for_port(
+                "iii.env-test-does-not-exist",
+                Instant::now() + Duration::from_millis(60)
+            )
+            .is_none()
+        );
     }
 }
