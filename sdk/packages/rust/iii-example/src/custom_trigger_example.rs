@@ -9,6 +9,7 @@ use iii_sdk::{
     RegisterFunction, Source,
 };
 use serde_json::json;
+use std::pin::Pin;
 
 // ── Example 1: an owner-delivered source with typed args ────────────────
 
@@ -37,18 +38,26 @@ pub struct ScheduleFired {
 
 struct Scheduler;
 
-#[async_trait::async_trait]
 impl ObserveHandler for Scheduler {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let args: ScheduleArgs = obs.args()?;
-        if !args.at.ends_with('Z') {
-            return Err(ObserveRejection::new(
-                "INVALID_SCHEDULE",
-                format!("`at` must be a UTC timestamp, got {}", args.at),
-            ));
-        }
-        println!("[schedule] {} scheduled at {}", obs.target(), args.at);
-        Ok(())
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move {
+            let args: ScheduleArgs = obs.args()?;
+
+            if !args.at.ends_with('Z') {
+                return Err(ObserveRejection::new(
+                    "INVALID_SCHEDULE",
+                    format!("`at` must be a UTC timestamp, got {}", args.at),
+                ));
+            }
+
+            println!("[schedule] {} scheduled at {}", obs.target(), args.at);
+            Ok(())
+        })
     }
 }
 
@@ -82,12 +91,18 @@ pub struct FileChanged {
 
 struct FileWatcher;
 
-#[async_trait::async_trait]
 impl ObserveHandler for FileWatcher {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let args: FileWatchArgs = obs.args()?;
-        println!("[file-watch] Watching: {}", args.pattern);
-        Ok(())
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move {
+            let args: FileWatchArgs = obs.args()?;
+            println!("[file-watch] Watching: {}", args.pattern);
+            Ok(())
+        })
     }
 }
 

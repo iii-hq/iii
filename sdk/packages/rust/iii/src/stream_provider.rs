@@ -1,7 +1,6 @@
 // The trait signatures name the deprecated legacy `Stream*Input` models.
 #![allow(deprecated)]
 
-use async_trait::async_trait;
 use iii_helpers::stream::{
     StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
     StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult,
@@ -19,16 +18,29 @@ use crate::error::Error;
 // async_trait injects #[must_use] on boxed Future-returning trait methods.
 // Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
 // compatibility exception on the affected trait, not the crate or its impls.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
 pub trait IStream: Send + Sync + 'static {
-    async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, Error>;
-    async fn set(&self, input: StreamSetInput) -> Result<Option<StreamSetResult>, Error>;
-    async fn delete(&self, input: StreamDeleteInput) -> Result<StreamDeleteResult, Error>;
-    async fn list(&self, input: StreamListInput) -> Result<Vec<Value>, Error>;
-    async fn list_groups(&self, input: StreamListGroupsInput) -> Result<Vec<String>, Error>;
-    async fn update(&self, input: StreamUpdateInput) -> Result<Option<StreamUpdateResult>, Error>;
+    fn get(
+        &self,
+        input: StreamGetInput,
+    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send;
+    fn set(
+        &self,
+        input: StreamSetInput,
+    ) -> impl Future<Output = Result<Option<StreamSetResult>, Error>> + Send;
+    fn delete(
+        &self,
+        input: StreamDeleteInput,
+    ) -> impl Future<Output = Result<StreamDeleteResult, Error>> + Send;
+    fn list(
+        &self,
+        input: StreamListInput,
+    ) -> impl Future<Output = Result<Vec<Value>, Error>> + Send;
+    fn list_groups(
+        &self,
+        input: StreamListGroupsInput,
+    ) -> impl Future<Output = Result<Vec<String>, Error>> + Send;
+    fn update(
+        &self,
+        input: StreamUpdateInput,
+    ) -> impl Future<Output = Result<Option<StreamUpdateResult>, Error>> + Send;
 }

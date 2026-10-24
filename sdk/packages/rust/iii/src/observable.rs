@@ -61,11 +61,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,future::Future,pin::Pin
+    time::Duration,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -75,7 +77,6 @@ use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, value::to_raw_value};
 use tokio::sync::mpsc;
-
 
 use crate::{
     context::with_current,
@@ -205,20 +206,24 @@ impl Observe {
 )]
 pub trait ObserveHandler: Send + Sync + 'static {
     /// An observer was attached to the function. Index it by its args here.
-     fn on_observer_added<'a>(&'a self, obs: &Observer) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
         let _ = obs;
         Box::pin(async { Ok(()) })
     }
 
     /// An observer was detached (unobserve, disposal, its worker left for
     /// good, a reconnect that no longer lists it). Cannot fail.
-     fn on_observer_removed<'a>(&'a self, obs: &Observer) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
-    {
+    fn on_observer_removed<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let _ = obs;
         Box::pin(async {})
     }
 }
-
 
 impl<T: ObserveHandler + ?Sized> ObserveHandler for Arc<T> {
     fn on_observer_added<'a>(
@@ -227,9 +232,7 @@ impl<T: ObserveHandler + ?Sized> ObserveHandler for Arc<T> {
     ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
         let obs = obs.clone();
 
-        Box::pin(async move {
-            (**self).on_observer_added(&obs).await
-        })
+        Box::pin(async move { (**self).on_observer_added(&obs).await })
     }
 
     fn on_observer_removed<'a>(
@@ -238,9 +241,7 @@ impl<T: ObserveHandler + ?Sized> ObserveHandler for Arc<T> {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let obs = obs.clone();
 
-        Box::pin(async move {
-            (**self).on_observer_removed(&obs).await
-        })
+        Box::pin(async move { (**self).on_observer_removed(&obs).await })
     }
 }
 

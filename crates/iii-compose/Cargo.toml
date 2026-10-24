@@ -10,7 +10,6 @@ name = "iii_compose"
 path = "src/lib.rs"
 
 [dependencies]
-async-trait = "0.1"
 chrono = "0.4"
 clap = { workspace = true }
 serde = { workspace = true }
@@ -65,13 +64,13 @@ nix = { version = "0.31", features = ["signal", "process"] }
 # graceful stop that unix gets from SIGTERM.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
-  "Win32_Foundation",
-  "Win32_Globalization",
-  # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
-  "Win32_Security",
-  "Win32_System_Console",
-  "Win32_System_JobObjects",
-  "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

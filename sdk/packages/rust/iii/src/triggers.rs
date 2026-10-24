@@ -1,6 +1,5 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::Error;
@@ -35,16 +34,17 @@ pub struct TriggerConfig {
 // async_trait injects #[must_use] on boxed Future-returning trait methods.
 // Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
 // compatibility exception on the affected trait, not the crate or its impls.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error>;
+    fn register_trigger<'a>(
+        &'a self,
+        config: TriggerConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
     /// Called when a trigger instance is unregistered.
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error>;
+    fn unregister_trigger<'a>(
+        &'a self,
+        config: TriggerConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
 /// Handle returned by [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
