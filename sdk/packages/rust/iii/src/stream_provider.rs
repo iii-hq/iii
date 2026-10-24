@@ -1,6 +1,8 @@
 // The trait signatures name the deprecated legacy `Stream*Input` models.
 #![allow(deprecated)]
 
+use std::pin::Pin;
+
 use iii_helpers::stream::{
     StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
     StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult,
@@ -16,28 +18,28 @@ use crate::error::Error;
     note = "IStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
 pub trait IStream: Send + Sync + 'static {
-    fn get(
-        &self,
+    fn get<'a>(
+        &'a self,
         input: StreamGetInput,
-    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send;
-    fn set(
-        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send +'a >>;
+    fn set<'a>(
+        &'a self,
         input: StreamSetInput,
-    ) -> impl Future<Output = Result<Option<StreamSetResult>, Error>> + Send;
-    fn delete(
-        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<StreamSetResult>, Error>> + Send+'a >>;
+    fn delete<'a>(
+        &'a self,
         input: StreamDeleteInput,
-    ) -> impl Future<Output = Result<StreamDeleteResult, Error>> + Send;
-    fn list(
-        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamDeleteResult, Error>> + Send+'a >>;
+    fn list<'a>(
+        &'a self,
         input: StreamListInput,
-    ) -> impl Future<Output = Result<Vec<Value>, Error>> + Send;
-    fn list_groups(
-        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>, Error>> + Send+'a >>;
+    fn list_groups<'a>(
+        &'a self,
         input: StreamListGroupsInput,
-    ) -> impl Future<Output = Result<Vec<String>, Error>> + Send;
-    fn update(
-        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, Error>> + Send+'a >>;
+    fn update<'a>(
+        &'a self,
         input: StreamUpdateInput,
-    ) -> impl Future<Output = Result<Option<StreamUpdateResult>, Error>> + Send;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<StreamUpdateResult>, Error>> + Send+'a >>;
 }

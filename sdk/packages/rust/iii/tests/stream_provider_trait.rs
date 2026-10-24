@@ -1,6 +1,5 @@
 #![allow(deprecated)] // exercises the deprecated legacy IStream provider surface
 
-use async_trait::async_trait;
 use iii_helpers::stream::{
     StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
     StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult,
@@ -8,30 +7,48 @@ use iii_helpers::stream::{
 use iii_sdk::IStream;
 use serde_json::Value;
 
+use std::pin::Pin;
+
 struct DummyStream;
 
-#[async_trait]
 impl IStream for DummyStream {
-    async fn get(&self, _: StreamGetInput) -> Result<Option<Value>, iii_sdk::Error> {
-        Ok(None)
+    fn get<'a>(
+        &'a self,
+        _: StreamGetInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, iii_sdk::Error>> + Send + 'a>> {
+        Box::pin(async move { Ok(None) })
     }
-    async fn set(&self, _: StreamSetInput) -> Result<Option<StreamSetResult>, iii_sdk::Error> {
-        Ok(None)
+    fn set<'a>(
+        &'a self,
+        _: StreamSetInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<StreamSetResult>, iii_sdk::Error>> + Send + 'a>>
+    {
+        Box::pin(async move { Ok(None) })
     }
-    async fn delete(&self, _: StreamDeleteInput) -> Result<StreamDeleteResult, iii_sdk::Error> {
-        Ok(StreamDeleteResult::default())
+    fn delete<'a>(
+        &'a self,
+        _: StreamDeleteInput,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamDeleteResult, iii_sdk::Error>> + Send + 'a>> {
+        Box::pin(async move { Ok(StreamDeleteResult::default()) })
     }
-    async fn list(&self, _: StreamListInput) -> Result<Vec<Value>, iii_sdk::Error> {
-        Ok(vec![])
+    fn list<'a>(
+        &'a self,
+        _: StreamListInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>, iii_sdk::Error>> + Send + 'a>> {
+        Box::pin(async move { Ok(vec![]) })
     }
-    async fn list_groups(&self, _: StreamListGroupsInput) -> Result<Vec<String>, iii_sdk::Error> {
-        Ok(vec![])
+    fn list_groups<'a>(
+        &'a self,
+        _: StreamListGroupsInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, iii_sdk::Error>> + Send + 'a>> {
+        Box::pin(async move { Ok(vec![]) })
     }
-    async fn update(
-        &self,
+    fn update<'a>(
+        &'a self,
         _: StreamUpdateInput,
-    ) -> Result<Option<StreamUpdateResult>, iii_sdk::Error> {
-        Ok(None)
+    ) -> Pin<Box<dyn Future<Output = Result<Option<StreamUpdateResult>, iii_sdk::Error>> + Send + 'a>>
+    {
+        Box::pin(async move { Ok(None) })
     }
 }
 
