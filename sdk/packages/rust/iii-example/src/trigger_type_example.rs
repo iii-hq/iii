@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 
@@ -65,25 +66,38 @@ impl WebhookRoutes {
     }
 }
 
-#[async_trait::async_trait]
 impl ObserveHandler for WebhookRoutes {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let WebhookArgs { url, .. } = obs.args()?;
-        println!("[webhook] {} now receives webhooks on {url}", obs.target());
-        self.0
-            .lock()
-            .unwrap()
-            .entry(url)
-            .or_default()
-            .push(obs.clone());
-        Ok(())
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move {
+            let WebhookArgs { url, .. } = obs.args()?;
+            println!("[webhook] {} now receives webhooks on {url}", obs.target());
+            self.0
+                .lock()
+                .unwrap()
+                .entry(url)
+                .or_default()
+                .push(obs.clone());
+            Ok(())
+        })
     }
 
-    async fn on_observer_removed(&self, obs: &Observer) {
-        println!("[webhook] observer {} removed", obs.id());
-        for observers in self.0.lock().unwrap().values_mut() {
-            observers.retain(|o| o != obs);
-        }
+    fn on_observer_removed<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move {
+            println!("[webhook] observer {} removed", obs.id());
+            for observers in self.0.lock().unwrap().values_mut() {
+                observers.retain(|o| *o != obs);
+            }
+        })
     }
 }
 

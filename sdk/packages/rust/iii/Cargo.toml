@@ -17,7 +17,6 @@ path = "src/lib.rs"
 
 [dependencies]
 arc-swap = "1"
-async-trait = "0.1.92"
 futures-util = "0.3"
 hostname = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -36,6 +35,7 @@ iii-filter = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
+async-trait = "0.1.92"
 criterion = "0.5"
 ctor = "0.6.3"
 opentelemetry = { version = "0.32" }

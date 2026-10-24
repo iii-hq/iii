@@ -10,6 +10,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    pin::Pin,
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Instant,
 };
@@ -52,22 +53,31 @@ struct ProgressTriggers {
     bindings: Arc<Mutex<BTreeMap<String, TriggerConfig>>>,
 }
 
-#[async_trait::async_trait]
 impl TriggerHandler for ProgressTriggers {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), config);
-        Ok(())
+    fn register_trigger<'a>(
+        &'a self,
+        config: TriggerConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            self.bindings
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(config.id.clone(), config);
+            Ok(())
+        })
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
+    fn unregister_trigger<'a>(
+        &'a self,
+        config: TriggerConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            self.bindings
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&config.id);
+            Ok(())
+        })
     }
 }
 

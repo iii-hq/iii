@@ -179,7 +179,7 @@ impl QueueBudget {
         let limit = self.limit.load(Ordering::Relaxed);
         let fits = self
             .bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
                 bytes.checked_add(cost).filter(|total| *total <= limit)
             })
             .is_ok();
@@ -607,7 +607,7 @@ impl ObserverRegistry {
         // overshoot the budget together.
         let reserved = self
             .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 queued.checked_add(bytes).filter(|total| *total <= budget)
             })
             .is_ok();
@@ -1459,7 +1459,7 @@ fn sdk_drop_reason(reason: &str) -> &'static str {
 }
 
 fn saturating_add(counter: &std::sync::atomic::AtomicU64, count: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
         Some(total.saturating_add(count))
     });
 }
@@ -1471,7 +1471,7 @@ fn take_fire(observer: &Observer) -> Option<u64> {
         Some(max) => {
             match observer
                 .fires
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |fires| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |fires| {
                     (fires < max).then_some(fires + 1)
                 }) {
                 Ok(previous) => Some(previous + 1),

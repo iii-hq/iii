@@ -61,6 +61,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -69,7 +71,6 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use async_trait::async_trait;
 use futures_util::FutureExt;
 use iii_filter::{Doc, Filter};
 use schemars::JsonSchema;
@@ -198,34 +199,44 @@ impl Observe {
 /// next `.await`) so the function's next callback can run; anything it
 /// spawned keeps running and may overlap that next callback. Callbacks run on
 /// the connection's runtime: do not block in them.
-// async_trait injects #[must_use] on boxed Future-returning trait methods.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
 pub trait ObserveHandler: Send + Sync + 'static {
     /// An observer was attached to the function. Index it by its args here.
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
         let _ = obs;
-        Ok(())
+        Box::pin(async { Ok(()) })
     }
 
     /// An observer was detached (unobserve, disposal, its worker left for
     /// good, a reconnect that no longer lists it). Cannot fail.
-    async fn on_observer_removed(&self, obs: &Observer) {
+    fn on_observer_removed<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let _ = obs;
+        Box::pin(async {})
     }
 }
 
-#[async_trait]
 impl<T: ObserveHandler + ?Sized> ObserveHandler for Arc<T> {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        (**self).on_observer_added(obs).await
+    fn on_observer_added<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move { (**self).on_observer_added(&obs).await })
     }
 
-    async fn on_observer_removed(&self, obs: &Observer) {
-        (**self).on_observer_removed(obs).await
+    fn on_observer_removed<'a>(
+        &'a self,
+        obs: &Observer,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let obs = obs.clone();
+
+        Box::pin(async move { (**self).on_observer_removed(&obs).await })
     }
 }
 
