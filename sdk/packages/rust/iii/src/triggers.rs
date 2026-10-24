@@ -31,9 +31,6 @@ pub struct TriggerConfig {
 /// instead (`on_observer_added` / `on_observer_removed`, with the observer's
 /// args in place of the trigger config). Migration guide:
 /// <https://iii.dev/docs/upgrading/from-0-24-x>.
-// async_trait injects #[must_use] on boxed Future-returning trait methods.
-// Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
-// compatibility exception on the affected trait, not the crate or its impls.
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
     fn register_trigger<'a>(

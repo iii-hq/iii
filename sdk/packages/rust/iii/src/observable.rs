@@ -199,11 +199,6 @@ impl Observe {
 /// next `.await`) so the function's next callback can run; anything it
 /// spawned keeps running and may overlap that next callback. Callbacks run on
 /// the connection's runtime: do not block in them.
-// async_trait injects #[must_use] on boxed Future-returning trait methods.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
 pub trait ObserveHandler: Send + Sync + 'static {
     /// An observer was attached to the function. Index it by its args here.
     fn on_observer_added<'a>(
