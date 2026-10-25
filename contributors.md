@@ -23,3 +23,4 @@ The following users make all of their contributions to iii under the Apache 2 li
 - @1aifanatic
 - @WanderLandWalker
 - @bsodmike
+- @iziang
