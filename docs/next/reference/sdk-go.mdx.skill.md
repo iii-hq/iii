@@ -1413,8 +1413,6 @@ func WithNamespace(namespace string) Option
 
 WithOtel configures the client's OpenTelemetry pipeline (the otel option of Node registerWorker). Telemetry starts with the connection lifecycle (`RegisterWorker` or `Client.Connect`) and `Client.Close` flushes and stops it. Without this option the defaults documented on `OtelConfig` apply, and they enable telemetry.
 
-To turn telemetry off:
-
 **Signature**
 
 ```go
@@ -1475,6 +1473,7 @@ c := iii.RegisterWorker(url, iii.WithOtel(iii.OtelConfig{ServiceName: "orders"})
 ```
 
 ```go
+// To turn telemetry off:
 off := false
 c := iii.RegisterWorker(url, iii.WithOtel(iii.OtelConfig{Enabled: &off}))
 ```

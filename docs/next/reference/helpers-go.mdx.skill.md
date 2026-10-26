@@ -21,7 +21,7 @@ Package http holds the HTTP helpers of the iii Go SDK: the Go counterpart of the
 **Import**
 
 ```go
-import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http"
+import iiihttp "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http"
 ```
 
 ### Functions
