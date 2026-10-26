@@ -367,3 +367,27 @@ async fn bidirectional_streaming() {
 
     assert_eq!(result["workerResult"]["status"], "done");
 }
+
+/// A writer dropped without `close()` (a crash, a cancelled task) cuts the
+/// stream: the reader gets the data sent before it, then an error, never a
+/// clean end.
+#[tokio::test]
+async fn reader_fails_when_the_writer_drops_without_close() {
+    let iii = common::shared_iii();
+    let channel = iii_sdk::helpers::create_channel(iii, None)
+        .await
+        .expect("create channel");
+    channel.writer.write(b"partial").await.expect("write");
+    drop(channel.writer);
+
+    let mut read = Vec::new();
+    let error = loop {
+        match channel.reader.next_binary().await {
+            Ok(Some(chunk)) => read.extend(chunk),
+            Ok(None) => panic!("a cut stream must not end cleanly"),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(read, b"partial");
+    assert!(error.to_string().contains("1011"), "{error}");
+}
