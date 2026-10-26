@@ -137,11 +137,23 @@ pub(crate) fn vm_boot_args(
         args.push("--net-activity-file".into());
         args.push(crate::sandbox_daemon::registry::net_activity_path(&params.shell_sock).into());
     }
-    for e in &params.env {
-        args.push("--env".into());
-        args.push(e.into());
-    }
+    // Env values go on stdin (`env_stdin_payload`), never argv, where `ps`
+    // shows them to every local user (MOT-5492).
+    args.push("--env-stdin".into());
     args
+}
+
+/// `params.env` (`KEY=VALUE` entries) as the `__vm-boot --env-stdin`
+/// payload. Entries without `=` are dropped, as `__vm-boot` always did.
+pub(crate) fn env_stdin_payload(params: &BootParams) -> Result<Vec<u8>, SandboxError> {
+    let pairs: Vec<(String, String)> = params
+        .env
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+    iii_supervisor::env_channel::encode_payload(&pairs)
+        .map_err(|e| SandboxError::BootFailed(format!("sandbox env: {e}")))
 }
 
 pub struct IiiWorkerLauncher;
@@ -265,9 +277,11 @@ impl VmLauncher for IiiWorkerLauncher {
         // reaper semantics simple.
         let control_sock = params.shell_sock.with_file_name("control.sock");
 
+        let env_stdin = env_stdin_payload(params)?;
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("__vm-boot")
-            .args(vm_boot_args(params, &rootfs_lower, &control_sock));
+            .args(vm_boot_args(params, &rootfs_lower, &control_sock))
+            .stdin(std::process::Stdio::piped());
 
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
@@ -288,11 +302,14 @@ impl VmLauncher for IiiWorkerLauncher {
             .map_err(|e| SandboxError::BootFailed(format!("lifeline pipe: {e}")))?;
 
         let t_spawn = Instant::now();
-        let child = cmd
+        let mut child = cmd
             .stdout(std::process::Stdio::null())
             .stderr(stderr)
             .spawn()
             .map_err(|e| SandboxError::BootFailed(format!("spawn iii-worker __vm-boot: {e}")))?;
+        crate::cli::worker_manager::libkrun::feed_env_stdin(child.stdin.take(), &env_stdin)
+            .await
+            .map_err(|e| SandboxError::BootFailed(format!("send sandbox env to __vm-boot: {e}")))?;
 
         let vm_pid = child
             .id()
@@ -876,6 +893,13 @@ mod sandbox_boot_shape_tests {
         .collect()
     }
 
+    #[test]
+    fn sandbox_env_travels_in_the_stdin_payload() {
+        let payload = env_stdin_payload(&params(false)).unwrap();
+        let pairs = iii_supervisor::env_channel::decode_payload(&payload).unwrap();
+        assert_eq!(pairs, vec![("A".to_string(), "1".to_string())]);
+    }
+
     fn value_of(args: &[String], flag: &str) -> Option<String> {
         let i = args.iter().position(|a| a == flag)?;
         args.get(i + 1).cloned()
@@ -896,7 +920,11 @@ mod sandbox_boot_shape_tests {
             !a.iter().any(|x| x == CACHE),
             "the shared cache dir must never be passed to the guest"
         );
-        assert_eq!(value_of(&a, "--env").as_deref(), Some("A=1"));
+        assert!(a.iter().any(|x| x == "--env-stdin"));
+        assert!(
+            !a.iter().any(|x| x == "--env" || x == "A=1"),
+            "env values must not reach argv: {a:?}"
+        );
         assert!(!a.iter().any(|x| x == "--network"));
     }
 
