@@ -37,7 +37,7 @@ func main() {
 
 	// Exposed over HTTP, so the handler speaks the engine's HTTP envelope: the request
 	// body is under "body", and the response is { status_code, body }.
-	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	greet, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`
@@ -51,20 +51,28 @@ func main() {
 			"body":        map[string]string{"message": "Hello, " + req.Body.Name + "!"},
 		}, nil
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	client.RegisterTrigger("hello-http", "http", "hello::greet",
-		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`), nil)
+	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+		Type:       "http",
+		FunctionID: greet.ID,
+		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
+	}); err != nil {
+		log.Fatal(err)
+	}
 
 	// RegisterWorker already started connecting; Connect blocks until the first
 	// connection is established (or the context is cancelled).
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Shutdown(context.Background())
 
 	result, err := client.Trigger(context.Background(), iii.TriggerRequest{
-		FunctionID: "hello::greet",
-		Data:       json.RawMessage(`{"body":{"name":"world"}}`),
+		FunctionID: greet.ID,
+		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -89,28 +97,31 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Engine address | `iii.EngineURLFromEnv() string` | `III_URL`, trimmed, else `DefaultEngineURL` (`ws://127.0.0.1:49134`). `New("")` and `RegisterWorker("")` use it. |
 | Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
 | Wait for registration | `client.WaitUntilRegistered(ctx) error` | Block until the engine acknowledged the worker on the current connection. |
-| Connection state | `client.OnConnectionStateChange(listener) (unsubscribe func())` | Follow `connecting`, `connected`, `reconnecting`, `disconnected` and `failed`, in order. |
-| Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...)` | Register a function with request/response schemas inferred from the types. |
-| Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
-| Register HTTP function | `client.RegisterHTTPFunction(id, iii.HTTPInvocationRef{...}, opts...) error` | Register a function hosted elsewhere that the engine invokes over HTTP. |
-| Unregister | `client.UnregisterFunction(id) error` | Remove a function; reconnects no longer register it. |
+| Connection state | `client.ConnectionState() ConnectionState`, `client.OnConnectionStateChange(listener) (unsubscribe func())` | The current state, and every change (`connecting`, `connected`, `reconnecting`, `disconnected`, `failed`) in order. |
+| Worker id | `client.WorkerID() string` | The id the engine assigned (empty before the first acknowledgement). |
+| Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...) (*FunctionRef, error)` | Register a function with request/response schemas inferred from the types. |
+| Register function | `client.RegisterFunction(id, handler, opts...) (*FunctionRef, error)` | Register a function the engine can invoke by name. |
+| Register HTTP function | `client.RegisterHTTPFunction(id, iii.HTTPInvocationRef{...}, opts...) (*FunctionRef, error)` | Register a function hosted elsewhere that the engine invokes over HTTP. |
+| Unregister | `ref.Unregister() error` | Remove the function (or trigger, or trigger type) the handle refers to; reconnects no longer register it. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
 | Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)` | Invoke `target` on every matching invocation (or owner event) of a function. |
 | Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
 | Owner hooks | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}` | React when the function is observed; hand events to observers with `obs.Emit` / `obs.Call`. |
-| Observed? | `client.IsObserved(id)`, `client.Observers(id)` | The active observers of a function this worker registered. |
-| Register trigger (deprecated) | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. Use `Observe`. |
-| Register trigger type (deprecated) | `client.RegisterTriggerType(id, description, handler, opts...) error` | Implement a custom trigger type. Use `ObserveHooks`. |
-| Unregister trigger, trigger type | `client.UnregisterTrigger(id) error`, `client.UnregisterTriggerType(id) error` (deprecated) | Remove a trigger or a trigger type; reconnects no longer register it. |
-| Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
+| Observed? | `ref.IsObserved()`, `ref.Observers()` (or `client.IsObserved(id)`, `client.Observers(id)`) | The active observers of a function this worker registered. |
+| Register trigger (deprecated) | `client.RegisterTrigger(iii.RegisterTriggerInput{...}) (*Trigger, error)` | Bind a trigger (HTTP, cron, queue, …) to a function. Use `Observe` where the source has moved. |
+| Register trigger type (deprecated) | `client.RegisterTriggerType(iii.RegisterTriggerTypeInput{...}, handler) (*TriggerTypeRef, error)` | Implement a custom trigger type. Use `ObserveHooks`. |
+| Unregister trigger type by id (deprecated) | `client.UnregisterTriggerType(id) error` | Remove a trigger type without its handle. |
+| Invoke (await) | `client.Trigger(ctx, TriggerRequest{FunctionID, Payload, ...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
 | Invoke (enqueue) | `client.Trigger(ctx, TriggerRequest{Action: iii.EnqueueAction("queue")})` | Route the invocation through a named queue. |
 | Create channel | `client.CreateChannel(ctx, bufferSize)` | Open a streaming data channel (writer + reader ends). |
 | Open channel end | `client.OpenReader(ref)`, `client.OpenWriter(ref)` | Open the end of a channel received in a payload, with the client's address and headers. |
-| Close | `client.Close() error` | Stop reconnecting, cancel pending calls, close the socket. |
+| Shut down | `client.Shutdown(ctx) error` | Stop gracefully: flush reports and telemetry within ctx, cancel pending calls, close the socket with a handshake. |
+| Close | `client.Close() error` | Stop at once (io.Closer): short fixed flush bounds, cancel pending calls, drop the socket. |
 
 `Register*` may be called before or after `Connect`; registrations are kept in memory and
-(re)sent to the engine on every (re)connection, until the matching `Unregister*` call.
+(re)sent to the engine on every (re)connection, until the handle they returned is
+unregistered.
 
 ### Options
 
@@ -131,10 +142,11 @@ Pass options to `New` or `RegisterWorker`:
 ### Registering functions
 
 A handler receives the raw JSON payload and returns any value (marshaled into the
-invocation result) or an error:
+invocation result) or an error. The registration returns a `*iii.FunctionRef`, the
+function's handle:
 
 ```go
-client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
+ref, err := client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
 	var in struct {
 		Item string `json:"item"`
 	}
@@ -226,7 +238,7 @@ secrets, never the secrets themselves.
 
 ```go
 timeout := uint64(10000)
-err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocationRef{
+charge, err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocationRef{
 	URL:       "https://billing.example.com/charge",
 	TimeoutMs: &timeout,
 	Headers:   map[string]string{"x-team": "billing"},
@@ -236,46 +248,67 @@ err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocationRef{
 
 ### Unregistering
 
-`client.UnregisterFunction(id)`, `client.UnregisterTrigger(id)` and the deprecated
-`client.UnregisterTriggerType(id)` remove a registration: the engine is told when the
-client is connected, and later reconnects no longer replay it. `UnregisterFunction` also
-releases the function's observers. Each returns an error when nothing is registered
-under `id`.
+Every registration returns a handle whose `Unregister` removes it: `*FunctionRef` (from
+`RegisterFunction`, `RegisterHTTPFunction`, `RegisterFunctionTyped`), `*Trigger` (from
+`RegisterTrigger`) and `*TriggerTypeRef` (from `RegisterTriggerType`). The engine is told
+when the client is connected, and later reconnects no longer replay the registration.
+`FunctionRef.Unregister` also releases the function's observers.
+
+```go
+ref, err := client.RegisterFunction("jobs::nightly", handler)
+// ...
+if err := ref.Unregister(); err != nil {
+	log.Fatal(err) // only for a handle the client did not return
+}
+```
+
+`Unregister` is idempotent, as in the Node SDK: a second call, or a call on a handle whose
+id was registered again since, does nothing and returns nil. The deprecated
+`client.UnregisterTriggerType(id)` removes a trigger type by id.
 
 ### Describing custom trigger types
 
-Pass one `RegisterTriggerTypeOptions` value to describe the configuration accepted
+`RegisterTriggerTypeInput` names the type and can describe the configuration accepted
 when binding a trigger and the payload delivered when it fires. Given a `handler`
 that implements `iii.TriggerHandler`:
 
 ```go
-err := client.RegisterTriggerType("messaging::events", "Filtered message events", handler,
-	iii.RegisterTriggerTypeOptions{
-		TriggerRequestFormat: json.RawMessage(`{
-			"type":"object",
-			"properties":{"chat_ids":{"type":"array","items":{"type":"string"}}},
-			"additionalProperties":false
-		}`),
-		CallRequestFormat: json.RawMessage(`{
-			"type":"object",
-			"properties":{"message_id":{"type":"string"},"text":{"type":"string"}},
-			"required":["message_id"]
-		}`),
-	})
+events, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
+	ID:          "messaging::events",
+	Description: "Filtered message events",
+	TriggerRequestFormat: json.RawMessage(`{
+		"type":"object",
+		"properties":{"chat_ids":{"type":"array","items":{"type":"string"}}},
+		"additionalProperties":false
+	}`),
+	CallRequestFormat: json.RawMessage(`{
+		"type":"object",
+		"properties":{"message_id":{"type":"string"},"text":{"type":"string"}},
+		"required":["message_id"]
+	}`),
+}, handler)
 if err != nil {
 	log.Fatal(err)
 }
+
+// Bind a trigger of this type to an existing function, or register a function and
+// bind it in one call; both resolve the function in this worker's namespace.
+_, err = events.RegisterTrigger("chat::on-message", json.RawMessage(`{"chat_ids":["c1"]}`))
+_, err = events.RegisterFunction("chat::audit", auditHandler, json.RawMessage(`{"chat_ids":["c2"]}`))
 ```
+
+The `FunctionRef` from `events.RegisterFunction` controls the function only: as in the
+Node SDK, its `Unregister` leaves the trigger bound until `events.Unregister()` removes
+the type.
 
 `engine::triggers::info` exposes `TriggerRequestFormat` as `configuration_schema`
 and `CallRequestFormat` as `request_schema`. Inspect a provider using
 `{"id":"messaging::events","namespace":"your-worker-namespace"}`. You can also
 generate either schema with `iii.InferSchema[T]()`.
 
-Existing three-argument calls remain valid. Nil or empty schema bytes omit the
-corresponding field. The SDK copies the bytes for registration and reconnect
-replay, rejects malformed JSON or multiple options values, and preserves the
-previous registration when an update is rejected. Schemas describe the contract;
+Nil or empty schema bytes omit the corresponding field. The SDK copies the bytes for
+registration and reconnect replay, rejects malformed JSON, and preserves the previous
+registration when an update is rejected. Schemas describe the contract;
 handlers remain responsible for validating trigger configuration and payloads.
 The SDK checks JSON syntax, not JSON Schema semantics.
 
@@ -285,13 +318,13 @@ The SDK checks JSON syntax, not JSON Schema semantics.
 // Await the result.
 res, err := client.Trigger(ctx, iii.TriggerRequest{
 	FunctionID: "orders::create",
-	Data:       json.RawMessage(`{"item":"widget"}`),
+	Payload:    json.RawMessage(`{"item":"widget"}`),
 })
 
 // Fire-and-forget (e.g. logging).
 client.Trigger(ctx, iii.TriggerRequest{
 	FunctionID: iii.LogInfo,
-	Data:       json.RawMessage(`{"message":"page_view"}`),
+	Payload:    json.RawMessage(`{"message":"page_view"}`),
 	Action:     iii.VoidAction(),
 })
 
@@ -429,7 +462,26 @@ if err := client.WaitUntilRegistered(ctx); err != nil {
 ```
 
 Listeners run one at a time, in order, on a goroutine of the client's own, so they may
-call the client.
+call the client. `client.ConnectionState()` reads the current state and
+`client.WorkerID()` the id the engine assigned.
+
+Stop a worker with `Shutdown` or `Close`:
+
+- `client.Shutdown(ctx)` is graceful, like the Node SDK's `shutdown()` and bounded by ctx
+  like `http.Server.Shutdown`: it waits for buffered observe reports to be written,
+  flushes and stops the telemetry exporters, cancels pending calls with
+  `ErrNotConnected`, and closes the socket with a normal-closure handshake. When ctx ends
+  first it cuts the rest short and returns `ctx.Err()`; the client is stopped either way.
+- `client.Close()` (`io.Closer`) stops at once: the report flush gets 250ms and the
+  telemetry flush at most 10s, and the socket is dropped without a handshake.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+if err := client.Shutdown(ctx); err != nil {
+	log.Printf("shutdown cut short: %v", err)
+}
+```
 
 ## Streaming channels
 
@@ -546,6 +598,101 @@ func quote(ctx context.Context, data json.RawMessage) (any, error) {
 
 Without running telemetry (turned off, or no client started) the helpers fall back: the
 `Logger` writes to the standard `log` package and spans use the global tracer provider.
+
+## Migrating from 0.25
+
+The module is 0.x, and this release changes its API. It requires **Go 1.25 or later**
+(the module's `go` directive is 1.25).
+
+**Registrations return handles.** `RegisterFunction`, `RegisterHTTPFunction` and
+`RegisterFunctionTyped` return `(*FunctionRef, error)`; unregister through the handle.
+
+```go
+// 0.25
+if err := client.RegisterFunction("orders::create", handler); err != nil {
+	log.Fatal(err)
+}
+
+// now
+ref, err := client.RegisterFunction("orders::create", handler)
+if err != nil {
+	log.Fatal(err)
+}
+_ = ref.Unregister() // when the function is retired
+```
+
+**`RegisterTrigger` takes a `RegisterTriggerInput` and returns a `*Trigger`.** An empty
+`ID` makes the SDK generate one (a UUID, as the Node and Python SDKs do), nil `Config`
+is sent as `{}`, `Namespace` is where the function resolves (empty: this worker's
+namespace) and `TriggerNamespace` where the trigger type's provider is found (empty: the
+engine resolves it). `RegisterTriggerNamespaced` keeps its signature and is deprecated.
+
+```go
+// 0.25
+err := client.RegisterTrigger("orders-http", "http", "orders::create",
+	json.RawMessage(`{"api_path":"/orders","http_method":"POST"}`))
+
+// now
+trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+	ID:         "orders-http", // optional
+	Type:       "http",
+	FunctionID: "orders::create",
+	Config:     json.RawMessage(`{"api_path":"/orders","http_method":"POST"}`),
+})
+// later: trigger.Unregister()
+```
+
+**`RegisterTriggerType` takes a `RegisterTriggerTypeInput` and the handler, and returns a
+`*TriggerTypeRef`.** `RegisterTriggerTypeOptions` is removed; its two schemas are fields
+of the input.
+
+```go
+// 0.25
+err := client.RegisterTriggerType("webhook", "Webhooks", handler,
+	iii.RegisterTriggerTypeOptions{TriggerRequestFormat: configSchema})
+
+// now
+webhooks, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
+	ID:                   "webhook",
+	Description:          "Webhooks",
+	TriggerRequestFormat: configSchema,
+}, handler)
+// webhooks.RegisterTrigger(functionID, config), webhooks.RegisterFunction(id, h, config),
+// webhooks.Unregister()
+```
+
+**`TriggerRequest.Payload` replaces `Data`.** `Data` still works when `Payload` is nil,
+and is deprecated.
+
+```go
+// 0.25
+client.Trigger(ctx, iii.TriggerRequest{FunctionID: "orders::create", Data: body})
+
+// now
+client.Trigger(ctx, iii.TriggerRequest{FunctionID: "orders::create", Payload: body})
+```
+
+**`ConnectionState()` replaces `State()`**, which stays as a deprecated alias.
+
+```go
+// 0.25
+if client.State() == iii.StateConnected {
+	log.Print("connected")
+}
+
+// now
+if client.ConnectionState() == iii.StateConnected {
+	log.Print("connected")
+}
+```
+
+**New:** `client.Shutdown(ctx)` for a graceful stop (see
+[Connection behavior](#connection-behavior)) and `client.WorkerID()`.
+
+Other changes in this release: `DefaultEngineURL` is `ws://127.0.0.1:49134` and an empty
+address reads `III_URL`; OpenTelemetry export is on by default (see
+[Observability](#observability) to configure or turn it off); an invocation that reaches a
+function registered with `RegisterHTTPFunction` is answered with `function_not_invokable`.
 
 ## Resources
 
