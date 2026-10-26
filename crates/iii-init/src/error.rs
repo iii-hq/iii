@@ -53,4 +53,7 @@ pub enum InitError {
 
     #[error("invalid CIDR prefix in III_INIT_CIDR: {0}")]
     InvalidCidr(String),
+
+    #[error("cannot load the worker environment: {0}")]
+    WorkerEnv(String),
 }

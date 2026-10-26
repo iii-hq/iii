@@ -1114,8 +1114,9 @@ async fn start_one_until_shutdown(
     }
 
     let plan = spawn_plan(&spawn_ctx);
-    let command = match plan.command() {
-        Some(command) => command,
+    // A VM boot process also takes the worker env on stdin (MOT-5492).
+    let (command, boot_stdin) = match plan.command() {
+        Some(command) => (command, None),
         // A VM worker is booted instead of run here. The handle that comes
         // back is an ordinary child, so readiness, stop, crash cascade and log
         // capture below are unchanged.
@@ -1139,11 +1140,11 @@ async fn start_one_until_shutdown(
         return Err(StartFailure::Interrupted);
     }
 
-    let (child, output) =
-        spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
-            container: key.to_string(),
-            message: err.to_string(),
-        })?;
+    let spawned = spawn_with_boot_stdin(command, boot_stdin).await;
+    let (child, output) = spawned.map_err(|err| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: err.to_string(),
+    })?;
     report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
@@ -1212,7 +1213,7 @@ async fn vm_command(
     key: &str,
     start: &StartSpec,
     plan: &crate::spawn::SpawnPlan,
-) -> std::result::Result<tokio::process::Command, String> {
+) -> std::result::Result<(tokio::process::Command, Option<Vec<u8>>), String> {
     let (worker_dir, run_override, prepare_command) = match start {
         StartSpec::Vm(VmSpec::Bundle { install_dir }) => (install_dir, None, "__bundle-prepare"),
         StartSpec::Vm(VmSpec::Local {
@@ -1233,6 +1234,13 @@ async fn vm_command(
     });
 
     let plan = prepare_vm(prepare_command, &request).await?;
+    Ok(boot_command(plan))
+}
+
+/// The boot command for a prepared plan, and the worker env to write to its
+/// stdin when the plan carries one (an older iii-worker's plan does not, and
+/// gets a null stdin).
+fn boot_command(plan: VmPlan) -> (tokio::process::Command, Option<Vec<u8>>) {
     let mut command = tokio::process::Command::new(&plan.program);
     command.args(&plan.args);
     for (name, value) in &plan.env {
@@ -1243,8 +1251,50 @@ async fn vm_command(
     for name in &plan.env_remove {
         command.env_remove(name);
     }
-    command.stdin(std::process::Stdio::null());
-    Ok(command)
+    let stdin = plan.stdin.map(String::into_bytes);
+    command.stdin(if stdin.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    });
+    (command, stdin)
+}
+
+/// Spawns a container's command; a VM boot command with a plan `stdin` also
+/// gets the worker env written to it.
+async fn spawn_with_boot_stdin(
+    command: tokio::process::Command,
+    boot_stdin: Option<Vec<u8>>,
+) -> std::io::Result<(Supervised, crate::process::ChildOutput)> {
+    match boot_stdin {
+        None => spawn_supervised_piped(command),
+        Some(payload) => spawn_vm_with_env(command, payload).await,
+    }
+}
+
+/// Spawns a VM boot process and writes the worker env to its stdin
+/// (`__vm-boot --env-stdin`); in argv every local user could read it with
+/// `ps` (MOT-5492). `__vm-boot` drains stdin before anything else, so the
+/// write does not wait on the boot. If it fails, the child is left with a
+/// truncated payload and exits by itself with the reason on stderr, which
+/// the readiness wait reports like any other crash.
+async fn spawn_vm_with_env(
+    command: tokio::process::Command,
+    payload: Vec<u8>,
+) -> std::io::Result<(Supervised, crate::process::ChildOutput)> {
+    use tokio::io::AsyncWriteExt;
+
+    let (child, output, mut stdin) = crate::process::spawn_supervised_piped_with_stdin(command)?;
+    let written = async {
+        stdin.write_all(&payload).await?;
+        stdin.shutdown().await
+    }
+    .await;
+    drop(stdin);
+    if let Err(err) = written {
+        eprintln!("warning: cannot send the worker environment to the VM: {err}");
+    }
+    Ok((child, output))
 }
 
 /// What an `iii-worker` VM prepare command answers: a program, its arguments, and
@@ -1257,6 +1307,10 @@ struct VmPlan {
     env: BTreeMap<String, String>,
     #[serde(default)]
     env_remove: Vec<String>,
+    /// Worker env for the boot process's stdin (MOT-5492). An older
+    /// iii-worker leaves it out and keeps the env in `args`.
+    #[serde(default)]
+    stdin: Option<String>,
 }
 
 /// Runs an `iii-worker` VM prepare command and reads the plan back.
@@ -1864,5 +1918,50 @@ containers:
             at("api") < at("database") && at("reports") < at("database"),
             "the target stops last: {order:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod vm_env_stdin_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_plan_with_stdin_gets_its_env_written_and_one_without_a_null_stdin() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, stdin) in [
+            ("with", Some(r#"[["API_KEY","sk-secret"]]"#)),
+            ("without", None),
+        ] {
+            let out = tmp.path().join(name);
+            let plan = VmPlan {
+                program: "/bin/sh".into(),
+                args: vec!["-c".to_string(), format!("cat > '{}'", out.display())],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                stdin: stdin.map(str::to_string),
+            };
+            let (command, boot_stdin) = boot_command(plan);
+            let (child, _output) = spawn_with_boot_stdin(command, boot_stdin).await.unwrap();
+            // `cat` exits only at EOF: the pipe was closed after the write,
+            // or stdin was /dev/null (an inherited stdin would hang here).
+            child.wait().await;
+            assert_eq!(
+                std::fs::read_to_string(&out).unwrap(),
+                stdin.unwrap_or(""),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_plan_stdin_is_optional_for_an_older_iii_worker() {
+        let old: VmPlan =
+            serde_json::from_str(r#"{"program":"/bin/iii-worker","args":["__vm-boot"]}"#).unwrap();
+        assert!(old.stdin.is_none());
+        let new: VmPlan = serde_json::from_str(
+            r#"{"program":"/bin/iii-worker","args":["__vm-boot","--env-stdin"],"stdin":"[]"}"#,
+        )
+        .unwrap();
+        assert_eq!(new.stdin.as_deref(), Some("[]"));
     }
 }
