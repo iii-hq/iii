@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,20 +196,27 @@ func TestFunctionRefUnregister(t *testing.T) {
 	}
 }
 
-// V1: a handle whose id was registered again no longer controls it.
+// V1: a handle whose id was unregistered and registered again no longer controls it.
 func TestFunctionRefStaleHandle(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
-	first, _ := c.RegisterFunction("dup::fn", noopHandler)
-	second, err := c.RegisterFunction("dup::fn", noopHandler)
+	first, err := c.RegisterFunction("dup::fn", noopHandler)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Unregister(); err != nil {
+		t.Fatal(err)
+	}
+	waitFrame(t, m, MsgUnregisterFunction, "dup::fn")
+	second, err := c.RegisterFunction("dup::fn", noopHandler)
+	if err != nil {
+		t.Fatalf("registering again after Unregister: %v", err)
+	}
+	if err := first.Unregister(); err != nil {
 		t.Fatalf("stale Unregister: %v", err)
 	}
-	if n := countRegister(sentinel(t, m, c, "sentinel::b"), string(MsgUnregisterFunction), "dup::fn"); n != 0 {
-		t.Errorf("stale handle sent %d unregisterfunction frames, want 0", n)
+	if n := countRegister(sentinel(t, m, c, "sentinel::b"), string(MsgUnregisterFunction), "dup::fn"); n != 1 {
+		t.Errorf("%d unregisterfunction frames, want 1 (the stale handle sends none)", n)
 	}
 	if c.functionObservers("dup::fn") == nil {
 		t.Fatal("stale handle removed the newer registration")
@@ -219,7 +227,84 @@ func TestFunctionRefStaleHandle(t *testing.T) {
 	if err := second.Unregister(); err != nil {
 		t.Fatal(err)
 	}
-	waitFrame(t, m, MsgUnregisterFunction, "dup::fn")
+	if n := countRegister(sentinel(t, m, c, "sentinel::b2"), string(MsgUnregisterFunction), "dup::fn"); n != 2 {
+		t.Errorf("%d unregisterfunction frames, want 2", n)
+	}
+}
+
+// A function id is registered once per client, as in the Node, Python and Rust SDKs:
+// a second registration of the same id fails, by any of the registration methods, and
+// leaves the first untouched; an empty id is refused. Trigger types and triggers with an
+// explicit ID are replaced instead (the other SDKs replace trigger types too, and never
+// reuse a trigger id).
+func TestRegisterFunctionRefusesDuplicateAndEmptyIDs(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+	first, err := c.RegisterFunction("once::fn", noopHandler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFrame(t, m, MsgRegisterFunction, "once::fn")
+	observe := c.functionObservers("once::fn")
+
+	handler := &stubTriggerHandler{registered: make(chan TriggerConfig, 1), unregistered: make(chan TriggerConfig, 1)}
+	tt, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "once::type"}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil }
+	for name, register := range map[string]func() (*FunctionRef, error){
+		"RegisterFunction": func() (*FunctionRef, error) { return c.RegisterFunction("once::fn", noopHandler) },
+		"RegisterHTTPFunction": func() (*FunctionRef, error) {
+			return c.RegisterHTTPFunction("once::fn", HTTPInvocationRef{URL: "https://x"})
+		},
+		"RegisterFunctionTyped": func() (*FunctionRef, error) {
+			return RegisterFunctionTyped(c, "once::fn", typed)
+		},
+		"TriggerTypeRef.RegisterFunction": func() (*FunctionRef, error) { return tt.RegisterFunction("once::fn", noopHandler, nil) },
+	} {
+		ref, err := register()
+		if ref != nil || err == nil || !strings.Contains(err.Error(), `"once::fn"): function id already registered`) {
+			t.Errorf("%s: ref %v, error %v, want function id already registered", name, ref, err)
+		}
+	}
+	for _, id := range []string{"", "   "} {
+		if _, err := c.RegisterFunction(id, noopHandler); err == nil || !strings.Contains(err.Error(), "id is required") {
+			t.Errorf("RegisterFunction(%q): error %v, want id is required", id, err)
+		}
+		if _, err := c.RegisterHTTPFunction(id, HTTPInvocationRef{URL: "https://x"}); err == nil || !strings.Contains(err.Error(), "id is required") {
+			t.Errorf("RegisterHTTPFunction(%q): error %v, want id is required", id, err)
+		}
+	}
+	msgs := sentinel(t, m, c, "sentinel::dup")
+	if n := countRegister(msgs, string(MsgRegisterFunction), "once::fn"); n != 1 {
+		t.Errorf("once::fn registered %d times on the wire, want 1", n)
+	}
+	if n := firstIndexWhere(msgs, func(msg map[string]json.RawMessage) bool {
+		return messageType(msg) == string(MsgRegisterTrigger) && stringField(msg, "function_id") == "once::fn"
+	}); n >= 0 {
+		t.Error("TriggerTypeRef.RegisterFunction bound a trigger to a refused function")
+	}
+	if c.functionObservers("once::fn") != observe {
+		t.Error("a refused registration replaced the first one")
+	}
+	if err := first.Unregister(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterFunction("once::fn", noopHandler); err != nil {
+		t.Errorf("registering again after Unregister: %v", err)
+	}
+
+	// Trigger types and explicit trigger ids are replaced, not refused.
+	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "once::type", Description: "again"}, handler); err != nil {
+		t.Errorf("registering a trigger type again: %v", err)
+	}
+	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "once::t", Type: "http", FunctionID: "once::fn"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "once::t", Type: "http", FunctionID: "once::fn"}); err != nil {
+		t.Errorf("registering a trigger id again: %v", err)
+	}
 }
 
 // V1: unregistering while disconnected sends nothing (it is not buffered) and the first

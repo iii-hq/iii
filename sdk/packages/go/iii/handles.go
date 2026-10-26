@@ -33,10 +33,10 @@ type FunctionRef struct {
 // observers are released (through the OnObserverRemoved hook of its [ObserveHooks]),
 // calls stop running in-process, and reports it still buffered are dropped.
 //
-// As in the Node SDK, Unregister is idempotent, and a handle whose function was
-// registered again under the same id (or already removed) no longer controls it:
-// Unregister then does nothing and returns nil. It returns an error only for a
-// FunctionRef the client did not return.
+// As the Node SDK's FunctionRef, Unregister is idempotent: once the function is removed,
+// the handle no longer controls the id, also after the id is registered again, and
+// Unregister does nothing and returns nil. It returns an error only for a FunctionRef
+// the client did not return.
 func (r *FunctionRef) Unregister() error {
 	if r == nil || r.client == nil || r.observe == nil {
 		return errForeignHandle

@@ -22,9 +22,9 @@ import (
 // [RegisterFunctionOptions] for the description, formats, metadata or observe hooks;
 // LocalDispatch does not apply, since there is nothing to run in-process.
 //
-// Like every registration it is kept in memory and sent again on each reconnect;
-// registering the same id again replaces it, and [FunctionRef.Unregister] on the
-// returned handle removes it.
+// Like every registration it is kept in memory and sent again on each reconnect. An
+// empty id, or one this client already registered, is refused as in
+// [Client.RegisterFunction]; [FunctionRef.Unregister] on the returned handle removes it.
 func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if strings.TrimSpace(invocation.URL) == "" {
 		return nil, fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation URL is empty", id)
@@ -55,7 +55,7 @@ func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, o
 		ref.TimeoutMs = &timeout
 	}
 	msg.Invocation = &ref
-	return c.storeFunction(id, msg, nil, cfg)
+	return c.storeFunction("RegisterHTTPFunction", id, msg, nil, cfg)
 }
 
 // HMACAuth returns the [HTTPInvocationRef].Auth that has the engine sign each request

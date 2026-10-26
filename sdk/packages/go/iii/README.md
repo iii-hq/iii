@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
@@ -68,14 +69,22 @@ func main() {
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	defer client.Shutdown(context.Background())
+	defer func() {
+		// Graceful stop: buffered reports and telemetry get up to five seconds.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Shutdown(ctx); err != nil {
+			log.Printf("shutdown cut short: %v", err)
+		}
+	}()
 
 	result, err := client.Trigger(context.Background(), iii.TriggerRequest{
 		FunctionID: greet.ID,
 		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("trigger: %v", err) // not log.Fatal: it would skip the deferred Shutdown
+		return
 	}
 	log.Printf("result: %s", result) // {"status_code":200,"body":{"message":"Hello, world!"}}
 }
@@ -143,7 +152,10 @@ Pass options to `New` or `RegisterWorker`:
 
 A handler receives the raw JSON payload and returns any value (marshaled into the
 invocation result) or an error. The registration returns a `*iii.FunctionRef`, the
-function's handle:
+function's handle. A function id is registered once per client: as in the Node, Python
+and Rust SDKs, registering it again returns an error (`function id already registered`)
+and an empty id is refused (`id is required`); unregister the function first to replace
+it.
 
 ```go
 ref, err := client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -262,9 +274,10 @@ if err := ref.Unregister(); err != nil {
 }
 ```
 
-`Unregister` is idempotent, as in the Node SDK: a second call, or a call on a handle whose
-id was registered again since, does nothing and returns nil. The deprecated
-`client.UnregisterTriggerType(id)` removes a trigger type by id.
+`Unregister` is idempotent: a second call, or a call on a handle whose id was registered
+again since, does nothing and returns nil. That is the Node SDK's rule for `FunctionRef`;
+the Go `Trigger` and `TriggerTypeRef` follow it too, where Node's resend the unregister
+frame. The deprecated `client.UnregisterTriggerType(id)` removes a trigger type by id.
 
 ### Describing custom trigger types
 
@@ -471,9 +484,12 @@ Stop a worker with `Shutdown` or `Close`:
   like `http.Server.Shutdown`: it waits for buffered observe reports to be written,
   flushes and stops the telemetry exporters, cancels pending calls with
   `ErrNotConnected`, and closes the socket with a normal-closure handshake. When ctx ends
-  first it cuts the rest short and returns `ctx.Err()`; the client is stopped either way.
+  first it cuts the rest short, also when the engine never answers the close handshake,
+  and returns `ctx.Err()`; the client is stopped either way.
 - `client.Close()` (`io.Closer`) stops at once: the report flush gets 250ms and the
-  telemetry flush at most 10s, and the socket is dropped without a handshake.
+  telemetry flush at most 10s, and the socket is dropped without a handshake. Called
+  while a `Shutdown` runs, it cuts that Shutdown short (which then returns
+  `context.Canceled`), as `http.Server.Close` does.
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -619,6 +635,28 @@ if err != nil {
 	log.Fatal(err)
 }
 _ = ref.Unregister() // when the function is retired
+```
+
+**A function id is registered once per client.** Registering an id again used to replace
+the earlier function; it now returns an error (`function id already registered`), as the
+Node, Python and Rust SDKs do, and an empty id is refused. To replace a function,
+unregister it first. Trigger types, and triggers registered with an explicit `ID`, are
+still replaced when registered again.
+
+```go
+// 0.25: the second call replaced the first handler
+client.RegisterFunction("orders::create", v1)
+client.RegisterFunction("orders::create", v2)
+
+// now
+ref, err := client.RegisterFunction("orders::create", v1)
+if err != nil {
+	log.Fatal(err)
+}
+if err := ref.Unregister(); err != nil {
+	log.Fatal(err)
+}
+ref, err = client.RegisterFunction("orders::create", v2)
 ```
 
 **`RegisterTrigger` takes a `RegisterTriggerInput` and returns a `*Trigger`.** An empty
