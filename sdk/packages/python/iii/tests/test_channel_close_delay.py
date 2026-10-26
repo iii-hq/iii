@@ -61,10 +61,10 @@ async def test_close_async_skips_when_not_connected():
     writer._ws = mock_ws
     writer._connected = False
 
-    with patch("iii.channels.asyncio.sleep") as mock_sleep:
+    # The delay still runs (a sync call queued before the close may be connecting); no close frame goes out.
+    with patch("iii.channels.asyncio.sleep", new_callable=AsyncMock):
         await writer.close_async()
 
-    mock_sleep.assert_not_called()
     mock_ws.close.assert_not_called()
 
 
@@ -76,10 +76,10 @@ async def test_close_async_skips_when_ws_is_none():
     writer._ws = None
     writer._connected = True  # even if _connected is True, _ws being None prevents action
 
-    with patch("iii.channels.asyncio.sleep") as mock_sleep:
+    with patch("iii.channels.asyncio.sleep", new_callable=AsyncMock):
         await writer.close_async()
 
-    mock_sleep.assert_not_called()
+    assert writer._connected is True
 
 
 @pytest.mark.asyncio

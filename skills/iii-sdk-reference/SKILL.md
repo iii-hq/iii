@@ -186,6 +186,15 @@ Per-invocation metadata rides on `ctx` (`iii.MetadataFromContext(ctx)`). Inside 
 - Use channels for binary data, large payloads, or streaming transfer between workers.
 - Pass `readerRef` or `writerRef` through a function payload.
 - Reconstruct readers/writers from refs in consumers when the SDK requires it.
+- A close tells the reader the stream is complete, so a writer that fails must abort instead: Node
+  `writer.stream.destroy()` (no argument), Rust drop the writer without `close()`, Go `Close` after
+  a failed `Write`. Go, Python and browser writers have no other abort call. A crash or a lost
+  connection aborts on its own; a writer left open keeps the reader waiting until its process exits.
+- On an abort the read errors after the data already sent (Rust `Err`, Node stream `'error'`,
+  browser rejection, Python `ConnectionError`, Go non-EOF error): treat it as an incomplete
+  transfer. A writer whose socket never opened (it failed before its first write or, in Node, right
+  after one, while the socket was still connecting) never reached the engine, so also check the
+  producer's result.
 
 ## Namespaces
 

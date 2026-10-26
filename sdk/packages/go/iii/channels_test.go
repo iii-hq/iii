@@ -2,7 +2,11 @@ package iii
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -233,13 +237,240 @@ func TestChannelReaderReadAll(t *testing.T) {
 	}
 }
 
+// TestChannelReaderEndOfStream checks how the reader reads the end of its socket: 1000 or
+// a close with no code (1005, the engine's clean end) is EOF, while the engine's 1011
+// abort or a drop without a close frame is an error. The bytes before it come back either
+// way.
+func TestChannelReaderEndOfStream(t *testing.T) {
+	const reason = "channel writer aborted: connection lost before close"
+	// wantCode is the close code the error carries, -1 when it is not a close.
+	tests := []struct {
+		name     string
+		end      func(*websocket.Conn)
+		wantErr  bool
+		wantCode websocket.StatusCode
+	}{
+		{
+			name: "1000 is end of stream",
+			end:  func(c *websocket.Conn) { _ = c.Close(websocket.StatusNormalClosure, "stream_complete") },
+		},
+		{
+			name: "a close with no code (1005) is end of stream",
+			end:  func(c *websocket.Conn) { _ = c.Close(websocket.StatusNoStatusRcvd, "") },
+		},
+		{
+			name:     "1011 is an error with its code and reason",
+			end:      func(c *websocket.Conn) { _ = c.Close(websocket.StatusInternalError, reason) },
+			wantErr:  true,
+			wantCode: websocket.StatusInternalError,
+		},
+		{
+			name:     "a drop without a close frame is an error",
+			end:      func(c *websocket.Conn) { _ = c.CloseNow() },
+			wantErr:  true,
+			wantCode: -1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				_ = conn.Write(r.Context(), websocket.MessageBinary, []byte("partial"))
+				tt.end(conn)
+			}))
+			defer srv.Close()
+
+			base := "ws" + strings.TrimPrefix(srv.URL, "http")
+			reader := OpenReader(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelRead})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			got, err := reader.ReadAll(ctx)
+			if string(got) != "partial" {
+				t.Errorf("ReadAll = %q, want %q", got, "partial")
+			}
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("ReadAll error = %v, want nil (end of stream)", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ReadAll error = nil, want an error")
+			}
+			if code := websocket.CloseStatus(err); code != tt.wantCode {
+				t.Errorf("CloseStatus = %v, want %v", code, tt.wantCode)
+			}
+			var ce websocket.CloseError
+			if errors.As(err, &ce) && ce.Reason != reason {
+				t.Errorf("close reason = %q, want %q", ce.Reason, reason)
+			}
+		})
+	}
+}
+
+// TestChannelReaderLocalClose checks that a read cut short by the reader's own Close, and
+// a read after it, end as end of stream. The server drops the socket on the reader's close
+// frame without a reply, as the engine does once its reader leaves.
+func TestChannelReaderLocalClose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		c, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(sum[:]))
+		_, _ = rw.WriteString("\x81\x02hi") // one unmasked text frame
+		_ = rw.Flush()
+		_, _ = rw.ReadByte() // the reader's close frame
+	}))
+	defer srv.Close()
+
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	reader := OpenReader(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelRead})
+	seen := make(chan struct{}, 1)
+	reader.OnMessage(func(string) { seen <- struct{}{} })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, ok, err := reader.NextBinary(ctx)
+		done <- result{ok, err}
+	}()
+	// Close only once the read has the text frame: it is then past the dial, so its next
+	// conn.Read fails with no close code and only the closed check makes that end of stream.
+	select {
+	case <-seen:
+	case res := <-done:
+		t.Fatalf("NextBinary before the text frame = (%v, %v), want it still reading", res.ok, res.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader got no text frame")
+	}
+	_ = reader.Close() // no reply comes, so Close itself reports the dropped socket
+	select {
+	case res := <-done:
+		if res.ok || res.err != nil {
+			t.Fatalf("NextBinary cut short by Close = (%v, %v), want end of stream", res.ok, res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("NextBinary cut short by Close did not return")
+	}
+	if _, ok, err := reader.NextBinary(ctx); ok || err != nil {
+		t.Errorf("NextBinary after Close = (%v, %v), want end of stream without a redial", ok, err)
+	}
+}
+
+// TestChannelWriterCloseAfterFailedWrite checks that Close after a failed Write ends the
+// socket without a close frame, which the engine reads as an abort, so the reader cannot
+// take the cut stream for a whole one.
+func TestChannelWriterCloseAfterFailedWrite(t *testing.T) {
+	closeCode := make(chan websocket.StatusCode, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				closeCode <- websocket.CloseStatus(err)
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	w := OpenWriter(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelWrite})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := w.Write(ctx, []byte("sent")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Hold the message lock so the next Write fails on its deadline with the socket still open.
+	if _, err := w.conn.Writer(ctx, websocket.MessageBinary); err != nil {
+		t.Fatalf("Writer: %v", err)
+	}
+	short, cancelShort := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancelShort()
+	if err := w.Write(short, []byte("lost")); err == nil {
+		t.Fatal("Write = nil, want a deadline error")
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+	select {
+	case code := <-closeCode:
+		if code != -1 {
+			t.Errorf("writer close code = %v, want none (-1): a clean close here hides the lost bytes", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not see the writer end")
+	}
+}
+
+// TestChannelWriterCloseAfterFailedMessage checks the same after a failed SendMessage: a
+// lost text frame is a cut stream too, so Close must not send 1000.
+func TestChannelWriterCloseAfterFailedMessage(t *testing.T) {
+	closeCode := make(chan websocket.StatusCode, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				closeCode <- websocket.CloseStatus(err)
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	w := OpenWriter(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelWrite})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := w.SendMessage(ctx, "sent"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	// Hold the message lock so the next SendMessage fails on its deadline with the socket still open.
+	if _, err := w.conn.Writer(ctx, websocket.MessageText); err != nil {
+		t.Fatalf("Writer: %v", err)
+	}
+	short, cancelShort := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancelShort()
+	if err := w.SendMessage(short, "lost"); err == nil {
+		t.Fatal("SendMessage = nil, want a deadline error")
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+	select {
+	case code := <-closeCode:
+		if code != -1 {
+			t.Errorf("writer close code = %v, want none (-1): a clean close here hides the lost message", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not see the writer end")
+	}
+}
+
 // TestChannelWriterChunking checks that a Write larger than channelFrameSize is split
-// into multiple binary frames, by counting frames the server receives.
+// into multiple binary frames, by counting frames the server receives, and that Close
+// ends the socket with 1000, the code the engine reads as a completed stream.
 func TestChannelWriterChunking(t *testing.T) {
 	var (
 		mu        sync.Mutex
 		binFrames int
 		total     int
+		closeCode websocket.StatusCode
 	)
 	done := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +483,7 @@ func TestChannelWriterChunking(t *testing.T) {
 		for {
 			typ, data, err := conn.Read(ctx)
 			if err != nil {
+				closeCode = websocket.CloseStatus(err)
 				close(done)
 				return
 			}
@@ -289,5 +521,8 @@ func TestChannelWriterChunking(t *testing.T) {
 	}
 	if total != len(payload) {
 		t.Errorf("total bytes = %d, want %d", total, len(payload))
+	}
+	if closeCode != websocket.StatusNormalClosure {
+		t.Errorf("writer close code = %v, want 1000 (anything else reads as an abort)", closeCode)
 	}
 }
