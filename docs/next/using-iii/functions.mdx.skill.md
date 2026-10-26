@@ -163,7 +163,7 @@ fire. Pass a different `TriggerAction` to change that.
     ```go
     result, err := client.Trigger(ctx, iii.TriggerRequest{
         FunctionID: "math::add",
-        Data:       json.RawMessage(`{"a":2,"b":3}`),
+        Payload:    json.RawMessage(`{"a":2,"b":3}`),
         Namespace:  "default", // target a specific namespace
         // Action: iii.VoidAction(),          // fire-and-forget
         // Action: iii.EnqueueAction("math"), // route through queue

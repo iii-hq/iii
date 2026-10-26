@@ -78,10 +78,11 @@ functions to a trigger type with `worker.registerTrigger({ type, function_id, co
   </Tab>
   <Tab title="Go">
     ```go
-    // "math-add-http" is the id of this trigger
-    err := client.RegisterTrigger("math-add-http", "http", "math::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -149,11 +150,12 @@ time. The engine stores it as-is and surfaces it in two places:
   </Tab>
   <Tab title="Go">
     ```go
-    err := client.RegisterTrigger("math-add-http", "http", "math::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
-        json.RawMessage(`{"team":"platform","env":"staging"}`), // metadata
-    )
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+        Metadata:   json.RawMessage(`{"team":"platform","env":"staging"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -392,7 +394,10 @@ worker that publishes the real `http` trigger type. The publisher worker:
           client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
 
           handler := &httpHandler{bindings: map[string]iii.TriggerConfig{}}
-          err := client.RegisterTriggerType("mini-http", "Routes HTTP requests to bound functions", handler)
+          _, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
+              ID:          "mini-http",
+              Description: "Routes HTTP requests to bound functions",
+          }, handler)
           if err != nil {
               log.Fatal(err)
           }
@@ -433,7 +438,7 @@ Each SDK accepts these in its own idiomatic way:
 | [Node](../reference/sdk-node#registertriggertype) / [Browser](../reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
 | [Python](../reference/sdk-python#register_trigger_type)                                                     | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
 | [Rust](../reference/sdk-rust#register_trigger_type)                                                         | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
-| [Go](../reference/sdk-go#registertriggertype)                                                               | `RegisterTriggerTypeOptions` with raw JSON in `TriggerRequestFormat` / `CallRequestFormat`; `iii.InferSchema[T]()` builds one from a type.     |
+| [Go](../reference/sdk-go#registertriggertype)                                                               | Raw JSON in the `TriggerRequestFormat` / `CallRequestFormat` fields of `RegisterTriggerTypeInput`; `iii.InferSchema[T]()` builds either.       |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
@@ -492,7 +497,8 @@ drops `mini-http` because its HTTP listener was disabled by config:
 
 <Note>
   Node's `registerTriggerType` also returns a `TriggerTypeRef` with an `.unregister()` shortcut that
-  delegates to `worker.unregisterTriggerType(...)`. Python's `TriggerTypeRef` only exposes
+  delegates to `worker.unregisterTriggerType(...)`, and Go's returns a `*TriggerTypeRef` whose
+  `Unregister()` does the same. Python's `TriggerTypeRef` only exposes
   `register_trigger` and `register_function`; tear down the trigger type itself via
   `worker.unregister_trigger_type(...)`. Rust and Go take only the `id` string; Node and Python take
   the full input object but only the `id` field is used to identify the type being torn down.
@@ -564,7 +570,7 @@ Continuing the `mini-http` example from above:
         _, err = client.Trigger(ctx, iii.TriggerRequest{
             FunctionID: binding.FunctionID,
             Namespace:  binding.Namespace, // the namespace the consumer bound from
-            Data:       payload,
+            Payload:    payload,
         })
         if err != nil {
             return err

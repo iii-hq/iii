@@ -399,7 +399,7 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
         }
         return client.Trigger(ctx, iii.TriggerRequest{
             FunctionID: input.FunctionID,
-            Data:       forwarded,
+            Payload:    forwarded,
             Namespace:  input.Namespace, // stay in the namespace the caller addressed
         })
     })

@@ -108,7 +108,7 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
 
     res, err := client.Trigger(ctx, iii.TriggerRequest{
         FunctionID: "email::send",
-        Data:       json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
+        Payload:    json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
         Action:     iii.EnqueueAction("email-jobs"), // "email-jobs" is the name of the queue
     })
     if err != nil {
@@ -255,10 +255,11 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
         return map[string]bool{"sent": true}, nil
     })
 
-    // "email-send-emails" is the id of this trigger
-    err := client.RegisterTrigger("email-send-emails", "durable:subscriber", "email::send",
-        json.RawMessage(`{"topic":"emails"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "durable:subscriber",
+        FunctionID: "email::send",
+        Config:     json.RawMessage(`{"topic":"emails"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -340,9 +341,11 @@ trigger with a `fifo` queue:
   </Tab>
   <Tab title="Go">
     ```go
-    err := client.RegisterTrigger("email-send-emails", "durable:subscriber", "email::send",
-        json.RawMessage(`{"topic":"emails","queue_config":{"type":"fifo"}}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "durable:subscriber",
+        FunctionID: "email::send",
+        Config:     json.RawMessage(`{"topic":"emails","queue_config":{"type":"fifo"}}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -439,9 +442,11 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
         return nil, errors.New("forced failure")
     })
 
-    err := client.RegisterTrigger("email-send-emails", "durable:subscriber", "email::send",
-        json.RawMessage(`{"topic":"emails"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "durable:subscriber",
+        FunctionID: "email::send",
+        Config:     json.RawMessage(`{"topic":"emails"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```

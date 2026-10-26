@@ -303,7 +303,7 @@ get the current state of the registry. Each returns a list:
       // engine::workers::list, pass {"worker_id":"<uuid>"} to look up one worker
       workers, err := client.Trigger(ctx, iii.TriggerRequest{
           FunctionID: "engine::workers::list",
-          Data:       json.RawMessage(`{}`),
+          Payload:    json.RawMessage(`{}`),
       })
       if err != nil {
           log.Fatal(err)
@@ -312,7 +312,7 @@ get the current state of the registry. Each returns a list:
       // engine::functions::list
       functions, err := client.Trigger(ctx, iii.TriggerRequest{
           FunctionID: "engine::functions::list",
-          Data:       json.RawMessage(`{"include_internal":false}`),
+          Payload:    json.RawMessage(`{"include_internal":false}`),
       })
       if err != nil {
           log.Fatal(err)
@@ -321,7 +321,7 @@ get the current state of the registry. Each returns a list:
       // engine::triggers::list
       triggers, err := client.Trigger(ctx, iii.TriggerRequest{
           FunctionID: "engine::triggers::list",
-          Data:       json.RawMessage(`{"include_internal":false}`),
+          Payload:    json.RawMessage(`{"include_internal":false}`),
       })
       if err != nil {
           log.Fatal(err)
@@ -330,7 +330,7 @@ get the current state of the registry. Each returns a list:
       // engine::registered-triggers::list
       registeredTriggers, err := client.Trigger(ctx, iii.TriggerRequest{
           FunctionID: "engine::registered-triggers::list",
-          Data:       json.RawMessage(`{"include_internal":false}`),
+          Payload:    json.RawMessage(`{"include_internal":false}`),
       })
       if err != nil {
           log.Fatal(err)
@@ -423,7 +423,7 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
       ```go
       result, err := client.Trigger(ctx, iii.TriggerRequest{
           FunctionID: "math::add",
-          Data:       json.RawMessage(`{"a":1,"b":2}`),
+          Payload:    json.RawMessage(`{"a":1,"b":2}`),
       })
       var ie *iii.InvocationError
       if errors.As(err, &ie) && ie.Code == "invocation_stopped" {
@@ -580,9 +580,11 @@ as they happen. This is particularly useful for continuing work when a Worker co
           }
           return nil, nil
       })
-      err := client.RegisterTrigger("discovery-on-workers", "engine::workers-available",
-          "discovery::on-workers", json.RawMessage(`{}`))
-      if err != nil {
+      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+          Type:       "engine::workers-available",
+          FunctionID: "discovery::on-workers",
+          Config:     json.RawMessage(`{}`),
+      }); err != nil {
           log.Fatal(err)
       }
 
@@ -604,9 +606,11 @@ as they happen. This is particularly useful for continuing work when a Worker co
           log.Printf("functions: %v", ids)
           return nil, nil
       })
-      err = client.RegisterTrigger("discovery-on-functions", "engine::functions-available",
-          "discovery::on-functions", json.RawMessage(`{}`))
-      if err != nil {
+      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+          Type:       "engine::functions-available",
+          FunctionID: "discovery::on-functions",
+          Config:     json.RawMessage(`{}`),
+      }); err != nil {
           log.Fatal(err)
       }
       ```
@@ -686,13 +690,15 @@ dropped socket; graceful shutdown makes it deterministic and faster.
   </Tab>
   <Tab title="Go">
     ```go
-    // Block until SIGTERM, then close the connection cleanly.
+    // Block until SIGTERM, then shut the worker down gracefully.
     ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
     defer stop()
     <-ctx.Done()
 
-    if err := client.Close(); err != nil {
-        log.Print(err)
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    if err := client.Shutdown(shutdownCtx); err != nil {
+        log.Printf("shutdown cut short: %v", err)
     }
     ```
 
@@ -702,7 +708,7 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 <Note>
   Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless containers,
   or scheduled scripts can connect like any other Worker, do their work, and `shutdown()`
-  (`shutdown_async().await` in Rust, `client.Close()` in Go).
+  (`shutdown_async().await` in Rust, `client.Shutdown(ctx)` in Go).
 </Note>
 
 {/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}

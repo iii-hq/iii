@@ -98,10 +98,11 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
     ```go
     client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
 
-    // "math-add-http" is the id of this trigger
-    err := client.RegisterTrigger("math-add-http", "http", "math::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -178,9 +179,11 @@ registration and stores it:
   <Tab title="Go">
     ```go
     // http worker not started
-    err := client.RegisterTrigger("math-add-http", "http", "math::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -280,15 +283,19 @@ a queue message.
   <Tab title="Go">
     ```go
     // Same handler runs for an HTTP POST and a weekly cron tick.
-    err := client.RegisterTrigger("reports-generate-http", "http", "reports::generate",
-        json.RawMessage(`{"api_path":"/reports/generate","http_method":"POST"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"api_path":"/reports/generate","http_method":"POST"}`),
+    }); err != nil {
         log.Fatal(err)
     }
 
-    err = client.RegisterTrigger("reports-generate-cron", "cron", "reports::generate",
-        json.RawMessage(`{"expression":"0 0 9 * * 1"}`)) // Every Monday at 09:00
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "cron",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"expression":"0 0 9 * * 1"}`), // Every Monday at 09:00
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -392,13 +399,15 @@ is a regular registered function.
         return payload.CustomerTier == "gold", nil
     })
 
-    err := client.RegisterTrigger("orders-expedite-http", "http", "orders::expedite",
-        json.RawMessage(`{
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "orders::expedite",
+        Config: json.RawMessage(`{
             "api_path": "/orders/expedite",
             "http_method": "POST",
             "condition_function_id": "orders::is-priority"
-        }`))
-    if err != nil {
+        }`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```
@@ -409,8 +418,7 @@ is a regular registered function.
 ## Unregister a trigger
 
 Trigger registration returns a handle with an `unregister()` method. Call it to drop the trigger at
-runtime (in Go, pass the trigger id to `client.UnregisterTrigger`); when the worker disconnects, all
-of its triggers are removed automatically.
+runtime; when the worker disconnects, all of its triggers are removed automatically.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -454,13 +462,16 @@ of its triggers are removed automatically.
   </Tab>
   <Tab title="Go">
     ```go
-    err := client.RegisterTrigger("math-add-http", "http", "math::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
+    trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    if err := client.UnregisterTrigger("math-add-http"); err != nil {
+    if err := trigger.Unregister(); err != nil {
         log.Fatal(err)
     }
     ```

@@ -312,7 +312,7 @@ function uses the ref to read from (or write to) the channel.
 
     result, err := client.Trigger(ctx, iii.TriggerRequest{
         FunctionID: "files::process",
-        Data:       payload,
+        Payload:    payload,
     })
     if err != nil {
         log.Fatal(err)

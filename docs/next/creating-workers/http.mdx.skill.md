@@ -179,10 +179,11 @@ endpoint.
         }, nil
     })
 
-    // "http-add-route" is the id of this trigger
-    err := client.RegisterTrigger("http-add-route", "http", "http::add",
-        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
-    if err != nil {
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "http::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
         log.Fatal(err)
     }
     ```

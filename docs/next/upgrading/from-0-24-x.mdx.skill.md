@@ -368,6 +368,9 @@ provider from the next section.
         Args:       iii.Args{"every_ms": 60000},
         Deliver:    iii.DeliverInput,
     }, "reports::refresh", iii.ObserverOptions{Metadata: json.RawMessage(`{"team":"reports"}`)})
+    if err != nil {
+        log.Fatal(err)
+    }
     // later
     observer.Dispose(ctx)
     ```
@@ -763,7 +766,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return args.EveryMs, err
     }
 
-    func registerTimer(client *iii.Client) error {
+    func registerTimer(client *iii.Client) (*iii.FunctionRef, error) {
         return client.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
             return data, nil
         }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{

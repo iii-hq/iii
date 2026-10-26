@@ -443,7 +443,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
       client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
 
       timeoutMs := uint64(5000)
-      err := client.RegisterHTTPFunction("notifications::send", iii.HTTPInvocationRef{
+      _, err := client.RegisterHTTPFunction("notifications::send", iii.HTTPInvocationRef{
           URL:       "https://hooks.provider.example.com/notify",
           Method:    "POST",
           TimeoutMs: &timeoutMs,
@@ -504,8 +504,8 @@ return an `error`).
 ## Unregister a function
 
 `registerFunction` returns a handle with an `unregister()` method that removes the function from the
-engine at runtime (in Go, call `client.UnregisterFunction` with the function id). When the worker
-disconnects, all of its functions are removed automatically and pending invocations error out.
+engine at runtime. When the worker disconnects, all of its functions are removed automatically and
+pending invocations error out.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -538,7 +538,7 @@ disconnects, all of its functions are removed automatically and pending invocati
   </Tab>
   <Tab title="Go">
     ```go
-    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    add, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
         var payload struct {
             A float64 `json:"a"`
             B float64 `json:"b"`
@@ -548,8 +548,11 @@ disconnects, all of its functions are removed automatically and pending invocati
         }
         return map[string]float64{"c": payload.A + payload.B}, nil
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
-    if err := client.UnregisterFunction("math::add"); err != nil {
+    if err := add.Unregister(); err != nil {
         log.Fatal(err)
     }
     ```
