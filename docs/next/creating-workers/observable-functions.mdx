@@ -54,6 +54,9 @@ by.
 - `onObserverAdded` runs before the SDK acknowledges the observer to the engine. Whatever it adds to
   your own index is in place before the observer turns `active`, so the first event after `ready()`
   resolves reaches it.
+- Do not deliver from `onObserverAdded`. The observer turns `active` only after the hook returns:
+  until then `emit` returns `false` and sends nothing, and `call` fails with `OBSERVER_NOT_ACTIVE`.
+  Start what produces the events (a timer, a file watch, a subscription) and deliver from there.
 - Throwing rejects the observer: an `ObserveRejection(code, message)` sets the code the observer's
   `ready()` fails with; any other error is `OBSERVE_REJECTED`.
 - The hooks of one function run one at a time, in the engine's order. Hooks of different functions
@@ -114,10 +117,14 @@ Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
 observer's filters match.
 
+Here the call itself is the event because `prices::on-change` is auto-delivered. With owner
+delivery, calling the function is not an event; see [Owner delivery](#owner-delivery).
+
 ## Owner delivery
 
-With `delivery: 'owner'`, invocations of your function are no longer offered to every observer. Your
-code decides which observers each event is for, from their `args`, and hands it over:
+With `delivery: 'owner'`, invocations of your function are not events: calling it, even with
+`trigger`, reaches no observer. An observer receives only what your code hands it. Your code decides
+which observers each event is for, from their `args`, and hands it over:
 
 |                 | `obs.emit(event)`                                                                                                                    | `obs.call(payload)`                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -145,8 +152,19 @@ held at most four fifths of the time.
 
 The event's `caller` follows where you call `emit`: inside your function's own handler, the event is
 that invocation (its id and its caller); inside another handler, that handler is the caller; outside
-any handler, only your worker. That is why the examples below trigger their own function and emit
-from its handler.
+any handler, only your worker.
+
+The examples below use this in three steps:
+
+1. `onObserverAdded` keeps the observer in your index, by its args, and starts what produces events
+   for those args (a timer, a file watch, a subscription) when nothing produces them yet.
+2. When something happens, that code calls your function with `trigger`. The call is not an event
+   by itself: it gives the event an invocation, a caller, and a trace.
+3. Your function's handler finds the observers the event belongs to and calls `emit` on each of
+   them.
+
+You can skip step 2 and emit straight from the code started in step 1. The event's caller is then
+your worker.
 
 ### Example: a timer that emits
 
@@ -194,6 +212,7 @@ It runs one timer per distinct interval, however many observers share it.
             if (!timer) {
               // First observer of this interval: start one timer for all of them.
               const handle = setInterval(() => {
+                // Not an event yet: the handler above emits it to the observers.
                 worker
                   .trigger({ function_id: "timer::on-tick", payload: { every_ms, fired_at_ms: Date.now() } })
                   .catch((err) => console.error("tick failed", err));
@@ -232,6 +251,7 @@ It runs one timer per distinct interval, however many observers share it.
 
     def run_timer(every_ms: int, stop: threading.Event) -> None:
         while not stop.wait(every_ms / 1000):
+            # Not an event yet: on_tick emits it to the observers.
             worker.trigger({
                 "function_id": "timer::on-tick",
                 "payload": {"every_ms": every_ms, "fired_at_ms": int(time.time() * 1000)},
@@ -335,6 +355,7 @@ It runs one timer per distinct interval, however many observers share it.
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or_default();
                         let tick = json!({ "every_ms": every_ms, "fired_at_ms": fired_at_ms });
+                        // Not an event yet: on-tick's handler emits it to the observers.
                         let _ = iii.trigger(TriggerRequest::new("timer::on-tick", tick)).await;
                     }
                 });
@@ -407,6 +428,7 @@ It runs one timer per distinct interval, however many observers share it.
                 return
             case now := <-ticker.C:
                 data, _ := json.Marshal(tick{EveryMs: everyMs, FiredAtMs: now.UnixMilli()})
+                // Not an event yet: on-tick's handler emits it to the observers.
                 client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "timer::on-tick", Data: data})
             }
         }

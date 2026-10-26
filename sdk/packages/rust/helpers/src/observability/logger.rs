@@ -28,12 +28,16 @@ fn json_value_to_anyvalue(v: &Value) -> AnyValue {
     }
 }
 
-/// Structured logger that emits logs as OpenTelemetry LogRecords.
+/// Structured logger that sends logs to the engine as OpenTelemetry
+/// LogRecords. The engine prints them in its own output and stores them
+/// (`engine::logs::list`); they do not appear in the worker's own output.
 ///
 /// Every log call automatically captures the active trace and span context,
 /// correlating your logs with distributed traces without any manual wiring.
-/// When OTel is not initialized, Logger gracefully falls back to the `tracing`
-/// crate.
+/// When OTel is not initialized (before the worker's telemetry starts, or with
+/// `OTEL_ENABLED=false`), Logger falls back to the `tracing` crate, which
+/// prints nothing unless the program installs a subscriber, for example
+/// `tracing_subscriber::fmt().init()`.
 ///
 /// Pass structured data as the second argument to any log method. Using a
 /// `serde_json::Value` object of key-value pairs (instead of string

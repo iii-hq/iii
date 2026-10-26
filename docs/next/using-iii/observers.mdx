@@ -178,6 +178,7 @@ function; observers use the same `observe` call in both cases.
 |                      | Auto (the default)                                         | Owner                                                                       |
 | -------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
 | An event is          | every invocation of the function                           | what the function's owner hands to an observer                              |
+| Calling the function | is an event                                                | not an event: only the owner's `obs.emit` and `obs.call` reach observers    |
 | `args`               | not accepted (`INVALID_ARGS`)                              | validated against the function's `args_format`, then read by the owner      |
 | Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | the owner's SDK, each time it hands an event to the observer                |
 | When the target runs | after the observed invocation completes, per `on`          | when the owner decides, usually inside the function's own handler           |

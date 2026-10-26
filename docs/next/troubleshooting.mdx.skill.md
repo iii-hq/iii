@@ -20,3 +20,38 @@ Then restart your session so the new group membership applies. On WSL2, run `wsl
 Windows terminal and reopen your distribution.
 
 <Info>For why workers run in microVMs, see [Engine](./understanding-iii/engine).</Info>
+
+## An observer's target never runs
+
+List the observers of the observed function:
+
+```bash
+iii trigger engine::observers::list function_id=orders::create
+```
+
+Find yours by its `target` and read its `state`:
+
+- `pending` or `error`: `reason` says why, for example the owner has not acknowledged it, the target
+  is not registered, or the args were refused (`INVALID_ARGS`). See
+  [Observer states](./using-iii/observers#observer-states).
+- `active` with `fires` at 0: no event has reached it. Check `delivery`:
+  - `owner`: calling the function is not an event. Its owner must hand each event to the observer
+    with `obs.emit` or `obs.call`, and not from `onObserverAdded`, where the observer is not active
+    yet. See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
+  - `auto`: only invocations that complete after the observer turned `active`, with the outcome its
+    `on` asks for (`success` by default), and that pass its filters are events.
+- `dropped` or `activation_failures` above 0: events reached it and were dropped or failed, counted
+  by reason (`OVERFLOW`, `LOOP_GUARD`, ...).
+
+## `Logger` lines do not show up
+
+`Logger` sends its lines to the engine, not to your worker's output. Look in the engine's output
+(under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
+
+```bash
+iii trigger engine::logs::list
+```
+
+If they are not there either, the worker's telemetry may be off (`OTEL_ENABLED=false`). `Logger` then
+falls back to the language's own logging, which the Rust SDK prints only with a `tracing`
+subscriber. See [Where the lines go](./creating-workers/observability#where-the-lines-go).
