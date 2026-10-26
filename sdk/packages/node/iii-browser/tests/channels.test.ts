@@ -138,6 +138,71 @@ describe('Channels', () => {
       expect(result).toEqual(new Uint8Array([10, 20, 30, 40, 50]))
     })
 
+    it('should resolve readAll on a close with no status code (1005)', async () => {
+      const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
+      const readPromise = reader.readAll()
+
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      socket.simulateMessage(new Uint8Array([1, 2]).buffer)
+      socket.simulateClose(1005)
+
+      expect(await readPromise).toEqual(new Uint8Array([1, 2]))
+    })
+
+    it('should reject readAll with code and reason when the writer aborts (1011)', async () => {
+      const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
+      const readPromise = reader.readAll()
+
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      socket.simulateMessage(new Uint8Array([1, 2]).buffer)
+      socket.simulateClose(1011, 'channel writer aborted: connection lost before close')
+
+      await expect(readPromise).rejects.toMatchObject({
+        code: 1011,
+        reason: 'channel writer aborted: connection lost before close',
+        message: 'Channel closed abnormally with code 1011: channel writer aborted: connection lost before close',
+      })
+    })
+
+    it('should reject readAll when the connection drops without a close frame (1006)', async () => {
+      const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
+      const readPromise = reader.readAll()
+
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      socket.simulateError()
+      socket.simulateClose(1006)
+
+      await expect(readPromise).rejects.toMatchObject({ code: 1006, reason: '' })
+    })
+
+    it('should resolve readAll when the reader closed itself, whatever the close code', async () => {
+      const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
+      const readPromise = reader.readAll()
+
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      socket.simulateMessage(new Uint8Array([7]).buffer)
+      reader.close()
+      socket.simulateClose(1006)
+
+      expect(await readPromise).toEqual(new Uint8Array([7]))
+    })
+
+    it('should still reject readAll on an abort when close() ran before the reader connected', async () => {
+      const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
+      reader.close()
+      const readPromise = reader.readAll()
+
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      socket.simulateClose(1011, 'channel writer aborted: connection lost before close')
+
+      await expect(readPromise).rejects.toMatchObject({ code: 1011 })
+    })
+
     it('should close reader with code 1000', () => {
       const reader = new ChannelReader('ws://engine:49135', makeRef('read'))
       reader.onMessage(() => {})

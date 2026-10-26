@@ -341,6 +341,8 @@ const done = worker.trigger({
   function_id: "reports::export",
   payload: { report_id: "r-42", writer: channel.writerRef },
 });
+// `done` can reject while the loop runs: mark it handled now; `await done` below still throws.
+done.catch(() => {});
 for await (const chunk of channel.reader.stream) {
   render(chunk);
 }
@@ -355,11 +357,17 @@ import type { ChannelWriter } from "iii-sdk";
 worker.registerFunction(
   "reports::export",
   async (input: { report_id: string; writer: ChannelWriter }) => {
-    for await (const row of readRows(input.report_id, { maxRows: 10_000 })) {
-      // Respect backpressure: wait for drain instead of buffering without limit.
-      if (!input.writer.stream.write(JSON.stringify(row) + "\n")) {
-        await once(input.writer.stream, "drain");
+    try {
+      for await (const row of readRows(input.report_id, { maxRows: 10_000 })) {
+        // Respect backpressure: wait for drain instead of buffering without limit.
+        if (!input.writer.stream.write(JSON.stringify(row) + "\n")) {
+          await once(input.writer.stream, "drain");
+        }
       }
+    } catch (err) {
+      // Abort instead of ending, so the reader gets an error, not a stream that looks complete.
+      input.writer.stream.destroy();
+      throw err;
     }
     input.writer.stream.end();
     return { ok: true };
@@ -370,8 +378,15 @@ worker.registerFunction(
 Rules for channels:
 
 - One channel per operation and reader. For fan-out to many consumers, use Recipe 1 or 2 instead.
-- End the writer when the operation finishes or fails. When the reader leaves, the engine closes the
-  writer. See [Backpressure and lifecycle](../understanding-iii/channels#backpressure-and-lifecycle).
+- End the writer when the operation finishes. If it fails, call `input.writer.stream.destroy()`
+  instead of ending it, then rethrow, so the reader gets an error, not a stream that looks complete.
+  Pass no argument: `destroy(err)` emits an `'error'` event that crashes the worker when nothing
+  listens for it. A producer whose writer socket never opened (it failed before its first write or,
+  in Node, right after one, while the socket was still connecting) never reached the engine, so the
+  reader is not told: its loop ends normally only when the engine drops the unused channel after the
+  channel TTL (about 5 to 6 minutes), and only the rejected `done` reports the failure. When the
+  reader leaves, the engine closes the writer. See
+  [Backpressure and lifecycle](../understanding-iii/channels#backpressure-and-lifecycle).
 - Bound the content: cap size or duration, and never queue an unbounded backlog for a slow reader.
 - For bidirectional traffic, create two channels.
 
