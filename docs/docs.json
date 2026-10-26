@@ -183,6 +183,7 @@
                   "next/reference/sdk-node",
                   "next/reference/sdk-python",
                   "next/reference/sdk-rust",
+                  "next/reference/sdk-go",
                   "next/reference/sdk-browser"
                 ]
               },
@@ -192,7 +193,8 @@
                 "pages": [
                   "next/reference/helpers-node",
                   "next/reference/helpers-python",
-                  "next/reference/helpers-rust"
+                  "next/reference/helpers-rust",
+                  "next/reference/helpers-go"
                 ]
               },
               {
