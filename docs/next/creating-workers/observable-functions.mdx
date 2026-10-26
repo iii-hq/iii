@@ -7,8 +7,9 @@ owner: "devrel"
 type: "how-to"
 ---
 
-By default you write nothing to be observed. Register a function, call it whenever the thing
-happens, and every call runs the targets of everyone who [observes](../using-iii/observers) it:
+Every function you register is already observable. Each time it runs, iii runs the target of every
+[observer](../using-iii/observers) watching it, and you add no code for that. To publish an event,
+register a function for it and call that function whenever the event happens:
 
 ```typescript
 worker.registerFunction("files::on-change", async (change: FileChanged) => change);
@@ -17,8 +18,8 @@ worker.registerFunction("files::on-change", async (change: FileChanged) => chang
 await worker.trigger({ function_id: "files::on-change", payload: change });
 ```
 
-That default is called **auto delivery**, and it covers most sources. This page is for the worker
-that hosts a function (its owner) and wants to **override that default**:
+This default is **auto delivery**, and most sources need nothing more. The rest of this page is for
+the worker that hosts a function (its owner) when it wants to **override the default**:
 
 - run code when an observer is added or removed, for example to start expensive work only while
   someone is watching ([Know when you are observed](#know-when-you-are-observed));
