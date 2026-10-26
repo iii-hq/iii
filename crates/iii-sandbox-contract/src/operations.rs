@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde_json::Value;
 
 pub const PUBLIC_PREFIX: &str = "sandbox::";
-pub const DEFAULT_ADAPTER: &str = "sandbox-builtin";
+pub const DEFAULT_ADAPTER: &str = "sandbox-libkrun";
 pub const ADAPTER_INFO_SUFFIX: &str = "adapter::info";
 pub const ROUTER_INFO_ID: &str = "sandbox::adapter::info";
 
@@ -21,7 +21,7 @@ pub const WORKER_LOGS: &str = "worker::logs";
 pub const WORKER_STOP: &str = "worker::stop";
 pub const WORKER_DESTROY: &str = "worker::destroy";
 
-/// `("sandbox-builtin", "sandbox::fs::ls" | "fs::ls")` -> `"sandbox-builtin::fs::ls"`;
+/// `("sandbox-libkrun", "sandbox::fs::ls" | "fs::ls")` -> `"sandbox-libkrun::fs::ls"`;
 /// strips a leading `PUBLIC_PREFIX`.
 pub fn adapter_function_id(adapter: &str, id: &str) -> String {
     format!(
@@ -253,23 +253,23 @@ mod tests {
             format!("{PUBLIC_PREFIX}{ADAPTER_INFO_SUFFIX}")
         );
         assert_eq!(
-            adapter_function_id("sandbox-builtin", "sandbox::fs::ls"),
-            "sandbox-builtin::fs::ls"
+            adapter_function_id("sandbox-libkrun", "sandbox::fs::ls"),
+            "sandbox-libkrun::fs::ls"
         );
         assert_eq!(
-            adapter_function_id("sandbox-builtin", "fs::ls"),
-            "sandbox-builtin::fs::ls"
+            adapter_function_id("sandbox-libkrun", "fs::ls"),
+            "sandbox-libkrun::fs::ls"
         );
         assert_eq!(
             adapter_function_id("fake", ADAPTER_INFO_SUFFIX),
             "fake::adapter::info"
         );
-        assert_eq!(DEFAULT_ADAPTER, "sandbox-builtin");
+        assert_eq!(DEFAULT_ADAPTER, "sandbox-libkrun");
     }
 
     #[test]
     fn adapter_names() {
-        for ok in ["sandbox-builtin", "fake", "sandbox-mock", "a1"] {
+        for ok in ["sandbox-libkrun", "fake", "sandbox-mock", "a1"] {
             assert!(is_valid_adapter_name(ok), "{ok}");
         }
         for bad in ["", "sandbox", "Sandbox", "a_b", "a::b", "a b"] {

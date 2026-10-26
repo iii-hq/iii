@@ -4,7 +4,7 @@ Spawn ephemeral microVMs from worker code. The router serves 16 `sandbox::*` tri
 
 > **Implementation:** `engine/src/workers/sandbox/`. The engine's built-in sandbox router. It
 > registers every `sandbox::*` function in the `default` namespace and forwards each call,
-> unchanged, to the bound sandbox adapter worker (`sandbox-builtin` by default). See
+> unchanged, to the bound sandbox adapter worker (`sandbox-libkrun` by default). See
 > [Binding](#binding).
 
 **Use it for:** running untrusted code, AI-agent tool calls, one-shot scripts, per-request isolation.
@@ -100,23 +100,23 @@ that owns the engine picks the adapter:
 ```yaml
 engine:
   sandbox:
-    adapter: sandbox-builtin   # function prefix = the adapter's manifest name; default
+    adapter: sandbox-libkrun   # function prefix = the adapter's manifest name; default
     namespace: my-proj         # optional; default = this project's namespace
 ```
 
-- A Compose-managed engine without an `engine.sandbox` section is bound to `sandbox-builtin` in the
+- A Compose-managed engine without an `engine.sandbox` section is bound to `sandbox-libkrun` in the
   owner's namespace. Compose installs the adapter when a VM container, `engine.sandbox` or
   `compose::add iii-sandbox` asks for it.
 - An engine no Compose file manages (External mode: the file has no `engine:` section) gets no
   binding. Set `sandbox:` in that engine's config, or its callers get `S303`.
 - Changing the section needs a Compose restart.
 - Adapter settings (`image_allowlist`, `custom_images`, `default_*`, `max_*`, `auto_install`, ...)
-  are not engine config. They go under `containers.sandbox-builtin.config_override` with the same
+  are not engine config. They go under `containers.sandbox-libkrun.config_override` with the same
   keys they had under `engine.workers.iii-sandbox`.
 - Known limit: the router re-reads `adapter::info` only after an `S301` or `invocation_stopped`. An
   adapter swapped for another major between calls is not caught until then.
 
-Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-builtin`.
+Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 
 ## Triggers
 

@@ -228,7 +228,7 @@ fn migration_guidance(name: &str) -> String {
             "remove this redundant entry; the engine provides it automatically"
         }
         "iii-sandbox" => {
-            "remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-builtin worker"
+            "remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-libkrun worker"
         }
         _ => "move this worker to worker-compose.yaml",
     };
@@ -1278,7 +1278,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.contains("'iii-sandbox' -> remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-builtin worker"),
+            message.contains("'iii-sandbox' -> remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-libkrun worker"),
             "{message}"
         );
         assert!(

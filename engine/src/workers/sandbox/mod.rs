@@ -11,6 +11,6 @@ pub use router::SandboxRouter;
 crate::register_worker!(
     "iii-sandbox",
     SandboxRouter,
-    description = "Routes sandbox::* in the default namespace to the configured sandbox adapter worker (sandbox-builtin by default).",
+    description = "Routes sandbox::* in the default namespace to the configured sandbox adapter worker (sandbox-libkrun by default).",
     mandatory
 );
