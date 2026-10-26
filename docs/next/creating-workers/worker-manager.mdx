@@ -210,14 +210,12 @@ to reject the connection.**
   </Tab>
   <Tab title="Go">
     ```go main.go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
+
     client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithName("auth"))
 
     client.RegisterFunction("auth::browser", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var input struct {
-            Headers     map[string]string   `json:"headers"`
-            QueryParams map[string][]string `json:"query_params"`
-            IPAddress   string              `json:"ip_address"`
-        }
+        var input workerconnection.AuthInput
         if err := json.Unmarshal(data, &input); err != nil {
             return nil, err
         }
@@ -385,27 +383,29 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
   <Tab title="Go">
     ```go main.go
     client.RegisterFunction("auth::middleware", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var input struct {
-            FunctionID string         `json:"function_id"`
-            Payload    map[string]any `json:"payload"`
-            Context    map[string]any `json:"context"`
-            Namespace  string         `json:"namespace"`
-        }
+        var input iii.MiddlewareFunctionInput
         if err := json.Unmarshal(data, &input); err != nil {
             return nil, err
         }
-        // stamp the authenticated caller onto every payload, then forward the call
-        if input.Payload == nil {
-            input.Payload = map[string]any{}
+        var payload, session map[string]any
+        if err := json.Unmarshal(input.Payload, &payload); err != nil {
+            return nil, err
         }
-        input.Payload["_source"] = input.Context["source"]
-        payload, err := json.Marshal(input.Payload)
+        if err := json.Unmarshal(input.Context, &session); err != nil {
+            return nil, err
+        }
+        // stamp the authenticated caller onto every payload, then forward the call
+        if payload == nil {
+            payload = map[string]any{}
+        }
+        payload["_source"] = session["source"]
+        forwarded, err := json.Marshal(payload)
         if err != nil {
             return nil, err
         }
         return client.Trigger(ctx, iii.TriggerRequest{
             FunctionID: input.FunctionID,
-            Data:       payload,
+            Data:       forwarded,
             Namespace:  input.Namespace, // stay in the namespace the caller addressed
         })
     })
