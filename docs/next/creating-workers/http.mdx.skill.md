@@ -173,9 +173,7 @@ iii trigger compose::add worker=./workers/my-worker
 
 ## Calling the endpoint
 
-Once the trigger is registered, call the endpoint. The `http` worker listens on port `3111` by
-default. To change the port, set `port` in the configuration of the `http` worker. See the
-[`http` worker docs](https://workers.iii.dev/workers/http).
+Once the trigger is registered, call the endpoint:
 
 ```bash
 curl -X POST "http://localhost:3111/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
