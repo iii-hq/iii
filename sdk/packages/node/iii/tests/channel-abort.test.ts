@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Socket } from 'node:net'
+import { type AddressInfo, createServer, type Socket } from 'node:net'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -69,6 +69,27 @@ describe('channel abort over a real WebSocket', () => {
     it('rejects readAll when the connection drops without a close frame (1006)', async () => {
       const { all } = await endWith((ws) => ws.terminate())
       await expect(all).rejects.toThrow(/1006/)
+    })
+
+    // A socket that never opens must fail with its own error, not read as an empty stream or a generic 1006.
+    it('rejects readAll with the socket error when the connection is refused', async () => {
+      const closed = createServer()
+      await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve))
+      const { port } = closed.address() as AddressInfo
+      await new Promise((resolve) => closed.close(resolve))
+
+      await expect(new ChannelReader(`ws://127.0.0.1:${port}`, ref('read')).readAll()).rejects.toThrow(/ECONNREFUSED/)
+    })
+
+    it('rejects readAll with the socket error when the upgrade is answered with 404', async () => {
+      const notFound = new WebSocketServer({ host: '127.0.0.1', port: 0, verifyClient: (_info, cb) => cb(false, 404) })
+      await new Promise<void>((resolve) => notFound.once('listening', () => resolve()))
+      try {
+        const reader = new ChannelReader(`ws://127.0.0.1:${(notFound.address() as AddressInfo).port}`, ref('read'))
+        await expect(reader.readAll()).rejects.toThrow(/Unexpected server response: 404/)
+      } finally {
+        await new Promise<void>((resolve) => notFound.close(() => resolve()))
+      }
     })
 
     it('throws in for-await after the data sent before the abort', async () => {

@@ -568,6 +568,7 @@ mod nodelay_tests {
 
 #[cfg(test)]
 mod end_of_stream_tests {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
     use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
     use super::*;
@@ -706,6 +707,36 @@ mod end_of_stream_tests {
         let error = result.unwrap_err().to_string();
         // The socket is fused after the error and yields `None` next.
         assert_eq!(reader.next_binary().await.unwrap_err().to_string(), error);
+    }
+
+    // A dial that fails with no close() (engine unreachable, or the channel is
+    // gone and the engine answers 404) is an error, not an empty stream.
+    #[tokio::test]
+    #[expect(
+        clippy::result_large_err,
+        reason = "tungstenite fixes the handshake callback's error type"
+    )]
+    async fn failed_dial_is_an_error_not_end_of_stream() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unreachable = closed.local_addr().unwrap();
+        drop(closed);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let not_found = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // read_all dials again, so every dial gets the 404.
+            while let Ok((socket, _)) = listener.accept().await {
+                let _ = tokio_tungstenite::accept_hdr_async(socket, |_: &Request, _: Response| {
+                    Err(Response::builder().status(404).body(None).unwrap())
+                })
+                .await;
+            }
+        });
+
+        for address in [unreachable, not_found] {
+            let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
+            reader.next_binary().await.unwrap_err();
+            reader.read_all().await.unwrap_err();
+        }
     }
 
     // The engine reads a writer's end from its close frame: close() must put

@@ -323,6 +323,7 @@ func TestChannelReaderLocalClose(t *testing.T) {
 		}
 		defer c.Close()
 		fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(sum[:]))
+		_, _ = rw.WriteString("\x81\x02hi") // one unmasked text frame
 		_ = rw.Flush()
 		_, _ = rw.ReadByte() // the reader's close frame
 	}))
@@ -330,11 +331,10 @@ func TestChannelReaderLocalClose(t *testing.T) {
 
 	base := "ws" + strings.TrimPrefix(srv.URL, "http")
 	reader := OpenReader(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelRead})
+	seen := make(chan struct{}, 1)
+	reader.OnMessage(func(string) { seen <- struct{}{} })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := reader.ensureConnected(ctx); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
 	type result struct {
 		ok  bool
 		err error
@@ -344,9 +344,23 @@ func TestChannelReaderLocalClose(t *testing.T) {
 		_, ok, err := reader.NextBinary(ctx)
 		done <- result{ok, err}
 	}()
+	// Close only once the read has the text frame: it is then past the dial, so its next
+	// conn.Read fails with no close code and only the closed check makes that end of stream.
+	select {
+	case <-seen:
+	case res := <-done:
+		t.Fatalf("NextBinary before the text frame = (%v, %v), want it still reading", res.ok, res.err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader got no text frame")
+	}
 	_ = reader.Close() // no reply comes, so Close itself reports the dropped socket
-	if res := <-done; res.ok || res.err != nil {
-		t.Fatalf("NextBinary cut short by Close = (%v, %v), want end of stream", res.ok, res.err)
+	select {
+	case res := <-done:
+		if res.ok || res.err != nil {
+			t.Fatalf("NextBinary cut short by Close = (%v, %v), want end of stream", res.ok, res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("NextBinary cut short by Close did not return")
 	}
 	if _, ok, err := reader.NextBinary(ctx); ok || err != nil {
 		t.Errorf("NextBinary after Close = (%v, %v), want end of stream without a redial", ok, err)
@@ -395,6 +409,53 @@ func TestChannelWriterCloseAfterFailedWrite(t *testing.T) {
 	case code := <-closeCode:
 		if code != -1 {
 			t.Errorf("writer close code = %v, want none (-1): a clean close here hides the lost bytes", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not see the writer end")
+	}
+}
+
+// TestChannelWriterCloseAfterFailedMessage checks the same after a failed SendMessage: a
+// lost text frame is a cut stream too, so Close must not send 1000.
+func TestChannelWriterCloseAfterFailedMessage(t *testing.T) {
+	closeCode := make(chan websocket.StatusCode, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				closeCode <- websocket.CloseStatus(err)
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+	w := OpenWriter(base, StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelWrite})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := w.SendMessage(ctx, "sent"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	// Hold the message lock so the next SendMessage fails on its deadline with the socket still open.
+	if _, err := w.conn.Writer(ctx, websocket.MessageText); err != nil {
+		t.Fatalf("Writer: %v", err)
+	}
+	short, cancelShort := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancelShort()
+	if err := w.SendMessage(short, "lost"); err == nil {
+		t.Fatal("SendMessage = nil, want a deadline error")
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+	select {
+	case code := <-closeCode:
+		if code != -1 {
+			t.Errorf("writer close code = %v, want none (-1): a clean close here hides the lost message", code)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not see the writer end")
