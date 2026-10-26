@@ -385,6 +385,14 @@ worker that publishes the real `http` trigger type. The publisher worker:
           return nil
       }
 
+      // lookup returns the binding registered under a trigger id.
+      func (h *httpHandler) lookup(id string) (iii.TriggerConfig, bool) {
+          h.mu.Lock()
+          defer h.mu.Unlock()
+          cfg, ok := h.bindings[id]
+          return cfg, ok
+      }
+
       func main() {
           client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
 
@@ -394,7 +402,7 @@ worker that publishes the real `http` trigger type. The publisher worker:
               log.Fatal(err)
           }
 
-          // Start the HTTP listener here; it dispatches to handler.bindings (see below).
+          // Start the HTTP listener here; it finds bindings with handler.lookup (see below).
       }
       ```
 
@@ -552,9 +560,7 @@ Continuing the `mini-http` example from above:
     ```go
     // Inside the worker's HTTP listener, after matching method+path to an
     // entry in the handler's `bindings` map from the declare-trigger-type example:
-    handler.mu.Lock()
-    binding, ok := handler.bindings[matchedTriggerID]
-    handler.mu.Unlock()
+    binding, ok := handler.lookup(matchedTriggerID)
     if ok {
         payload, err := json.Marshal(map[string]any{"method": method, "headers": headers, "body": body})
         if err != nil {
