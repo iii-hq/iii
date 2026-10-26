@@ -14,7 +14,7 @@ socket.
 go get github.com/iii-hq/iii/sdk/packages/go/iii
 ```
 
-Requires Go 1.24+.
+Requires Go 1.25 or later.
 
 ## Hello World
 
@@ -78,7 +78,7 @@ func main() {
 > function to return `{ status_code, body }`. Functions invoked only over the socket can
 > use any payload shape. See the [HTTP trigger documentation](https://iii.dev/docs).
 
-A complete, runnable version lives in the [`iii-example`](../iii-example) module.
+A complete, runnable version is in the [`iii-example`](../iii-example) module.
 
 ## API
 
@@ -125,6 +125,8 @@ Pass options to `New` or `RegisterWorker`:
 | `iii.WithReconnectConfig(cfg)` | Reconnect schedule (see [Connection behavior](#connection-behavior)). |
 | `iii.WithInvocationTimeout(d)` | How long `Trigger` waits when `TriggerRequest.Timeout` is zero (default `iii.DefaultInvocationTimeout`, 30s). |
 | `iii.WithTelemetry(iii.TelemetryOptions{...})` | Language, project name and framework reported in the worker metadata. |
+| `iii.WithOtel(iii.OtelConfig{...})` | OpenTelemetry export to the engine: on by default, configured or turned off here (see [Observability](#observability)). |
+| `iii.WithMetricsReporting(enabled)` | Worker resource gauges (memory, CPU, uptime) exported with the telemetry (default `true`). |
 
 ### Registering functions
 
@@ -144,7 +146,7 @@ client.RegisterFunction("orders::create", func(ctx context.Context, data json.Ra
 ```
 
 Per-invocation metadata rides on the handler's `ctx` (so the `Handler` signature never
-changes); read it with `MetadataFromContext` — `ok` is `false` when the caller attached
+changes); read it with `MetadataFromContext`. `ok` is `false` when the caller attached
 none:
 
 ```go
@@ -403,6 +405,8 @@ ship their source functions. See the
   forever). Override with `iii.WithReconnectConfig`.
 - **Offline buffer**: invocations sent while disconnected are buffered and flushed on
   reconnect; registrations are replayed from the in-memory registries.
+- **Telemetry** travels on a second WebSocket, to `<engine address>/otel`, with its own
+  reconnect loop (see [Observability](#observability)).
 - **Worker metadata** is registered last on each connect, tagged `runtime: "go"`, with
   `isolation` (`III_ISOLATION`, else `null`) and `telemetry`: `language` (from `LANG`),
   `project_name` (the last element of the module path in the nearest `go.mod`) and
@@ -449,19 +453,99 @@ all, _ := reader.ReadAll(ctx)        // binary stream, until the writer closes
 ```
 
 On a channel socket, **a text frame is a message** (`SendMessage` / `OnMessage`) and **a
-binary frame is stream data** (`Write` / `ReadAll`) — disambiguated by WebSocket opcode,
+binary frame is stream data** (`Write` / `ReadAll`), told apart by WebSocket opcode,
 no envelope. The writer ends the stream with `Close`; the reader sees that as EOF.
 
 ## Observability
 
-The wire protocol carries W3C trace context (`traceparent` / `baggage`) across the
-engine→worker→engine hop, and the SDK echoes it back on results. Wiring it to an
-OpenTelemetry SDK (real spans around invocations) is planned as a follow-up; see
-[iii-hq/iii#1719](https://github.com/iii-hq/iii/issues/1719).
+OpenTelemetry is on by default. When the connection lifecycle starts (`RegisterWorker`
+or `Connect`), the client opens a second WebSocket to the engine at
+`<engine address>/otel`, with the same `WithHeaders` headers and `III_TOKEN` bearer as the
+main connection, and exports spans, metrics and log records over it. The engine takes
+them into its own observability pipeline, so a worker needs no exporter configuration
+of its own. `client.Close()` flushes what is buffered and stops the pipeline.
+
+What the SDK records:
+
+- **Invocation spans.** Every handler runs inside an `execute <function id>` span (kind
+  INTERNAL), a child of the trace context the invocation carried. The handler's `ctx`
+  carries that span: pass it to `Trigger` and the call joins the trace. The SDK injects
+  `traceparent` and `baggage` into outbound invocations and extracts them from inbound
+  ones, also when export is turned off.
+- **Invocation payloads.** The span records the handler's input and output as the
+  `iii.invocation.input` and `iii.invocation.output` events. Values of sensitive keys
+  (`password`, `secret`, `authorization`, `api_key`, `access_token`, keys ending in
+  `_token`, ...) are replaced by `[REDACTED]`. Set `III_DISABLE_TRACE_PAYLOADS=1` (or
+  `true`) to stop recording payloads, and `III_TRACE_PAYLOAD_MAX_BYTES` to cap their size.
+- **Worker metrics.** Resource gauges (`iii.worker.memory.*`, `iii.worker.cpu.*`,
+  `iii.worker.uptime_seconds`, ...) tagged with `worker.id` and `worker.name`, from the
+  moment the engine acknowledges the worker. Turn them off with
+  `iii.WithMetricsReporting(false)`.
+
+Configure the pipeline with `iii.WithOtel`, or turn it off:
+
+```go
+// Defaults: export on, service name "iii-go", metrics every 60s.
+client := iii.RegisterWorker("", iii.WithOtel(iii.OtelConfig{
+	ServiceName:    "orders",
+	ServiceVersion: "1.4.0",
+}))
+
+// Off: set OTEL_ENABLED=false (or 0, no, off) in the environment, or in code:
+off := false
+quiet := iii.RegisterWorker("", iii.WithOtel(iii.OtelConfig{Enabled: &off}))
+```
+
+An `OtelConfig` field left at its zero value reads its environment variable
+(`OTEL_SERVICE_NAME`, `OTEL_METRICS_ENABLED`, `OTEL_SPANS_FLUSH_INTERVAL_MS`, ...), then
+its default; the `OtelConfig` documentation lists each one.
+
+**Global providers.** The SDK installs the global tracer provider, meter provider and
+propagator only when the application has not set its own, and restores them on `Close`.
+When the SDK's providers are the globals, spans and metrics a handler creates through
+`go.opentelemetry.io/otel` are exported to the engine and parented to the invocation
+span. An application that configured OpenTelemetry itself keeps its providers and its
+propagator; the SDK's invocation spans still reach the engine.
+
+**Helpers.** The `observability` package
+(`github.com/iii-hq/iii/sdk/packages/go/iii/observability`) is the Go counterpart of the
+Node SDK's `@iii-dev/helpers/observability`: a structured `Logger` whose records carry
+the current trace, `WithSpan` for child spans, a traced HTTP client (`NewTransport`,
+`NewHTTPClient`), trace context and baggage helpers (`InjectTraceparent`,
+`ExtractContext`, `SetBaggageEntry`, ...), span helpers (`SetCurrentSpanAttribute`,
+`RecordSpanEvent`, ...), payload redaction (`Redact`, `RedactAndTruncate`) and `Flush`
+for a short-lived process. Go has no implicit active context, so each helper takes the
+`ctx` the handler received.
+
+```go
+var logger observability.Logger // the zero value is ready to use
+
+func quote(ctx context.Context, data json.RawMessage) (any, error) {
+	logger.Info(ctx, "quote requested", map[string]any{"currency": "EUR"})
+
+	return observability.WithSpan(ctx, "fetch-rates", observability.SpanOptions{},
+		func(ctx context.Context, span observability.Span) (any, error) {
+			// An HTTP client span, child of "fetch-rates".
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://rates.example.com/eur", nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := observability.NewHTTPClient(nil).Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			return map[string]int{"status": resp.StatusCode}, nil
+		})
+}
+```
+
+Without running telemetry (turned off, or no client started) the helpers fall back: the
+`Logger` writes to the standard `log` package and spans use the global tracer provider.
 
 ## Resources
 
 - [iii engine](https://github.com/iii-hq/iii)
-- [Node SDK](../../node/iii) · [Rust SDK](../../rust/iii) — the references this SDK mirrors
+- [Node SDK](../../node/iii) · [Rust SDK](../../rust/iii): the references this SDK mirrors
 - [Examples](https://github.com/iii-hq/iii-examples) (and a runnable Go worker in [`iii-example`](../iii-example))
 - [Documentation](https://iii.dev/docs)
