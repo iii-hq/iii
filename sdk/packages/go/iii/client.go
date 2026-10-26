@@ -26,21 +26,25 @@ import (
 // then invokes those functions over the same socket and the Client replies.
 //
 // Concurrency model (ported from the Rust SDK's single-thread + channel design,
-// sdk/packages/rust/iii/src/iii.rs): all writes are funneled through one writer
-// goroutine fed by the outbound channel, so the WebSocket is never written from two
-// goroutines (coder/websocket, like gorilla, requires a single writer). One read-loop
-// goroutine reads frames and dispatches them; user handlers run in their own goroutines
-// so a slow or panicking handler never blocks the read loop. A supervisor goroutine owns
-// the connect / reconnect-with-backoff lifecycle. Shared maps and the pending-invocation
-// table are guarded by mu.
+// sdk/packages/rust/iii/src/iii.rs): all data writes are funneled through one writer
+// goroutine fed by the outbound channel. A separate keepalive goroutine sends WebSocket
+// control pings, which coder/websocket permits concurrently with writes and its Reader.
+// One read-loop goroutine reads frames and dispatches them; user handlers run in their
+// own goroutines so a slow or panicking handler never blocks the read loop. A supervisor
+// goroutine owns the connect / reconnect-with-backoff lifecycle. Shared maps and the
+// pending-invocation table are guarded by mu.
 //
 // A Client is safe for concurrent use. Register* may be called before or after Connect;
 // registrations are kept in memory and (re)sent to the engine on every (re)connection.
 type Client struct {
-	url         string
-	reconnect   ReconnectConfig
-	name        string
-	description string
+	url       string
+	reconnect ReconnectConfig
+	// keepalive timings are internal so all clients use protocol-compatible defaults.
+	// Tests override them to exercise the lifecycle without waiting for wall-clock seconds.
+	keepaliveInterval time.Duration
+	keepaliveTimeout  time.Duration
+	name              string
+	description       string
 	// headers are the caller's WithHeaders, sent on the WebSocket handshake of the
 	// main connection and of channels. handshakeHeaders adds the III_TOKEN bearer.
 	headers http.Header
@@ -348,20 +352,22 @@ func New(url string, opts ...Option) *Client {
 		url = EngineURLFromEnv()
 	}
 	c := &Client{
-		url:          url,
-		reconnect:    DefaultReconnectConfig(),
-		name:         defaultWorkerName(),
-		outbound:     make(chan []byte, 64),
-		observeOut:   make(chan observeFrame, 64),
-		state:        StateDisconnected,
-		functions:    map[string]registeredFunction{},
-		triggers:     map[string]*RegisterTriggerMessage{},
-		triggerTypes: map[string]registeredTriggerType{},
-		pending:      map[uuid.UUID]chan invocationOutcome{},
-		shutdown:     make(chan struct{}),
-		connected:    make(chan struct{}),
-		failed:       make(chan struct{}),
-		fatal:        make(chan struct{}),
+		url:               url,
+		reconnect:         DefaultReconnectConfig(),
+		keepaliveInterval: 20 * time.Second,
+		keepaliveTimeout:  60 * time.Second,
+		name:              defaultWorkerName(),
+		outbound:          make(chan []byte, 64),
+		observeOut:        make(chan observeFrame, 64),
+		state:             StateDisconnected,
+		functions:         map[string]registeredFunction{},
+		triggers:          map[string]*RegisterTriggerMessage{},
+		triggerTypes:      map[string]registeredTriggerType{},
+		pending:           map[uuid.UUID]chan invocationOutcome{},
+		shutdown:          make(chan struct{}),
+		connected:         make(chan struct{}),
+		failed:            make(chan struct{}),
+		fatal:             make(chan struct{}),
 
 		engineFeatures:      map[string]bool{},
 		observers:           map[string]*ObserverHandle{},
@@ -1009,7 +1015,7 @@ func (c *Client) supervise() {
 			c.setState(StateReconnecting)
 		}
 
-		err := c.runConnection()
+		registered, err := c.runConnection()
 		if err == nil {
 			// Clean shutdown of the connection (Close was called).
 			return
@@ -1024,6 +1030,11 @@ func (c *Client) supervise() {
 		default:
 		}
 
+		// Once the engine has accepted this worker, the connection was healthy.
+		// Back off only across consecutive failures to establish a healthy session.
+		if registered {
+			attempt = 0
+		}
 		attempt++
 		if c.reconnect.MaxRetries != -1 && attempt > c.reconnect.MaxRetries {
 			c.setState(StateFailed)
@@ -1056,8 +1067,9 @@ func (c *Client) backoffDelay(attempt int) time.Duration {
 }
 
 // runConnection dials, runs the read loop and writer until the socket drops or Close is
-// called, and returns nil only on a clean Close. A returned error means "reconnect".
-func (c *Client) runConnection() error {
+// called, and returns nil only on a clean Close. The bool reports whether the engine
+// registered the worker on this connection; a returned error means "reconnect".
+func (c *Client) runConnection() (bool, error) {
 	// A connection-scoped context cancelled when this connection ends, so the writer
 	// goroutine and any per-connection work stop together.
 	connCtx, cancel := context.WithCancel(context.Background())
@@ -1068,9 +1080,9 @@ func (c *Client) runConnection() error {
 		// Treat dial failure as a reconnectable error unless we're shutting down.
 		select {
 		case <-c.shutdown:
-			return nil
+			return false, nil
 		default:
-			return err
+			return false, err
 		}
 	}
 	// Bound inbound main-protocol messages consistently with the engine message limit.
@@ -1098,9 +1110,9 @@ func (c *Client) runConnection() error {
 				_ = conn.CloseNow()
 				select {
 				case <-c.shutdown:
-					return nil
+					return false, nil
 				default:
-					return werr
+					return false, werr
 				}
 			}
 		}
@@ -1135,6 +1147,8 @@ func (c *Client) runConnection() error {
 	writerDone := make(chan struct{})
 	c.writerWG.Add(1)
 	go c.writeLoop(connCtx, conn, reply, replyQueued, epoch, writerDone)
+	keepaliveDone := make(chan struct{})
+	go c.keepaliveLoop(connCtx, conn, keepaliveDone)
 
 	// Signal the first successful connection to Connect's caller.
 	c.connOnce.Do(func() { close(c.connected) })
@@ -1153,12 +1167,14 @@ func (c *Client) runConnection() error {
 	close(replyDone)
 	cancel()
 	<-writerDone
+	<-keepaliveDone
 	// Report frames handed to this connection's writer and never written are counted
 	// INACTIVE (no new send can start on the detached channel).
 	c.discardUnwritten(reply, replySenders)
 	_ = conn.CloseNow()
 	c.mu.Lock()
 	c.conn = nil
+	registered := c.registeredOnConnection
 	// Local dispatch and the compiled observer sets survive; what was sent on this
 	// connection is replayed on the next one.
 	c.registeredOnConnection = false
@@ -1172,12 +1188,37 @@ func (c *Client) runConnection() error {
 	// If Close was called, report a clean stop; otherwise ask for a reconnect.
 	select {
 	case <-c.shutdown:
-		return nil
+		return registered, nil
 	default:
 		if readErr == nil {
 			readErr = fmt.Errorf("iii: connection closed")
 		}
-		return readErr
+		return registered, readErr
+	}
+}
+
+// keepaliveLoop prevents an otherwise idle worker connection from being retired by
+// proxies and detects half-open sockets. Ping waits for the read loop to observe the
+// matching pong; a timeout closes the socket so the supervisor reconnects.
+func (c *Client) keepaliveLoop(ctx context.Context, conn *websocket.Conn, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(c.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, c.keepaliveTimeout)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					_ = conn.CloseNow()
+				}
+				return
+			}
+		}
 	}
 }
 
