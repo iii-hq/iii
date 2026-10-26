@@ -87,15 +87,6 @@
                 ]
               },
               {
-                "group": "Upgrading",
-                "pages": [
-                  "next/upgrading/from-0-24-x",
-                  "next/upgrading/migrate-from-streams",
-                  "next/upgrading/workers-to-compose",
-                  "next/upgrading/from-0-22-x"
-                ]
-              },
-              {
                 "group": "Using iii",
                 "pages": [
                   "next/using-iii/workers",
@@ -143,6 +134,15 @@
                   "next/creating-workers/observable-functions",
                   "next/creating-workers/functions",
                   "next/creating-workers/channels"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "next/upgrading/from-0-24-x",
+                  "next/upgrading/migrate-from-streams",
+                  "next/upgrading/workers-to-compose",
+                  "next/upgrading/from-0-22-x"
                 ]
               }
             ]
@@ -231,15 +231,6 @@
                 ]
               },
               {
-                "group": "Upgrading",
-                "pages": [
-                  "upgrading/from-0-24-x",
-                  "upgrading/migrate-from-streams",
-                  "upgrading/workers-to-compose",
-                  "upgrading/from-0-22-x"
-                ]
-              },
-              {
                 "group": "Using iii",
                 "pages": [
                   "using-iii/workers",
@@ -287,6 +278,15 @@
                   "creating-workers/observable-functions",
                   "creating-workers/functions",
                   "creating-workers/channels"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "upgrading/from-0-24-x",
+                  "upgrading/migrate-from-streams",
+                  "upgrading/workers-to-compose",
+                  "upgrading/from-0-22-x"
                 ]
               }
             ]
