@@ -88,7 +88,7 @@ headings are label-style (small caps) and stay out of the contents list. See
 ## The benchmarks page
 
 `/benchmarks` draws two data sets that CI publishes to the `gh-pages` branch:
-- **Load benchmarks.** These come from the workers repo (`.github/workflows/loadtest.yml` and `sandbox-builtin/crates/iii-loadtest`, which publish to this repo's `gh-pages`), and live in `loadtest/index.json` (every run, newest first) and `loadtest/runs/<id>.json`.
+- **Load benchmarks.** These come from the workers repo (`.github/workflows/loadtest.yml` and `sandbox-libkrun/crates/iii-loadtest`, which publish to this repo's `gh-pages`), and live in `loadtest/index.json` (every run, newest first) and `loadtest/runs/<id>.json`.
 - **Criterion history.** This comes from `bench-release.yml` and lives in `dev/bench/data.js`.
 
 `scripts/generate-benchmarks.ts` runs before `dev` and `build`. It fetches both and writes `content/benchmarks/data.json`, which is gitignored and is what the page imports. Each workflow dispatches a website deploy once it has published, so the page follows every run.
@@ -100,10 +100,10 @@ A part that cannot be fetched falls back to `content/benchmarks/snapshot.json`, 
 Every number in the page's text is computed from the same run its charts draw (`lib/benchmarks/page.ts`), and the charts are in `components/benchmarks/`. To refresh the snapshot from a local run:
 
 ```bash
-# in the workers repo, sandbox-builtin/
+# in the workers repo, sandbox-libkrun/
 target/release/iii-loadtest export target/loadtest/<run> --version <x.y.z>
 # here, in website/
-pnpm tsx scripts/generate-benchmarks.ts --snapshot --summary <workers>/sandbox-builtin/target/loadtest/<run>/summary.json \
+pnpm tsx scripts/generate-benchmarks.ts --snapshot --summary <workers>/sandbox-libkrun/target/loadtest/<run>/summary.json \
   --micro <a copy of gh-pages dev/bench/data.js>
 ```
 

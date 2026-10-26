@@ -431,7 +431,7 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 `compose::update` without `worker` or `workers` updates every declared `package://` worker to its
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
-The container that runs the sandbox adapter (`sandbox-builtin`, or the one `engine.sandbox.adapter`
+The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
 names) moves only to the newest release within the engine's sandbox contract major.
 
 ```bash
@@ -682,7 +682,7 @@ usage analytics, `iii-observability` for OpenTelemetry traces, metrics, and logs
 `engine.workers` fails with `SANDBOX_CONFIG_MOVED`, which prints the replacement; see [Upgrading to
 the sandbox worker](../upgrading/sandbox-worker).
 
-`engine.sandbox` takes `adapter`, the adapter's function prefix (`sandbox-builtin` by default), and
+`engine.sandbox` takes `adapter`, the adapter's function prefix (`sandbox-libkrun` by default), and
 `namespace`, where the adapter runs (this project's namespace by default). A managed engine is
 bound to an adapter whether or not the section is present. Setting the section, with `namespace`
 unset or this project's, also makes Compose install that adapter, as does a bundle or `runtime.base_image` worker, or
@@ -748,7 +748,7 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
 | `path`   | A path to a worker stored locally on disk.                                      |
 
-A bundle's VM, like a `path://` worker with `runtime.base_image`, runs in the `sandbox-builtin`
+A bundle's VM, like a `path://` worker with `runtime.base_image`, runs in the `sandbox-libkrun`
 worker, which Compose installs from the registry when the project has such a worker. The adapter is
 built for three targets only: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and
 `aarch64-unknown-linux-gnu`. On a musl Linux or Intel Mac host Compose fails with

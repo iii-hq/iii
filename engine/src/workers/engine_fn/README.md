@@ -78,7 +78,7 @@ iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 
 Use `engine::workers::list` for live registrations and `compose::status` for process ownership and
-supervisor state. `<adapter>::worker::*` (for example `sandbox-builtin::worker::*`) is the sandbox
+supervisor state. `<adapter>::worker::*` (for example `sandbox-libkrun::worker::*`) is the sandbox
 adapter's surface, and only Compose calls it. Use
 `compose::logs` for bounded raw stdout and stderr, or `iii compose logs state --follow --namespace dev`
 for a live view.

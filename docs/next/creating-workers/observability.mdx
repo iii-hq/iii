@@ -96,11 +96,11 @@ The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
 ```yaml worker-compose.yaml
 engine:
   sandbox:
-    adapter: sandbox-builtin
+    adapter: sandbox-libkrun
 ```
 
 Start this file with `iii compose --up` before calling the sandbox function. Setting
-`engine.sandbox` makes Compose install the `sandbox-builtin` adapter, which runs the VMs behind the
+`engine.sandbox` makes Compose install the `sandbox-libkrun` adapter, which runs the VMs behind the
 engine's `iii-sandbox` router.
 
 ```bash

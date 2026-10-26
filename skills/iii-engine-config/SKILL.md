@@ -34,7 +34,7 @@ engine:
       host: 127.0.0.1
       port: 3112
   sandbox:
-    adapter: sandbox-builtin
+    adapter: sandbox-libkrun
 containers: {}
 ```
 
@@ -60,7 +60,7 @@ Allowed engine worker base names are:
 
 Use `#instance` for another instance of an allowed worker. `iii-engine-functions`,
 `iii-telemetry`, `iii-observability`, and the `iii-sandbox` router are injected automatically and
-must not be declared. `engine.sandbox` binds the router to an adapter worker (`sandbox-builtin` by
+must not be declared. `engine.sandbox` binds the router to an adapter worker (`sandbox-libkrun` by
 default, which Compose installs). An engine no Compose file manages sets a top-level
 `sandbox: {adapter, namespace}` in its `config.yaml`, or its `sandbox::*` calls get S303.
 

@@ -445,7 +445,7 @@ pub async fn update_all(
 }
 
 /// VM binaries `iii update` no longer manages: sandboxes and VM workers now run
-/// in the sandbox-builtin worker, which `iii compose` installs.
+/// in the sandbox-libkrun worker, which `iii compose` installs.
 const RETIRED_BINARIES: [&str; 2] = ["iii-worker", "iii-init"];
 
 /// Retired binaries still sitting in the managed bin dir.
@@ -466,7 +466,7 @@ pub fn print_retired_binaries_note() {
     }
     eprintln!();
     eprintln!(
-        "  {} iii-worker and iii-init are no longer used: sandboxes and VM workers run in the sandbox-builtin worker, which iii compose installs. You can delete:",
+        "  {} iii-worker and iii-init are no longer used: sandboxes and VM workers run in the sandbox-libkrun worker, which iii compose installs. You can delete:",
         "note:".cyan(),
     );
     for path in retired {

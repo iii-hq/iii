@@ -64,13 +64,13 @@ workers:
 The engine watches this file. A valid change reloads the affected engine worker; an invalid change
 stops the engine so it cannot continue with a configuration different from the file on disk.
 
-A Compose-managed engine is bound to the `sandbox-builtin` adapter for you. An engine that no
+A Compose-managed engine is bound to the `sandbox-libkrun` adapter for you. An engine that no
 Compose file manages sets the top-level `sandbox` section in this file instead, or its `sandbox::*`
 calls fail with S303:
 
 ```yaml
 sandbox:
-  adapter: sandbox-builtin
+  adapter: sandbox-libkrun
   namespace: default
 ```
 

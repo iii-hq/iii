@@ -6,7 +6,7 @@
 iii 0.26 moves the VM code out of the engine. `iii-worker` and `iii-init` are gone, and so is the
 `iii-sandbox` worker you configured under `engine.workers`. The engine keeps `iii-sandbox` as a small
 router: it serves the `sandbox::*` triggers and forwards every call to a sandbox adapter. The
-`sandbox-builtin` worker is that adapter. It runs the VMs, it comes from the worker registry, and
+`sandbox-libkrun` worker is that adapter. It runs the VMs, it comes from the worker registry, and
 Compose installs it when a project needs it.
 
 Consumers keep calling `sandbox::*` in the `default` namespace, and no existing request field,
@@ -19,8 +19,8 @@ and where their state is kept. Work through the sections that apply to your setu
 
 | 0.25 | 0.26 |
 | --- | --- |
-| `engine.workers.iii-sandbox` | `engine.sandbox`, and `containers.sandbox-builtin.config_override` for the settings |
-| `iii-worker` boots bundle and `runtime.base_image` VMs | `sandbox-builtin` boots them through Compose |
+| `engine.workers.iii-sandbox` | `engine.sandbox`, and `containers.sandbox-libkrun.config_override` for the settings |
+| `iii-worker` boots bundle and `runtime.base_image` VMs | `sandbox-libkrun` boots them through Compose |
 | `iii-worker` and `iii-init` in `~/.local/bin` | Not installed or updated by `iii update` |
 | VM state in `<state dir>/vm/<key>/` | VM state in `~/.iii/sandbox/workers/<vm_id>/` |
 | Error `docs_url` on GitHub | [Sandboxes](../creating-workers/sandboxes), where every S-code has an entry |
@@ -32,8 +32,8 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 
 ```yaml worker-compose.yaml
 containers:
-  sandbox-builtin:
-    worker: package://sandbox-builtin
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
     version: '^1'
     config_override:
       image_allowlist:
@@ -45,7 +45,7 @@ Delete the `iii-sandbox` entry, add that container, and keep the keys you had (`
 `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
-`engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-builtin`, so you
+`engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-libkrun`, so you
 can leave the section out. `engine.sandbox.namespace` names the namespace the adapter runs in and
 defaults to the project's namespace. See [Compose](../using-iii/compose#engine-fields).
 
@@ -58,8 +58,8 @@ with `configuration::set`. Read it in its template form:
 iii trigger configuration::get --json '{"id": "iii-sandbox", "raw": true}'
 ```
 
-Copy the keys it prints into the `config_override` of the `sandbox-builtin` container, as in the
-previous section. Do not store them under the adapter's id, `<namespace>-sandbox-builtin`: Compose
+Copy the keys it prints into the `config_override` of the `sandbox-libkrun` container, as in the
+previous section. Do not store them under the adapter's id, `<namespace>-sandbox-libkrun`: Compose
 sets that entry in memory at each start, from the package defaults and `config_override`, and
 storing it with `configuration::set` fails with `NOT_REGISTERED`. A running project reads the
 edited file on `compose::restart` without a `worker` argument. Check the adapter before you delete
@@ -68,14 +68,14 @@ See [Configuration precedence](../using-iii/compose#configuration-precedence).
 
 ## Engines that no Compose file manages
 
-Compose binds the router to `sandbox-builtin` only on an engine it owns. An engine started directly
+Compose binds the router to `sandbox-libkrun` only on an engine it owns. An engine started directly
 with `iii --config config.yaml`, with no `engine:` section in any Compose file, has no adapter bound,
 and its `sandbox::*` calls fail with S303. Set the top-level `sandbox:` section in that engine's
 config:
 
 ```yaml config.yaml
 sandbox:
-  adapter: sandbox-builtin
+  adapter: sandbox-libkrun
   namespace: default
 ```
 
@@ -100,7 +100,7 @@ roots. Move the worker under the compose directory.
 
 ## Supported hosts
 
-`sandbox-builtin` is built for three targets:
+`sandbox-libkrun` is built for three targets:
 
 - macOS on Apple Silicon (`aarch64-apple-darwin`)
 - Linux with glibc on x86_64 (`x86_64-unknown-linux-gnu`)
@@ -134,7 +134,7 @@ on [Sandboxes](../creating-workers/sandboxes).
 set it. Nothing reads these directories now, so delete them. The first boot of each VM in 0.26
 starts from fresh state and reinstalls its dependencies.
 
-`iii-worker` also left the paths below. `sandbox-builtin` reads none of them, so delete them too:
+`iii-worker` also left the paths below. `sandbox-libkrun` reads none of them, so delete them too:
 
 - `~/.iii/managed/`, the state of each VM worker it ran.
 - `~/.iii/workers/` and `~/.iii/workers-bundle/`, the binary and bundle workers it installed.
@@ -143,7 +143,7 @@ starts from fresh state and reinstalls its dependencies.
 - `~/.iii/lib/iii-init`.
 - `~/.iii/rootfs/` and `~/.iii/images/`, left by releases before 0.25.
 
-Keep the rest of `~/.iii/lib/`: `sandbox-builtin` still loads `libkrunfw` from there. Keep the rest
+Keep the rest of `~/.iii/lib/`: `sandbox-libkrun` still loads `libkrunfw` from there. Keep the rest
 of `~/.iii/cache/` too. It holds pulled images, where 0.25 put them, so those are not pulled again.
 
 The state is now in `~/.iii/sandbox/workers/<vm_id>/`, owned by the adapter. Compose deletes it

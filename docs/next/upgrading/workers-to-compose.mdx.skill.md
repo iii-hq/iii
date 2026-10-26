@@ -84,7 +84,7 @@ The map value is the worker config itself; do not keep the old nested `config:` 
 instances use a `#instance` suffix, such as `iii-worker-manager#rbac`.
 
 `iii-sandbox` is not in this list. The engine injects the `iii-sandbox` router, and the
-`sandbox-builtin` worker runs the VMs; see [Upgrading to the sandbox worker](./sandbox-worker) for
+`sandbox-libkrun` worker runs the VMs; see [Upgrading to the sandbox worker](./sandbox-worker) for
 an existing `iii-sandbox` entry.
 
 ```yaml worker-compose.yaml
