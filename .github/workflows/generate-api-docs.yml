@@ -65,7 +65,7 @@ jobs:
       # The extractor is stdlib-only (no go.sum), so there is nothing to cache.
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: false
 
       # Step 1: Extract TypeDoc JSON (Node SDK, Browser SDK, Helpers)

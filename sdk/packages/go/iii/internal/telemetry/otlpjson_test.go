@@ -130,8 +130,11 @@ func (p *captureProcessor) OnEmit(_ context.Context, r *sdklog.Record) error {
 	p.records = append(p.records, r.Clone())
 	return nil
 }
-func (p *captureProcessor) Shutdown(context.Context) error   { return nil }
-func (p *captureProcessor) ForceFlush(context.Context) error { return nil }
+
+// Enabled reports that every record is wanted (sdklog.Processor since otel/sdk/log v0.15).
+func (p *captureProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool { return true }
+func (p *captureProcessor) Shutdown(context.Context) error                         { return nil }
+func (p *captureProcessor) ForceFlush(context.Context) error                       { return nil }
 
 func TestMarshalLogsMatchesNode(t *testing.T) {
 	capture := &captureProcessor{}
@@ -143,11 +146,11 @@ func TestMarshalLogsMatchesNode(t *testing.T) {
 	first.SetTimestamp(time.Unix(1700000000, 1000))
 	first.SetObservedTimestamp(time.Unix(1700000000, 2000))
 	first.SetSeverity(otellog.SeverityInfo)
-	first.SetBody(otellog.StringValue("Order processed"))
+	first.SetBody(attribute.StringValue("Order processed"))
 	first.AddAttributes(
-		otellog.String("trace_id", fixtureTraceID.String()),
-		otellog.String("span_id", fixtureSpanID.String()),
-		otellog.KeyValue{Key: "log.data", Value: ToLogValue(map[string]any{
+		attribute.String("trace_id", fixtureTraceID.String()),
+		attribute.String("span_id", fixtureSpanID.String()),
+		attribute.KeyValue{Key: "log.data", Value: ToLogValue(map[string]any{
 			"orderId": "ord_123", "amount": 49.99, "count": 3, "tags": []string{"x"}, "nested": map[string]bool{"ok": true},
 		})},
 	)
@@ -157,7 +160,7 @@ func TestMarshalLogsMatchesNode(t *testing.T) {
 	second.SetTimestamp(time.Unix(1700000003, 0))
 	second.SetObservedTimestamp(time.Unix(1700000003, 5))
 	second.SetSeverity(otellog.SeverityError)
-	second.SetBody(otellog.StringValue("no span"))
+	second.SetBody(attribute.StringValue("no span"))
 	logger.Emit(context.Background(), second)
 
 	got, err := MarshalLogs(capture.records)

@@ -14,7 +14,7 @@ socket.
 go get github.com/iii-hq/iii/sdk/packages/go/iii
 ```
 
-Requires Go 1.24+.
+Requires Go 1.25+.
 
 ## Hello World
 
