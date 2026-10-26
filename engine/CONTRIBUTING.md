@@ -219,7 +219,7 @@ All PRs must pass:
 
 ## License Headers
 
-The III Engine core is licensed under **Elastic License 2.0 (ELv2)**. All Rust source files in
+The iii engine core and CLI are licensed under **Elastic License 2.0 (ELv2)**. All Rust source files in
 `src/` and `function-macros/src/` must include the license header.
 
 ### Check for Missing Headers
