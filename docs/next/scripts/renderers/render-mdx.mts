@@ -10,12 +10,13 @@ const LANG_MAP: Record<string, string> = {
 
 // Canonical ordering for the core worker-handle methods in the generated docs.
 // Matched case-insensitively and ignoring underscores so one list covers both
-// camelCase (Node/Browser) and snake_case (Python/Rust). Methods not listed here
+// camelCase (Node/Browser) and snake_case (Python/Rust), and ignoring a
+// receiver prefix (Go headings read `Client.Trigger`). Methods not listed here
 // keep their existing alphabetical order and sort after these.
 const METHOD_ORDER = ['registertrigger', 'registerfunction', 'trigger', 'registertriggertype', 'unregistertriggertype']
 
 function methodRank(name: string): number {
-  const i = METHOD_ORDER.indexOf(name.toLowerCase().replace(/_/g, ''))
+  const i = METHOD_ORDER.indexOf(name.replace(/^.*\./, '').toLowerCase().replace(/_/g, ''))
   return i === -1 ? METHOD_ORDER.length : i
 }
 

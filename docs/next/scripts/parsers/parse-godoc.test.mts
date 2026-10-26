@@ -7,7 +7,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { parseHelpersGodoc } from './parse-godoc.mjs'
+import { renderSdkMdx } from '../renderers/render-mdx.mjs'
+import { parseGodoc, parseHelpersGodoc } from './parse-godoc.mjs'
 
 const text = (t: string) => ({ kind: 'paragraph', spans: [{ kind: 'text', text: t }] })
 const code = (c: string) => ({ kind: 'code', code: c })
@@ -30,11 +31,72 @@ function pkg(relPath: string, extra: object = {}) {
   }
 }
 
-function parse(packages: object[]) {
+function writeModule(packages: object[]): string {
   const file = join(mkdtempSync(join(tmpdir(), 'parse-godoc-')), 'api-docs.json')
   writeFileSync(file, JSON.stringify({ module: 'example.com/m', goVersion: '1.25.0', packages }))
-  return parseHelpersGodoc(file)
+  return file
 }
+
+function parse(packages: object[]) {
+  return parseHelpersGodoc(writeModule(packages))
+}
+
+const deprecatedDoc = (summary: string, note: string) => ({
+  raw: `${summary}\n\nDeprecated: ${note}\n`,
+  blocks: [text(summary)],
+  deprecated: text(note),
+})
+
+function func(name: string, params: [string, string][], results: string[], d: object = doc([text(`${name} does it.`)])) {
+  const list = params.map(([n, t]) => `${n} ${t}`).join(', ')
+  const res = results.length > 1 ? ` (${results.join(', ')})` : results.length ? ` ${results[0]}` : ''
+  return {
+    name,
+    signature: `func ${name}(${list})${res}`,
+    funcType: `func(${list})${res}`,
+    params: params.map(([n, t]) => ({ name: n, type: t })),
+    results: results.map(t => ({ name: '', type: t })),
+    doc: d,
+    examples: [],
+  }
+}
+
+function type(name: string, extra: object = {}) {
+  return {
+    name,
+    kind: 'struct',
+    doc: doc([text(`${name} is a type.`)]),
+    fields: [],
+    interfaceMethods: [],
+    consts: [],
+    vars: [],
+    funcs: [],
+    methods: [],
+    examples: [],
+    ...extra,
+  }
+}
+
+// A package with a client, a handle, a method-like generic registration and
+// deprecated types: one returned by a client method, one returned only by that
+// deprecated handle (kept through the fixed point) and one only taken as a
+// parameter.
+const handlesTypes = () => [
+  type('Client', {
+    methods: [func('Open', [], ['*OldRef']), func('Use', [['in', 'OldInput']], ['error']), func('Do', [], [])],
+  }),
+  type('Gone', { doc: deprecatedDoc('Gone is gone.', 'nothing replaces it.') }),
+  type('OldInput', { doc: deprecatedDoc('OldInput is an input.', 'use Ref instead.') }),
+  type('OldRef', {
+    doc: deprecatedDoc('OldRef is an old handle.', 'use Ref instead.'),
+    methods: [func('Next', [], ['*Gone'])],
+  }),
+  type('Ref', {
+    fields: [{ name: 'ID', type: 'string', doc: doc([text('ID is the id.')]) }],
+    funcs: [func('NewRef', [], ['*Ref']), func('RegisterTyped', [['c', '*Client'], ['id', 'string']], ['*Ref', 'error'])],
+    methods: [func('Unregister', [], ['error'])],
+  }),
+]
 
 test('the import line uses the name the package is imported under', () => {
   const doc = parse([pkg('helpers/http', { importName: 'myhttp' }), pkg('helpers/queue')])
@@ -84,4 +146,44 @@ test('a long lead-in wraps into comment lines of at most 80 columns', () => {
     assert.ok(line.startsWith('// ') && line.length <= 80, line)
   }
   assert.equal(lines.slice(0, -1).map(l => l.slice(3)).join(' '), lead)
+})
+
+test('a method-like function is no constructor row of the handle it returns', () => {
+  const mod = parse([pkg('helpers/h', { types: handlesTypes() })]).modules?.[0]
+  const ref = mod?.types.find(t => t.name === 'Ref')
+  assert.deepEqual(ref?.fields.map(f => f.name), ['ID', 'NewRef', 'Unregister'])
+  // Both stay under Functions.
+  assert.deepEqual(mod?.functions.map(f => f.name), ['NewRef', 'RegisterTyped'])
+})
+
+test('deprecated types the API returns stay in Types, marked deprecated', () => {
+  const mod = parse([pkg('helpers/h', { types: handlesTypes() })]).modules?.[0]
+  assert.deepEqual(mod?.types.map(t => t.name).sort(), ['Client', 'Gone', 'OldRef', 'Ref'])
+  const oldRef = mod?.types.find(t => t.name === 'OldRef')
+  assert.equal(oldRef?.description, '**Deprecated.** Use Ref instead.\n\nOldRef is an old handle.')
+  assert.ok(oldRef?.fields.some(f => f.name === 'Next'))
+})
+
+test('on the SDK page a returned deprecated handle is a type, a deprecated input only expands', () => {
+  const sdk = parseGodoc(writeModule([pkg('', { importPath: 'example.com/m', name: 'm', types: handlesTypes() })]))
+  assert.deepEqual(sdk.types.map(t => t.name), ['Gone', 'OldRef', 'Ref'])
+  assert.deepEqual(sdk.paramOnlyTypes?.map(t => t.name), ['OldInput'])
+  assert.deepEqual(sdk.methods.map(m => m.name), ['Client.Open', 'Client.Use', 'Client.Do'])
+})
+
+test('Client method headings carry the receiver and keep the canonical order', () => {
+  const types = [
+    type('Client', {
+      methods: [func('Address', [], ['string']), func('Trigger', [], ['error']), func('RegisterFunction', [], ['*Trigger', 'error'])],
+    }),
+    type('Trigger', { methods: [func('Unregister', [], ['error'])] }),
+  ]
+  const mdx = renderSdkMdx(parseGodoc(writeModule([pkg('', { importPath: 'example.com/m', name: 'm', types })])))
+  const headings = [...mdx.matchAll(/^#{3,4} (.+)$/gm)].map(m => m[1])
+  const methods = headings.slice(headings.indexOf('Client.RegisterFunction'), headings.indexOf('Client.Address') + 1)
+  assert.deepEqual(methods, ['Client.RegisterFunction', 'Client.Trigger', 'Client.Address'])
+  // The type keeps the bare name, so its anchor (#trigger) is its own.
+  const slug = (h: string) => h.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '')
+  assert.equal(headings.filter(h => slug(h) === 'trigger').length, 1)
+  assert.match(mdx, /\[`Trigger`\]\(#trigger\)/)
 })

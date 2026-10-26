@@ -18,7 +18,7 @@ import type {
  * - `sdk-go.mdx` (`parseGodoc`): the root package `iii` and every other public
  *   package that is not a helper (today `iii/filter`), shaped like the other SDK
  *   pages: `RegisterWorker` is the entry point, the `Client` methods are the
- *   Methods, every other exported function is under Functions, then the
+ *   Methods (headed `Client.Name`), every other exported function is under Functions, then the
  *   package-level constants and variables and the types, grouped per package.
  * - `helpers-go.mdx` (`parseHelpersGodoc`): the packages under `iii/helpers/`
  *   and `iii/observability`, one section per package, like the other helpers
@@ -391,13 +391,65 @@ function funcRow(name: string, type: string, doc: GoDoc): ParamDoc {
   return { name, type, description: withDeprecation(summary(doc), doc), required: true }
 }
 
+/** The package type a parameter or result type names: `*Client`, `[]*Observer` -> `Client`, `Observer`. */
+function baseTypeName(type: string): string {
+  return type.replace(/^(\.\.\.|\*|\[\])+/, '').split('[')[0]
+}
+
+/**
+ * Whether go/doc filed `fn` under a type it does not construct. A function
+ * whose first parameter is a pointer to another package type with methods works
+ * as a method of that type, which Go needs for generic functions:
+ * `RegisterFunctionTyped(c *Client, ...)` belongs with Client, not with the
+ * FunctionRef it returns. It stays under Functions but is no row of its result
+ * type's table.
+ */
+function isMethodLike(fn: GoFunc, pkg: GoPackage, owner: string): boolean {
+  const first = fn.params[0]?.type ?? ''
+  if (!first.startsWith('*')) return false
+  const base = baseTypeName(first)
+  return base !== owner && pkg.types.some(t => t.name === base && t.methods.length > 0)
+}
+
+/**
+ * The deprecated types of a package that the reader is still handed: those a
+ * documented function or method returns, such as the TriggerTypeRef of
+ * RegisterTriggerType. Their methods are documented nowhere else, so they stay
+ * in the Types section, marked deprecated; other deprecated types only expand
+ * under the parameters of the methods that take them. Computed to a fixed
+ * point, since the methods of a kept type count as documented too.
+ */
+function returnedDeprecatedTypes(pkg: GoPackage): Set<string> {
+  const deprecated = new Set(pkg.types.filter(t => t.doc.deprecated && !isInternalDoc(t.doc.raw)).map(t => t.name))
+  const kept = new Set<string>()
+  const documented = (t: GoType) => !isInternalDoc(t.doc.raw) && (!t.doc.deprecated || kept.has(t.name))
+  for (let changed = deprecated.size > 0; changed; ) {
+    changed = false
+    // Every package function is documented (Functions); methods only on documented types.
+    const funcs = [...pkg.funcs, ...pkg.types.flatMap(t => t.funcs), ...pkg.types.filter(documented).flatMap(t => t.methods)]
+    for (const fn of funcs) {
+      if (isInternalDoc(fn.doc.raw)) continue
+      for (const result of fn.results) {
+        const name = baseTypeName(result.type)
+        if (deprecated.has(name) && !kept.has(name)) {
+          kept.add(name)
+          changed = true
+        }
+      }
+    }
+  }
+  return kept
+}
+
 /**
  * A type. The table lists its exported fields (or interface methods), then the
- * constants and variables of the type, its constructors and its methods, the
- * way the Rust parser lists a struct's fields then its methods. A type that is
- * not a struct or an interface also shows its declaration.
+ * constants and variables of the type, its constructors (not method-like
+ * functions, see `isMethodLike`) and its methods, the way the Rust parser lists
+ * a struct's fields then its methods. A type that is not a struct or an
+ * interface also shows its declaration; a deprecated one opens with its
+ * deprecation.
  */
-function buildType(t: GoType): TypeDoc {
+function buildType(t: GoType, pkg?: GoPackage): TypeDoc {
   const zeroValueType = ZERO_VALUE_TYPE_RE.test(t.doc.raw)
   const fields: ParamDoc[] = []
   for (const field of t.fields) {
@@ -414,11 +466,13 @@ function buildType(t: GoType): TypeDoc {
     fields.push(funcRow(method.name, method.embedded ? 'embedded' : method.type, method.doc))
   }
   fields.push(...valueRows(t.consts), ...valueRows(t.vars))
-  for (const fn of [...t.funcs, ...t.methods]) {
+  const constructors = t.funcs.filter(fn => !(pkg && isMethodLike(fn, pkg, t.name)))
+  for (const fn of [...constructors, ...t.methods]) {
     if (isInternalDoc(fn.doc.raw)) continue
     fields.push(funcRow(fn.name, fn.funcType, fn.doc))
   }
-  const description = [renderBlocks(t.doc.blocks, 'fence'), ...t.examples.map(e => fence(e.code))]
+  const deprecation = t.doc.deprecated ? withDeprecation('', t.doc) : ''
+  const description = [deprecation, renderBlocks(t.doc.blocks, 'fence'), ...t.examples.map(e => fence(e.code))]
     .filter(Boolean)
     .join('\n\n')
   return {
@@ -525,7 +579,13 @@ export function parseGodoc(jsonPath: string): SdkDoc {
   const packages = mod.packages.filter(p => !isGoHelpersPackage(p.relPath))
   const root = packages.find(p => p.relPath === '')
   const client = root?.types.find(t => t.name === MAIN_TYPE)
-  const methods = (client?.methods ?? []).filter(m => !isInternalDoc(m.doc.raw)).map(m => buildFunc(m))
+  // Method headings carry their receiver (`Client.Trigger`), the way Go doc links
+  // name methods. A type name has no dot, so a method never shares its anchor
+  // with a type of the same name (the Trigger handle, the ConnectionState type)
+  // or with a package function (OpenReader).
+  const methods = (client?.methods ?? [])
+    .filter(m => !isInternalDoc(m.doc.raw))
+    .map(m => buildFunc(m, { name: `${MAIN_TYPE}.${m.name}` }))
   // The package's own examples (`Example`, `Example_suffix`) are complete
   // workers: they illustrate the entry point.
   const entry = root ? packageFuncs(root).find(fn => fn.name === ENTRY_POINT) : undefined
@@ -547,12 +607,14 @@ export function parseGodoc(jsonPath: string): SdkDoc {
     }
 
     const groupTypes: TypeDoc[] = []
+    const returnedDeprecated = returnedDeprecatedTypes(pkg)
     for (const t of pkg.types) {
       if ((!pkg.relPath && t.name === MAIN_TYPE) || isInternalDoc(t.doc.raw)) continue
-      const doc = buildType(t)
+      const doc = buildType(t, pkg)
       // Deprecated types leave the Types section but still expand under the
-      // parameters of the deprecated methods that take them.
-      if (t.doc.deprecated) {
+      // parameters of the deprecated methods that take them, unless the API
+      // returns them (see returnedDeprecatedTypes).
+      if (t.doc.deprecated && !returnedDeprecated.has(t.name)) {
         paramOnlyTypes.push(doc)
         continue
       }
@@ -600,6 +662,7 @@ export function parseHelpersGodoc(jsonPath: string): SdkDoc {
     .map(pkg => {
       const constants = valueGroups(pkg.consts)
       const variables = valueGroups(pkg.vars)
+      const returnedDeprecated = returnedDeprecatedTypes(pkg)
       return {
         name: pkg.relPath,
         // The name the package's doc or examples import it under (e.g.
@@ -607,7 +670,9 @@ export function parseHelpersGodoc(jsonPath: string): SdkDoc {
         importPath: `import ${pkg.importName ? `${pkg.importName} ` : ''}"${pkg.importPath}"`,
         description: packageDescription(pkg, true),
         functions: packageFuncs(pkg).map(fn => buildFunc(fn)),
-        types: pkg.types.filter(t => !t.doc.deprecated && !isInternalDoc(t.doc.raw)).map(buildType),
+        types: pkg.types
+          .filter(t => (!t.doc.deprecated || returnedDeprecated.has(t.name)) && !isInternalDoc(t.doc.raw))
+          .map(t => buildType(t, pkg)),
         ...(constants.length > 0 ? { constants } : {}),
         ...(variables.length > 0 ? { variables } : {}),
       }
