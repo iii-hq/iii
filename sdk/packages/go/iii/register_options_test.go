@@ -245,16 +245,19 @@ func TestRegisterHTTPFunctionValidates(t *testing.T) {
 	}
 }
 
-// A3: the engine invoking an HTTP function on this worker gets function_not_found (it
-// has no handler here), not a panic; and it never runs in-process.
-func TestHTTPFunctionHasNoLocalHandler(t *testing.T) {
+// A3: the engine invoking an HTTP function on this worker gets function_not_invokable
+// with the Node SDK's message (iii.ts onInvokeFunction), an unknown id still gets
+// function_not_found, nothing panics, and the HTTP function never runs in-process.
+func TestHTTPFunctionIsNotInvokableLocally(t *testing.T) {
 	m := newMockEngine(t)
-	id := mustUUID(t, "34343434-3434-3434-3434-343434343434")
+	httpID := mustUUID(t, "34343434-3434-3434-3434-343434343434")
+	unknownID := mustUUID(t, "56565656-5656-5656-5656-565656565656")
 	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "ext::remote" {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			_ = m.send(ctx, conn, &InvokeFunctionMessage{InvocationID: &id, FunctionID: "ext::remote", Data: json.RawMessage(`{}`)})
+			_ = m.send(ctx, conn, &InvokeFunctionMessage{InvocationID: &httpID, FunctionID: "ext::remote", Data: json.RawMessage(`{}`)})
+			_ = m.send(ctx, conn, &InvokeFunctionMessage{InvocationID: &unknownID, FunctionID: "ext::unknown", Data: json.RawMessage(`{}`)})
 		}
 	}
 	c := connectClient(t, m)
@@ -262,16 +265,35 @@ func TestHTTPFunctionHasNoLocalHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
-		return firstOfType(msgs, string(MsgInvocationResult)) != nil
+		return countType(msgs, string(MsgInvocationResult)) >= 2
 	}, 3*time.Second)
-	res := firstOfType(got, string(MsgInvocationResult))
+	result := func(id string) map[string]json.RawMessage {
+		return firstWhere(got, func(msg map[string]json.RawMessage) bool {
+			return messageType(msg) == string(MsgInvocationResult) && stringField(msg, "invocation_id") == id
+		})
+	}
+
+	res := result(httpID.String())
 	if res == nil {
-		t.Fatal("no invocation result")
+		t.Fatal("no invocation result for the HTTP function")
+	}
+	const wantHTTP = `{"code":"function_not_invokable","message":"Function is HTTP-invoked and cannot be invoked locally"}`
+	if got := sortedJSON(t, res["error"]); got != wantHTTP {
+		t.Errorf("HTTP function error = %s, want %s", got, wantHTTP)
+	}
+	if _, hasResult := res["result"]; hasResult {
+		t.Errorf("HTTP function reply carries a result: %s", res["result"])
+	}
+
+	res = result(unknownID.String())
+	if res == nil {
+		t.Fatal("no invocation result for the unknown function")
 	}
 	var body ErrorBody
 	if err := json.Unmarshal(res["error"], &body); err != nil || body.Code != "function_not_found" {
-		t.Errorf("error = %s, want function_not_found", res["error"])
+		t.Errorf("unknown function error = %s, want function_not_found", res["error"])
 	}
+
 	c.mu.Lock()
 	fn := c.functions["ext::remote"]
 	c.mu.Unlock()

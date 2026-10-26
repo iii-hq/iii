@@ -30,10 +30,12 @@ type mockEngine struct {
 	server *httptest.Server
 	url    string
 
-	mu         sync.Mutex
-	received   []map[string]json.RawMessage
-	handshakes []handshake     // one per accepted connection, in order
-	active     *websocket.Conn // most-recent accepted connection, for forced close
+	mu       sync.Mutex
+	received []map[string]json.RawMessage
+	// receivedConn[i] is the connection received[i] arrived on: its index in handshakes.
+	receivedConn []int
+	handshakes   []handshake     // one per accepted connection, in order
+	active       *websocket.Conn // most-recent accepted connection, for forced close
 
 	// onReceive, if set, is called for every decoded inbound frame with the
 	// connection it arrived on, letting a test script the engine's reply. It runs
@@ -82,6 +84,7 @@ func newMockEngine(t *testing.T) *mockEngine {
 // reply on the same connection.
 func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
+	connIndex := len(m.handshakes)
 	m.handshakes = append(m.handshakes, handshake{uri: r.URL.RequestURI(), header: r.Header.Clone()})
 	m.mu.Unlock()
 
@@ -120,6 +123,7 @@ func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
 
 		m.mu.Lock()
 		m.received = append(m.received, msg)
+		m.receivedConn = append(m.receivedConn, connIndex)
 		m.gotMessage.Broadcast()
 		hook := m.onReceive
 		m.mu.Unlock()
@@ -177,7 +181,33 @@ func (m *mockEngine) closeActiveConnection() {
 func (m *mockEngine) clear() {
 	m.mu.Lock()
 	m.received = nil
+	m.receivedConn = nil
 	m.mu.Unlock()
+}
+
+// connectionCount is the number of connections accepted so far; the next one gets this
+// index.
+func (m *mockEngine) connectionCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.handshakes)
+}
+
+// waitForFrom is waitFor restricted to the frames that arrived on connection first or a
+// later one, so a frame still in flight from an older connection can never satisfy it.
+// It returns those frames only.
+func (m *mockEngine) waitForFrom(first int, predicate func([]map[string]json.RawMessage) bool, timeout time.Duration) []map[string]json.RawMessage {
+	var out []map[string]json.RawMessage
+	m.waitFor(func(all []map[string]json.RawMessage) bool {
+		out = out[:0]
+		for i, msg := range all {
+			if m.receivedConn[i] >= first {
+				out = append(out, msg)
+			}
+		}
+		return predicate(out)
+	}, timeout)
+	return append([]map[string]json.RawMessage(nil), out...)
 }
 
 // waitFor blocks until predicate holds on the recorded frames or timeout elapses,

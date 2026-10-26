@@ -204,6 +204,9 @@ func TestWaitUntilRegisteredSucceedsPerConnection(t *testing.T) {
 	if err := c.WaitUntilRegistered(ctx); err != nil {
 		t.Fatalf("WaitUntilRegistered: %v", err)
 	}
+	// The mock acknowledges on connect, before the client's own replay arrives: let the
+	// first connection's replay finish before the connection is dropped.
+	workerRegisterFrame(t, m)
 
 	// The next connection is not acknowledged until the engine says so.
 	ack.Store(false)

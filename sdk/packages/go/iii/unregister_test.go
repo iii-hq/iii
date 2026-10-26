@@ -19,12 +19,14 @@ func fastReconnect() Option {
 }
 
 // reconnectAndWaitReplay drops the connection and waits for the next one's replay to
-// finish: engine::workers::register is the last frame onConnect sends.
+// finish: engine::workers::register is the last frame onConnect sends. Only frames of the
+// new connection count (and are returned), so a register frame of the dropped connection
+// that lands late cannot end the wait before the client has reconnected.
 func reconnectAndWaitReplay(t *testing.T, m *mockEngine) []map[string]json.RawMessage {
 	t.Helper()
-	m.clear()
+	next := m.connectionCount()
 	m.closeActiveConnection()
-	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+	got := m.waitForFrom(next, func(msgs []map[string]json.RawMessage) bool {
 		return indexOfFunctionID(msgs, FnRegisterWorker) >= 0
 	}, 3*time.Second)
 	if indexOfFunctionID(got, FnRegisterWorker) < 0 {

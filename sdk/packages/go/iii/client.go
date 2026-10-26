@@ -1567,11 +1567,19 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 
 	tc := traceContext{traceparent: msg.Traceparent, baggage: msg.Baggage}
 
-	// An HTTP-invoked function (RegisterHTTPFunction) has no handler here.
-	if !ok || fn.handler == nil {
+	if !ok {
 		c.replyInvocation(msg, nil, &ErrorBody{
 			Code:    "function_not_found",
 			Message: fmt.Sprintf("no handler registered for %q", msg.FunctionID),
+		}, tc)
+		return
+	}
+	// An HTTP-invoked function (RegisterHTTPFunction) has no handler here: the engine
+	// calls its URL. Same code and message as the Node, Python and Rust SDKs.
+	if fn.handler == nil {
+		c.replyInvocation(msg, nil, &ErrorBody{
+			Code:    "function_not_invokable",
+			Message: "Function is HTTP-invoked and cannot be invoked locally",
 		}, tc)
 		return
 	}
