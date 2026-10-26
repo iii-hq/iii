@@ -86,7 +86,7 @@ func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler
 client := iii.RegisterWorker(iii.DefaultEngineURL)
 defer client.Close()
 
-_ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
+_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
 	func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 		body, err := io.ReadAll(req)
 		if err != nil {
@@ -339,7 +339,7 @@ defer client.Close()
 
 res, err := client.Trigger(context.Background(), iii.TriggerRequest{
 	FunctionID: "emails::send",
-	Data:       json.RawMessage(`{"to":"ada@example.com"}`),
+	Payload:    json.RawMessage(`{"to":"ada@example.com"}`),
 	Action:     iii.EnqueueAction("emails"),
 })
 if err != nil {
@@ -436,8 +436,8 @@ OnFunctionRegistrationResult is the result returned from the on_function_registr
 client := iii.RegisterWorker(iii.DefaultEngineURL)
 defer client.Close()
 
-_ = iii.RegisterFunctionTyped(client, "auth::browser", authorize)
-_ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
+_, _ = iii.RegisterFunctionTyped(client, "auth::browser", authorize)
+_, _ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
 	func(_ context.Context, in workerconnection.OnFunctionRegistrationInput) (workerconnection.OnFunctionRegistrationResult, error) {
 		if strings.HasPrefix(in.FunctionID, "engine::") {
 			return workerconnection.OnFunctionRegistrationResult{}, errors.New("reserved prefix")
