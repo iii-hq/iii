@@ -31,6 +31,15 @@ mod teardown_race_repro {
     }
 
     impl Gate {
+        fn pause(&self) -> impl Future<Output = ()> + '_ {
+            let mut resumed = Box::pin(self.resume.notified());
+            // Queue this waiter before publishing `entered`, so later calls
+            // cannot consume its resume notification before its first poll.
+            resumed.as_mut().enable();
+            self.entered.notify_one();
+            resumed
+        }
+
         fn live(&self, id: &str) -> bool {
             self.live.lock().unwrap().contains_key(id)
         }
@@ -68,8 +77,7 @@ mod teardown_race_repro {
         ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
             Box::pin(async move {
                 if self.pause_register.swap(false, SeqCst) {
-                    self.entered.notify_one();
-                    self.resume.notified().await;
+                    self.pause().await;
                 }
                 if self.fail_register.swap(false, SeqCst) {
                     anyhow::bail!("register failed");
@@ -89,8 +97,7 @@ mod teardown_race_repro {
         ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
             Box::pin(async move {
                 if self.pause_unregister.swap(false, SeqCst) {
-                    self.entered.notify_one();
-                    self.resume.notified().await;
+                    self.pause().await;
                 }
                 if self.fail_unregister.swap(false, SeqCst) {
                     anyhow::bail!("unregister failed");
@@ -100,6 +107,28 @@ mod teardown_race_repro {
                 Ok(())
             })
         }
+    }
+
+    #[tokio::test]
+    async fn paused_calls_resume_in_announced_order() {
+        let gate = Gate::default();
+        let first = gate.pause();
+        gate.entered.notified().await;
+        let second = gate.pause();
+        gate.entered.notified().await;
+        tokio::pin!(first, second);
+
+        // Neither waiter has been polled: a caller can be descheduled as soon
+        // as it announces that it has paused.
+        gate.resume.notify_one();
+        assert!(
+            futures::poll!(&mut second).is_pending(),
+            "the second call consumed the first call's resume notification"
+        );
+        assert!(futures::poll!(&mut first).is_ready());
+
+        gate.resume.notify_one();
+        assert!(futures::poll!(&mut second).is_ready());
     }
 
     /// A fresh Box (fresh registrator identity) per announce, like router_msg.
