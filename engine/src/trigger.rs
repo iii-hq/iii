@@ -471,7 +471,50 @@ impl TriggerStore {
     }
 }
 
-#[derive(Default)]
+/// A provider operation that may finish after its binding is cancelled.
+struct TriggerTransition {
+    token: u64,
+    worker_id: Option<Uuid>,
+    removing: bool,
+    /// The destination is authoritative while a move still exposes its source
+    /// in the live map. A late repair must not reactivate that source.
+    target: Arc<Trigger>,
+}
+
+/// An aborted caller must not leave a token that blocks later provider work.
+struct TriggerTransitionGuard<'a> {
+    registry: &'a TriggerRegistry,
+    target: Trigger,
+    token: u64,
+    registrator: Option<Arc<dyn TriggerRegistrator>>,
+    removing: bool,
+    source: Option<(Trigger, Arc<dyn TriggerRegistrator>)>,
+    armed: bool,
+}
+
+impl Drop for TriggerTransitionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.removing {
+            self.registry.recover_abandoned_removal(
+                &self.target.id,
+                self.token,
+                self.registrator.as_ref(),
+            );
+        } else if let Some(registrator) = &self.registrator {
+            self.registry.recover_abandoned_activation(
+                &self.target,
+                self.token,
+                registrator,
+                self.source.as_ref(),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct TriggerRegistry {
     /// Providers, by `(namespace, type id)`.
     pub trigger_types: Arc<DashMap<TypeKey, TriggerType>>,
@@ -490,17 +533,15 @@ pub struct TriggerRegistry {
     /// this, a re-park's remove+insert can interleave with an unregister's
     /// removes and resurrect an explicitly-unregistered binding. Held only
     /// around the map operations, never across an await.
-    pub park_transition: std::sync::Mutex<()>,
-    /// Bindings a failover is moving, and parked intents being activated,
-    /// with the move's token. Whatever replaces, unregisters or parks such a
-    /// binding meanwhile drops the token, and the move then leaves the
-    /// binding alone; registering or re-homing a provider skips bindings in
-    /// flight.
-    failing_over: DashMap<String, u64>,
-    failover_tokens: std::sync::atomic::AtomicU64,
+    pub park_transition: Arc<std::sync::Mutex<()>>,
+    /// Bindings being moved, activated or removed. Tokens prevent a stale
+    /// operation from publishing over a replacement. Ownership remains
+    /// visible even while a pending intent is outside both binding maps.
+    failing_over: Arc<DashMap<String, TriggerTransition>>,
+    failover_tokens: Arc<std::sync::atomic::AtomicU64>,
     /// How long a failover waits for a provider to take a binding; 0 means
     /// [`FAILOVER_REPLAY_TIMEOUT`].
-    failover_replay_timeout_ms: std::sync::atomic::AtomicU64,
+    failover_replay_timeout_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Bindings claimed for a failover by
@@ -520,10 +561,10 @@ impl TriggerRegistry {
             trigger_types: Arc::new(DashMap::new()),
             triggers: Arc::new(TriggerStore::new()),
             pending_triggers: Arc::new(DashMap::new()),
-            park_transition: std::sync::Mutex::new(()),
-            failing_over: DashMap::new(),
-            failover_tokens: std::sync::atomic::AtomicU64::new(0),
-            failover_replay_timeout_ms: std::sync::atomic::AtomicU64::new(0),
+            park_transition: Arc::new(std::sync::Mutex::new(())),
+            failing_over: Arc::new(DashMap::new()),
+            failover_tokens: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            failover_replay_timeout_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -547,8 +588,137 @@ impl TriggerRegistry {
 
     /// Ends any failover of `id` in flight: the binding was replaced,
     /// unregistered or parked by someone else.
-    fn interrupt_failover(&self, id: &str) {
-        self.failing_over.remove(id);
+    fn interrupt_failover(&self, id: &str) -> bool {
+        self.failing_over.remove(id).is_some()
+    }
+
+    /// Call with `park_transition` held, together with the binding map changes.
+    fn begin_transition(&self, trigger: &Trigger, removing: bool) -> u64 {
+        let token = self
+            .failover_tokens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.failing_over.insert(
+            trigger.id.clone(),
+            TriggerTransition {
+                token,
+                worker_id: trigger.worker_id,
+                removing,
+                target: Arc::new(trigger.clone()),
+            },
+        );
+        token
+    }
+
+    fn finish_transition(&self, id: &str, token: u64) -> bool {
+        self.failing_over
+            .remove_if(id, |_, current| current.token == token)
+            .is_some()
+    }
+
+    /// A failed or cancelled removal still owns its binding. Repair any job
+    /// another compensation removed, or resume failover if its provider left.
+    /// The task owns a shared registry handle so cancelling the caller cannot
+    /// cancel this recovery as well.
+    fn recover_abandoned_removal(
+        &self,
+        id: &str,
+        token: u64,
+        registrator: Option<&Arc<dyn TriggerRegistrator>>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let (trigger, token, runtime) = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let (_, operation) = self
+                .failing_over
+                .remove_if(id, |_, operation| operation.token == token)?;
+            if !operation.removing {
+                return None;
+            }
+            let trigger = self
+                .triggers
+                .get(id)
+                .map(|current| current.value().clone())
+                .or_else(|| self.pending_triggers.get(id).map(|pending| pending.clone()))?;
+            let current = self.provider_registrator(&trigger.provider_key());
+            let same_provider = matches!((registrator, current),
+                (Some(before), Some(after)) if Arc::ptr_eq(before, &after));
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                self.triggers.remove(id);
+                self.pending_triggers.insert(id.to_string(), trigger);
+                return None;
+            };
+            let token = if same_provider {
+                None
+            } else {
+                self.pending_triggers.remove(id);
+                Some(self.begin_transition(&trigger, false))
+            };
+            (trigger, token, runtime)
+        };
+        let registry = self.clone();
+        let registrator = registrator.cloned();
+        Some(runtime.spawn(async move {
+            if let Some(token) = token {
+                registry.fail_over(trigger, token).await;
+            } else if let Some(registrator) = registrator {
+                registry
+                    .settle_superseded_provider(&trigger, &registrator)
+                    .await;
+            }
+        }))
+    }
+
+    /// Compensation can deliver a provisional target before its activation
+    /// finishes. On cancellation keep the intent tracked and settle both
+    /// providers against the surviving maps, even if the caller is gone.
+    fn recover_abandoned_activation(
+        &self,
+        target: &Trigger,
+        token: u64,
+        registrator: &Arc<dyn TriggerRegistrator>,
+        source: Option<&(Trigger, Arc<dyn TriggerRegistrator>)>,
+    ) {
+        {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            if let Some((_, operation)) = self
+                .failing_over
+                .remove_if(&target.id, |_, operation| operation.token == token)
+            {
+                if source.is_none() {
+                    self.triggers.remove(&target.id);
+                    self.pending_triggers
+                        .insert(target.id.clone(), operation.target.as_ref().clone());
+                } else if !self.triggers.contains_key(&target.id)
+                    && !self.pending_triggers.contains_key(&target.id)
+                {
+                    self.pending_triggers
+                        .insert(target.id.clone(), operation.target.as_ref().clone());
+                }
+            }
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let registry = self.clone();
+        let target = target.clone();
+        let registrator = Arc::clone(registrator);
+        let source = source.cloned();
+        runtime.spawn(async move {
+            registry
+                .settle_superseded_provider(&target, &registrator)
+                .await;
+            if let Some((trigger, provider)) = source {
+                registry
+                    .settle_superseded_provider(&trigger, &provider)
+                    .await;
+            }
+        });
     }
 
     /// The namespace a fired trigger's target/condition function resolves in,
@@ -620,10 +790,8 @@ impl TriggerRegistry {
 
     /// Move fallback bindings onto the provider that just registered at home.
     ///
-    /// The old provider is told to let go first. A failure there is logged and
-    /// not fatal: the binding still moves, because leaving it on a provider
-    /// this registry no longer routes to would make it fire from a place
-    /// nothing can unregister.
+    /// The old provider must let go first. Keep the binding tracked there if
+    /// detaching fails. A cancelled move must not publish or park its snapshot.
     async fn rehome_fallback_bindings(
         &self,
         key: &TypeKey,
@@ -634,22 +802,103 @@ impl TriggerRegistry {
             return;
         }
 
-        for mut trigger in candidates {
+        for candidate in candidates {
+            let (mut trigger, token) = {
+                let _park = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                let Some(current) = self.triggers.get(&candidate.id) else {
+                    continue;
+                };
+                if !current.is_on_fallback()
+                    || current.home_namespace != key.0
+                    || current.trigger_type != key.1
+                    || self.failing_over.contains_key(&candidate.id)
+                {
+                    continue;
+                }
+                let trigger = current.value().clone();
+                drop(current);
+                let mut target = trigger.clone();
+                target.provider_namespace = key.0.clone();
+                let token = self.begin_transition(&target, false);
+                (trigger, token)
+            };
             let previous = trigger.provider_key();
-            if let Some(old) = self.provider_registrator(&previous)
-                && let Err(err) = old.unregister_trigger(trigger.clone()).await
-            {
-                tracing::warn!(
-                    error = %err,
-                    trigger_id = %trigger.id,
-                    from = %previous.0,
-                    "Could not detach a trigger from its fallback provider; re-homing anyway"
-                );
+            let old = self.provider_registrator(&previous);
+            let mut operation = TriggerTransitionGuard {
+                registry: self,
+                target: Trigger {
+                    provider_namespace: key.0.clone(),
+                    ..trigger.clone()
+                },
+                token,
+                registrator: Some(Arc::clone(registrator)),
+                removing: false,
+                source: old.as_ref().map(|old| (trigger.clone(), Arc::clone(old))),
+                armed: true,
+            };
+            if let Some(old) = &old {
+                if let Err(err) = old.unregister_trigger(trigger.clone()).await {
+                    {
+                        let _park = self
+                            .park_transition
+                            .lock()
+                            .expect("park_transition lock poisoned");
+                        self.finish_transition(&trigger.id, token);
+                    }
+                    tracing::warn!(
+                        error = %err,
+                        trigger_id = %trigger.id,
+                        "Could not detach a fallback binding; keeping its registry entry"
+                    );
+                    // A concurrent repair may have detached the source after
+                    // observing our destination. Restore the surviving binding
+                    // now that this move failed, or honour its cancellation.
+                    let mut destination = trigger.clone();
+                    destination.provider_namespace = key.0.clone();
+                    self.settle_superseded_provider(&destination, registrator)
+                        .await;
+                    self.settle_superseded_provider(&trigger, old).await;
+                    operation.armed = false;
+                    continue;
+                }
+                let current = self
+                    .failing_over
+                    .get(&trigger.id)
+                    .is_some_and(|operation| operation.token == token);
+                if !current {
+                    self.settle_superseded_provider(&operation.target, registrator)
+                        .await;
+                    self.settle_superseded_provider(&trigger, old).await;
+                    operation.armed = false;
+                    continue;
+                }
             }
 
             trigger.provider_namespace = key.0.clone();
-            match registrator.replay_trigger(trigger.clone()).await {
-                Ok(()) => {
+            let replayed = registrator.replay_trigger(trigger.clone()).await;
+            let settled = {
+                let _park = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                if self.finish_transition(&trigger.id, token) {
+                    if replayed.is_ok() {
+                        self.triggers.insert(trigger.id.clone(), trigger.clone());
+                    } else {
+                        self.triggers.remove(&trigger.id);
+                        self.pending_triggers
+                            .insert(trigger.id.clone(), trigger.clone());
+                    }
+                    true
+                } else {
+                    false
+                }
+            };
+            match (settled, replayed) {
+                (true, Ok(())) => {
                     tracing::info!(
                         "{} Trigger {} (type {}) moved from {} to its own namespace {}",
                         "[RE-HOMED]".green(),
@@ -658,26 +907,23 @@ impl TriggerRegistry {
                         previous.0.purple(),
                         key.0.purple(),
                     );
-                    self.triggers.insert(trigger.id.clone(), trigger);
                 }
-                Err(err) => {
-                    // It is off the old provider and the new one refused it.
-                    // Park rather than leave it pointing at a provider that is
-                    // no longer routed: pending is the bucket that gets
-                    // retried on the next registration.
+                (true, Err(err)) => {
                     tracing::error!(
                         error = %err,
                         trigger_id = %trigger.id,
                         "Re-homing failed; the binding is parked until the trigger type re-registers"
                     );
-                    let _park = self
-                        .park_transition
-                        .lock()
-                        .expect("park_transition lock poisoned");
-                    self.triggers.remove(&trigger.id);
-                    self.pending_triggers.insert(trigger.id.clone(), trigger);
+                    self.settle_superseded_provider(&trigger, registrator).await;
                 }
+                (false, Ok(())) => self.settle_superseded_provider(&trigger, registrator).await,
+                (false, Err(_)) => self.settle_superseded_provider(&trigger, registrator).await,
             }
+            if !settled && let Some(old) = &old {
+                trigger.provider_namespace = previous.0;
+                self.settle_superseded_provider(&trigger, old).await;
+            }
+            operation.armed = false;
         }
     }
 
@@ -689,7 +935,119 @@ impl TriggerRegistry {
             .map(|provider| provider.registrator.clone())
     }
 
+    /// Repair a late provider call without overwriting a newer registration.
+    /// Repeat if the desired binding changed during the repair, within the
+    /// same bounded deadline used for failover provider calls.
+    async fn settle_superseded_provider(
+        &self,
+        stale: &Trigger,
+        registrator: &Arc<dyn TriggerRegistrator>,
+    ) {
+        // The binding can already be parked or removed, with its token gone.
+        // Cancelling its caller must not also cancel this final provider repair.
+        let registry = self.clone();
+        let trigger = stale.clone();
+        let provider = Arc::clone(registrator);
+        if let Err(err) = tokio::spawn(async move {
+            registry.reconcile_provider(&trigger, &provider).await;
+        })
+        .await
+        {
+            tracing::warn!(error = %err, trigger_id = %stale.id, "Provider repair stopped");
+        }
+    }
+
+    async fn reconcile_provider(&self, stale: &Trigger, registrator: &Arc<dyn TriggerRegistrator>) {
+        let key = stale.provider_key();
+        let desired = || {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let current = match self.failing_over.get(&stale.id) {
+                Some(operation) if operation.removing => return None,
+                Some(operation) => Arc::clone(&operation.target),
+                None => self
+                    .triggers
+                    .by_id
+                    .get(&stale.id)
+                    .map(|current| Arc::clone(current.value()))?,
+            };
+            if current.provider_key() != key {
+                return None;
+            }
+            self.provider_registrator(&key)
+                .map(|provider| (current, provider))
+        };
+        let deadline = tokio::time::Instant::now() + self.failover_replay_timeout();
+        let mut touched = Arc::clone(registrator);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(trigger_id = %stale.id, "Timed out settling a superseded binding's provider");
+                return;
+            }
+            let before = desired();
+            let replay = before
+                .as_ref()
+                .filter(|(_, provider)| Arc::ptr_eq(provider, &touched));
+            let result = match replay {
+                Some((current, _)) => {
+                    tokio::time::timeout_at(
+                        deadline,
+                        touched.replay_trigger(current.as_ref().clone()),
+                    )
+                    .await
+                }
+                None => {
+                    tokio::time::timeout_at(deadline, touched.unregister_trigger(stale.clone()))
+                        .await
+                }
+            };
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, trigger_id = %stale.id, "Could not settle a superseded binding's provider");
+                    return;
+                }
+                Err(_) => {
+                    tracing::warn!(trigger_id = %stale.id, "Timed out settling a superseded binding's provider");
+                    return;
+                }
+            }
+            let after = desired();
+            if replay.is_some() {
+                if let (Some((before, provider_before)), Some((after, provider_after))) =
+                    (&before, &after)
+                    && Arc::ptr_eq(before, after)
+                    && Arc::ptr_eq(provider_before, provider_after)
+                {
+                    return;
+                }
+            } else {
+                let Some((_, provider)) = after else {
+                    return;
+                };
+                // Re-announcing the same worker creates a new Arc wrapper.
+                // Cleaning the old wrapper can also remove the current job,
+                // so restore through the current provider before returning.
+                touched = provider;
+            }
+        }
+    }
+
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
+        // Cancel claims before awaiting any provider: a pending activation
+        // may not appear in either binding map, but it still has an owner.
+        {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            self.failing_over
+                .retain(|_, operation| operation.worker_id != Some(*worker_id));
+            self.pending_triggers
+                .retain(|_, trigger| trigger.worker_id != Some(*worker_id));
+        }
         let worker_trigger_type_keys: Vec<TypeKey> = self
             .trigger_types
             .iter()
@@ -712,18 +1070,26 @@ impl TriggerRegistry {
             // remove it — and only unregister it with the registrator — if it
             // still belongs to the disconnecting worker; a replaced binding
             // keeps firing. Same guard as trigger types below.
-            if self
-                .triggers
-                .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id))
-                .map(|_| self.interrupt_failover(&trigger.id))
-                .is_none()
-            {
+            let removed = {
+                let _park = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                let removed = self
+                    .triggers
+                    .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id));
+                if removed.is_some() {
+                    self.interrupt_failover(&trigger.id);
+                }
+                removed
+            };
+            let Some((_, trigger)) = removed else {
                 tracing::debug!(
                     trigger_id = trigger.id,
                     "Trigger already replaced by another worker; leaving it"
                 );
                 continue;
-            }
+            };
 
             if let Some(registrator) = self.provider_registrator(&trigger.provider_key()) {
                 tracing::debug!(trigger_type_id = %trigger.trigger_type, "Unregistering trigger");
@@ -732,6 +1098,10 @@ impl TriggerRegistry {
                     registrator.unregister_trigger(trigger.clone()).await;
                 if let Err(err) = result {
                     tracing::error!(error = %err, "Error unregistering trigger");
+                }
+                if self.triggers.contains_key(&trigger.id) {
+                    self.settle_superseded_provider(&trigger, &registrator)
+                        .await;
                 }
             }
 
@@ -799,16 +1169,18 @@ impl TriggerRegistry {
         let orphans: Vec<(Trigger, u64)> = self
             .triggers
             .iter()
-            .filter(|pair| pair.value().provider_key() == *key)
+            .filter(|pair| {
+                pair.value().provider_key() == *key
+                    && !self
+                        .failing_over
+                        .get(pair.key())
+                        .is_some_and(|operation| operation.removing)
+            })
             .map(|pair| pair.value().clone())
             .collect::<Vec<_>>()
             .into_iter()
             .map(|orphan| {
-                let token = self
-                    .failover_tokens
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    + 1;
-                self.failing_over.insert(orphan.id.clone(), token);
+                let token = self.begin_transition(&orphan, false);
                 (orphan, token)
             })
             .collect();
@@ -846,63 +1218,61 @@ impl TriggerRegistry {
     /// registered at the binding's home while it was in flight gets it back.
     async fn fail_over(&self, orphan: Trigger, token: u64) {
         let mut moving = orphan;
-        let next = self.resolve_provider_key(&moving);
-        let timeout = self.failover_replay_timeout();
-        let replayed = match &next {
-            Some(next) => {
-                moving.provider_namespace = next.0.clone();
-                Some(match self.provider_registrator(next) {
-                    Some(registrator) => {
-                        match tokio::time::timeout(
-                            timeout,
-                            registrator.replay_trigger(moving.clone()),
-                        )
-                        .await
-                        {
-                            Ok(Ok(())) => Ok(registrator),
-                            Ok(Err(err)) => Err(err),
-                            Err(_) => Err(anyhow::anyhow!(
-                                "the provider did not take the binding within {timeout:?}"
-                            )),
-                        }
-                    }
-                    None => Err(anyhow::anyhow!("provider vanished during failover")),
-                })
-            }
-            None => None,
-        };
-
-        // What the provider that took the replay must be told afterwards:
-        // `detach` it, or `refresh` it with the binding as it is now (it was
-        // registered again with that same provider while in flight, and the
-        // replay may have reached it after the newer registration).
-        let (detach, refresh, moved) = {
+        let next = {
             let _park = self
                 .park_transition
                 .lock()
                 .expect("park_transition lock poisoned");
-            let ours = self
-                .failing_over
-                .remove_if(&moving.id, |_, current| *current == token)
-                .is_some();
-            if !ours {
-                // Touched while in flight: unregistered, parked, or
-                // registered again, possibly with another provider. Unless
-                // the provider that just took it is the one serving it now,
-                // it must let go, or the binding would fire from two places.
-                let served_there = next.as_ref().and_then(|next| {
-                    self.triggers
-                        .get(&moving.id)
-                        .filter(|current| current.provider_key() == *next)
-                        .map(|current| current.clone())
-                });
-                match (replayed, served_there) {
-                    (Some(Ok(registrator)), None) => (Some(registrator), None, false),
-                    (Some(Ok(registrator)), Some(current)) => {
-                        (None, Some((registrator, current)), false)
+            let Some(mut operation) = self.failing_over.get_mut(&moving.id) else {
+                return;
+            };
+            if operation.token != token {
+                return;
+            }
+            let next = self.resolve_provider_key(&moving);
+            if let Some(next) = &next {
+                moving.provider_namespace = next.0.clone();
+            }
+            operation.target = Arc::new(moving.clone());
+            next
+        };
+        let timeout = self.failover_replay_timeout();
+        let registrator = next.as_ref().and_then(|key| self.provider_registrator(key));
+        let mut operation = TriggerTransitionGuard {
+            registry: self,
+            target: moving.clone(),
+            token,
+            registrator: registrator.clone(),
+            removing: false,
+            source: None,
+            armed: true,
+        };
+        let replayed = match &next {
+            Some(_) => Some(match &registrator {
+                Some(registrator) => {
+                    match tokio::time::timeout(timeout, registrator.replay_trigger(moving.clone()))
+                        .await
+                    {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(err)) => Err(err),
+                        Err(_) => Err(anyhow::anyhow!(
+                            "the provider did not take the binding within {timeout:?}"
+                        )),
                     }
-                    _ => (None, None, false),
                 }
+                None => Err(anyhow::anyhow!("provider vanished during failover")),
+            }),
+            None => None,
+        };
+
+        let moved = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let ours = self.finish_transition(&moving.id, token);
+            if !ours {
+                false
             } else {
                 match (&next, replayed) {
                     (Some(next), Some(Ok(_))) => {
@@ -914,7 +1284,7 @@ impl TriggerRegistry {
                             next.0.purple(),
                         );
                         self.triggers.insert(moving.id.clone(), moving.clone());
-                        (None, None, true)
+                        true
                     }
                     (_, Some(Err(err))) => {
                         tracing::error!(
@@ -925,7 +1295,7 @@ impl TriggerRegistry {
                         self.triggers.remove(&moving.id);
                         self.pending_triggers
                             .insert(moving.id.clone(), moving.clone());
-                        (None, None, false)
+                        false
                     }
                     _ => {
                         tracing::warn!(
@@ -938,41 +1308,16 @@ impl TriggerRegistry {
                         self.triggers.remove(&moving.id);
                         self.pending_triggers
                             .insert(moving.id.clone(), moving.clone());
-                        (None, None, false)
+                        false
                     }
                 }
             }
         };
-        // Bounded like the replay: the provider may be the stalled one.
-        if let Some(registrator) = detach {
-            match tokio::time::timeout(timeout, registrator.unregister_trigger(moving.clone()))
-                .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => tracing::warn!(
-                    error = %err,
-                    trigger_id = %moving.id,
-                    "Could not detach a binding that moved during failover"
-                ),
-                Err(_) => tracing::warn!(
-                    trigger_id = %moving.id,
-                    "The provider did not let go of a binding that moved during failover in time"
-                ),
-            }
-        }
-        if let Some((registrator, current)) = refresh {
-            match tokio::time::timeout(timeout, registrator.replay_trigger(current)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => tracing::warn!(
-                    error = %err,
-                    trigger_id = %moving.id,
-                    "Could not refresh a binding registered again during failover"
-                ),
-                Err(_) => tracing::warn!(
-                    trigger_id = %moving.id,
-                    "The provider did not take a refreshed binding in time"
-                ),
-            }
+        operation.armed = false;
+        // A provisional target may also have been delivered by another
+        // operation's compensation. Settle it after failure or supersession.
+        if !moved && let Some(registrator) = &registrator {
+            self.settle_superseded_provider(&moving, registrator).await;
         }
         // A provider that registered at the binding's home while it was in
         // flight skipped it; it claims it back now.
@@ -1049,11 +1394,10 @@ impl TriggerRegistry {
             for trigger_id in pending {
                 // Claiming removes the intent, so a concurrent drain of the
                 // same type cannot activate it twice.
-                let Some((mut trigger, token)) = self.claim_parked(&trigger_id) else {
+                let Some((trigger, token)) = self.claim_parked(&trigger_id, &key) else {
                     continue;
                 };
-                trigger.provider_namespace = key.0.clone();
-                self.activate_pending_trigger(&key, &registrator, trigger, token)
+                self.activate_pending_trigger(&registrator, trigger, token)
                     .await;
             }
         }
@@ -1074,22 +1418,26 @@ impl TriggerRegistry {
     /// `pending_triggers` and marks it in flight with a token, under
     /// `park_transition`. Whatever registers, unregisters or parks the same id
     /// meanwhile drops the token (see `interrupt_failover`).
-    fn claim_parked(&self, id: &str) -> Option<(Trigger, u64)> {
+    fn claim_parked(&self, id: &str, key: &TypeKey) -> Option<(Trigger, u64)> {
         let _park = self
             .park_transition
             .lock()
             .expect("park_transition lock poisoned");
-        let (_, trigger) = self.pending_triggers.remove(id)?;
-        let token = self
-            .failover_tokens
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        self.failing_over.insert(trigger.id.clone(), token);
+        if self
+            .failing_over
+            .get(id)
+            .is_some_and(|operation| operation.removing)
+        {
+            return None;
+        }
+        let (_, mut trigger) = self.pending_triggers.remove(id)?;
+        trigger.provider_namespace = key.0.clone();
+        let token = self.begin_transition(&trigger, false);
         Some((trigger, token))
     }
 
     /// Activate a claimed pending intent against its now-available trigger
-    /// type (at `key`). On registrator failure the intent is parked again so
+    /// type. On registrator failure the intent is parked again so
     /// the next type (re)registration retries it.
     ///
     /// The intent was claimed with `token`; it settles (live, or parked again)
@@ -1101,21 +1449,26 @@ impl TriggerRegistry {
     /// after the newer registration).
     async fn activate_pending_trigger(
         &self,
-        key: &TypeKey,
         registrator: &Arc<dyn TriggerRegistrator>,
         trigger: Trigger,
         token: u64,
     ) -> bool {
+        let mut operation = TriggerTransitionGuard {
+            registry: self,
+            target: trigger.clone(),
+            token,
+            registrator: Some(Arc::clone(registrator)),
+            removing: false,
+            source: None,
+            armed: true,
+        };
         let replayed = registrator.replay_trigger(trigger.clone()).await;
-        let (settled, newer_with_this_provider) = {
+        let settled = {
             let _park = self
                 .park_transition
                 .lock()
                 .expect("park_transition lock poisoned");
-            let ours = self
-                .failing_over
-                .remove_if(&trigger.id, |_, current| *current == token)
-                .is_some()
+            let ours = self.finish_transition(&trigger.id, token)
                 && !self.triggers.contains_key(&trigger.id)
                 && !self.pending_triggers.contains_key(&trigger.id);
             if ours {
@@ -1125,16 +1478,12 @@ impl TriggerRegistry {
                         .pending_triggers
                         .insert(trigger.id.clone(), trigger.clone()),
                 };
-                (Some(replayed.is_ok()), None)
+                Some(replayed.is_ok())
             } else {
-                let newer = self
-                    .triggers
-                    .get(&trigger.id)
-                    .filter(|current| current.provider_key() == *key)
-                    .map(|current| current.clone());
-                (None, newer)
+                None
             }
         };
+        operation.armed = false;
         match (settled, replayed) {
             (Some(true), _) => {
                 tracing::info!(
@@ -1153,6 +1502,7 @@ impl TriggerRegistry {
                     trigger_type = %trigger.trigger_type,
                     "Error registering pending trigger; it stays pending"
                 );
+                self.settle_superseded_provider(&trigger, registrator).await;
                 false
             }
             (None, Ok(())) => {
@@ -1160,16 +1510,11 @@ impl TriggerRegistry {
                     trigger_id = %trigger.id,
                     "A parked binding was superseded while it activated; the newer one stays"
                 );
-                let outcome = match newer_with_this_provider {
-                    Some(newer) => registrator.replay_trigger(newer).await,
-                    None => registrator.unregister_trigger(trigger).await,
-                };
-                if let Err(err) = outcome {
-                    tracing::warn!(
-                        error = %err,
-                        "Could not settle the provider of a superseded parked binding"
-                    );
-                }
+                self.settle_superseded_provider(&trigger, registrator).await;
+                false
+            }
+            (None, Err(_)) => {
+                self.settle_superseded_provider(&trigger, registrator).await;
                 false
             }
             _ => false,
@@ -1271,15 +1616,12 @@ impl TriggerRegistry {
             // provider that appeared in the meantime may be either step.
             if let Some(key) = self.resolve_provider_key(&trigger)
                 && let Some(registrator) = self.provider_registrator(&key)
-                && let Some((mut parked, token)) = self.claim_parked(&trigger.id)
-            {
-                parked.provider_namespace = key.0.clone();
-                if self
-                    .activate_pending_trigger(&key, &registrator, parked, token)
+                && let Some((parked, token)) = self.claim_parked(&trigger.id, &key)
+                && self
+                    .activate_pending_trigger(&registrator, parked, token)
                     .await
-                {
-                    return Ok(RegisterTriggerOutcome::Registered);
-                }
+            {
+                return Ok(RegisterTriggerOutcome::Registered);
             }
 
             return Ok(RegisterTriggerOutcome::Deferred);
@@ -1305,9 +1647,15 @@ impl TriggerRegistry {
             // supersedes a previous live binding with the same id (the dying
             // provider's jobs die with it) — the binding must end in exactly
             // one bucket.
-            self.interrupt_failover(&trigger.id);
-            self.triggers.remove(&trigger.id);
-            self.pending_triggers.insert(trigger.id.clone(), trigger);
+            {
+                let _park = self
+                    .park_transition
+                    .lock()
+                    .expect("park_transition lock poisoned");
+                self.interrupt_failover(&trigger.id);
+                self.triggers.remove(&trigger.id);
+                self.pending_triggers.insert(trigger.id.clone(), trigger);
+            }
             return Ok(RegisterTriggerOutcome::Deferred);
         }
 
@@ -1317,9 +1665,15 @@ impl TriggerRegistry {
 
         // A live registration supersedes any parked intent with the same id,
         // and any failover of the binding it replaces.
-        self.interrupt_failover(&trigger.id);
-        self.pending_triggers.remove(&trigger.id);
-        self.triggers.insert(trigger.id.clone(), trigger);
+        {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            self.interrupt_failover(&trigger.id);
+            self.pending_triggers.remove(&trigger.id);
+            self.triggers.insert(trigger.id.clone(), trigger);
+        }
 
         Ok(RegisterTriggerOutcome::Registered)
     }
@@ -1342,21 +1696,45 @@ impl TriggerRegistry {
             trigger_type.as_deref().unwrap_or("<missing>").purple()
         );
 
-        let trigger = {
+        let (trigger, token) = {
             let _park = self
                 .park_transition
                 .lock()
                 .expect("park_transition lock poisoned");
             let Some(trigger_entry) = self.triggers.get(&id) else {
-                // A parked intent has no live registration to tear down —
-                // dropping it from the pending bucket is the whole unregister.
-                return Ok(self.pending_triggers.remove(&id).is_some());
+                // A claimed pending intent is outside both maps. Cancelling
+                // its token makes its completion detach the provider instead
+                // of publishing a binding after this unregister.
+                let cancelled = self.interrupt_failover(&id);
+                let removed = self.pending_triggers.remove(&id).is_some();
+                return Ok(cancelled || removed);
             };
-            trigger_entry.value().clone()
+            let trigger = trigger_entry.value().clone();
+            drop(trigger_entry);
+            let token = self.begin_transition(&trigger, true);
+            (trigger, token)
         };
 
-        if let Some(registrator) = self.provider_registrator(&trigger.provider_key()) {
-            registrator.unregister_trigger(trigger.clone()).await?;
+        let registrator = self.provider_registrator(&trigger.provider_key());
+        let _operation = TriggerTransitionGuard {
+            registry: self,
+            target: trigger.clone(),
+            token,
+            registrator: registrator.clone(),
+            removing: true,
+            source: None,
+            armed: true,
+        };
+
+        if let Some(registrator) = &registrator
+            && let Err(err) = registrator.unregister_trigger(trigger.clone()).await
+        {
+            if let Some(recovery) = self.recover_abandoned_removal(&id, token, Some(registrator))
+                && let Err(join_error) = recovery.await
+            {
+                tracing::warn!(error = %join_error, trigger_id = %id, "Failed removal recovery stopped");
+            }
+            return Err(err);
         }
 
         // A late async rejection may re-park this binding while the
@@ -1364,13 +1742,22 @@ impl TriggerRegistry {
         // win over that park or the intent resurrects on the next type
         // registration. The transition lock makes this two-map clear atomic
         // with the re-park's own live-to-pending move.
-        let _park = self
-            .park_transition
-            .lock()
-            .expect("park_transition lock poisoned");
-        self.interrupt_failover(&id);
-        self.triggers.remove(&id);
-        self.pending_triggers.remove(&id);
+        let removed = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            if self.finish_transition(&id, token) {
+                self.triggers.remove(&id);
+                self.pending_triggers.remove(&id);
+                true
+            } else {
+                false
+            }
+        };
+        if !removed && let Some(registrator) = &registrator {
+            self.settle_superseded_provider(&trigger, registrator).await;
+        }
 
         Ok(true)
     }
@@ -1389,7 +1776,16 @@ impl TriggerRegistry {
             let Some((_, failed)) = self.triggers.remove(id) else {
                 return;
             };
-            self.interrupt_failover(id);
+            // A rejection may park the entry during an explicit unregister.
+            // Keep the removal token so that its completion clears the parked
+            // intent; claim_parked will not activate it in the meantime.
+            if !self
+                .failing_over
+                .get(id)
+                .is_some_and(|operation| operation.removing)
+            {
+                self.interrupt_failover(id);
+            }
             tracing::warn!(
                 trigger_id = %id,
                 trigger_type = %failed.trigger_type,
@@ -1416,9 +1812,9 @@ impl TriggerRegistry {
             .map(|provider| (provider.worker_id, provider.registrator.clone()));
         if let Some((provider_worker, registrator)) = current
             && provider_worker != Some(reporter_worker_id)
-            && let Some((parked, token)) = self.claim_parked(id)
+            && let Some((parked, token)) = self.claim_parked(id, &parked_type)
         {
-            self.activate_pending_trigger(&parked_type, &registrator, parked, token)
+            self.activate_pending_trigger(&registrator, parked, token)
                 .await;
         }
     }
