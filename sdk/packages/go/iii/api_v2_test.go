@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,6 +156,83 @@ func TestShutdownWithDoneContext(t *testing.T) {
 	idle := New("ws://127.0.0.1:0")
 	if err := idle.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown of a client never started: %v", err)
+	}
+}
+
+// silentEngine accepts worker connections and never reads from them, so a close
+// handshake is never answered (a hung or partitioned engine).
+func silentEngine(t *testing.T) string {
+	t.Helper()
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		<-stop // never reads
+		_ = conn.CloseNow()
+	}))
+	t.Cleanup(func() {
+		close(stop)
+		srv.Close()
+	})
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+func connectSilent(t *testing.T) *Client {
+	t.Helper()
+	c := New(silentEngine(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// V6 (review round 6, finding 1): an engine that never answers the close handshake
+// cannot hold Shutdown past its ctx (coder/websocket would wait its own 5s).
+func TestShutdownIsBoundedWhenTheEngineIgnoresTheCloseHandshake(t *testing.T) {
+	c := connectSilent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := c.Shutdown(ctx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("Shutdown with a 300ms ctx took %v", elapsed)
+	}
+	if c.ConnectionState() != StateDisconnected {
+		t.Errorf("state = %q, want disconnected", c.ConnectionState())
+	}
+}
+
+// V6 (review round 6, finding 2): a Close called while Shutdown waits on an engine that
+// does not answer cuts the Shutdown short instead of waiting for it.
+func TestCloseCutsARunningShutdownShort(t *testing.T) {
+	c := connectSilent(t)
+	shutdownErr := make(chan error, 1)
+	go func() { shutdownErr <- c.Shutdown(context.Background()) }()
+	time.Sleep(200 * time.Millisecond) // Shutdown is now waiting for the close handshake
+
+	start := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Close during Shutdown took %v", d)
+	}
+	select {
+	case err := <-shutdownErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Shutdown = %v, want context.Canceled (cut short by Close)", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown still running after Close returned")
 	}
 }
 

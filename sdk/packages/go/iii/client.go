@@ -84,10 +84,14 @@ type Client struct {
 	// another connection.
 	observeOut chan observeFrame
 
-	mu       sync.Mutex
-	state    ConnectionState
-	conn     *websocket.Conn
-	writerWG sync.WaitGroup
+	mu    sync.Mutex
+	state ConnectionState
+	conn  *websocket.Conn
+	// connCancel cancels the live connection's context (its reads, writes and pings);
+	// a Shutdown out of time uses it to end the close handshake at once. Set and cleared
+	// with conn.
+	connCancel context.CancelFunc
+	writerWG   sync.WaitGroup
 
 	// workerID/reattachToken are the engine-assigned identity from the last
 	// WorkerRegistered frame, presented back via a Reattach frame on reconnect so
@@ -112,9 +116,11 @@ type Client struct {
 	offline [][]byte
 
 	// lifecycle
-	shutdown      chan struct{}
-	shutOnce      sync.Once
-	shutDone      chan struct{} // closed when the first Close or Shutdown has finished
+	shutdown chan struct{}
+	shutOnce sync.Once
+	shutDone chan struct{} // closed when the first Close or Shutdown has finished
+	// shutForce cuts a running Shutdown short (a Close called meanwhile). Guarded by mu.
+	shutForce     context.CancelFunc
 	connected     chan struct{} // closed once the first connection is established
 	connOnce      sync.Once
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
@@ -1167,6 +1173,7 @@ func (c *Client) runConnection() (bool, error) {
 
 	c.mu.Lock()
 	c.conn = conn
+	c.connCancel = cancel
 	c.setStateLocked(StateConnected)
 	c.mu.Unlock()
 
@@ -1202,6 +1209,7 @@ func (c *Client) runConnection() (bool, error) {
 	_ = conn.CloseNow()
 	c.mu.Lock()
 	c.conn = nil
+	c.connCancel = nil
 	registered := c.registeredOnConnection
 	// Local dispatch and the compiled observer sets survive; what was sent on this
 	// connection is replayed on the next one.
@@ -1777,7 +1785,8 @@ func (c *Client) handleUnregisterTrigger(ctx context.Context, msg *UnregisterTri
 // flushes under a deadline of your own and close the socket gracefully.
 //
 // Close is idempotent and implements io.Closer; it always returns nil. Called while a
-// Shutdown runs, it waits for that Shutdown to finish.
+// Shutdown runs, it cuts that Shutdown short (as http.Server.Close does) and returns
+// once it has finished.
 func (c *Client) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), otelShutdownTimeout)
 	defer cancel()
@@ -1792,10 +1801,12 @@ func (c *Client) Close() error {
 // ErrNotConnected, and closes the socket with a normal-closure handshake.
 //
 // When ctx is done before those steps finish, the remaining work is cut short (the
-// socket is dropped as [Client.Close] drops it) and ctx.Err() is returned; the client is
-// shut down either way and nil means everything was delivered. Like Close it does not
-// send unregister frames. Shutdown is idempotent: a later call, or a Close, returns once
-// the first shutdown has finished (Shutdown returns ctx.Err() if ctx ends first).
+// socket is closed at once, also when the engine never answers the close handshake)
+// and ctx.Err() is returned; the client is shut down either way and nil means
+// everything was delivered. A [Client.Close] called meanwhile cuts it short the same
+// way, and Shutdown then returns context.Canceled. Like Close it does not send
+// unregister frames. Shutdown is idempotent: a later Shutdown returns once the first
+// shutdown has finished, or ctx.Err() if its own ctx ends first.
 func (c *Client) Shutdown(ctx context.Context) error {
 	return c.terminate(ctx, true)
 }
@@ -1805,18 +1816,40 @@ func (c *Client) Shutdown(ctx context.Context) error {
 // everything by ctx and closes the socket with a handshake.
 func (c *Client) terminate(ctx context.Context, graceful bool) error {
 	first := false
-	c.shutOnce.Do(func() { first = true })
+	var stop context.CancelFunc
+	c.shutOnce.Do(func() {
+		first = true
+		if graceful {
+			// A Close called while this Shutdown runs cancels ctx, which cuts every
+			// remaining step short. Set inside Do, so a Close that loses the race sees it.
+			ctx, stop = context.WithCancel(ctx)
+			c.mu.Lock()
+			c.shutForce = stop
+			c.mu.Unlock()
+		}
+	})
 	if !first {
-		select {
-		case <-c.shutDone:
-			return nil
-		case <-ctx.Done():
-			if graceful {
-				return ctx.Err()
+		if !graceful {
+			// Close keeps its "at once" contract: it cuts a running Shutdown short, then
+			// waits for it to finish (http.Server.Close next to Shutdown).
+			c.mu.Lock()
+			force := c.shutForce
+			c.mu.Unlock()
+			if force != nil {
+				force()
 			}
 			<-c.shutDone
 			return nil
 		}
+		select {
+		case <-c.shutDone:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if stop != nil {
+		defer stop()
 	}
 	defer close(c.shutDone)
 
@@ -1849,7 +1882,7 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 		ch <- invocationOutcome{err: ErrNotConnected}
 		delete(c.pending, id)
 	}
-	conn := c.conn
+	conn, connCancel := c.conn, c.connCancel
 	c.setStateLocked(StateDisconnected)
 	c.mu.Unlock()
 
@@ -1863,7 +1896,14 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 			select {
 			case <-closed:
 			case <-ctx.Done():
-				_ = conn.CloseNow()
+				// Out of time, or a Close cut the shutdown short. A peer that never
+				// answers the close handshake keeps coder/websocket waiting up to its own
+				// 5s, and CloseNow would only wait for that same handshake. Cancelling the
+				// connection's context closes the connection under the pending read,
+				// which ends the handshake at once.
+				if connCancel != nil {
+					connCancel()
+				}
 			}
 		} else {
 			_ = conn.CloseNow()
