@@ -328,8 +328,8 @@ func (r *ChannelReader) Close() error {
 // ExtractChannelRefs recursively walks a JSON value and returns every StreamChannelRef
 // found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it
 // is an object with string channel_id, access_key, and direction fields. Mirrors
-// extract_channel_refs / is_channel_ref (channels.rs:225-275): the receiving worker uses
-// it to find a ref another worker embedded in a trigger payload.
+// extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it
+// to find a ref another worker embedded in a trigger payload.
 func ExtractChannelRefs(data json.RawMessage) (map[string]StreamChannelRef, error) {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {

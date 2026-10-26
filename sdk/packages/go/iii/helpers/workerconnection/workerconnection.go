@@ -16,7 +16,7 @@
 //
 // A hook returns the (possibly remapped) fields, or an error to deny the registration;
 // fields left empty in a result keep the value of the original registration request.
-// The middleware input lives in the core package as iii.MiddlewareFunctionInput.
+// The middleware input is in the core package: iii.MiddlewareFunctionInput.
 //
 // The JSON names of every field are the wire contract and match the Node and Rust types
 // exactly. Arbitrary JSON values (context, config, metadata) are json.RawMessage, as in

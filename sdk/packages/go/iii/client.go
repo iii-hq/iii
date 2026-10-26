@@ -25,9 +25,8 @@ import (
 // Client, registering functions and/or trigger types, and calling Connect; the engine
 // then invokes those functions over the same socket and the Client replies.
 //
-// Concurrency model (ported from the Rust SDK's single-thread + channel design,
-// sdk/packages/rust/iii/src/iii.rs): all data writes are funneled through one writer
-// goroutine fed by the outbound channel. A separate keepalive goroutine sends WebSocket
+// Concurrency model (ported from the Rust SDK's single-thread + channel design): all
+// data writes are funneled through one writer goroutine fed by the outbound channel. A separate keepalive goroutine sends WebSocket
 // control pings, which coder/websocket permits concurrently with writes and its Reader.
 // One read-loop goroutine reads frames and dispatches them; user handlers run in their
 // own goroutines so a slow or panicking handler never blocks the read loop. A supervisor
@@ -128,7 +127,7 @@ type Client struct {
 	fatalOnce sync.Once
 	fatalErr  error
 
-	// lifeCtx lives until Close: observe hooks and locally dispatched handlers run on
+	// lifeCtx lasts until Close: observe hooks and locally dispatched handlers run on
 	// it, as remote handlers run on their connection's context.
 	lifeCtx    context.Context
 	lifeCancel context.CancelFunc
@@ -780,7 +779,7 @@ const maxLocalDepth = 64
 // observe depth), which observers' filters and the engine's loop guard read.
 //
 // A function this worker hosts runs in-process, without touching the wire, once the
-// engine confirmed it for local dispatch (sdk.md §3), unless the action is enqueue or
+// engine confirmed it for local dispatch, unless the action is enqueue or
 // Dispatch is [DispatchRemote]. The handler gets its own copy of the payload and the
 // caller a fresh encoding of the result; errors and timeouts look as on the remote path.
 // Observers of a local call see the payload and metadata as they were when the call

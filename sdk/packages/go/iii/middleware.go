@@ -8,8 +8,8 @@ import "encoding/json"
 // reject the call before it reaches the target function: forward it with
 // [Client.Trigger], or return an error to reject it.
 //
-// It mirrors MiddlewareFunctionInput in the Node SDK (iii-types.ts) and the Rust SDK
-// (structs.rs) field for field; the JSON names are the wire contract. Register the
+// It mirrors MiddlewareFunctionInput in the Node and Rust SDKs field for field; the
+// JSON names are the wire contract. Register the
 // middleware with [RegisterFunctionTyped] to receive it decoded, or unmarshal the raw
 // handler payload into it.
 //

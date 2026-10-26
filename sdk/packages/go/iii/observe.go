@@ -19,7 +19,7 @@ import (
 // need from the connection.
 
 // Features this SDK declares in its engine::workers::register payload. The engine
-// advertises the first two in WorkerRegistered (CONTRACT D2). FeatureLargeMessagesV1 is
+// advertises the first two in WorkerRegistered. FeatureLargeMessagesV1 is
 // declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it
 // messages of that size whatever version it reports.
 const (
@@ -30,7 +30,7 @@ const (
 
 var sdkFeatures = []string{FeatureObserveV1, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
 
-// Engine functions of the observer registry (protocol.md §3.6).
+// Engine functions of the observer registry.
 const (
 	FnListObservers   = "engine::observers::list"
 	FnGetObserver     = "engine::observers::get"

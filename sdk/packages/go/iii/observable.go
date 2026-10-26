@@ -618,7 +618,7 @@ func (f *functionObservers) reportLocal(set []*Observer, call localCall) {
 // [ObserveHooks.OnObserverAdded] and [Client.Observers]): its args, filters, target,
 // capture and on. Never its metadata, policy or the observing worker. Its fields are
 // set when it is added; the SDK keeps its own copy of what it reads, so changing them
-// changes nothing but the owner's view. The pointer is stable while the observer lives,
+// changes nothing but the owner's view. The pointer is stable while the observer exists,
 // so owners keep it in their own index (expression -> observers, route table).
 type Observer struct {
 	ID string
@@ -784,7 +784,7 @@ func (o *Observer) Emit(ctx context.Context, event any) (bool, error) {
 // caller, as for Emit. It fails with FILTERS_NOT_MATCHED (nothing sent) when the
 // observer's filters reject the payload, OBSERVER_NOT_ACTIVE when the observer is no
 // longer active, and NOT_OWNER_DELIVERED on an auto function; an error the engine
-// answers (protocol.md §3.5) comes back as an *InvocationError with its code.
+// answers comes back as an *InvocationError with its code.
 func (o *Observer) Call(ctx context.Context, payload any) (json.RawMessage, error) {
 	f := o.owner
 	if f.delivery != DeliveryOwner {

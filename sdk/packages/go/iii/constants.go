@@ -34,7 +34,7 @@ func EngineURLFromEnv() string {
 const runtimeTag = "go"
 
 // EngineFunctions are the engine's built-in function paths a worker can invoke via
-// Trigger. Mirrors EngineFunctions in sdk/packages/node/iii/src/iii-constants.ts.
+// Trigger. Mirrors EngineFunctions in the Node SDK.
 //
 // Naming note (kept verbatim from the Node SDK so the two read the same): ListTriggers
 // / InfoTriggers cover trigger TYPES (templates); ListRegisteredTriggers /
@@ -52,7 +52,7 @@ const (
 	FnCreateChannel          = "engine::channels::create"
 )
 
-// Engine trigger types. Mirrors EngineTriggers in iii-constants.ts.
+// Engine trigger types. Mirrors EngineTriggers in the Node SDK.
 const (
 	// TriggerFunctionsAvailable is the trigger type fired when the function set
 	// changes.
@@ -78,7 +78,7 @@ const (
 	FnOnConfigurationUpdate = "configuration::on-updated"
 )
 
-// Log function paths. Mirrors LogFunctions in iii-constants.ts. Invoke these with
+// Log function paths. Mirrors LogFunctions in the Node SDK. Invoke these with
 // Trigger (fire-and-forget) to write to the engine log.
 const (
 	LogInfo  = "engine::log::info"
@@ -89,14 +89,13 @@ const (
 
 // DefaultInvocationTimeout bounds how long Trigger waits for an InvocationResult
 // before failing with ErrTimeout, unless [WithInvocationTimeout] or
-// [TriggerRequest].Timeout says otherwise. Mirrors DEFAULT_INVOCATION_TIMEOUT_MS (30000)
-// in iii-constants.ts.
+// [TriggerRequest].Timeout says otherwise. Same default (30000 ms) as
+// DEFAULT_INVOCATION_TIMEOUT_MS in the Node SDK.
 const DefaultInvocationTimeout = 30 * time.Second
 
 // ReconnectConfig controls the exponential-backoff-with-jitter reconnect loop. The
-// defaults below match the Node SDK's DEFAULT_BRIDGE_RECONNECTION_CONFIG
-// (iii-constants.ts) exactly, so a Go worker reconnects on the same schedule as a
-// Node one.
+// defaults below match the Node SDK's DEFAULT_BRIDGE_RECONNECTION_CONFIG exactly, so
+// a Go worker reconnects on the same schedule as a Node one.
 type ReconnectConfig struct {
 	// InitialDelay is the delay before the first reconnect attempt.
 	InitialDelay time.Duration
@@ -124,7 +123,7 @@ func DefaultReconnectConfig() ReconnectConfig {
 }
 
 // ConnectionState is the lifecycle state of a Client's WebSocket. Mirrors
-// IIIConnectionState in iii-constants.ts.
+// IIIConnectionState in the Node SDK.
 type ConnectionState string
 
 const (
