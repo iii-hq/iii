@@ -19,10 +19,16 @@
 // On the response channel a TEXT frame is a control message, either
 // {"type":"set_status","status_code":201} or
 // {"type":"set_headers","headers":{"content-type":"text/plain"}}; BINARY frames carry
-// the body, and closing the channel ends the response. The status and headers are
-// committed when the first body chunk (or the close) reaches the http worker. A
+// the body, and a clean close of the channel ends the response. The status and headers
+// are committed when the first body chunk (or the close) reaches the http worker. A
 // function that returns a non-null value without writing a body gets a buffered
 // response built from that value ({status_code, headers, body}) instead.
+//
+// A channel that ends any other way (its writer failed, or went away without a clean
+// close) is aborted: the engine closes the reader with an error, so the reader never
+// takes an incomplete body for a whole one. [StreamRequest.Read] returns that error for
+// an aborted request body, and [Wrap] aborts the response when a send fails or the
+// handler returns an error after body bytes were written.
 //
 // Import the package under an alias to keep net/http available:
 //

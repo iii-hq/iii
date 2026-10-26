@@ -29,7 +29,8 @@ var (
 // Write the response to res and return nil to stream it, or return a [Response] (any
 // non-nil value with status_code, headers and body) to answer buffered without touching
 // res. A returned error is reported as the invocation error, which the http worker
-// answers with a 500, unless a body was already streamed.
+// answers with a 500; if body bytes were already streamed, [Wrap] aborts the response
+// instead of ending it, so the truncated body is not taken for a complete one.
 type HandlerFunc func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error)
 
 // StreamRequest is the incoming request a [HandlerFunc] receives, Node StreamRequest:
@@ -57,10 +58,17 @@ type StreamRequest struct {
 	ctx     context.Context
 	pending []byte
 	eof     bool
+	err     error // the error that ended the body, returned by every later Read
 }
 
 // Read reads the raw request body from RequestBody and implements [io.Reader]. It
-// returns io.EOF once the http worker has sent the whole body, and
+// returns io.EOF only once the http worker has sent the whole body and ended the channel
+// cleanly. If the channel was aborted instead (its writer failed or went away before
+// finishing, or the connection dropped), Read returns that error, never io.EOF: the body
+// read so far is incomplete, and io.ReadAll returns it together with the error. An abort
+// reported by the engine is a websocket close error with code 1011 and a reason
+// (websocket.CloseStatus reads the code). Bytes received before the abort are returned
+// first, and once Read failed every later call returns the same error. Read returns
 // [ErrMissingChannel] when RequestBody is nil. Reads are bound to the invocation
 // context; a StreamRequest is not safe for concurrent reads.
 func (r *StreamRequest) Read(p []byte) (int, error) {
@@ -71,18 +79,21 @@ func (r *StreamRequest) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	for len(r.pending) == 0 {
-		if r.eof {
+		switch {
+		case r.err != nil:
+			return 0, r.err
+		case r.eof:
 			return 0, io.EOF
 		}
 		chunk, ok, err := r.RequestBody.NextBinary(contextOrBackground(r.ctx))
-		if err != nil {
-			return 0, err
-		}
-		if !ok {
+		switch {
+		case err != nil:
+			r.err = err
+		case !ok:
 			r.eof = true
-			return 0, io.EOF
+		default:
+			r.pending = chunk
 		}
-		r.pending = chunk
 	}
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
@@ -92,14 +103,20 @@ func (r *StreamRequest) Read(p []byte) (int, error) {
 // StreamResponse is the response a [HandlerFunc] writes, Node StreamResponse: Status
 // and Headers send control messages, Write streams the body and Close ends it.
 // StreamResponse is an [io.Writer]. Its methods are safe for concurrent use.
+//
+// A response whose writer failed is aborted, never reported complete. Once Status,
+// Headers or Write returned an error, every later call returns that error, and Close
+// (or [Wrap], when the handler returns) ends the channel without a clean close: the http
+// worker's reader gets an error instead of a truncated body that looks whole.
 type StreamResponse struct {
 	ctx    context.Context
 	writer *iii.ChannelWriter
 
 	mu        sync.Mutex
-	opened    bool // a frame was sent, so the channel socket is open
-	wroteBody bool // body bytes were written: the http worker is streaming
-	closed    bool
+	opened    bool  // a frame was sent, so the channel socket is open
+	wroteBody bool  // body bytes were written: the http worker is streaming
+	closed    bool  // ended: closed cleanly, aborted, or dropped by Wrap
+	err       error // the first failed send: the response can only be aborted
 }
 
 // NewStreamResponse returns a StreamResponse writing to writer, the response channel of
@@ -151,6 +168,7 @@ func (r *StreamResponse) sendControl(msg any) error {
 		return err
 	}
 	if err := r.writer.SendMessage(contextOrBackground(r.ctx), string(text)); err != nil {
+		r.err = err
 		return err
 	}
 	r.opened = true
@@ -158,7 +176,8 @@ func (r *StreamResponse) sendControl(msg any) error {
 }
 
 // Write streams p as response body (BINARY frames of at most 64 KiB) and implements
-// [io.Writer]. The first body chunk commits the status and headers.
+// [io.Writer]. The first body chunk commits the status and headers. A failed Write
+// leaves the body incomplete, so the response can then only be aborted.
 func (r *StreamResponse) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -169,6 +188,7 @@ func (r *StreamResponse) Write(p []byte) (int, error) {
 		r.wroteBody = true
 	}
 	if err := r.writer.Write(contextOrBackground(r.ctx), p); err != nil {
+		r.err = err
 		return 0, err
 	}
 	r.opened = true
@@ -176,25 +196,47 @@ func (r *StreamResponse) Write(p []byte) (int, error) {
 }
 
 // Close ends the response: the http worker sends the status and headers set so far
-// (200 by default) and finishes the body. Close is idempotent; [Wrap] closes a
-// streamed response when the handler returns, so calling it is optional there.
+// (200 by default) and finishes the body. After a failed Status, Headers or Write, Close
+// aborts the response instead: the channel ends without a clean close, the http worker's
+// reader gets an error, and Close returns nil (the failing call already returned the
+// error). Close is idempotent; [Wrap] ends the response when the handler returns, so
+// calling it is optional there.
 func (r *StreamResponse) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.writer == nil {
+	switch {
+	case r.closed:
+		return nil
+	case r.writer == nil:
 		return ErrMissingChannel
+	case r.err != nil:
+		r.abortLocked()
+		return nil
 	}
 	return r.closeLocked()
 }
 
 func (r *StreamResponse) checkWritableLocked() error {
-	if r.writer == nil {
+	switch {
+	case r.err != nil:
+		return r.err
+	case r.closed:
+		return ErrResponseClosed
+	case r.writer == nil:
 		return ErrMissingChannel
 	}
-	if r.closed {
-		return ErrResponseClosed
-	}
 	return nil
+}
+
+// abortLocked ends a response whose send failed. The channel writer recorded the
+// failure, so its Close ends the socket without a close frame, which the engine reads as
+// an abort; Close never dials, so a channel that never connected is left untouched.
+func (r *StreamResponse) abortLocked() {
+	if r.closed {
+		return
+	}
+	r.closed = true
+	_ = r.writer.Close()
 }
 
 // closeLocked ends the stream. The channel socket opens lazily, so a response that
@@ -214,19 +256,48 @@ func (r *StreamResponse) closeLocked() error {
 	return r.writer.Close()
 }
 
-// finish runs after the handler returned. A streamed body is always ended. A nil
-// result without error means the answer is on the channel, possibly with no body, so
-// the stream is ended too. Otherwise (a buffered result or an error, and no body) the
-// channel is left alone, as the Node helper does, so the http worker answers from the
-// returned value or reports the error instead of racing an end-of-stream.
+// finish runs after the handler returned:
+//   - a send failed: the response is aborted;
+//   - the handler failed after body bytes were written: the response is aborted with
+//     abortWriter;
+//   - body bytes were written, or the result is nil without error: the stream is ended
+//     cleanly, since the answer is on the channel (possibly with no body);
+//   - otherwise (a buffered result, or an error before any body) the channel is left
+//     alone, as the Node helper does, so the http worker answers from the returned value
+//     or reports the error instead of racing an end of stream.
 func (r *StreamResponse) finish(nilResult bool, failed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.writer == nil || r.closed {
 		return
 	}
-	if r.wroteBody || (nilResult && !failed) {
+	switch {
+	case r.err != nil:
+		r.abortLocked()
+	case failed && r.wroteBody:
+		r.closed = true
+		abortWriter(r.writer) // never report this truncated body complete
+	case r.wroteBody || (nilResult && !failed):
 		_ = r.closeLocked()
+	}
+}
+
+// abortMessage is the text frame abortWriter sends with a cancelled context. If it gets
+// through, the http worker skips it as an unknown control message.
+const abortMessage = `{"type":"abort"}`
+
+// abortWriter ends w's socket without a clean close, which the engine reports to the
+// reader as an abort. iii.ChannelWriter has no exported abort, so it sends with an
+// already cancelled context, which can only end one of two ways: the send fails, and
+// Close after a failed send ends the socket with no close frame; or the write started,
+// and the websocket library closes the connection with no close frame because the
+// context is done (context.AfterFunc on a done context always runs). Close is not called
+// in the second case, since the socket is already being torn down.
+func abortWriter(w *iii.ChannelWriter) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := w.SendMessage(ctx, abortMessage); err != nil {
+		_ = w.Close()
 	}
 }
 
@@ -238,12 +309,18 @@ func (r *StreamResponse) finish(nilResult bool, failed bool) {
 // for reading and the response channel for writing with [iii.Client.OpenReader] and
 // [iii.Client.OpenWriter] (so the dials use the client's engine address and send its
 // [iii.WithHeaders], plus III_TOKEN), and calls fn with the [StreamRequest] and
-// [StreamResponse]. When fn returns, Wrap
-// closes the request body reader and finishes the response like a net/http handler: a
-// streamed body, or a nil result, ends the response stream (no explicit Close needed); a
-// buffered result or an error without a streamed body leaves the channel untouched so
-// the http worker answers from the returned value. fn must not use req or res after it
-// returns. Wrap returns nil when fn is nil; it panics when client is nil.
+// [StreamResponse]. When fn returns, Wrap closes the request body reader and finishes
+// the response like a net/http handler:
+//   - a streamed body, or a nil result without error, ends the response stream cleanly
+//     (no explicit Close needed);
+//   - a buffered result, or an error before any body, leaves the channel untouched so
+//     the http worker answers from the returned value or reports the error;
+//   - a failed Status, Headers or Write aborts the response, whatever fn returns;
+//   - an error after body bytes were written aborts the response too, so the truncated
+//     body is not taken for a complete one.
+//
+// fn must not use req or res after it returns. Wrap returns nil when fn is nil; it
+// panics when client is nil.
 func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler {
 	if client == nil {
 		panic("iii/helpers/http: Wrap requires a non-nil client")
