@@ -34,10 +34,10 @@ fn json_value_to_anyvalue(v: &Value) -> AnyValue {
 ///
 /// Every log call automatically captures the active trace and span context,
 /// correlating your logs with distributed traces without any manual wiring.
-/// When OTel is not initialized (before the worker's telemetry starts, or with
-/// `OTEL_ENABLED=false`), Logger falls back to the `tracing` crate, which
-/// prints nothing unless the program installs a subscriber, for example
-/// `tracing_subscriber::fmt().init()`.
+/// When OTel is not initialized (before the worker's OpenTelemetry export
+/// starts, or with `OTEL_ENABLED=false`), Logger falls back to the `tracing`
+/// crate, which prints nothing unless the program installs a subscriber, for
+/// example `tracing_subscriber::fmt().init()`.
 ///
 /// Pass structured data as the second argument to any log method. Using a
 /// `serde_json::Value` object of key-value pairs (instead of string

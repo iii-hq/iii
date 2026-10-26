@@ -82,8 +82,8 @@ than to raw stdout.
 Under `iii compose --up`, the engine's output goes to `engine.log` in the compose state directory,
 `.iii/compose/<namespace>/` by default (see [Compose logs](../using-iii/compose#compose-logs)).
 
-Before the worker's telemetry starts, or when it is off (`OTEL_ENABLED=false`), `Logger` falls back
-to the language's own logging, and the line stays in the worker's process:
+Before the worker's OpenTelemetry export starts, or when it is off (`OTEL_ENABLED=false`), `Logger`
+falls back to the language's own logging, and the line stays in the worker's process:
 
 | SDK    | Fallback                       | Shown without setup                                                      |
 | ------ | ------------------------------ | ------------------------------------------------------------------------ |

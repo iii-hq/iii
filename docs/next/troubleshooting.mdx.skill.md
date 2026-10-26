@@ -52,6 +52,6 @@ Find yours by its `target` and read its `state`:
 iii trigger engine::logs::list
 ```
 
-If they are not there either, the worker's telemetry may be off (`OTEL_ENABLED=false`). `Logger` then
-falls back to the language's own logging, which the Rust SDK prints only with a `tracing`
-subscriber. See [Where the lines go](./creating-workers/observability#where-the-lines-go).
+If they are not there either, the worker's OpenTelemetry export may be off (`OTEL_ENABLED=false`).
+`Logger` then falls back to the language's own logging, which the Rust SDK prints only with a
+`tracing` subscriber. See [Where the lines go](./creating-workers/observability#where-the-lines-go).
