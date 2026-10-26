@@ -815,8 +815,9 @@ The example moves a `timer` trigger type, which fires each binding every `every_
 </Tabs>
 
 The "after" versions keep one timer per observer, like the original. To share one timer per interval
-between all its observers, emit from the function's own handler, as in
-[Observable functions](../creating-workers/observable-functions#example-a-timer-that-emits).
+between all its observers, index them by interval and emit from the function's own handler, as the
+[file watcher example](../creating-workers/observable-functions#example-a-file-watcher-that-emits)
+does per path.
 
 ### Keep old consumers working
 

@@ -286,8 +286,8 @@ await worker.trigger({ function_id: "files::on-change", payload: { path, event: 
 worker.observe({ function_id: "files::on-change" }, "csv::process");
 ```
 
-Some sources go further and take control of who gets which event, for example a timer that runs one
-schedule per interval its observers ask for. Those are written with
+Some sources go further and take control of who gets which event, for example a file watcher that
+polls only the paths its observers ask for. Those are written with
 [Observable functions](../creating-workers/observable-functions); you only need that page if you are
 writing such a source, never to observe one.
 
@@ -333,53 +333,63 @@ the target.
 
 ### Sources that take args
 
-A few sources need to know what you want before they can fire: a timer needs an interval, a route
-needs a path. Their documentation lists the `args` they take, and you pass them in the source. For
-example, `timer::on-tick`, the example source built in
-[Observable functions](../creating-workers/observable-functions#example-a-timer-that-emits) (it is
-not built in), takes `{ every_ms }`:
+A few sources need to know what you want before they can fire: a file watcher needs a path, a
+schedule needs an interval. Their documentation lists the `args` they take, and you pass them in the
+source. For example, `files::watch`, the example source built in
+[Observable functions](../creating-workers/observable-functions#example-a-file-watcher-that-emits)
+(it is not built in), takes `{ path }`:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // Every minute, run reports::refresh.
-    worker.observe({ function_id: "timer::on-tick", args: { every_ms: 60_000 } }, "reports::refresh");
+    // When /data/orders.csv changes, run csv::process.
+    worker.observe(
+      { function_id: "files::watch", args: { path: "/data/orders.csv" }, deliver: "input" },
+      "csv::process",
+    );
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    # Every minute, run reports::refresh.
-    worker.observe({"function_id": "timer::on-tick", "args": {"every_ms": 60_000}}, "reports::refresh")
+    # When /data/orders.csv changes, run csv::process.
+    worker.observe(
+        {"function_id": "files::watch", "args": {"path": "/data/orders.csv"}, "deliver": "input"},
+        "csv::process",
+    )
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    // Every minute, run reports::refresh.
+    // When /data/orders.csv changes, run csv::process.
     worker.observe(
-        Source::function("timer::on-tick").args(json!({ "every_ms": 60_000 })),
-        "reports::refresh",
+        Source::function("files::watch")
+            .args(json!({ "path": "/data/orders.csv" }))
+            .deliver(Deliver::Input),
+        "csv::process",
     );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    // Every minute, run reports::refresh.
+    // When /data/orders.csv changes, run csv::process.
     client.Observe(iii.Source{
-        FunctionID: "timer::on-tick",
-        Args:       iii.Args{"every_ms": 60000},
-    }, "reports::refresh")
+        FunctionID: "files::watch",
+        Args:       iii.Args{"path": "/data/orders.csv"},
+        Deliver:    iii.DeliverInput,
+    }, "csv::process")
     ```
 
   </Tab>
 </Tabs>
 
-Args and filters do different jobs: `args` tell the source what to produce (ticks every minute), and
-filters choose among what it produced. The engine validates `args` against the source's schema
-(`INVALID_ARGS` when they do not fit). A function that does not document `args` takes none, and
-passing them fails with `INVALID_ARGS`.
+Args and filters do different jobs: `args` tell the source what to produce (changes to this one
+file), and filters choose among what it produced (say, only changes that leave the file non-empty,
+with `{ "input.size_bytes": { "$gt": 0 } }`). The engine validates `args` against the source's
+schema (`INVALID_ARGS` when they do not fit). A function that does not document `args` takes none,
+and passing them fails with `INVALID_ARGS`.
 
 ## Filters
 
