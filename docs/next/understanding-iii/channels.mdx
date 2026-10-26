@@ -70,7 +70,18 @@ The engine keeps a bounded buffer for each channel. The default size is 64 messa
 is 1024. The SDK helper that creates a channel takes an optional buffer size. When the buffer is
 full, the engine stops reading from the writer. The writer then waits until the reader takes data.
 
-When the writer closes, the reader receives the stream end.
+When the writer closes, the reader receives the stream end. So a writer that fails must not close.
+When a connected writer stops without closing, the reader gets the data already sent and then an
+error. A crash or a lost connection has this effect automatically. To abort a writer on purpose
+after its own error, in Node call `writer.stream.destroy()` with no argument, and in Rust drop the
+writer without calling `close()`. In Go, a `Close` after a failed `Write` also aborts. Go, Python
+and browser writers have no other abort call. In any SDK, a writer that stays open keeps the reader
+waiting until the socket of the writer goes away, at the latest when its process or page exits.
+
+A writer whose socket never opened did not reach the engine, so the reader gets no error. This
+occurs when a writer fails before its first write, or in Node right after a write while its socket
+still connects. For this reason, also check the result of the producer. When a worker disconnects,
+its channel connections close with it.
 
 ### Channel ownership
 
@@ -80,7 +91,8 @@ A channel belongs to the worker that called `engine::channels::create` (for exam
 
 - Ends that no worker has attached yet are dropped. A later attempt to attach with that ref fails
   with HTTP `404`.
-- A reader already waiting on the channel receives the end of the stream.
+- A reader already waiting for a writer that never attached gets an error, not the end of the
+  stream.
 - Streams with both ends already attached keep running until they complete.
 
 If a worker creates a channel and hands a `writerRef` or `readerRef` to another worker, the creating
