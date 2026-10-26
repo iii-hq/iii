@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,7 +26,10 @@ import (
 // the same socket and are told apart purely by WebSocket opcode. A TEXT frame is a
 // message (SendMessage / OnMessage); a BINARY frame is stream data (Write / ReadAll).
 // There is no envelope. End-of-stream is a Close frame propagated writer -> engine ->
-// reader (the engine ignores the close code/reason; only the opcode matters).
+// reader. A writer close with code 1000 (or no code) is a completed stream, which the
+// reader sees as a close with no code (1005). A writer socket that ends any other way
+// (another code, or no close frame) is an abort: the engine closes the reader with 1011
+// and a reason, and the reader returns that as an error.
 
 // channelFrameSize is the max bytes per binary frame. Matches FRAME_SIZE (64 KiB) in
 // the Node/Rust SDKs; the engine reassembles by concatenation so the boundary is not
@@ -103,6 +107,8 @@ type ChannelWriter struct {
 
 	mu   sync.Mutex
 	conn *websocket.Conn
+
+	failed atomic.Bool // a send failed, so Close must not report the stream complete
 }
 
 // OpenWriter returns a writer for the write end described by ref, against the given
@@ -151,7 +157,11 @@ func (w *ChannelWriter) SendMessage(ctx context.Context, msg string) error {
 	if err != nil {
 		return err
 	}
-	return conn.Write(ctx, websocket.MessageText, []byte(msg))
+	if err := conn.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+		w.failed.Store(true)
+		return err
+	}
+	return nil
 }
 
 // Write streams bytes as BINARY frames, chunked at channelFrameSize. It implements the
@@ -167,6 +177,7 @@ func (w *ChannelWriter) Write(ctx context.Context, data []byte) error {
 			n = channelFrameSize
 		}
 		if err := conn.Write(ctx, websocket.MessageBinary, data[:n]); err != nil {
+			w.failed.Store(true)
 			return err
 		}
 		data = data[n:]
@@ -175,8 +186,10 @@ func (w *ChannelWriter) Write(ctx context.Context, data []byte) error {
 }
 
 // Close finishes the stream: it pauses briefly so buffered frames flush, then closes the
-// socket. The engine treats the close as end-of-stream and propagates it to the reader.
-// Close is idempotent.
+// socket with code 1000, which the engine treats as a completed stream (the reader sees
+// EOF). After a failed Write or SendMessage the stream is incomplete, so Close ends the
+// socket without a close frame instead: the engine reads that as an abort and the reader
+// gets an error, as it does when the process exits before Close. Close is idempotent.
 func (w *ChannelWriter) Close() error {
 	w.mu.Lock()
 	conn := w.conn
@@ -185,16 +198,17 @@ func (w *ChannelWriter) Close() error {
 	if conn == nil {
 		return nil
 	}
-	time.Sleep(channelFlushDelay)
-	// The close code/reason are ignored by the engine; the opcode is what signals
-	// completion. Close sends the close frame and waits for the peer's reply; bound that
-	// wait so a slow or absent peer can't hang the caller, falling back to an abrupt
-	// close. Either way the close frame reaches the engine, which is the end-of-stream
-	// signal.
-	if err := conn.Close(websocket.StatusNormalClosure, "stream_complete"); err != nil {
+	if w.failed.Load() {
 		return conn.CloseNow()
 	}
-	return nil
+	time.Sleep(channelFlushDelay)
+	// Code 1000 is what tells the engine the stream completed. The engine decides on receipt
+	// of the frame, so an error from the reply wait after it went out is still a clean end.
+	// shortcut: coder/websocket writes the close frame with a fixed 5 s timeout, so if the
+	// engine does not read this socket for that long (a slow or late reader on a
+	// backpressured stream) the frame is lost, the engine reads an abort and Close still
+	// returns nil; upgrade when coder/websocket lets the caller bound the close write.
+	return conn.Close(websocket.StatusNormalClosure, "stream_complete")
 }
 
 // ChannelReader is the read end of a channel: a WebSocket opened lazily on first use.
@@ -209,6 +223,8 @@ type ChannelReader struct {
 	conn       *websocket.Conn
 	onMessage  []func(string)
 	textBuffer []string // text frames seen while waiting on NextBinary, drained to callbacks
+
+	closed atomic.Bool // set by Close: reads end as end of stream and do not redial
 }
 
 // OpenReader returns a reader for the read end described by ref, against the given engine
@@ -250,6 +266,9 @@ func (r *ChannelReader) ensureConnected(ctx context.Context) (*websocket.Conn, e
 	if r.conn != nil {
 		return r.conn, nil
 	}
+	if r.closed.Load() {
+		return nil, nil
+	}
 	conn, _, err := websocket.Dial(ctx, r.url, &websocket.DialOptions{HTTPHeader: r.headers})
 	if err != nil {
 		return nil, fmt.Errorf("iii: dialing channel reader: %w", err)
@@ -260,18 +279,27 @@ func (r *ChannelReader) ensureConnected(ctx context.Context) (*websocket.Conn, e
 }
 
 // NextBinary returns the next binary stream chunk. ok is false at end of stream (the
-// writer closed). Text frames encountered while waiting are dispatched to OnMessage
-// callbacks and skipped, so a reader can interleave messages and stream data.
+// writer closed cleanly, or this reader was closed). If the writer aborted or the
+// connection dropped, err is non-nil; a close carries its code and reason
+// (websocket.CloseStatus, errors.As with websocket.CloseError). Text frames encountered
+// while waiting are dispatched to OnMessage callbacks and skipped, so a reader can
+// interleave messages and stream data.
 func (r *ChannelReader) NextBinary(ctx context.Context) (data []byte, ok bool, err error) {
 	conn, err := r.ensureConnected(ctx)
-	if err != nil {
-		return nil, false, err
+	if conn == nil {
+		return nil, false, err // a nil err here means the reader was closed: end of stream
 	}
 	for {
 		typ, frame, readErr := conn.Read(ctx)
 		if readErr != nil {
-			// A normal closure (or any close) is end-of-stream, not an error.
-			if websocket.CloseStatus(readErr) != -1 {
+			// A read cut short by the caller's own Close is end of stream, not an error.
+			if r.closed.Load() {
+				return nil, false, nil
+			}
+			// Only 1000 or a close with no code (1005, the engine's clean end) is end of
+			// stream; any other code (1011 for an aborted writer) is an error.
+			switch websocket.CloseStatus(readErr) {
+			case websocket.StatusNormalClosure, websocket.StatusNoStatusRcvd:
 				return nil, false, nil
 			}
 			return nil, false, readErr
@@ -298,7 +326,8 @@ func (r *ChannelReader) dispatchText(msg string) {
 }
 
 // ReadAll consumes the channel until the writer closes, concatenating all binary chunks.
-// Text messages seen along the way are dispatched to OnMessage callbacks.
+// Text messages seen along the way are dispatched to OnMessage callbacks. On an error (an
+// aborted writer included) it returns the bytes read so far with the error.
 func (r *ChannelReader) ReadAll(ctx context.Context) ([]byte, error) {
 	var out []byte
 	for {
@@ -313,9 +342,11 @@ func (r *ChannelReader) ReadAll(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// Close closes the reader socket. It is idempotent and safe to call after ReadAll.
+// Close closes the reader socket. A read it cuts short, and any read after it, ends as end
+// of stream, not an error. It is idempotent and safe to call after ReadAll.
 func (r *ChannelReader) Close() error {
 	r.mu.Lock()
+	r.closed.Store(true)
 	conn := r.conn
 	r.conn = nil
 	r.mu.Unlock()

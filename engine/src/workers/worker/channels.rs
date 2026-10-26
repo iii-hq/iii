@@ -18,6 +18,10 @@ use crate::protocol::{ChannelDirection, StreamChannelRef};
 pub enum ChannelItem {
     Text(String),
     Binary(Bytes),
+    /// The stream was cut: the writer ended without a clean close, or the
+    /// owner left before the writer attached. The reader gets this reason
+    /// in a 1011 close after the data queued before it.
+    Abort(String),
 }
 
 #[allow(dead_code)]
@@ -31,6 +35,8 @@ pub struct StreamChannel {
 }
 
 const CHANNEL_TTL: Duration = Duration::from_secs(5 * 60);
+
+const OWNER_GONE: &str = "channel owner disconnected before the writer attached";
 
 #[derive(Default)]
 pub struct ChannelManager {
@@ -105,8 +111,10 @@ impl ChannelManager {
         self.channels.remove(id);
     }
 
-    /// Removes all channels owned by the given worker.
-    pub fn remove_channels_by_worker(&self, worker_id: &Uuid) {
+    /// Removes all channels owned by the given worker. A writer end that never
+    /// attached is aborted, not ended: the owner may have been that writer.
+    /// (`remove_channel` and the TTL sweep end it cleanly, as callers expect.)
+    pub async fn remove_channels_by_worker(&self, worker_id: &Uuid) {
         let channel_ids: Vec<String> = self
             .channels
             .iter()
@@ -123,7 +131,12 @@ impl ChannelManager {
         }
 
         for id in channel_ids {
-            self.channels.remove(&id);
+            if let Some((_, channel)) = self.channels.remove(&id)
+                && let Some(tx) = channel.tx.lock().await.take()
+            {
+                // Nothing was ever sent on it, so the buffer has room.
+                let _ = tx.try_send(ChannelItem::Abort(OWNER_GONE.to_string()));
+            }
         }
     }
 
@@ -321,8 +334,8 @@ mod tests {
         assert!(receiver.is_none());
     }
 
-    #[test]
-    fn test_remove_channels_by_worker() {
+    #[tokio::test]
+    async fn test_remove_channels_by_worker() {
         let mgr = ChannelManager::new();
         let worker_a = Uuid::new_v4();
         let worker_b = Uuid::new_v4();
@@ -334,7 +347,7 @@ mod tests {
 
         assert_eq!(mgr.channels.len(), 4);
 
-        mgr.remove_channels_by_worker(&worker_a);
+        mgr.remove_channels_by_worker(&worker_a).await;
 
         // Only the two channels owned by worker_a should be removed.
         assert_eq!(mgr.channels.len(), 2);
@@ -349,17 +362,64 @@ mod tests {
         assert!(remaining_owners.contains(&None));
     }
 
-    #[test]
-    fn test_remove_channels_by_worker_no_matches() {
+    #[tokio::test]
+    async fn test_remove_channels_by_worker_no_matches() {
         let mgr = ChannelManager::new();
         mgr.create_channel(8, None);
         mgr.create_channel(8, None);
 
         let random_worker = Uuid::new_v4();
-        mgr.remove_channels_by_worker(&random_worker);
+        mgr.remove_channels_by_worker(&random_worker).await;
 
         // Nothing should be removed.
         assert_eq!(mgr.channels.len(), 2);
+    }
+
+    // The owner may have been the writer that never connected: a waiting
+    // reader must see an abort, not an empty stream that ended cleanly.
+    #[tokio::test]
+    async fn test_remove_channels_by_worker_aborts_an_unattached_writer() {
+        let mgr = ChannelManager::new();
+        let owner = Uuid::new_v4();
+        let (_, reader_ref) = mgr.create_channel(8, Some(owner));
+        let mut receiver = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+
+        mgr.remove_channels_by_worker(&owner).await;
+
+        assert!(
+            matches!(receiver.recv().await, Some(ChannelItem::Abort(reason)) if reason == OWNER_GONE)
+        );
+        assert!(receiver.recv().await.is_none());
+    }
+
+    // Deployed workers rely on these ending a never-attached writer as a
+    // plain end of stream (empty bodies, writers with nothing to send).
+    #[tokio::test]
+    async fn test_remove_channel_and_sweep_end_an_unattached_writer_cleanly() {
+        let mgr = ChannelManager::new();
+        let (_, reader_ref) = mgr.create_channel(8, None);
+        let mut receiver = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+        mgr.remove_channel(&reader_ref.channel_id);
+        assert!(receiver.recv().await.is_none());
+
+        let (tx, mut receiver) = mpsc::channel(1);
+        let channel = Arc::new(StreamChannel {
+            id: "stale-channel".to_string(),
+            access_key: "stale-key".to_string(),
+            tx: tokio::sync::Mutex::new(Some(tx)),
+            rx: tokio::sync::Mutex::new(None),
+            owner_worker_id: Some(Uuid::new_v4()),
+            created_at: Instant::now() - CHANNEL_TTL - Duration::from_secs(1),
+        });
+        mgr.channels.insert(channel.id.clone(), channel);
+        assert_eq!(mgr.sweep_stale_channels().await, 1);
+        assert!(receiver.recv().await.is_none());
     }
 
     #[tokio::test]

@@ -160,6 +160,7 @@ export class ChannelWriter {
 export class ChannelReader {
   private ws: WebSocket | null = null
   private connected = false
+  private closedByCaller = false
   private readonly messageCallbacks: Array<(msg: string) => void> = []
   private readonly binaryCallbacks: Array<(data: Uint8Array) => void> = []
   private readonly url: string
@@ -209,12 +210,17 @@ export class ChannelReader {
     this.ensureConnected()
   }
 
-  /** Read all binary data from the channel until it closes. */
+  /**
+   * Read all binary data from the channel until it closes.
+   *
+   * Rejects with an `Error` carrying the close `code` and `reason` when the
+   * channel ends abnormally (the writer aborted or the connection was lost).
+   */
   async readAll(): Promise<Uint8Array> {
     this.ensureConnected()
     const chunks: Uint8Array[] = []
 
-    return new Promise<Uint8Array>((resolve) => {
+    return new Promise<Uint8Array>((resolve, reject) => {
       const onData = (data: Uint8Array) => {
         chunks.push(data)
       }
@@ -222,7 +228,18 @@ export class ChannelReader {
 
       const originalWs = this.ws
       if (originalWs) {
-        originalWs.addEventListener('close', () => {
+        originalWs.addEventListener('close', (event: CloseEvent) => {
+          // 1000 or no status (1005, the engine's plain Close) is end of stream; our own close is never an error
+          if (!this.closedByCaller && event.code !== 1000 && event.code !== 1005) {
+            const detail = event.reason ? `: ${event.reason}` : ''
+            reject(
+              Object.assign(new Error(`Channel closed abnormally with code ${event.code}${detail}`), {
+                code: event.code,
+                reason: event.reason,
+              }),
+            )
+            return
+          }
           const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
           const result = new Uint8Array(totalLength)
           let offset = 0
@@ -239,6 +256,8 @@ export class ChannelReader {
   /** Close the channel reader. */
   close(): void {
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      // only an open socket is ours to close; a flag set with none would mask a later read's abort
+      this.closedByCaller = true
       this.ws.close(1000, 'channel_close')
     }
   }

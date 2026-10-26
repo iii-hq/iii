@@ -64,6 +64,31 @@ When `engine::workers::register` arrives, the engine registers the worker, sets 
 namespace, and processes the held messages in arrival order. If the registration timeout expires
 first, the engine sets the connection namespace to `default`. See [Namespaces](#namespaces).
 
+### Channel sockets
+
+Each end of a channel from `engine::channels::create` opens its own WebSocket on the worker
+listener: `/ws/channels/{channel_id}?key={access_key}&dir=read` for the reader, `dir=write` for the
+writer. The engine forwards the writer's text and binary frames to the reader in order.
+
+- **Clean end.** The writer sends a close frame with no status code or with code `1000`. The engine
+  classifies the end when that frame arrives, so a writer that drops the socket right after sending
+  it still ends cleanly. The reader gets the queued data, then a close frame with no status code
+  (clients see `1005`).
+- **Abort.** Anything else on an attached writer socket: a close frame with any other code (`1001`,
+  `1011`, `4000`, and so on), or a connection that ends without a close frame (TCP reset, receive
+  error). A browser client can only send `1000` or `3000`-`4999`, so one that aborts on purpose must
+  use a code from that upper range; a page that closes mid write sends `1001`, which is also an
+  abort. The reader gets the data queued before the abort, then a close frame with code `1011` and a
+  short reason, such as `channel writer aborted: connection lost before close`. A reader waiting on
+  a channel whose owner disconnected before any writer attached gets the same `1011` close.
+- **Reader end.** When the reader closes or disconnects, the engine removes the channel and closes
+  or drops an attached writer's socket.
+
+A reader treats a close with code `1000` or no status code as the end of the stream, and any other
+close, or a connection that ends without a close frame, as an error. A reader that closed its own
+socket treats the end that follows as normal. After the engine sends a close frame to a reader, it
+waits up to 1 s for the close reply before it drops the socket.
+
 ## Feature negotiation
 
 Observers and local dispatch (0.25) are negotiated per connection, so a 0.24 SDK keeps working

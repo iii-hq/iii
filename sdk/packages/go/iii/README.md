@@ -454,7 +454,11 @@ all, _ := reader.ReadAll(ctx)        // binary stream, until the writer closes
 
 On a channel socket, **a text frame is a message** (`SendMessage` / `OnMessage`) and **a
 binary frame is stream data** (`Write` / `ReadAll`), told apart by WebSocket opcode,
-no envelope. The writer ends the stream with `Close`; the reader sees that as EOF.
+no envelope. The writer ends the stream with `Close`; the reader sees that as EOF. If a
+`Write` or `SendMessage` failed, `Close` ends the socket without the clean close instead,
+and so does a process that exits before `Close`: the engine aborts the channel and
+`NextBinary` / `ReadAll` return an error (with the bytes read so far) instead of EOF. A
+reader's own `Close` ends its reads as EOF.
 
 ## Observability
 
