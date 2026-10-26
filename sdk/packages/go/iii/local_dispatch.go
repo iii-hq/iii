@@ -85,7 +85,8 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 	// connection's: the caller's cancellation and values do not reach it.
 	// The handler gets its own copy of the metadata: what it does with it cannot
 	// change the report (made from inv.metadata, the snapshot taken at call start).
-	hctx := withInvocation(withMetadata(c.lifeCtx, bytes.Clone(inv.metadata)), inv)
+	// The caller's trace context does reach it (otel.go), so its span joins the trace.
+	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), bytes.Clone(inv.metadata)), inv)
 
 	run := func() localOutcome {
 		started := time.Now()
