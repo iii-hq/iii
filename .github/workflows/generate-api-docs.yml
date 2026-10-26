@@ -2,7 +2,8 @@ name: Generate API Docs
 
 # Regenerates the auto-generated SDK API reference under
 # docs/next/reference/ from the SDK sources (TypeDoc for Node/Browser/
-# Helpers, griffe for Python, nightly rustdoc JSON for Rust). These pages are a
+# Helpers, griffe for Python, nightly rustdoc JSON for Rust, go/doc JSON for
+# Go via docs/next/scripts/godoc-json). These pages are a
 # second, source-derived set that sits alongside the hand-authored
 # reference pages (e.g. docs/next/reference/engine-protocol); do not edit the
 # generated files by hand.
@@ -20,6 +21,7 @@ on:
       - 'sdk/packages/python/helpers/src/**'
       - 'sdk/packages/rust/iii/src/**'
       - 'sdk/packages/rust/helpers/src/**'
+      - 'sdk/packages/go/iii/**'
       - 'docs/next/scripts/**'
       - 'sdk/packages/node/iii/typedoc.json'
       - 'sdk/packages/node/iii-browser/typedoc.json'
@@ -59,6 +61,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: dtolnay/rust-toolchain@nightly
 
+      # ── Go ──
+      # The extractor is stdlib-only (no go.sum), so there is nothing to cache.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
       # Step 1: Extract TypeDoc JSON (Node SDK, Browser SDK, Helpers)
       # iii-sdk imports @iii-dev/helpers by subpath; typedoc resolves those
       # types from the helpers dist, so it must be built first (same as ci.yml).
@@ -93,11 +102,17 @@ jobs:
         run: cargo +nightly rustdoc -p iii-helpers --all-features -- -Z unstable-options --output-format json
         continue-on-error: true
 
-      # Step 4: Generate MDX from the extracted JSON
+      # Step 4: Extract Go docs (go/doc JSON) for package iii and its
+      # subpackages (iii/filter, iii/helpers/..., iii/observability)
+      - name: Extract Go SDK docs
+        working-directory: docs/next/scripts/godoc-json
+        run: go run . -root "$GITHUB_WORKSPACE/sdk/packages/go/iii" -out "$GITHUB_WORKSPACE/sdk/packages/go/iii/api-docs.json"
+
+      # Step 5: Generate MDX from the extracted JSON
       - name: Generate MDX files
         run: pnpm tsx docs/next/scripts/generate-api-docs.mts
 
-      # Step 5: Commit if changed (skip ci so the push-back doesn't loop)
+      # Step 6: Commit if changed (skip ci so the push-back doesn't loop)
       - name: Commit generated docs
         run: |
           git config user.name "github-actions[bot]"
