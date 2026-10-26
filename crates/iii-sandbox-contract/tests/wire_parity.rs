@@ -352,7 +352,7 @@ fn router_info_unbound_json() {
 #[test]
 fn adapter_info_json() {
     let v = json!({
-        "adapter": "sandbox-builtin",
+        "adapter": "sandbox-libkrun",
         "adapter_version": "1.0.0",
         "contract": {"major": 1, "minor": 0}
     });

@@ -2,16 +2,16 @@
   "ContractVersion": { "major": 1, "minor": 1 },
   "AdapterInfoRequest": {},
   "AdapterInfo": {
-    "adapter": "sandbox-builtin",
+    "adapter": "sandbox-libkrun",
     "adapter_version": "1.0.0",
     "contract": { "major": 1, "minor": 1 }
   },
   "RouterInfo": {
-    "adapter": "sandbox-builtin",
-    "namespace": "sandbox-builtin",
+    "adapter": "sandbox-libkrun",
+    "namespace": "sandbox-libkrun",
     "contract": { "major": 1, "minor": 1 },
     "info": {
-      "adapter": "sandbox-builtin",
+      "adapter": "sandbox-libkrun",
       "adapter_version": "1.0.0",
       "contract": { "major": 1, "minor": 1 }
     }

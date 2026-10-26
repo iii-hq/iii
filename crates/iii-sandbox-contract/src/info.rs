@@ -30,7 +30,7 @@ pub struct AdapterInfoRequest {}
 /// Reply of `<adapter>::adapter::info`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AdapterInfo {
-    /// The adapter's name, e.g. `"sandbox-builtin"`.
+    /// The adapter's name, e.g. `"sandbox-libkrun"`.
     pub adapter: String,
     pub adapter_version: String,
     /// The contract version the adapter implements.
