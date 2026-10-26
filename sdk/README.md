@@ -96,6 +96,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
@@ -130,7 +131,14 @@ func main() {
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	defer client.Shutdown(context.Background())
+	defer func() {
+		// Graceful stop: buffered reports and telemetry get up to five seconds.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Shutdown(ctx); err != nil {
+			log.Printf("shutdown cut short: %v", err)
+		}
+	}()
 }
 ```
 
