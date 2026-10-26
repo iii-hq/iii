@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -350,5 +351,104 @@ func TestConnectionReconnects(t *testing.T) {
 	defer mu.Unlock()
 	if connected < 1 {
 		t.Errorf("OnConnected ran %d times", connected)
+	}
+}
+
+// engineRefusal is the text frame the engine's /otel handler sends before closing a
+// connection it refuses (Engine::handle_otel, RBAC rejection).
+const engineRefusal = `{"type":"error","error":{"code":"FORBIDDEN","message":"telemetry refused for this worker"}}`
+
+// captureLogs records the connection's log lines for the test.
+func captureLogs(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var lines []string
+	old := logf
+	logf = func(format string, args ...any) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	t.Cleanup(func() { logf = old })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), lines...)
+	}
+}
+
+// Review round 3, finding D: a text frame from the peer is logged and discarded, and does
+// not stall Shutdown. coder/websocket's CloseRead answered it with a Close that waited up
+// to 15s for its own goroutine.
+func TestConnectionUnexpectedTextFrame(t *testing.T) {
+	logs := captureLogs(t)
+	sent := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.Write(context.Background(), websocket.MessageText, []byte(engineRefusal))
+		sent <- struct{}{}
+		// Keep reading, so the close handshake is answered.
+		for {
+			if _, _, err := conn.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := NewConnection("ws"+strings.TrimPrefix(srv.URL, "http")+"/otel", nil, fastReconnect(-1))
+	<-sent
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(strings.Join(logs(), "\n"), "telemetry refused for this worker") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the engine's text frame was not logged: %q", logs())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if c.State() != StateConnected {
+		t.Errorf("state %v after a text frame, want connected", c.State())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := c.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Shutdown took %v after a text frame from the peer", d)
+	}
+}
+
+// Finding D: Shutdown is bounded by its ctx even when the peer never answers the close
+// handshake (it does not read): cancelling lifeCtx ends it, where CloseNow waited.
+func TestConnectionShutdownBoundedByContext(t *testing.T) {
+	silence(t)
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		_ = conn.Write(context.Background(), websocket.MessageText, []byte(engineRefusal))
+		<-stop // never reads: the close handshake is never answered
+		_ = conn.CloseNow()
+	}))
+	defer srv.Close()
+	defer close(stop)
+
+	c := NewConnection("ws"+strings.TrimPrefix(srv.URL, "http"), nil, fastReconnect(-1))
+	waitState(t, c, StateConnected)
+	time.Sleep(20 * time.Millisecond) // let the text frame arrive
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_ = c.Shutdown(ctx)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Shutdown with a 300ms ctx took %v", d)
 	}
 }
