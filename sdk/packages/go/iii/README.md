@@ -31,8 +31,9 @@ import (
 
 func main() {
 	// registerWorker-style entry point, matching the Node/Rust SDKs: creates the client
-	// and starts connecting in the background.
-	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://localhost:49134
+	// and starts connecting in the background. An empty address means III_URL when it
+	// is set, else iii.DefaultEngineURL (ws://127.0.0.1:49134).
+	client := iii.RegisterWorker("")
 
 	// Exposed over HTTP, so the handler speaks the engine's HTTP envelope: the request
 	// body is under "body", and the response is { status_code, body }.
@@ -85,9 +86,14 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | --- | --- | --- |
 | Register worker | `iii.RegisterWorker(url, opts...) *Client` | Create a client and start connecting in the background (the `registerWorker` entry point). |
 | Create | `iii.New(url, opts...) *Client` | Build a client without connecting (call `Connect` yourself). |
+| Engine address | `iii.EngineURLFromEnv() string` | `III_URL`, trimmed, else `DefaultEngineURL` (`ws://127.0.0.1:49134`). `New("")` and `RegisterWorker("")` use it. |
 | Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
+| Wait for registration | `client.WaitUntilRegistered(ctx) error` | Block until the engine acknowledged the worker on the current connection. |
+| Connection state | `client.OnConnectionStateChange(listener) (unsubscribe func())` | Follow `connecting`, `connected`, `reconnecting`, `disconnected` and `failed`, in order. |
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
+| Register HTTP function | `client.RegisterHTTPFunction(id, iii.HTTPInvocationRef{...}, opts...) error` | Register a function hosted elsewhere that the engine invokes over HTTP. |
+| Unregister | `client.UnregisterFunction(id) error` | Remove a function; reconnects no longer register it. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
 | Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)` | Invoke `target` on every matching invocation (or owner event) of a function. |
 | Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
@@ -95,14 +101,30 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | Observed? | `client.IsObserved(id)`, `client.Observers(id)` | The active observers of a function this worker registered. |
 | Register trigger (deprecated) | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. Use `Observe`. |
 | Register trigger type (deprecated) | `client.RegisterTriggerType(id, description, handler, opts...) error` | Implement a custom trigger type. Use `ObserveHooks`. |
+| Unregister trigger, trigger type | `client.UnregisterTrigger(id) error`, `client.UnregisterTriggerType(id) error` (deprecated) | Remove a trigger or a trigger type; reconnects no longer register it. |
 | Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
 | Invoke (enqueue) | `client.Trigger(ctx, TriggerRequest{Action: iii.EnqueueAction("queue")})` | Route the invocation through a named queue. |
 | Create channel | `client.CreateChannel(ctx, bufferSize)` | Open a streaming data channel (writer + reader ends). |
+| Open channel end | `client.OpenReader(ref)`, `client.OpenWriter(ref)` | Open the end of a channel received in a payload, with the client's address and headers. |
 | Close | `client.Close() error` | Stop reconnecting, cancel pending calls, close the socket. |
 
 `Register*` may be called before or after `Connect`; registrations are kept in memory and
-(re)sent to the engine on every (re)connection.
+(re)sent to the engine on every (re)connection, until the matching `Unregister*` call.
+
+### Options
+
+Pass options to `New` or `RegisterWorker`:
+
+| Option | Effect |
+| --- | --- |
+| `iii.WithName(name)` | Worker name reported to the engine (default `hostname:pid`; a non-empty `III_WORKER_NAME` wins). |
+| `iii.WithNamespace(namespace)` | Namespace the worker registers into (else `III_NAMESPACE`, else the engine default). |
+| `iii.WithDescription(text)` | One-line summary shown by `engine::workers::list` / `engine::workers::info`. |
+| `iii.WithHeaders(h)` | Headers for the WebSocket handshake of the main connection and of channels. |
+| `iii.WithReconnectConfig(cfg)` | Reconnect schedule (see [Connection behavior](#connection-behavior)). |
+| `iii.WithInvocationTimeout(d)` | How long `Trigger` waits when `TriggerRequest.Timeout` is zero (default `iii.DefaultInvocationTimeout`, 30s). |
+| `iii.WithTelemetry(iii.TelemetryOptions{...})` | Language, project name and framework reported in the worker metadata. |
 
 ### Registering functions
 
@@ -134,7 +156,10 @@ client.RegisterFunction("orders::create", func(ctx context.Context, data json.Ra
 })
 ```
 
-Attach metadata to the function registration with the optional options struct:
+Describe the function, advertise its request and response JSON Schemas, and attach
+registration metadata with the optional options struct. They travel as `description`,
+`request_format`, `response_format` and `metadata`; a format that is not valid JSON is
+refused with an error.
 
 ```go
 ordersHandler := func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -142,7 +167,10 @@ ordersHandler := func(ctx context.Context, data json.RawMessage) (any, error) {
 }
 
 client.RegisterFunction("orders::create", ordersHandler, iii.RegisterFunctionOptions{
-	Metadata: json.RawMessage(`{"owner":"billing-team","priority":"high"}`),
+	Description:    "Creates an order",
+	RequestFormat:  json.RawMessage(`{"type":"object","properties":{"item":{"type":"string"}},"required":["item"]}`),
+	ResponseFormat: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`),
+	Metadata:       json.RawMessage(`{"owner":"billing-team","priority":"high"}`),
 })
 ```
 
@@ -181,9 +209,36 @@ iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::crea
 The handler works with the concrete `CreateOrderRequest` (the SDK unmarshals the payload)
 and returns the typed `OrderResult`. Typed handlers read the per-invocation metadata
 sidecar from `ctx` with `iii.MetadataFromContext`, same as raw handlers. Use
-`RegisterFunction` for schemaless functions or when you want to send a hand-written
-schema. `iii.InferSchema[T]()` returns the schema for a type if you want to inspect or
+`RegisterFunction` for schemaless functions. To send a hand-written schema, set
+`RequestFormat` / `ResponseFormat` in `RegisterFunctionOptions`: with
+`RegisterFunctionTyped` they replace the inferred schema, and `Description` passes
+through. `iii.InferSchema[T]()` returns the schema for a type if you want to inspect or
 reuse it.
+
+### HTTP-invoked functions
+
+A function hosted elsewhere (a Lambda, a Cloudflare Worker, any HTTP endpoint) can be
+registered without a local handler: the engine calls it over HTTP. The method defaults
+to `POST`. The auth constructors name the engine environment variables that hold the
+secrets, never the secrets themselves.
+
+```go
+timeout := uint64(10000)
+err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocationRef{
+	URL:       "https://billing.example.com/charge",
+	TimeoutMs: &timeout,
+	Headers:   map[string]string{"x-team": "billing"},
+	Auth:      iii.BearerAuth("BILLING_TOKEN"), // or iii.HMACAuth("KEY"), iii.APIKeyAuth("x-api-key", "KEY")
+}, iii.RegisterFunctionOptions{Description: "Charges a card"})
+```
+
+### Unregistering
+
+`client.UnregisterFunction(id)`, `client.UnregisterTrigger(id)` and the deprecated
+`client.UnregisterTriggerType(id)` remove a registration: the engine is told when the
+client is connected, and later reconnects no longer replay it. `UnregisterFunction` also
+releases the function's observers. Each returns an error when nothing is registered
+under `id`.
 
 ### Describing custom trigger types
 
@@ -244,6 +299,9 @@ client.Trigger(ctx, iii.TriggerRequest{
 	Action:     iii.EnqueueAction("jobs"),
 })
 ```
+
+An await or enqueue call waits `TriggerRequest.Timeout`, or, when that is zero, the
+client's invocation timeout (`iii.WithInvocationTimeout`, default 30s).
 
 Errors are typed: `errors.Is(err, iii.ErrTimeout)` for a missed deadline,
 `errors.Is(err, iii.ErrNotConnected)` for a call cancelled by shutdown, and
@@ -339,11 +397,35 @@ ship their source functions. See the
 
 ## Connection behavior
 
+- **Engine address**: an explicit address wins, then `III_URL`, then
+  `ws://127.0.0.1:49134`, as in the other SDKs (`iii.EngineURLFromEnv`).
 - **Reconnect** with exponential backoff and jitter (start 1s, ×2, cap 30s, ±30%, retry
   forever). Override with `iii.WithReconnectConfig`.
 - **Offline buffer**: invocations sent while disconnected are buffered and flushed on
   reconnect; registrations are replayed from the in-memory registries.
-- **Worker metadata** is registered last on each connect, tagged `runtime: "go"`.
+- **Worker metadata** is registered last on each connect, tagged `runtime: "go"`, with
+  `isolation` (`III_ISOLATION`, else `null`) and `telemetry`: `language` (from `LANG`),
+  `project_name` (the last element of the module path in the nearest `go.mod`) and
+  `framework` (`iii-go`). Override them with `iii.WithTelemetry`.
+
+Follow the connection, or wait for the engine to accept the worker before calling out:
+
+```go
+client := iii.RegisterWorker("")
+unsubscribe := client.OnConnectionStateChange(func(state iii.ConnectionState) {
+	log.Printf("engine link: %s", state) // current state first, then every change
+})
+defer unsubscribe()
+
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+if err := client.WaitUntilRegistered(ctx); err != nil {
+	log.Fatal(err) // client.FatalError() on a terminal rejection, or ctx.Err()
+}
+```
+
+Listeners run one at a time, in order, on a goroutine of the client's own, so they may
+call the client.
 
 ## Streaming channels
 
@@ -361,7 +443,7 @@ ch.Writer.Close()                    // signals end-of-stream
 
 // hand ch.ReaderRef to a processor function via Trigger; on that side:
 refs, _ := iii.ExtractChannelRefs(data)
-reader := iii.OpenReader(client.Address(), refs["reader"])
+reader := client.OpenReader(refs["reader"]) // client address, WithHeaders and III_TOKEN
 reader.OnMessage(func(m string) { /* text messages */ })
 all, _ := reader.ReadAll(ctx)        // binary stream, until the writer closes
 ```

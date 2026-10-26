@@ -153,6 +153,23 @@ type Client struct {
 	reporter *reporter
 	// hookTimeout overrides observeHookTimeout (tests).
 	hookTimeout time.Duration
+
+	// invocationTimeout is how long Trigger waits when TriggerRequest.Timeout is zero:
+	// WithInvocationTimeout, else DefaultInvocationTimeout.
+	invocationTimeout time.Duration
+	// telemetry is WithTelemetry; blank fields take their defaults on every
+	// engine::workers::register (worker_metadata.go).
+	telemetry TelemetryOptions
+	// started is set once the supervisor runs (Connect or RegisterWorker).
+	started atomic.Bool
+	// registeredSignal is closed, and replaced, each time WorkerRegistered arrives, to
+	// wake WaitUntilRegistered. Guarded by mu.
+	registeredSignal chan struct{}
+	// Connection-state listeners and the state changes queued for them, delivered in
+	// order by one goroutine at a time (lifecycle.go). Guarded by mu.
+	connStateListeners  []*connStateListener
+	connStateEvents     []connStateEvent
+	connStateDelivering bool
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
@@ -181,6 +198,18 @@ type RegisterFunctionOptions struct {
 	// [Client.Trigger]: observers see snapshots of the payload and metadata taken at
 	// call start, and a handler may outlive a caller whose deadline passed).
 	LocalDispatch *bool
+	// Description is a human/LLM-readable summary of the function, sent as
+	// "description" and surfaced by engine::functions::list and
+	// engine::functions::info. Empty omits it.
+	Description string
+	// RequestFormat is the JSON Schema of the function's request, sent as
+	// "request_format". It must be valid JSON; nil omits it. With
+	// [RegisterFunctionTyped] it replaces the schema inferred from Req.
+	RequestFormat json.RawMessage
+	// ResponseFormat is the JSON Schema of the function's response, sent as
+	// "response_format". It must be valid JSON; nil omits it. With
+	// [RegisterFunctionTyped] it replaces the schema inferred from Resp.
+	ResponseFormat json.RawMessage
 }
 
 // RegisterTriggerTypeOptions describes a trigger type's configuration and the
@@ -234,6 +263,18 @@ type Option func(*Client)
 // WithReconnectConfig overrides the default reconnect schedule.
 func WithReconnectConfig(c ReconnectConfig) Option {
 	return func(cl *Client) { cl.reconnect = c }
+}
+
+// WithInvocationTimeout sets how long [Client.Trigger] waits for a result when
+// [TriggerRequest].Timeout is zero, in place of [DefaultInvocationTimeout]. It is the
+// invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less
+// keeps the default.
+func WithInvocationTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.invocationTimeout = d
+		}
+	}
 }
 
 // WithDescription sets a one-line, human/LLM-readable summary of what this
@@ -296,10 +337,14 @@ func WithNamespace(namespace string) Option {
 	}
 }
 
-// New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). It does not
+// New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). An empty url
+// means [EngineURLFromEnv]: III_URL when set, else DefaultEngineURL. It does not
 // connect; call [Client.Connect] to start the connection lifecycle, or use
 // [RegisterWorker] to create and connect in one step.
 func New(url string, opts ...Option) *Client {
+	if url == "" {
+		url = EngineURLFromEnv()
+	}
 	c := &Client{
 		url:          url,
 		reconnect:    DefaultReconnectConfig(),
@@ -319,6 +364,9 @@ func New(url string, opts ...Option) *Client {
 		engineFeatures:      map[string]bool{},
 		observers:           map[string]*ObserverHandle{},
 		hooksInactiveWarned: map[string]bool{},
+
+		invocationTimeout: DefaultInvocationTimeout,
+		registeredSignal:  make(chan struct{}),
 	}
 	c.lifeCtx, c.lifeCancel = context.WithCancel(context.Background())
 	c.reporter = newReporter(c, defaultReporterLimits)
@@ -355,7 +403,8 @@ func New(url string, opts ...Option) *Client {
 }
 
 // RegisterWorker creates a [Client] for the engine at url and starts the connection
-// lifecycle in the background, returning immediately. It is the idiomatic entry point,
+// lifecycle in the background, returning immediately. An empty url means
+// [EngineURLFromEnv], as with [New]. It is the idiomatic entry point,
 // matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register
 // functions and triggers on the returned client; they are (re)sent on each connection.
 // Call [Client.Close] to stop.
@@ -379,7 +428,8 @@ func defaultWorkerName() string {
 }
 
 // Address returns the engine WebSocket base URL this client dials (e.g.
-// "ws://localhost:49134"). Channel readers/writers build their own URLs from it.
+// "ws://127.0.0.1:49134"): the url given to [New] or [RegisterWorker], else
+// [EngineURLFromEnv]. Channel readers/writers build their own URLs from it.
 func (c *Client) Address() string { return c.url }
 
 // State returns the current connection state.
@@ -391,7 +441,7 @@ func (c *Client) State() ConnectionState {
 
 func (c *Client) setState(s ConnectionState) {
 	c.mu.Lock()
-	c.state = s
+	c.setStateLocked(s)
 	c.mu.Unlock()
 }
 
@@ -414,7 +464,40 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 	if err != nil {
 		return err
 	}
-	return c.storeFunction(id, &RegisterFunctionMessage{ID: id, Metadata: cfg.Metadata}, handler, cfg)
+	msg, err := registerFunctionMessage(name, id, cfg)
+	if err != nil {
+		return err
+	}
+	return c.storeFunction(id, msg, handler, cfg)
+}
+
+// registerFunctionMessage builds the registerfunction frame for id from cfg: the
+// description, the request and response formats (each checked for valid JSON and
+// copied) and the metadata, as the Node SDK spreads its RegisterFunctionOptions into
+// the message.
+func registerFunctionMessage(name, id string, cfg RegisterFunctionOptions) (*RegisterFunctionMessage, error) {
+	for _, format := range []struct {
+		field string
+		data  json.RawMessage
+	}{
+		{"RequestFormat", cfg.RequestFormat},
+		{"ResponseFormat", cfg.ResponseFormat},
+	} {
+		if len(format.data) > 0 && !json.Valid(format.data) {
+			return nil, fmt.Errorf("iii: %s(%q): %s must contain valid JSON", name, id, format.field)
+		}
+	}
+	msg := &RegisterFunctionMessage{
+		ID:             id,
+		RequestFormat:  bytes.Clone(cfg.RequestFormat),
+		ResponseFormat: bytes.Clone(cfg.ResponseFormat),
+		Metadata:       cfg.Metadata,
+	}
+	if cfg.Description != "" {
+		description := cfg.Description
+		msg.Description = &description
+	}
+	return msg, nil
 }
 
 // storeFunction validates the observe descriptor, records the function with its
@@ -430,7 +513,8 @@ func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler 
 	if _, err := prepareJSON(msg); err != nil {
 		return err
 	}
-	localDispatch := cfg.LocalDispatch == nil || *cfg.LocalDispatch
+	// A function without a local handler (RegisterHTTPFunction) never runs in-process.
+	localDispatch := handler != nil && (cfg.LocalDispatch == nil || *cfg.LocalDispatch)
 	var hooks *ObserveHooks
 	if cfg.Observe != nil {
 		h := *cfg.Observe
@@ -660,7 +744,8 @@ type TriggerRequest struct {
 	Metadata json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
-	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
+	// Timeout bounds an await/enqueue call. Zero means the client's invocation timeout:
+	// [WithInvocationTimeout], else [DefaultInvocationTimeout].
 	Timeout time.Duration
 	// Namespace routes the invocation to a specific namespace. Empty means this
 	// worker's namespace, except engine::* and configuration::* builtins, which
@@ -782,11 +867,7 @@ func (c *Client) invokeRemote(ctx context.Context, req TriggerRequest, namespace
 	}
 	c.enqueueOutbound(frame)
 
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultInvocationTimeout
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(c.triggerTimeout(req.Timeout))
 	defer timer.Stop()
 
 	select {
@@ -808,6 +889,15 @@ func (c *Client) clearPending(id uuid.UUID) {
 	c.mu.Lock()
 	delete(c.pending, id)
 	c.mu.Unlock()
+}
+
+// triggerTimeout is how long a Trigger call waits: its own Timeout when positive, else
+// the client's invocation timeout (WithInvocationTimeout or DefaultInvocationTimeout).
+func (c *Client) triggerTimeout(requested time.Duration) time.Duration {
+	if requested > 0 {
+		return requested
+	}
+	return c.invocationTimeout
 }
 
 // sendRegistration sends a registration frame if connected, and drops it otherwise:
@@ -855,6 +945,7 @@ func (c *Client) enqueueOutbound(frame []byte) {
 // driving the socket.
 func (c *Client) startSupervisor() {
 	c.superviseOnce.Do(func() {
+		c.started.Store(true)
 		c.reporter.start()
 		// Lets `iii ps` find this worker until Close ends the supervisor.
 		remove := announceProcess(c.url, c.name, "")
@@ -1033,7 +1124,7 @@ func (c *Client) runConnection() error {
 
 	c.mu.Lock()
 	c.conn = conn
-	c.state = StateConnected
+	c.setStateLocked(StateConnected)
 	c.mu.Unlock()
 
 	// Start the single writer for this connection. It drains the shared outbound channel
@@ -1069,7 +1160,7 @@ func (c *Client) runConnection() error {
 	// connection is replayed on the next one.
 	c.registeredOnConnection = false
 	if c.state == StateConnected {
-		c.state = StateDisconnected
+		c.setStateLocked(StateDisconnected)
 	}
 	c.mu.Unlock()
 
@@ -1150,6 +1241,8 @@ func (c *Client) registerWorkerMetadata() {
 		Namespace:   c.namespace,
 		OS:          fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
 		PID:         &pid,
+		Isolation:   isolationFromEnv(),
+		Telemetry:   c.resolveTelemetry(),
 		// Opts this connection into the observe messages (CONTRACT D2).
 		Features: sdkFeatures,
 	}
@@ -1171,19 +1264,21 @@ func (c *Client) registerWorkerMetadata() {
 	}
 }
 
-// workerMetadata is the payload sent to engine::workers::register. v1 reports the
-// essentials and omits the optional telemetry sub-object (deferred with full OTel —
-// open question #3 in iii-hq/iii#1719). Optional fields use omitempty to match the
-// engine's skip_serializing_if discipline.
+// workerMetadata is the payload sent to engine::workers::register, built like the Node
+// SDK's registerWorkerMetadata (sdk/packages/node/iii/src/iii.ts). Optional fields use
+// omitempty to match the engine's skip_serializing_if discipline, except isolation,
+// which Node always sends (null when III_ISOLATION is unset).
 type workerMetadata struct {
-	Runtime     string   `json:"runtime"`
-	Version     string   `json:"version"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Namespace   string   `json:"namespace,omitempty"`
-	OS          string   `json:"os"`
-	PID         *int     `json:"pid,omitempty"`
-	Features    []string `json:"features,omitempty"`
+	Runtime     string          `json:"runtime"`
+	Version     string          `json:"version"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Namespace   string          `json:"namespace,omitempty"`
+	OS          string          `json:"os"`
+	PID         *int            `json:"pid,omitempty"`
+	Isolation   *string         `json:"isolation"`
+	Telemetry   workerTelemetry `json:"telemetry"`
+	Features    []string        `json:"features,omitempty"`
 }
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
@@ -1302,6 +1397,7 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 		// it via Reattach, and the engine's features (observe.v1).
 		if dec.WorkerRegistered != nil {
 			c.onWorkerRegistered(dec.WorkerRegistered)
+			c.signalRegistered()
 		}
 	case MsgFunctionRegistered, MsgObserverAdded, MsgObserverRemoved, MsgObserveResult, MsgObserverStateChanged:
 		// Applied in order on the read loop; observe hooks run on per-function queues.
@@ -1350,7 +1446,7 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 
 	c.mu.Lock()
 	c.fatalErr = err
-	c.state = StateFailed
+	c.setStateLocked(StateFailed)
 	conn := c.conn
 	for id, ch := range c.pending {
 		ch <- invocationOutcome{err: err}
@@ -1374,7 +1470,7 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 func (c *Client) failFatally(err error) {
 	c.mu.Lock()
 	c.fatalErr = err
-	c.state = StateFailed
+	c.setStateLocked(StateFailed)
 	c.mu.Unlock()
 	c.fatalOnce.Do(func() { close(c.fatal) })
 	c.failOnce.Do(func() { close(c.failed) })
@@ -1424,7 +1520,8 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 
 	tc := traceContext{traceparent: msg.Traceparent, baggage: msg.Baggage}
 
-	if !ok {
+	// An HTTP-invoked function (RegisterHTTPFunction) has no handler here.
+	if !ok || fn.handler == nil {
 		c.replyInvocation(msg, nil, &ErrorBody{
 			Code:    "function_not_found",
 			Message: fmt.Sprintf("no handler registered for %q", msg.FunctionID),
@@ -1615,7 +1712,7 @@ func (c *Client) Close() error {
 			delete(c.pending, id)
 		}
 		conn := c.conn
-		c.state = StateDisconnected
+		c.setStateLocked(StateDisconnected)
 		c.mu.Unlock()
 
 		if conn != nil {

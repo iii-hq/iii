@@ -10,7 +10,7 @@
 //
 // Create a worker, register a function, bind a trigger, and connect:
 //
-//	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://localhost:49134
+//	client := iii.RegisterWorker("") // III_URL, else ws://127.0.0.1:49134
 //
 //	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 //		var req struct {
@@ -33,13 +33,36 @@
 //	}
 //	defer client.Close()
 //
+// An empty address means [EngineURLFromEnv]: the III_URL environment variable when it is
+// set, else [DefaultEngineURL]. Options such as [WithName], [WithNamespace],
+// [WithHeaders], [WithInvocationTimeout] and [WithTelemetry] configure the client.
+//
+// # Registering functions
+//
+// [Client.RegisterFunction] registers a handler; [RegisterFunctionOptions] adds a
+// description, request and response JSON Schemas, metadata and observe hooks.
+// [Client.RegisterHTTPFunction] registers a function hosted elsewhere that the engine
+// invokes over HTTP ([HTTPInvocationRef], with [HMACAuth], [BearerAuth] or
+// [APIKeyAuth]). Registrations are replayed on every reconnect until
+// [Client.UnregisterFunction] (or [Client.UnregisterTrigger]) removes them.
+//
+// # Connection lifecycle
+//
+// [Client.OnConnectionStateChange] reports every [ConnectionState] change, in order.
+// [Client.WaitUntilRegistered] blocks until the engine has acknowledged the worker on the
+// current connection, or reports the terminal [Client.FatalError]. On each connection the
+// worker announces itself with engine::workers::register, including its isolation
+// (III_ISOLATION) and [TelemetryOptions].
+//
 // # Invoking functions
 //
 // [Client.Trigger] invokes a function and, by default, awaits its result. The
 // [TriggerRequest] Action field selects the delivery semantics: the default (nil) awaits
 // the result, [VoidAction] is fire-and-forget, and [EnqueueAction] routes through a named
-// queue. Errors are typed: [ErrTimeout] for a missed deadline, [ErrNotConnected] for a
-// call cancelled by shutdown, and [InvocationError] (via errors.As) for a remote failure.
+// queue. A call waits [TriggerRequest].Timeout, or the client's [WithInvocationTimeout]
+// (default [DefaultInvocationTimeout]). Errors are typed: [ErrTimeout] for a missed
+// deadline, [ErrNotConnected] for a call cancelled by shutdown, and [InvocationError]
+// (via errors.As) for a remote failure.
 //
 // # Observing functions
 //
@@ -64,7 +87,8 @@
 // # Channels
 //
 // For bulk or streaming data, [Client.CreateChannel] opens a streaming data channel; see
-// [ChannelWriter] and [ChannelReader].
+// [ChannelWriter] and [ChannelReader]. [Client.OpenReader] and [Client.OpenWriter] open
+// the end of a channel whose [StreamChannelRef] arrived in a payload.
 //
 // The package mirrors the iii Node and Rust SDKs; see the repository README at
 // https://github.com/iii-hq/iii for the engine and the other SDKs.

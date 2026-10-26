@@ -96,17 +96,23 @@ func EnqueueAction(queue string) *TriggerAction {
 	return &TriggerAction{Type: "enqueue", Queue: queue}
 }
 
-// HTTPInvocationRef describes an externally-hosted function the engine can call
-// directly over HTTP (engine/src/protocol.rs:14-31). Workers that only register
-// in-process handlers never set this; it is here for wire completeness so
-// RegisterFunction round-trips byte-for-byte. Auth is left as raw JSON because the
-// engine's HttpAuthConfig is itself a tagged union the v1 SDK has no reason to model.
+// HTTPInvocationRef describes an externally-hosted function the engine calls directly
+// over HTTP (engine/src/protocol.rs:14-31), the Node SDK's HttpInvocationConfig.
+// Register one with [Client.RegisterHTTPFunction]; it travels as the registration's
+// "invocation" field. Auth is raw JSON because the engine's HttpAuthConfig is a tagged
+// union: build it with [HMACAuth], [BearerAuth] or [APIKeyAuth].
 type HTTPInvocationRef struct {
-	URL       string            `json:"url"`
-	Method    string            `json:"method,omitempty"`
-	TimeoutMs *uint64           `json:"timeout_ms,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Auth      json.RawMessage   `json:"auth,omitempty"`
+	// URL is the endpoint the engine calls. Required.
+	URL string `json:"url"`
+	// Method is the HTTP method (GET, POST, PUT, PATCH or DELETE).
+	// RegisterHTTPFunction sends POST when it is empty.
+	Method string `json:"method,omitempty"`
+	// TimeoutMs bounds each request, in milliseconds; nil uses the engine default.
+	TimeoutMs *uint64 `json:"timeout_ms,omitempty"`
+	// Headers are sent with every request.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Auth is how the engine authenticates its requests; nil sends none.
+	Auth json.RawMessage `json:"auth,omitempty"`
 }
 
 // ChannelDirection is the end of a streaming channel a StreamChannelRef refers to.
