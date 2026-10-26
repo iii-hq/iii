@@ -129,11 +129,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 
 	done := make(chan localOutcome, 1)
 	go func() { done <- run() }()
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultInvocationTimeout
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(c.triggerTimeout(req.Timeout))
 	defer timer.Stop()
 	select {
 	case out := <-done:

@@ -14,7 +14,7 @@ import (
 // trigger to it, and connect. The handler speaks the engine's HTTP-trigger envelope (the
 // request body is under "body"; the response is {status_code, body}).
 func Example_helloWorker() {
-	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://localhost:49134
+	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://127.0.0.1:49134
 
 	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
