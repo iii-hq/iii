@@ -133,7 +133,7 @@ type Request[T any] struct {
 	// Method is the HTTP method of the request (for example GET or POST).
 	Method string `json:"method"`
 	// RequestBody is the channel carrying the raw request body; open it with
-	// iii.OpenReader. nil when the invocation carried none.
+	// [iii.Client.OpenReader]. nil when the invocation carried none.
 	RequestBody *iii.StreamChannelRef `json:"request_body,omitempty"`
 }
 
@@ -154,8 +154,8 @@ type Response[T any] struct {
 // InternalRequest is the payload the http worker sends to a function behind an http
 // trigger, Node InternalHttpRequest: the parsed request plus the two channel refs. The
 // Node SDK resolves the refs into a reader and a writer before it calls the handler; in
-// Go they stay refs, opened by [Wrap] or by hand with iii.OpenReader and
-// iii.OpenWriter.
+// Go they stay refs, opened by [Wrap] or by hand with [iii.Client.OpenReader] and
+// [iii.Client.OpenWriter].
 type InternalRequest struct {
 	// PathParams holds the path parameters extracted from the matched route.
 	PathParams map[string]string `json:"path_params"`

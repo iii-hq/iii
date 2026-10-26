@@ -103,7 +103,7 @@ type StreamResponse struct {
 }
 
 // NewStreamResponse returns a StreamResponse writing to writer, the response channel of
-// an http invocation opened with iii.OpenWriter. ctx bounds the channel dial and every
+// an http invocation opened with [iii.Client.OpenWriter]. ctx bounds the channel dial and every
 // write. [Wrap] builds one for each invocation; call NewStreamResponse only when
 // handling an [InternalRequest] by hand. With a nil writer every method returns
 // [ErrMissingChannel].
@@ -235,8 +235,10 @@ func (r *StreamResponse) finish(nilResult bool, failed bool) {
 // [iii.Client.RegisterFunction].
 //
 // For each invocation Wrap decodes the [InternalRequest], opens the request body channel
-// for reading and the response channel for writing against client's engine address,
-// and calls fn with the [StreamRequest] and [StreamResponse]. When fn returns, Wrap
+// for reading and the response channel for writing with [iii.Client.OpenReader] and
+// [iii.Client.OpenWriter] (so the dials use the client's engine address and send its
+// [iii.WithHeaders], plus III_TOKEN), and calls fn with the [StreamRequest] and
+// [StreamResponse]. When fn returns, Wrap
 // closes the request body reader and finishes the response like a net/http handler: a
 // streamed body, or a nil result, ends the response stream (no explicit Close needed); a
 // buffered result or an error without a streamed body leaves the channel untouched so
@@ -266,12 +268,12 @@ func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler {
 			ctx:         ctx,
 		}
 		if in.RequestBody.ChannelID != "" {
-			req.RequestBody = iii.OpenReader(client.Address(), in.RequestBody)
+			req.RequestBody = client.OpenReader(in.RequestBody)
 			defer func() { _ = req.RequestBody.Close() }()
 		}
 		var writer *iii.ChannelWriter
 		if in.Response.ChannelID != "" {
-			writer = iii.OpenWriter(client.Address(), in.Response)
+			writer = client.OpenWriter(in.Response)
 		}
 		res := NewStreamResponse(ctx, writer)
 

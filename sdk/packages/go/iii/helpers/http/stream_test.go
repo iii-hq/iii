@@ -47,18 +47,29 @@ func (s writeSession) body() []byte {
 // http worker streams a request body; a writer (dir=write) is drained and recorded up to
 // its close, the way the http worker reads the response channel.
 type fakeEngine struct {
-	srv    *httptest.Server
-	reads  chan string
-	writes chan writeSession
+	srv        *httptest.Server
+	reads      chan string
+	writes     chan writeSession
+	handshakes chan handshake
+}
+
+// handshake is the direction and request headers of one channel WebSocket upgrade.
+type handshake struct {
+	dir    string
+	header nethttp.Header
 }
 
 func newFakeEngine(t *testing.T, requestChunks ...[]byte) *fakeEngine {
 	t.Helper()
-	f := &fakeEngine{reads: make(chan string, 4), writes: make(chan writeSession, 4)}
+	f := &fakeEngine{reads: make(chan string, 4), writes: make(chan writeSession, 4), handshakes: make(chan handshake, 16)}
 	f.srv = httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/ws/channels/") {
 			nethttp.NotFound(w, r)
 			return
+		}
+		select {
+		case f.handshakes <- handshake{dir: r.URL.Query().Get("dir"), header: r.Header.Clone()}:
+		default:
 		}
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -245,6 +256,50 @@ func TestWrapStreamsRequestAndResponse(t *testing.T) {
 	}
 	if s.closeStatus != websocket.StatusNormalClosure {
 		t.Errorf("close status = %v, want normal closure (end of stream)", s.closeStatus)
+	}
+}
+
+// TestWrapSendsClientHeaders checks Wrap dials both channels through the client, so the
+// headers set with iii.WithHeaders reach the channel WebSocket handshakes, together with
+// the Authorization header III_TOKEN adds.
+func TestWrapSendsClientHeaders(t *testing.T) {
+	t.Setenv("III_TOKEN", "tok-123")
+	f := newFakeEngine(t, []byte("ping"))
+	c := iii.New(f.address(), iii.WithHeaders(nethttp.Header{"X-Tenant": {"acme"}}))
+	t.Cleanup(func() { _ = c.Close() })
+
+	handler := Wrap(c, func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error) {
+		body, err := io.ReadAll(req)
+		if err != nil {
+			return nil, err
+		}
+		_, err = res.Write(body)
+		return nil, err
+	})
+	if _, err := handler(testContext(t), workerPayload(t, true)); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.nextWrite(t); string(s.body()) != "ping" {
+		t.Fatalf("response body = %q, want ping", s.body())
+	}
+
+	seen := map[string]nethttp.Header{}
+	for len(seen) < 2 {
+		select {
+		case h := <-f.handshakes:
+			seen[h.dir] = h.header
+		case <-time.After(2 * time.Second):
+			t.Fatalf("handshakes seen = %v, want read and write", seen)
+		}
+	}
+	for _, dir := range []string{"read", "write"} {
+		h := seen[dir]
+		if got := h.Get("X-Tenant"); got != "acme" {
+			t.Errorf("%s handshake X-Tenant = %q, want acme (WithHeaders)", dir, got)
+		}
+		if got := h.Get("Authorization"); got != "Bearer tok-123" {
+			t.Errorf("%s handshake Authorization = %q, want Bearer tok-123 (III_TOKEN)", dir, got)
+		}
 	}
 }
 
