@@ -11,7 +11,7 @@ faq:
   - q: 'What does each option cost before inference?'
     a: 'OpenCode and iii are free to run; you pay only for inference. Claude Code requires a paid Claude plan (Pro $20/month, Max from $100/month, Team Standard $25/seat/month as of 2026-10-07) or API billing at usage-based token pricing. OpenCode Go is $10/month with metered usage caps.'
   - q: 'Is iii open source?'
-    a: 'The iii engine and CLI use the Elastic License 2.0, which is not OSI-approved. You can use and self-host the engine; the only limitation is that you cannot offer it to others as a hosted or managed service. The SDKs, console, and published workers use Apache 2.0.'
+    a: 'The iii engine and CLI use the Elastic License 2.0, which is not OSI-approved. ELv2 allows you to use, modify, and redistribute the engine and CLI, subject to three limitations: you cannot provide them to third parties as a hosted or managed service where users have access to any substantial set of their features or functionality; move, change, disable, or circumvent license-key functionality or remove functionality protected by a license key; or alter, remove, or obscure licensing, copyright, or other notices. The SDKs, console, and published workers use Apache 2.0.'
   - q: 'Do these tools send my code to their servers?'
     a: 'All three send prompts and code context to whichever provider runs the model. With OpenCode or iii that can be a local model, so no context leaves your machine at inference time. Claude Code sends to Anthropic. iii is self-hosted and sends only anonymous AI Agent Harness usage events with no message content unless III_TELEMETRY_ENABLED is set to false.'
   - q: 'Which tool survives a restart with a pending approval?'
