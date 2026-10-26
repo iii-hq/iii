@@ -7,6 +7,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { slugify } from '../renderers/components.mjs'
 import { renderSdkMdx } from '../renderers/render-mdx.mjs'
 import { parseGodoc, parseHelpersGodoc } from './parse-godoc.mjs'
 
@@ -186,4 +187,27 @@ test('Client method headings carry the receiver and keep the canonical order', (
   const slug = (h: string) => h.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '')
   assert.equal(headings.filter(h => slug(h) === 'trigger').length, 1)
   assert.match(mdx, /\[`Trigger`\]\(#trigger\)/)
+})
+
+test('anchors use the slug Mintlify gives a heading, and every link has exactly one target', () => {
+  // Ids observed on the Mintlify preview: the dot of a qualified heading becomes a hyphen.
+  assert.equal(slugify('Client.RegisterTriggerType'), 'client-registertriggertype')
+  assert.equal(slugify('filter.Compile'), 'filter-compile')
+  assert.equal(slugify('iii/filter'), 'iii-filter')
+  const types = [
+    type('Client', {
+      methods: [func('Trigger', [], ['*Trigger', 'error']), func('ConnectionState', [], ['ConnectionState'])],
+    }),
+    type('Trigger', { methods: [func('Unregister', [], ['error'])] }),
+    type('ConnectionState', { kind: 'named', decl: 'type ConnectionState string' }),
+  ]
+  const mdx = renderSdkMdx(parseGodoc(writeModule([pkg('', { importPath: 'example.com/m', name: 'm', types })])))
+  const prose = mdx.replace(/```[\s\S]*?```/g, '')
+  const slugs = [...prose.matchAll(/^#{1,6} (.+)$/gm)].map(m => slugify(m[1]))
+  const links = [...new Set([...prose.matchAll(/\]\(#([^)]+)\)/g)].map(m => m[1]))]
+  assert.ok(links.includes('trigger') && links.includes('connectionstate'), links.join(' '))
+  for (const link of links) {
+    assert.equal(slugs.filter(s => s === link).length, 1, `#${link}`)
+  }
+  assert.ok(slugs.includes('client-trigger') && slugs.includes('client-connectionstate'))
 })
