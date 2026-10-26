@@ -160,7 +160,7 @@ func (c *Client) RegisterTrigger(input RegisterTriggerInput) (*Trigger, error)
 
 ### Client.RegisterFunction
 
-RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. Calling it again with the same id replaces the registration, and the earlier handle no longer controls it. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, observe hooks or the local dispatch setting.
+RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an empty id is refused ("id is required") and so is an id this client already registered ("function id already registered"): to replace a function, unregister it first. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, observe hooks or the local dispatch setting.
 
 Handlers read the optional per-invocation metadata sidecar from their ctx with `MetadataFromContext`.
 
@@ -395,7 +395,7 @@ func (c *Client) Address() string
 
 Close shuts the client down at once: it stops the reconnect loop, gives buffered observe reports and telemetry a short, fixed time to go out (250ms for the reports, at most 10s for the telemetry flush), cancels all pending Trigger calls with ErrNotConnected, and drops the socket without a closing handshake. It does not send unregister frames (matching the reference SDKs). Use `Client.Shutdown` to wait for the flushes under a deadline of your own and close the socket gracefully.
 
-Close is idempotent and implements io.Closer; it always returns nil. Called while a Shutdown runs, it waits for that Shutdown to finish.
+Close is idempotent and implements io.Closer; it always returns nil. Called while a Shutdown runs, it cuts that Shutdown short (as http.Server.Close does) and returns once it has finished.
 
 **Signature**
 
@@ -704,7 +704,7 @@ func (c *Client) OpenWriter(ref StreamChannelRef) *ChannelWriter
 
 RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata or observe hooks; LocalDispatch does not apply, since there is nothing to run in-process.
 
-Like every registration it is kept in memory and sent again on each reconnect; registering the same id again replaces it, and `FunctionRef.Unregister` on the returned handle removes it.
+Like every registration it is kept in memory and sent again on each reconnect. An empty id, or one this client already registered, is refused as in `Client.RegisterFunction`; `FunctionRef.Unregister` on the returned handle removes it.
 
 **Signature**
 
@@ -808,7 +808,7 @@ func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespac
 
 Shutdown shuts the client down gracefully, as the Node SDK's shutdown does, bounded by ctx like http.Server.Shutdown: it stops the reconnect loop, waits until the buffered observe reports and counters are written, stops the worker gauges, flushes and stops the telemetry exporters, cancels all pending Trigger calls with ErrNotConnected, and closes the socket with a normal-closure handshake.
 
-When ctx is done before those steps finish, the remaining work is cut short (the socket is dropped as `Client.Close` drops it) and ctx.Err() is returned; the client is shut down either way and nil means everything was delivered. Like Close it does not send unregister frames. Shutdown is idempotent: a later call, or a Close, returns once the first shutdown has finished (Shutdown returns ctx.Err() if ctx ends first).
+When ctx is done before those steps finish, the remaining work is cut short (the socket is closed at once, also when the engine never answers the close handshake) and ctx.Err() is returned; the client is shut down either way and nil means everything was delivered. A `Client.Close` called meanwhile cuts it short the same way, and Shutdown then returns context.Canceled. Like Close it does not send unregister frames. Shutdown is idempotent: a later Shutdown returns once the first shutdown has finished, or ctx.Err() if its own ctx ends first.
 
 **Signature**
 
