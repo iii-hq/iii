@@ -153,6 +153,8 @@ type Client struct {
 	reporter *reporter
 	// hookTimeout overrides observeHookTimeout (tests).
 	hookTimeout time.Duration
+	// otel is the client's OpenTelemetry pipeline (otel_client.go).
+	otel otelState
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
@@ -855,6 +857,7 @@ func (c *Client) enqueueOutbound(frame []byte) {
 // driving the socket.
 func (c *Client) startSupervisor() {
 	c.superviseOnce.Do(func() {
+		c.startTelemetry() // otel_client.go: OpenTelemetry starts with the lifecycle
 		c.reporter.start()
 		// Lets `iii ps` find this worker until Close ends the supervisor.
 		remove := announceProcess(c.url, c.name, "")
@@ -1072,6 +1075,8 @@ func (c *Client) runConnection() error {
 		c.state = StateDisconnected
 	}
 	c.mu.Unlock()
+
+	c.stopMetricsReporting() // otel_client.go: the gauges stop with the connection
 
 	// If Close was called, report a clean stop; otherwise ask for a reconnect.
 	select {
@@ -1302,6 +1307,7 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 		// it via Reattach, and the engine's features (observe.v1).
 		if dec.WorkerRegistered != nil {
 			c.onWorkerRegistered(dec.WorkerRegistered)
+			c.startMetricsReporting() // otel_client.go: worker gauges once the worker id is known
 		}
 	case MsgFunctionRegistered, MsgObserverAdded, MsgObserverRemoved, MsgObserveResult, MsgObserverStateChanged:
 		// Applied in order on the read loop; observe hooks run on per-function queues.
@@ -1465,10 +1471,12 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 // runHandler invokes h, recovering a panic into an error so a panicking handler yields
 // an InvocationResult.error instead of leaving the caller to time out.
 func (c *Client) runHandler(ctx context.Context, h Handler, data json.RawMessage) (result any, err error) {
+	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("iii: handler panic: %v", r)
 		}
+		endSpan(result, err)
 	}()
 	return h(ctx, data)
 }
@@ -1605,6 +1613,7 @@ func (c *Client) Close() error {
 		case <-time.After(closeFlushTimeout):
 		}
 		c.reporter.shutdown()
+		c.stopTelemetry() // otel_client.go: stop the worker gauges, flush and stop exporters
 		close(c.shutdown)
 		c.lifeCancel()
 
