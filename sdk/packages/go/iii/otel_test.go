@@ -356,7 +356,7 @@ func TestOtelHandlerReceivesCallerTraceContext(t *testing.T) {
 		tenant string
 	}
 	got := make(chan seen, 1)
-	_ = c.RegisterFunction("traced::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("traced::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		got <- seen{trace.SpanContextFromContext(ctx), baggage.FromContext(ctx).Member("tenant").Value()}
 		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "downstream::fn", Action: VoidAction()})
 		return "ok", err
@@ -389,7 +389,7 @@ func TestOtelInvocationSpanExported(t *testing.T) {
 		otelOn(OtelConfig{ServiceName: "orders-svc", ServiceVersion: "1.0.0"}),
 		WithHeaders(http.Header{"X-Test": {"1"}}),
 	)
-	_ = c.RegisterFunction("orders::create", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("orders::create", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "inventory::reserve", Action: VoidAction()})
 		return map[string]any{"ok": true, "token": "t-1"}, err
 	})
@@ -441,7 +441,7 @@ func TestOtelInvocationSpanError(t *testing.T) {
 			e := newOtelEngine(t, nil)
 			e.invokeOnRegister(t, tc.fn, `{}`, "", "")
 			c := e.connect(t, otelOn(OtelConfig{}))
-			_ = c.RegisterFunction(tc.fn, func(context.Context, json.RawMessage) (any, error) { return nil, tc.err })
+			_, _ = c.RegisterFunction(tc.fn, func(context.Context, json.RawMessage) (any, error) { return nil, tc.err })
 			span, _, _ := waitSpan(t, e.oc, "execute "+tc.fn)
 			if span.Status.Code != 2 || span.Status.Message != tc.wantMessage || span.ParentSpanID != "" {
 				t.Errorf("status %+v parent %q", span.Status, span.ParentSpanID)
@@ -469,7 +469,7 @@ func TestOtelDisableTracePayloads(t *testing.T) {
 			e := newOtelEngine(t, nil)
 			e.invokeOnRegister(t, "quiet::fn", `{"secret":"s"}`, "", "")
 			c := e.connect(t, otelOn(OtelConfig{}))
-			_ = c.RegisterFunction("quiet::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
+			_, _ = c.RegisterFunction("quiet::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
 			span, _, _ := waitSpan(t, e.oc, "execute quiet::fn")
 			if len(span.Events) != 0 {
 				t.Errorf("payload events recorded: %+v", span.Events)
@@ -478,6 +478,31 @@ func TestOtelDisableTracePayloads(t *testing.T) {
 				t.Errorf("status %+v", span.Status)
 			}
 		})
+	}
+}
+
+// V6: Shutdown flushes the telemetry buffered behind long flush intervals within its ctx,
+// then stops the exporters, as Close does.
+func TestOtelShutdownFlushesAndStops(t *testing.T) {
+	e := newOtelEngine(t, nil)
+	c := e.connect(t,
+		otelOn(OtelConfig{ServiceName: "shutdown-svc", SpansFlushInterval: time.Hour, LogsFlushInterval: time.Hour, MetricsExportInterval: time.Hour, LogsBatchSize: 100}),
+		WithMetricsReporting(false),
+	)
+	e.oc.waitFor(t, "telemetry connection", func() bool { return e.oc.conns == 1 })
+	_, span := otel.Tracer("user").Start(context.Background(), "before-shutdown")
+	span.End()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, _, _, ok := findSpan(e.oc, "before-shutdown"); !ok {
+		t.Errorf("span not flushed by Shutdown: %q", e.oc.payloads(telemetry.PrefixTraces))
+	}
+	e.oc.waitFor(t, "telemetry socket closed", func() bool { return e.oc.closed == 1 })
+	if telemetry.Active() != nil || c.telemetrySystem() != nil {
+		t.Error("telemetry still running after Shutdown")
 	}
 }
 
@@ -559,7 +584,7 @@ func TestOtelDisabledProducesNoTraffic(t *testing.T) {
 			e := newOtelEngine(t, nil)
 			e.invokeOnRegister(t, "silent::fn", `{}`, testTraceparent, "")
 			c := e.connect(t, tc.opts...)
-			_ = c.RegisterFunction("silent::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
+			_, _ = c.RegisterFunction("silent::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
 			e.waitResult(t)
 			observability.Logger{}.Info(context.Background(), "to the standard logger", nil)
 			_ = c.Close()
@@ -583,7 +608,7 @@ func TestOtelEnabledByDefault(t *testing.T) {
 	e := newOtelEngine(t, nil)
 	e.invokeOnRegister(t, "default::fn", `{}`, "", "")
 	c := e.connect(t)
-	_ = c.RegisterFunction("default::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
+	_, _ = c.RegisterFunction("default::fn", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
 	_, res, scope := waitSpan(t, e.oc, "execute default::fn")
 	if attr(res, "service.name") != "iii-go" || attr(res, "service.version") != "unknown" || scope != "iii-go" {
 		t.Errorf("default resource %v scope %q", res, scope)

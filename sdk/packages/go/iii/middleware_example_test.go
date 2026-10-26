@@ -31,7 +31,7 @@ func ExampleMiddlewareFunctionInput_forward() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	_ = iii.RegisterFunctionTyped(client, "auth::middleware",
+	_, _ = iii.RegisterFunctionTyped(client, "auth::middleware",
 		func(ctx context.Context, in iii.MiddlewareFunctionInput) (json.RawMessage, error) {
 			var payload map[string]any
 			if err := json.Unmarshal(in.Payload, &payload); err != nil {
@@ -48,7 +48,7 @@ func ExampleMiddlewareFunctionInput_forward() {
 			}
 			return client.Trigger(ctx, iii.TriggerRequest{
 				FunctionID: in.FunctionID,
-				Data:       data,
+				Payload:    data,
 				Action:     in.Action,
 				Namespace:  namespace,
 			})

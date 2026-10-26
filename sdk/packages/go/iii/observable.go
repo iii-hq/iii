@@ -808,7 +808,7 @@ func (o *Observer) Call(ctx context.Context, payload any) (json.RawMessage, erro
 	}
 	// No namespace: the engine routes an activation call to the observer's stored
 	// target (CONTRACT D13).
-	return f.client.invokeRemote(ctx, TriggerRequest{FunctionID: o.target, Data: payloadJSON}, "", &Activation{ObserverID: o.id})
+	return f.client.invokeRemote(ctx, TriggerRequest{FunctionID: o.target, Payload: payloadJSON}, "", &Activation{ObserverID: o.id})
 }
 
 // Reject sends a late rejection for this observer (e.g. after a config reload removed

@@ -20,7 +20,7 @@ type MiddlewareFunctionInput struct {
 	// FunctionID is the ID of the function being invoked.
 	FunctionID string `json:"function_id"`
 	// Payload is the payload sent by the caller, verbatim. Forward it as
-	// [TriggerRequest.Data] or decode it to inspect the call.
+	// [TriggerRequest.Payload] or decode it to inspect the call.
 	Payload json.RawMessage `json:"payload"`
 	// Action is the routing action of the call, if any (nil for a synchronous
 	// request/response). Forward it as [TriggerRequest.Action] to keep enqueue/void

@@ -41,7 +41,7 @@ type localOutcome struct {
 // encoding of the result. Timeouts and errors have the remote path's shape: ErrTimeout,
 // and an *InvocationError carrying the handler's error body.
 func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req TriggerRequest) (json.RawMessage, error) {
-	data := req.Data
+	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
 	}

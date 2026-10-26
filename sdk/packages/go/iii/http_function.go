@@ -23,22 +23,22 @@ import (
 // LocalDispatch does not apply, since there is nothing to run in-process.
 //
 // Like every registration it is kept in memory and sent again on each reconnect;
-// registering the same id again replaces it, and [Client.UnregisterFunction] removes
-// it.
-func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, opts ...RegisterFunctionOptions) error {
+// registering the same id again replaces it, and [FunctionRef.Unregister] on the
+// returned handle removes it.
+func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if strings.TrimSpace(invocation.URL) == "" {
-		return fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation URL is empty", id)
+		return nil, fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation URL is empty", id)
 	}
 	if len(invocation.Auth) > 0 && !json.Valid(invocation.Auth) {
-		return fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation Auth must contain valid JSON", id)
+		return nil, fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation Auth must contain valid JSON", id)
 	}
 	cfg, err := resolveRegisterFunctionOptions("RegisterHTTPFunction", id, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	msg, err := registerFunctionMessage("RegisterHTTPFunction", id, cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// A copy, so the caller's later changes do not reach the replayed registration.
 	ref := HTTPInvocationRef{

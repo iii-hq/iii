@@ -124,7 +124,7 @@ func (c *collected) len() int { return len(c.all()) }
 func collector(t *testing.T, c *iii.Client, fn string) *collected {
 	t.Helper()
 	col := &collected{}
-	err := c.RegisterFunction(fn, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, err := c.RegisterFunction(fn, func(ctx context.Context, data json.RawMessage) (any, error) {
 		a := activation{Raw: append(json.RawMessage(nil), data...)}
 		_ = json.Unmarshal(data, &a.Data)
 		a.Metadata, _ = iii.MetadataFromContext(ctx)

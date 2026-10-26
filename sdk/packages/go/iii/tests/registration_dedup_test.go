@@ -21,17 +21,17 @@ func TestRegistrationDoesNotDuplicate(t *testing.T) {
 
 	handler := func(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
 	// Register the same id twice; the second replaces the first, not duplicates it.
-	if err := c.RegisterFunction(fnID, handler); err != nil {
+	if _, err := c.RegisterFunction(fnID, handler); err != nil {
 		t.Fatalf("RegisterFunction #1: %v", err)
 	}
-	if err := c.RegisterFunction(fnID, handler); err != nil {
+	if _, err := c.RegisterFunction(fnID, handler); err != nil {
 		t.Fatalf("RegisterFunction #2: %v", err)
 	}
 	settle()
 
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListFunctions,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("engine::functions::list: %v", err)

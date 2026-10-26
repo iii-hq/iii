@@ -16,8 +16,8 @@ import (
 	"github.com/iii-hq/iii/sdk/packages/go/iii/internal/telemetry"
 )
 
-// otelShutdownTimeout bounds the final flush in Close (the Rust SDK's default
-// shutdown_timeout_ms).
+// otelShutdownTimeout bounds the final telemetry flush in Close (the Rust SDK's default
+// shutdown_timeout_ms); Shutdown uses its ctx instead.
 const otelShutdownTimeout = 10 * time.Second
 
 // otelState is a client's telemetry: the configuration its options set and the running
@@ -97,9 +97,8 @@ func (c *Client) startTelemetry() {
 }
 
 // stopTelemetry stops the worker gauges, then flushes and shuts the pipeline down
-// (Node shutdown: stopMetricsReporting, then shutdownOtel), bounded by
-// otelShutdownTimeout.
-func (c *Client) stopTelemetry() {
+// (Node shutdown: stopMetricsReporting, then shutdownOtel), bounded by ctx.
+func (c *Client) stopTelemetry(ctx context.Context) {
 	s := &c.otel
 	s.mu.Lock()
 	s.started = true
@@ -110,8 +109,6 @@ func (c *Client) stopTelemetry() {
 		return
 	}
 	sys.StopWorkerGauges()
-	ctx, cancel := context.WithTimeout(context.Background(), otelShutdownTimeout)
-	defer cancel()
 	_ = sys.Shutdown(ctx)
 }
 

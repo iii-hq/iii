@@ -34,8 +34,11 @@ type mockEngine struct {
 	received []map[string]json.RawMessage
 	// receivedConn[i] is the connection received[i] arrived on: its index in handshakes.
 	receivedConn []int
-	handshakes   []handshake     // one per accepted connection, in order
-	active       *websocket.Conn // most-recent accepted connection, for forced close
+	handshakes   []handshake // one per accepted connection, in order
+	// closeStatuses[i] is the close status connection i ended with (-1 for no close
+	// frame, for example a dropped socket), recorded when its read loop ends.
+	closeStatuses map[int]websocket.StatusCode
+	active        *websocket.Conn // most-recent accepted connection, for forced close
 
 	// onReceive, if set, is called for every decoded inbound frame with the
 	// connection it arrived on, letting a test script the engine's reply. It runs
@@ -111,6 +114,13 @@ func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
 	for {
 		typ, data, err := conn.Read(ctx)
 		if err != nil {
+			m.mu.Lock()
+			if m.closeStatuses == nil {
+				m.closeStatuses = map[int]websocket.StatusCode{}
+			}
+			m.closeStatuses[connIndex] = websocket.CloseStatus(err)
+			m.gotMessage.Broadcast()
+			m.mu.Unlock()
 			return
 		}
 		if typ != websocket.MessageText {
@@ -183,6 +193,17 @@ func (m *mockEngine) clear() {
 	m.received = nil
 	m.receivedConn = nil
 	m.mu.Unlock()
+}
+
+// closeStatusOf waits until connection i has ended and returns its close status.
+func (m *mockEngine) closeStatusOf(i int, timeout time.Duration) (websocket.StatusCode, bool) {
+	var status websocket.StatusCode
+	var ended bool
+	m.waitFor(func([]map[string]json.RawMessage) bool {
+		status, ended = m.closeStatuses[i]
+		return ended
+	}, timeout)
+	return status, ended
 }
 
 // connectionCount is the number of connections accepted so far; the next one gets this

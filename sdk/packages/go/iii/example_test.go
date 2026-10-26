@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
@@ -16,7 +17,7 @@ import (
 func Example_helloWorker() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://127.0.0.1:49134
 
-	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	greet, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`
@@ -30,14 +31,52 @@ func Example_helloWorker() {
 			"body":        map[string]string{"message": "Hello, " + req.Body.Name + "!"},
 		}, nil
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	client.RegisterTrigger("hello-http", "http", "hello::greet",
-		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`), nil)
+	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+		Type:       "http",
+		FunctionID: greet.ID,
+		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
+	}); err != nil {
+		log.Fatal(err)
+	}
 
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
+}
+
+// ExampleFunctionRef_Unregister removes a function through the handle its registration
+// returned; a reconnect no longer registers it.
+func ExampleFunctionRef_Unregister() {
+	client := iii.RegisterWorker(iii.DefaultEngineURL)
+	defer client.Close()
+
+	ref, err := client.RegisterFunction("jobs::nightly", func(ctx context.Context, data json.RawMessage) (any, error) {
+		return nil, nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Later, when the job is retired:
+	if err := ref.Unregister(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// ExampleClient_Shutdown stops a worker gracefully on SIGTERM-style exits: buffered
+// reports and telemetry get up to five seconds to reach the engine.
+func ExampleClient_Shutdown() {
+	client := iii.RegisterWorker(iii.DefaultEngineURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(ctx); err != nil {
+		log.Printf("shutdown cut short: %v", err)
+	}
 }
 
 // ExampleClient_RegisterFunction_withMetadata attaches registration metadata via the
@@ -75,7 +114,7 @@ func ExampleClient_Trigger() {
 
 	res, err := client.Trigger(context.Background(), iii.TriggerRequest{
 		FunctionID: "orders::create",
-		Data:       json.RawMessage(`{"item":"widget"}`),
+		Payload:    json.RawMessage(`{"item":"widget"}`),
 	})
 	switch {
 	case errors.Is(err, iii.ErrTimeout):

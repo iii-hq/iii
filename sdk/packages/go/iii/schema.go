@@ -39,33 +39,35 @@ type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, e
 //	iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::create",
 //	    func(ctx context.Context, req CreateOrderRequest) (OrderResult, error) { ... })
 //
+// It returns the function's handle, as [Client.RegisterFunction] does.
+//
 // Use [Client.RegisterFunction] directly for schemaless functions. See [InferSchema] to
 // obtain a type's schema on its own. Pass a single [RegisterFunctionOptions] value to
 // attach a description, registration metadata or observe hooks; its RequestFormat and
 // ResponseFormat, when set, are sent instead of the inferred schemas (that type is then
 // not reflected).
-func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) error {
+func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if handler == nil {
-		return fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)
+		return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)
 	}
 	cfg, err := resolveRegisterFunctionOptions("RegisterFunctionTyped", id, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	msg, err := registerFunctionMessage("RegisterFunctionTyped", id, cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Explicit formats win over the inferred ones.
 	if len(msg.RequestFormat) == 0 {
 		if msg.RequestFormat, err = reflectSchema[Req](); err != nil {
-			return fmt.Errorf("iii: RegisterFunctionTyped(%q): request schema: %w", id, err)
+			return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): request schema: %w", id, err)
 		}
 	}
 	if len(msg.ResponseFormat) == 0 {
 		if msg.ResponseFormat, err = reflectSchema[Resp](); err != nil {
-			return fmt.Errorf("iii: RegisterFunctionTyped(%q): response schema: %w", id, err)
+			return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): response schema: %w", id, err)
 		}
 	}
 

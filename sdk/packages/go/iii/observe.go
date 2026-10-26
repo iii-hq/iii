@@ -3,6 +3,7 @@ package iii
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -618,16 +619,16 @@ func (c *Client) reportStatus(functionID string, epoch uint64) reportStatus {
 	return f.reportStatus(epoch)
 }
 
-// closeFlushTimeout bounds the final flush in Close.
+// closeFlushTimeout bounds the final observe flush in Close (Shutdown uses its ctx).
 const closeFlushTimeout = 250 * time.Millisecond
 
-// flushObserveOnClose gives buffered reports and counters a last chance to reach the
-// engine, waiting briefly for the writer to drain them. Close bounds it.
-func (c *Client) flushObserveOnClose() {
+// flushObserve gives buffered reports and counters a last chance to reach the engine,
+// waiting until the writer drained them or ctx is done (Close: closeFlushTimeout;
+// Shutdown: the caller's ctx).
+func (c *Client) flushObserve(ctx context.Context) {
 	c.reporter.flush()
 	c.reporter.sendStats(time.Now())
-	deadline := time.Now().Add(closeFlushTimeout)
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil {
 		c.replyMu.Lock()
 		pending := 0
 		if c.reply != nil {

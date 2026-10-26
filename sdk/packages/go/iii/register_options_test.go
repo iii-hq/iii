@@ -63,7 +63,7 @@ func TestRegisterFunctionOptionsSendDescriptionAndFormats(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	err := c.RegisterFunction("orders::create", noopHandler, RegisterFunctionOptions{
+	_, err := c.RegisterFunction("orders::create", noopHandler, RegisterFunctionOptions{
 		Description:    "Creates an order",
 		RequestFormat:  json.RawMessage(`{"type": "object", "properties": {"item": {"type": "string"}}}`),
 		ResponseFormat: json.RawMessage(`{"type":"object"}`),
@@ -85,7 +85,7 @@ func TestRegisterFunctionOptionsSendDescriptionAndFormats(t *testing.T) {
 func TestRegisterFunctionWithoutOptionsSendsOnlyID(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
-	if err := c.RegisterFunction("plain::fn", noopHandler); err != nil {
+	if _, err := c.RegisterFunction("plain::fn", noopHandler); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
 	}
 	const want = `{"id":"plain::fn","type":"registerfunction"}`
@@ -101,11 +101,11 @@ func TestRegisterFunctionRejectsInvalidFormats(t *testing.T) {
 		"RequestFormat":  {RequestFormat: json.RawMessage(`{"type":`)},
 		"ResponseFormat": {ResponseFormat: json.RawMessage(`not json`)},
 	} {
-		err := c.RegisterFunction("bad::fn", noopHandler, opts)
+		_, err := c.RegisterFunction("bad::fn", noopHandler, opts)
 		if err == nil || !strings.Contains(err.Error(), name+" must contain valid JSON") {
 			t.Errorf("%s: error = %v, want a valid JSON error", name, err)
 		}
-		if err := RegisterFunctionTyped(c, "bad::typed", func(context.Context, struct{}) (struct{}, error) {
+		if _, err := RegisterFunctionTyped(c, "bad::typed", func(context.Context, struct{}) (struct{}, error) {
 			return struct{}{}, nil
 		}, opts); err == nil {
 			t.Errorf("%s: RegisterFunctionTyped accepted invalid JSON", name)
@@ -131,7 +131,7 @@ type typedOrderResult struct {
 func TestRegisterFunctionTypedExplicitFormatsOverrideInferred(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
-	err := RegisterFunctionTyped(c, "orders::typed", func(context.Context, typedOrderRequest) (typedOrderResult, error) {
+	_, err := RegisterFunctionTyped(c, "orders::typed", func(context.Context, typedOrderRequest) (typedOrderResult, error) {
 		return typedOrderResult{}, nil
 	}, RegisterFunctionOptions{
 		Description:   "Typed order",
@@ -163,7 +163,7 @@ func TestRegisterHTTPFunctionFrame(t *testing.T) {
 	c := connectClient(t, m)
 	timeout := uint64(5000)
 	headers := map[string]string{"x-team": "shop"}
-	err := c.RegisterHTTPFunction("ext::lambda", HTTPInvocationRef{
+	_, err := c.RegisterHTTPFunction("ext::lambda", HTTPInvocationRef{
 		URL:       "https://example.com/fn",
 		TimeoutMs: &timeout,
 		Headers:   headers,
@@ -198,7 +198,7 @@ func TestRegisterHTTPFunctionFrame(t *testing.T) {
 func TestRegisterHTTPFunctionKeepsExplicitMethod(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
-	if err := c.RegisterHTTPFunction("ext::get", HTTPInvocationRef{URL: "https://example.com/get", Method: "GET"}); err != nil {
+	if _, err := c.RegisterHTTPFunction("ext::get", HTTPInvocationRef{URL: "https://example.com/get", Method: "GET"}); err != nil {
 		t.Fatalf("RegisterHTTPFunction: %v", err)
 	}
 	const want = `{"id":"ext::get","invocation":{"method":"GET","url":"https://example.com/get"},"type":"registerfunction"}`
@@ -229,13 +229,13 @@ func TestHTTPAuthConstructors(t *testing.T) {
 // A3: an empty URL or invalid auth JSON is refused and nothing is registered.
 func TestRegisterHTTPFunctionValidates(t *testing.T) {
 	c := New("ws://127.0.0.1:0")
-	if err := c.RegisterHTTPFunction("ext::none", HTTPInvocationRef{URL: "  "}); err == nil || !strings.Contains(err.Error(), "URL is empty") {
+	if _, err := c.RegisterHTTPFunction("ext::none", HTTPInvocationRef{URL: "  "}); err == nil || !strings.Contains(err.Error(), "URL is empty") {
 		t.Errorf("empty URL: error = %v", err)
 	}
-	if err := c.RegisterHTTPFunction("ext::auth", HTTPInvocationRef{URL: "https://x", Auth: json.RawMessage(`{`)}); err == nil {
+	if _, err := c.RegisterHTTPFunction("ext::auth", HTTPInvocationRef{URL: "https://x", Auth: json.RawMessage(`{`)}); err == nil {
 		t.Error("invalid auth JSON accepted")
 	}
-	if err := c.RegisterHTTPFunction("ext::fmt", HTTPInvocationRef{URL: "https://x"}, RegisterFunctionOptions{RequestFormat: json.RawMessage(`[`)}); err == nil {
+	if _, err := c.RegisterHTTPFunction("ext::fmt", HTTPInvocationRef{URL: "https://x"}, RegisterFunctionOptions{RequestFormat: json.RawMessage(`[`)}); err == nil {
 		t.Error("invalid RequestFormat accepted")
 	}
 	c.mu.Lock()
@@ -261,7 +261,7 @@ func TestHTTPFunctionIsNotInvokableLocally(t *testing.T) {
 		}
 	}
 	c := connectClient(t, m)
-	if err := c.RegisterHTTPFunction("ext::remote", HTTPInvocationRef{URL: "https://example.com"}); err != nil {
+	if _, err := c.RegisterHTTPFunction("ext::remote", HTTPInvocationRef{URL: "https://example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {

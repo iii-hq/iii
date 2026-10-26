@@ -49,8 +49,8 @@ func ExampleOnFunctionRegistrationResult() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	_ = iii.RegisterFunctionTyped(client, "auth::browser", authorize)
-	_ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
+	_, _ = iii.RegisterFunctionTyped(client, "auth::browser", authorize)
+	_, _ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
 		func(_ context.Context, in workerconnection.OnFunctionRegistrationInput) (workerconnection.OnFunctionRegistrationResult, error) {
 			if strings.HasPrefix(in.FunctionID, "engine::") {
 				return workerconnection.OnFunctionRegistrationResult{}, errors.New("reserved prefix")

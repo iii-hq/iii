@@ -166,6 +166,10 @@ type RegisterTriggerMessage struct {
 	// Namespace the trigger's target FunctionID resolves in. Absent means the
 	// engine's default namespace, independent of the connection's namespace.
 	Namespace string `json:"namespace,omitempty"`
+	// TriggerNamespace is the namespace to find the trigger type's provider in. Absent
+	// asks the engine to resolve it: the registering connection's namespace first, then
+	// the engine's own. A namespace named here is strict.
+	TriggerNamespace string `json:"trigger_namespace,omitempty"`
 }
 
 // TriggerRegistrationResult is the engine's ack for a RegisterTrigger; Error is set

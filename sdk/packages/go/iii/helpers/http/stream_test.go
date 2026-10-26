@@ -610,7 +610,7 @@ func TestWrapNilHandler(t *testing.T) {
 	if h := Wrap(c, nil); h != nil {
 		t.Fatal("Wrap(client, nil) should be nil")
 	}
-	if err := c.RegisterFunction("api::nil", Wrap(c, nil)); err == nil {
+	if _, err := c.RegisterFunction("api::nil", Wrap(c, nil)); err == nil {
 		t.Fatal("RegisterFunction accepted a nil wrapped handler")
 	}
 	defer func() {

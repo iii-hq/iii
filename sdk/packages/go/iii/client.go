@@ -114,6 +114,7 @@ type Client struct {
 	// lifecycle
 	shutdown      chan struct{}
 	shutOnce      sync.Once
+	shutDone      chan struct{} // closed when the first Close or Shutdown has finished
 	connected     chan struct{} // closed once the first connection is established
 	connOnce      sync.Once
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
@@ -215,23 +216,6 @@ type RegisterFunctionOptions struct {
 	// "response_format". It must be valid JSON; nil omits it. With
 	// [RegisterFunctionTyped] it replaces the schema inferred from Resp.
 	ResponseFormat json.RawMessage
-}
-
-// RegisterTriggerTypeOptions describes a trigger type's configuration and the
-// payload delivered to its bound functions. The zero value omits both schemas.
-// Schemas are discovery metadata; handlers remain responsible for validation.
-//
-// Deprecated: TriggerRequestFormat becomes [ObserveHooks.ArgsFormat] and
-// CallRequestFormat the request format of the function. Migration guide:
-// https://iii.dev/docs/upgrading/from-0-24-x
-type RegisterTriggerTypeOptions struct {
-	// TriggerRequestFormat is the JSON Schema for a trigger instance's config.
-	// engine::triggers::info exposes it as configuration_schema.
-	TriggerRequestFormat json.RawMessage
-	// CallRequestFormat is the JSON Schema for the payload sent to the bound
-	// function when the trigger fires. engine::triggers::info exposes it as
-	// request_schema.
-	CallRequestFormat json.RawMessage
 }
 
 func resolveRegisterFunctionOptions(name, id string, opts []RegisterFunctionOptions) (RegisterFunctionOptions, error) {
@@ -373,6 +357,7 @@ func New(url string, opts ...Option) *Client {
 		hooksInactiveWarned: map[string]bool{},
 
 		invocationTimeout: DefaultInvocationTimeout,
+		shutDone:          make(chan struct{}),
 		registeredSignal:  make(chan struct{}),
 	}
 	c.lifeCtx, c.lifeCancel = context.WithCancel(context.Background())
@@ -439,11 +424,28 @@ func defaultWorkerName() string {
 // [EngineURLFromEnv]. Channel readers/writers build their own URLs from it.
 func (c *Client) Address() string { return c.url }
 
-// State returns the current connection state.
-func (c *Client) State() ConnectionState {
+// ConnectionState returns the current state of the connection to the engine. It
+// mirrors getConnectionState in the Node SDK; [Client.OnConnectionStateChange] reports
+// every change.
+func (c *Client) ConnectionState() ConnectionState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state
+}
+
+// State returns the current connection state.
+//
+// Deprecated: use [Client.ConnectionState].
+func (c *Client) State() ConnectionState { return c.ConnectionState() }
+
+// WorkerID returns the worker id the engine assigned with its last WorkerRegistered, or
+// "" before the first one. The id is kept across a disconnect (the next connection
+// presents it to reattach) until the engine assigns the next one. It mirrors worker_id
+// in the Python SDK.
+func (c *Client) WorkerID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.workerID
 }
 
 func (c *Client) setState(s ConnectionState) {
@@ -452,28 +454,30 @@ func (c *Client) setState(s ConnectionState) {
 	c.mu.Unlock()
 }
 
-// RegisterFunction registers a function this worker can handle. It may be called before
-// or after Connect; the registration is sent on the next (re)connect. Calling it again
-// with the same id replaces the handler. Pass a single [RegisterFunctionOptions] value
-// to attach registration metadata without changing the registration method.
+// RegisterFunction registers a function this worker can handle and returns its handle;
+// [FunctionRef.Unregister] removes it. It may be called before or after Connect; the
+// registration is sent on the next (re)connect. Calling it again with the same id
+// replaces the registration, and the earlier handle no longer controls it. Pass a
+// single [RegisterFunctionOptions] value for a description, request and response
+// formats, metadata, observe hooks or the local dispatch setting.
 //
 // Handlers read the optional per-invocation metadata sidecar from their ctx with
 // [MetadataFromContext].
-func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFunctionOptions) error {
+func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if handler == nil {
-		return fmt.Errorf("iii: RegisterFunction(%q): handler is nil", id)
+		return nil, fmt.Errorf("iii: RegisterFunction(%q): handler is nil", id)
 	}
 	return c.registerFunction("RegisterFunction", id, handler, opts)
 }
 
-func (c *Client) registerFunction(name, id string, handler Handler, opts []RegisterFunctionOptions) error {
+func (c *Client) registerFunction(name, id string, handler Handler, opts []RegisterFunctionOptions) (*FunctionRef, error) {
 	cfg, err := resolveRegisterFunctionOptions(name, id, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	msg, err := registerFunctionMessage(name, id, cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return c.storeFunction(id, msg, handler, cfg)
 }
@@ -511,14 +515,14 @@ func registerFunctionMessage(name, id string, cfg RegisterFunctionOptions) (*Reg
 // observe state and sends the registration. A function registered again under the
 // same id replaces the previous one: its observers go through the previous hooks'
 // OnObserverRemoved, and the engine's fresh functionregistered reaches the new ones.
-func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler Handler, cfg RegisterFunctionOptions) error {
+func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler Handler, cfg RegisterFunctionOptions) (*FunctionRef, error) {
 	descriptor, err := observeDescriptor(id, cfg.Observe)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	msg.Observe = descriptor
 	if _, err := prepareJSON(msg); err != nil {
-		return err
+		return nil, err
 	}
 	// A function without a local handler (RegisterHTTPFunction) never runs in-process.
 	localDispatch := handler != nil && (cfg.LocalDispatch == nil || *cfg.LocalDispatch)
@@ -546,7 +550,7 @@ func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler 
 	// Best-effort live send; if disconnected, the registry replay on reconnect covers
 	// it (registration frames are deliberately not buffered; see offline).
 	c.sendRegistration(msg)
-	return nil
+	return &FunctionRef{ID: id, client: c, observe: observe}, nil
 }
 
 // observeDescriptor validates hooks and returns the fields that travel, or nil when
@@ -586,12 +590,14 @@ func observeDescriptor(id string, hooks *ObserveHooks) (*ObserveDescriptor, erro
 	return d, nil
 }
 
-// RegisterTriggerType registers a custom trigger-type handler (e.g. "cron"). The engine
-// will call the handler to start and stop individual trigger instances of this type.
-// Pass at most one [RegisterTriggerTypeOptions] value to advertise JSON Schemas.
-// Nonempty schemas must contain valid JSON; JSON Schema semantics are not checked.
-// The SDK copies the schema bytes and resends them on reconnect. An invalid
-// registration leaves any existing registration with the same id unchanged.
+// RegisterTriggerType registers a custom trigger type (for example "webhook") with the
+// handler the engine calls to start and stop individual trigger instances of it, and
+// returns its handle: [TriggerTypeRef.RegisterTrigger] and
+// [TriggerTypeRef.RegisterFunction] bind triggers of the type, and
+// [TriggerTypeRef.Unregister] removes it. Nonempty schemas in input must contain valid
+// JSON; JSON Schema semantics are not checked. The SDK copies the schema bytes and
+// resends them on reconnect. Registering the same id again replaces the registration;
+// an invalid registration leaves an existing one unchanged.
 //
 // It keeps working, and logs a deprecation warning once per process.
 //
@@ -600,43 +606,36 @@ func observeDescriptor(id string, hooks *ObserveHooks) (*ObserveDescriptor, erro
 // Delivery: iii.DeliveryOwner, OnObserverAdded: ..., OnObserverRemoved: ...}}). Its
 // observers are what trigger instances were. Migration guide:
 // https://iii.dev/docs/upgrading/from-0-24-x
-func (c *Client) RegisterTriggerType(id, description string, handler TriggerHandler, opts ...RegisterTriggerTypeOptions) error {
+func (c *Client) RegisterTriggerType(input RegisterTriggerTypeInput, handler TriggerHandler) (*TriggerTypeRef, error) {
 	warnDeprecated(deprecatedRegisterTriggerType)
 	if handler == nil {
-		return fmt.Errorf("iii: RegisterTriggerType(%q): handler is nil", id)
-	}
-	if len(opts) > 1 {
-		return fmt.Errorf("iii: RegisterTriggerType(%q): expected at most one RegisterTriggerTypeOptions, got %d", id, len(opts))
-	}
-	var cfg RegisterTriggerTypeOptions
-	if len(opts) == 1 {
-		cfg = opts[0]
+		return nil, fmt.Errorf("iii: RegisterTriggerType(%q): handler is nil", input.ID)
 	}
 	for _, schema := range []struct {
 		name string
 		data json.RawMessage
 	}{
-		{"trigger_request_format", cfg.TriggerRequestFormat},
-		{"call_request_format", cfg.CallRequestFormat},
+		{"trigger_request_format", input.TriggerRequestFormat},
+		{"call_request_format", input.CallRequestFormat},
 	} {
 		if len(schema.data) > 0 && !json.Valid(schema.data) {
-			return fmt.Errorf("iii: RegisterTriggerType(%q): %s must contain valid JSON", id, schema.name)
+			return nil, fmt.Errorf("iii: RegisterTriggerType(%q): %s must contain valid JSON", input.ID, schema.name)
 		}
 	}
 	msg := &RegisterTriggerTypeMessage{
-		ID:                   id,
-		Description:          description,
-		TriggerRequestFormat: bytes.Clone(cfg.TriggerRequestFormat),
-		CallRequestFormat:    bytes.Clone(cfg.CallRequestFormat),
+		ID:                   input.ID,
+		Description:          input.Description,
+		TriggerRequestFormat: bytes.Clone(input.TriggerRequestFormat),
+		CallRequestFormat:    bytes.Clone(input.CallRequestFormat),
 	}
 	if _, err := prepareJSON(msg); err != nil {
-		return err
+		return nil, err
 	}
 	c.mu.Lock()
-	c.triggerTypes[id] = registeredTriggerType{message: msg, handler: handler}
+	c.triggerTypes[input.ID] = registeredTriggerType{message: msg, handler: handler}
 	c.mu.Unlock()
 	c.sendRegistration(msg)
-	return nil
+	return &TriggerTypeRef{ID: input.ID, client: c, message: msg}, nil
 }
 
 // refuseBlankCallNamespace refuses a namespace that was named and left blank on
@@ -673,9 +672,14 @@ func invocationNamespace(functionID, explicit, worker string) string {
 	}
 }
 
-// RegisterTrigger registers a trigger instance: fire functionID when a trigger of
-// triggerType matches config. config and optional metadata are raw JSON (may be nil).
-// functionID resolves in this worker's namespace.
+// RegisterTrigger registers a trigger instance described by input, fire
+// input.FunctionID when a trigger of input.Type matches input.Config, and returns its
+// handle; [Trigger.Unregister] removes it. An empty input.ID makes the SDK generate one
+// (a random UUID), nil Config is sent as {}, an empty Namespace means this worker's
+// namespace and an empty TriggerNamespace lets the engine resolve the type's provider.
+// Config and Metadata must be valid JSON. The registration is kept in memory and sent
+// again on every reconnect; registering the same ID again replaces it. It mirrors
+// registerTrigger in the Node SDK.
 //
 // It keeps working (through a live trigger-type provider or the engine's legacy shim),
 // and logs a deprecation warning once per process.
@@ -686,56 +690,68 @@ func invocationNamespace(functionID, explicit, worker string) string {
 // engine-hosted source. Built-in trigger providers (http, cron, queue, ...) keep
 // RegisterTrigger until they ship their source functions. Migration guide:
 // https://iii.dev/docs/upgrading/from-0-24-x
-func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
+func (c *Client) RegisterTrigger(input RegisterTriggerInput) (*Trigger, error) {
 	warnDeprecated(deprecatedRegisterTrigger)
-	return c.registerTrigger(id, triggerType, functionID, "", config, metadata...)
+	return c.registerTrigger(input, "RegisterTriggerInput.Namespace")
 }
 
-// RegisterTriggerNamespaced is like [Client.RegisterTrigger] but resolves the
-// target functionID in namespace. An empty namespace means this worker's.
+// RegisterTriggerNamespaced registers a trigger with id that fires functionID, resolved
+// in namespace (empty: this worker's), when a trigger of triggerType matches config.
+// It is [Client.RegisterTrigger] with the input spelled out, without the handle.
 //
 // It keeps working, and logs the RegisterTrigger deprecation warning once per process.
 //
-// Deprecated: use [Client.Observe] with [ObserverOptions.TargetNamespace] instead.
-// Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
+// Deprecated: use [Client.Observe] with [ObserverOptions.TargetNamespace], or
+// [Client.RegisterTrigger] with [RegisterTriggerInput].Namespace for a built-in trigger
+// provider. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
 func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
 	warnDeprecated(deprecatedRegisterTrigger)
-	return c.registerTrigger(id, triggerType, functionID, namespace, config, metadata...)
+	if len(metadata) > 1 {
+		return fmt.Errorf("iii: RegisterTriggerNamespaced(%q): expected at most one metadata argument, got %d", id, len(metadata))
+	}
+	in := RegisterTriggerInput{ID: id, Type: triggerType, FunctionID: functionID, Config: config, Namespace: namespace}
+	if len(metadata) == 1 {
+		in.Metadata = metadata[0]
+	}
+	_, err := c.registerTrigger(in, "RegisterTriggerNamespaced namespace")
+	return err
 }
 
-func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
-	if err := refuseBlankCallNamespace(namespace, "RegisterTriggerNamespaced namespace"); err != nil {
-		return err
+// registerTrigger stores and sends one trigger registration. namespaceSource names the
+// namespace setting in the error that refuses a blank one.
+func (c *Client) registerTrigger(in RegisterTriggerInput, namespaceSource string) (*Trigger, error) {
+	if err := refuseBlankCallNamespace(in.Namespace, namespaceSource); err != nil {
+		return nil, err
 	}
+	namespace := in.Namespace
 	if namespace == "" {
 		namespace = c.namespace
 	}
+	id := in.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	config := in.Config
 	if config == nil {
 		config = json.RawMessage("{}")
 	}
-	var meta json.RawMessage
-	if len(metadata) > 1 {
-		return fmt.Errorf("iii: RegisterTrigger(%q): expected at most one metadata argument, got %d", id, len(metadata))
-	}
-	if len(metadata) == 1 {
-		meta = metadata[0]
-	}
 	msg := &RegisterTriggerMessage{
-		ID:          id,
-		TriggerType: triggerType,
-		FunctionID:  functionID,
-		Config:      config,
-		Metadata:    meta,
-		Namespace:   namespace,
+		ID:               id,
+		TriggerType:      in.Type,
+		FunctionID:       in.FunctionID,
+		Config:           bytes.Clone(config),
+		Metadata:         bytes.Clone(in.Metadata),
+		Namespace:        namespace,
+		TriggerNamespace: in.TriggerNamespace,
 	}
 	if _, err := prepareJSON(msg); err != nil {
-		return err
+		return nil, err
 	}
 	c.mu.Lock()
 	c.triggers[id] = msg
 	c.mu.Unlock()
 	c.sendRegistration(msg)
-	return nil
+	return &Trigger{ID: id, client: c, message: msg}, nil
 }
 
 // TriggerRequest is the input to [Client.Trigger]. The Action field selects the delivery
@@ -744,10 +760,15 @@ func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, 
 type TriggerRequest struct {
 	// FunctionID is the engine function to invoke (e.g. an EngineFunctions constant).
 	FunctionID string
-	// Data is the JSON payload. nil is sent as {}.
+	// Payload is the JSON input of the function (payload in the Node, Python and Rust
+	// SDKs). Nil is sent as {}.
+	Payload json.RawMessage
+	// Data is the JSON input of the function, used only when Payload is nil.
+	//
+	// Deprecated: use Payload.
 	Data json.RawMessage
-	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside Data
-	// on the wire's metadata channel, not folded into the payload. nil is omitted.
+	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the
+	// payload on the wire's metadata channel, not folded into it. nil is omitted.
 	Metadata json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
@@ -762,6 +783,14 @@ type TriggerRequest struct {
 	// [DispatchAuto]) runs it in-process once the engine confirmed it for local
 	// dispatch; [DispatchRemote] always goes through the engine.
 	Dispatch Dispatch
+}
+
+// payload is the request's input: Payload, else the deprecated Data.
+func (req TriggerRequest) payload() json.RawMessage {
+	if req.Payload != nil {
+		return req.Payload
+	}
+	return req.Data
 }
 
 // maxLocalDepth bounds nested local calls: deeper ones go through the engine, so
@@ -814,7 +843,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 // handler (ctx), and when the engine supports observe, it carries caller and
 // observe_depth. activation marks an owner delivery (obs.Call).
 func (c *Client) invokeRemote(ctx context.Context, req TriggerRequest, namespace string, activation *Activation) (json.RawMessage, error) {
-	data := req.Data
+	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
 	}
@@ -1740,41 +1769,108 @@ func (c *Client) handleUnregisterTrigger(ctx context.Context, msg *UnregisterTri
 	_ = tt.handler.UnregisterTrigger(ctx, TriggerConfig{ID: msg.ID})
 }
 
-// Close shuts the client down: it stops the reconnect loop, cancels all pending Trigger
-// calls with ErrNotConnected, and closes the socket. It does not send unregister frames
-// (matching the reference SDKs). Close is idempotent.
+// Close shuts the client down at once: it stops the reconnect loop, gives buffered
+// observe reports and telemetry a short, fixed time to go out (250ms for the reports, at
+// most 10s for the telemetry flush), cancels all pending Trigger calls with
+// ErrNotConnected, and drops the socket without a closing handshake. It does not send
+// unregister frames (matching the reference SDKs). Use [Client.Shutdown] to wait for the
+// flushes under a deadline of your own and close the socket gracefully.
+//
+// Close is idempotent and implements io.Closer; it always returns nil. Called while a
+// Shutdown runs, it waits for that Shutdown to finish.
 func (c *Client) Close() error {
-	c.shutOnce.Do(func() {
-		// Last chance for buffered reports and counters to reach the engine: best
-		// effort and bounded. A writer that does not drain (a peer that stopped
-		// reading) cannot hold Close up: closing shutdown unblocks the flush.
-		flushed := make(chan struct{})
-		go func() {
-			defer close(flushed)
-			c.flushObserveOnClose()
-		}()
+	ctx, cancel := context.WithTimeout(context.Background(), otelShutdownTimeout)
+	defer cancel()
+	_ = c.terminate(ctx, false)
+	return nil
+}
+
+// Shutdown shuts the client down gracefully, as the Node SDK's shutdown does, bounded
+// by ctx like http.Server.Shutdown: it stops the reconnect loop, waits until the
+// buffered observe reports and counters are written, stops the worker gauges, flushes
+// and stops the telemetry exporters, cancels all pending Trigger calls with
+// ErrNotConnected, and closes the socket with a normal-closure handshake.
+//
+// When ctx is done before those steps finish, the remaining work is cut short (the
+// socket is dropped as [Client.Close] drops it) and ctx.Err() is returned; the client is
+// shut down either way and nil means everything was delivered. Like Close it does not
+// send unregister frames. Shutdown is idempotent: a later call, or a Close, returns once
+// the first shutdown has finished (Shutdown returns ctx.Err() if ctx ends first).
+func (c *Client) Shutdown(ctx context.Context) error {
+	return c.terminate(ctx, true)
+}
+
+// terminate is Close (graceful false) and Shutdown (graceful true). Close bounds the
+// observe flush to closeFlushTimeout and the telemetry flush to ctx; Shutdown bounds
+// everything by ctx and closes the socket with a handshake.
+func (c *Client) terminate(ctx context.Context, graceful bool) error {
+	first := false
+	c.shutOnce.Do(func() { first = true })
+	if !first {
 		select {
-		case <-flushed:
-		case <-time.After(closeFlushTimeout):
+		case <-c.shutDone:
+			return nil
+		case <-ctx.Done():
+			if graceful {
+				return ctx.Err()
+			}
+			<-c.shutDone
+			return nil
 		}
-		c.reporter.shutdown()
-		c.stopTelemetry() // otel_client.go: stop the worker gauges, flush and stop exporters
-		close(c.shutdown)
-		c.lifeCancel()
+	}
+	defer close(c.shutDone)
 
-		// Cancel all pending invocations.
-		c.mu.Lock()
-		for id, ch := range c.pending {
-			ch <- invocationOutcome{err: ErrNotConnected}
-			delete(c.pending, id)
-		}
-		conn := c.conn
-		c.setStateLocked(StateDisconnected)
-		c.mu.Unlock()
+	// Last chance for buffered reports and counters to reach the engine. A writer
+	// that does not drain (a peer that stopped reading) cannot hold the shutdown up:
+	// closing shutdown unblocks the flush.
+	flushCtx := ctx
+	if !graceful {
+		var cancel context.CancelFunc
+		flushCtx, cancel = context.WithTimeout(ctx, closeFlushTimeout)
+		defer cancel()
+	}
+	flushed := make(chan struct{})
+	go func() {
+		defer close(flushed)
+		c.flushObserve(flushCtx)
+	}()
+	select {
+	case <-flushed:
+	case <-flushCtx.Done():
+	}
+	c.reporter.shutdown()
+	c.stopTelemetry(ctx) // otel_client.go: stop the worker gauges, flush and stop exporters
+	close(c.shutdown)
+	c.lifeCancel()
 
-		if conn != nil {
+	// Cancel all pending invocations.
+	c.mu.Lock()
+	for id, ch := range c.pending {
+		ch <- invocationOutcome{err: ErrNotConnected}
+		delete(c.pending, id)
+	}
+	conn := c.conn
+	c.setStateLocked(StateDisconnected)
+	c.mu.Unlock()
+
+	if conn != nil {
+		if graceful && ctx.Err() == nil {
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				_ = conn.Close(websocket.StatusNormalClosure, "shutdown")
+			}()
+			select {
+			case <-closed:
+			case <-ctx.Done():
+				_ = conn.CloseNow()
+			}
+		} else {
 			_ = conn.CloseNow()
 		}
-	})
+	}
+	if graceful {
+		return ctx.Err()
+	}
 	return nil
 }

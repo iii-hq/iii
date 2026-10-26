@@ -30,7 +30,7 @@ func ExampleEnqueueResult_trigger() {
 
 	res, err := client.Trigger(context.Background(), iii.TriggerRequest{
 		FunctionID: "emails::send",
-		Data:       json.RawMessage(`{"to":"ada@example.com"}`),
+		Payload:    json.RawMessage(`{"to":"ada@example.com"}`),
 		Action:     iii.EnqueueAction("emails"),
 	})
 	if err != nil {

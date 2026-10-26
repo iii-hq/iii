@@ -61,7 +61,7 @@ func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, 
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: FnCreateChannel, Data: payload})
+	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: FnCreateChannel, Payload: payload})
 	if err != nil {
 		return nil, err
 	}

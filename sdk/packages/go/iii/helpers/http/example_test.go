@@ -16,7 +16,7 @@ func ExampleWrap() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	_ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
+	_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
 		func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 			body, err := io.ReadAll(req)
 			if err != nil {

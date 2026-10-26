@@ -54,7 +54,7 @@ func TestOtelKeepsApplicationGlobals(t *testing.T) {
 	e := newOtelEngine(t, nil)
 	e.invokeOnRegister(t, "app::fn", `{}`, testTraceparent, "")
 	c := e.connect(t, otelOn(OtelConfig{}))
-	_ = c.RegisterFunction("app::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("app::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		_, span := otel.Tracer("app").Start(ctx, "app-work")
 		span.End()
 		return 1, nil
@@ -119,7 +119,7 @@ func TestOtelStartAfterStopIsNoop(t *testing.T) {
 	// The window, made deterministic: Close's stopTelemetry has run, then the first
 	// Connect's startTelemetry runs before Close closes shutdown.
 	c := New(e.url, otelOn(OtelConfig{}))
-	c.stopTelemetry()
+	c.stopTelemetry(context.Background())
 	c.startTelemetry()
 	if c.telemetrySystem() != nil {
 		t.Fatal("startTelemetry after stopTelemetry started a pipeline")
