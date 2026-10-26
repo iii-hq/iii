@@ -110,6 +110,20 @@ pass to another function so it can read or write the other end.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    channel, err := client.CreateChannel(ctx, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // channel.Writer
+    // channel.Reader
+    // channel.WriterRef
+    // channel.ReaderRef
+    ```
+
+  </Tab>
 </Tabs>
 
 ### Write to a channel
@@ -141,6 +155,22 @@ engine to whichever worker holds the matching `reader`.
 
     channel.writer.write(b"file contents").await?;
     channel.writer.close().await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    channel, err := client.CreateChannel(ctx, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := channel.Writer.Write(ctx, []byte("file contents")); err != nil {
+        log.Fatal(err)
+    }
+    if err := channel.Writer.Close(); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>
@@ -181,6 +211,28 @@ by whichever worker holds the matching `writer`.
     while let Some(chunk) = channel.reader.next_binary().await? {
         bytes += chunk.len();
     }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    channel, err := client.CreateChannel(ctx, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    bytes := 0
+    for {
+        chunk, ok, err := channel.Reader.NextBinary(ctx)
+        if err != nil {
+            log.Fatal(err)
+        }
+        if !ok {
+            break // the writer closed the channel
+        }
+        bytes += len(chunk)
+    }
+    log.Printf("read %d bytes", bytes)
     ```
 
   </Tab>
@@ -240,12 +292,34 @@ function uses the ref to read from (or write to) the channel.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    payload, err := json.Marshal(map[string]any{
+        "filename": "report.csv",
+        "reader":   channel.ReaderRef,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := client.Trigger(ctx, iii.TriggerRequest{
+        FunctionID: "files::process",
+        Data:       payload,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("files::process returned %s", result)
+    ```
+
+  </Tab>
 </Tabs>
 
 Node and Python deserialize incoming channel refs into live `ChannelReader` / `ChannelWriter`
-objects before the handler runs, so the ref arrives ready to iterate or write to. Rust receives the
-ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader::new(...)` or
-`ChannelWriter::new(...)`.
+objects before the handler runs, so the ref arrives ready to iterate or write to. Rust and Go
+receive the ref in JSON and reconstruct the reader or writer explicitly: Rust with
+`ChannelReader::new(...)` or `ChannelWriter::new(...)`, Go with `iii.ExtractChannelRefs(...)` and
+`client.OpenReader(...)` or `client.OpenWriter(...)`.
 
 <Tip>
   The channel belongs to the worker that created it. Keep that worker connected until the receiving
@@ -303,6 +377,37 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("files::process", func(ctx context.Context, data json.RawMessage) (any, error) {
+        refs, err := iii.ExtractChannelRefs(data)
+        if err != nil {
+            return nil, err
+        }
+        readerRef, ok := refs["reader"]
+        if !ok || readerRef.Direction != iii.ChannelRead {
+            return nil, errors.New("missing reader channel ref")
+        }
+
+        reader := client.OpenReader(readerRef)
+        defer reader.Close()
+
+        bytes := 0
+        for {
+            chunk, ok, err := reader.NextBinary(ctx)
+            if err != nil {
+                return nil, err
+            }
+            if !ok {
+                break
+            }
+            bytes += len(chunk)
+        }
+        return map[string]int{"bytes": bytes}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ### Write to a channel ref
@@ -352,10 +457,37 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("files::generate", func(ctx context.Context, data json.RawMessage) (any, error) {
+        refs, err := iii.ExtractChannelRefs(data)
+        if err != nil {
+            return nil, err
+        }
+        writerRef, ok := refs["writer"]
+        if !ok || writerRef.Direction != iii.ChannelWrite {
+            return nil, errors.New("missing writer channel ref")
+        }
+
+        writer := client.OpenWriter(writerRef)
+        if err := writer.Write(ctx, []byte("hello ")); err != nil {
+            return nil, err
+        }
+        if err := writer.Write(ctx, []byte("world")); err != nil {
+            return nil, err
+        }
+        if err := writer.Close(); err != nil {
+            return nil, err
+        }
+        return map[string]bool{"ok": true}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 <Note>
   For the per-language channel API surface, see the SDK reference:
-  [Node](../reference/sdk-node), [Python](../reference/sdk-python), and
-  [Rust](../reference/sdk-rust).
+  [Node](../reference/sdk-node), [Python](../reference/sdk-python), [Rust](../reference/sdk-rust),
+  and [Go](../reference/sdk-go).
 </Note>

@@ -155,10 +155,44 @@ endpoint.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("my-worker"),
+        iii.WithNamespace("orders"),
+    )
+
+    client.RegisterFunction("http::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var req struct {
+            Body struct {
+                A float64 `json:"a"`
+                B float64 `json:"b"`
+            } `json:"body"`
+        }
+        if err := json.Unmarshal(data, &req); err != nil {
+            return nil, err
+        }
+        return map[string]any{
+            "status_code": 200,
+            "body":        map[string]float64{"c": req.Body.A + req.Body.B},
+            "headers":     map[string]string{"Content-Type": "application/json"},
+        }, nil
+    })
+
+    // "http-add-route" is the id of this trigger
+    err := client.RegisterTrigger("http-add-route", "http", "http::add",
+        json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`))
+    if err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 The Rust SDK sets the worker name through `InitOptions.metadata.name`; Node uses `workerName`,
-and Python uses `worker_name`. All three examples register the name `my-worker`.
+Python uses `worker_name`, and Go uses `iii.WithName`. All four examples register the name
+`my-worker`.
 
 2. Add the worker to Compose, pointing at its directory:
 

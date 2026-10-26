@@ -63,6 +63,23 @@ and returns the result.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            A float64 `json:"a"`
+            B float64 `json:"b"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return map[string]float64{"c": payload.A + payload.B}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ### Every function is observable
@@ -139,6 +156,22 @@ fire. Pass a different `TriggerAction` to change that.
         .namespace("default"), // target a specific namespace
         )
         .await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    result, err := client.Trigger(ctx, iii.TriggerRequest{
+        FunctionID: "math::add",
+        Data:       json.RawMessage(`{"a":2,"b":3}`),
+        Namespace:  "default", // target a specific namespace
+        // Action: iii.VoidAction(),          // fire-and-forget
+        // Action: iii.EnqueueAction("math"), // route through queue
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("math::add returned %s", result)
     ```
 
   </Tab>
