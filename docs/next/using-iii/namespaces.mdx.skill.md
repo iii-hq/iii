@@ -176,7 +176,7 @@ no namespace of its own resolves in `default`, as before.
     ```go
     result, err := client.Trigger(ctx, iii.TriggerRequest{
         FunctionID: "state::get",
-        Data:       json.RawMessage(`{"key":"cart"}`),
+        Payload:    json.RawMessage(`{"key":"cart"}`),
         Namespace:  "orders",
     })
     if err != nil {
@@ -198,8 +198,8 @@ A miss returns `function_not_found`. The error lists other namespaces where the 
 ## Point a trigger at a namespaced function
 
 Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
-the target to the worker's namespace. Set `namespace` (Go: `RegisterTriggerNamespaced`) to bind it
-elsewhere, which is what a trigger pointing at an engine builtin needs, since those exist only in
+the target to the worker's namespace. Set `namespace` (Go: `RegisterTriggerInput.Namespace`) to bind
+it elsewhere, which is what a trigger pointing at an engine builtin needs, since those exist only in
 `default`.
 
 ```typescript

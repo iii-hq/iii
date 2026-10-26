@@ -496,7 +496,7 @@ engine path:
     client.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
 
     // per call
-    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
+    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Payload: payload, Dispatch: iii.DispatchRemote})
     ```
 
   </Tab>
