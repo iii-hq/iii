@@ -51,12 +51,12 @@ pub enum ComposeError {
     UnsupportedEngineWorker { worker: String },
 
     /// The pre-0.26 `engine.workers.iii-sandbox` block. `replacement` is the
-    /// `containers:` entry that carries its settings to `sandbox-builtin`.
+    /// `containers:` entry that carries its settings to `sandbox-libkrun`.
     #[error(
         "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the \
-         sandbox-builtin worker, which Compose installs for you. Replace the block with \
-         `engine.sandbox.adapter: sandbox-builtin` (optional, the default) and move \
-         image_allowlist/custom_images/default_* to `containers.sandbox-builtin.config_override`. \
+         sandbox-libkrun worker, which Compose installs for you. Replace the block with \
+         `engine.sandbox.adapter: sandbox-libkrun` (optional, the default) and move \
+         image_allowlist/custom_images/default_* to `containers.sandbox-libkrun.config_override`. \
          Guide: https://iii.dev/docs/upgrading/sandbox-worker\n\n{replacement}"
     )]
     SandboxConfigMoved { replacement: String },

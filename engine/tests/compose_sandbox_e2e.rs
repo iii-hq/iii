@@ -1,4 +1,4 @@
-//! Compose's acceptance run on the real `sandbox-builtin` adapter.
+//! Compose's acceptance run on the real `sandbox-libkrun` adapter.
 //!
 //! A registry bundle and a `path://` worker with `runtime.base_image` each boot
 //! in a microVM that belongs to the adapter, restart after their VM is killed,
@@ -26,7 +26,7 @@ use nix::{
 use serde_json::{Value, json};
 
 /// Pinned so a new registry release cannot turn iii's CI red (D5).
-const SANDBOX_BUILTIN: &str = "1.0.0";
+const SANDBOX_LIBKRUN: &str = "1.0.0";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
@@ -105,7 +105,7 @@ fn vm_boots(home: &Path) -> Vec<Proc> {
         .collect()
 }
 
-/// The microVM is the adapter's child, not Compose's. `sandbox-builtin`
+/// The microVM is the adapter's child, not Compose's. `sandbox-libkrun`
 /// re-executes itself as `__vm-boot`, so the parent runs the same executable.
 #[cfg(target_os = "linux")]
 fn assert_vm_belongs_to_the_adapter(vm: &Proc, compose_pid: u32) {
@@ -119,7 +119,7 @@ fn assert_vm_belongs_to_the_adapter(vm: &Proc, compose_pid: u32) {
     assert_eq!(
         exe(parent),
         exe(vm),
-        "the parent of __vm-boot is not the sandbox-builtin process that re-executed itself"
+        "the parent of __vm-boot is not the sandbox-libkrun process that re-executed itself"
     );
 }
 
@@ -181,7 +181,7 @@ impl Project {
         std::fs::write(
             &file,
             format!(
-                "stop_timeout: {}s\nstartup_timeout: 120s\nengine:\n  url: ws://127.0.0.1:{port}\ncontainers:\n{containers}  # added by compose::add\n  sandbox-builtin:\n    worker: package://api.workers.iii.dev/sandbox-builtin\n    version: {SANDBOX_BUILTIN}\n",
+                "stop_timeout: {}s\nstartup_timeout: 120s\nengine:\n  url: ws://127.0.0.1:{port}\ncontainers:\n{containers}  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n",
                 STOP_TIMEOUT.as_secs()
             ),
         )
@@ -316,7 +316,7 @@ impl Project {
     fn up_again(&mut self, key: &str) {
         let up = self.compose_call("compose::up", json!({}), LONG);
         assert_eq!(up["status"], "ok", "{up}");
-        self.wait_ready("sandbox-builtin", SHORT);
+        self.wait_ready("sandbox-libkrun", SHORT);
         self.wait_ready(key, SHORT);
     }
 
@@ -354,7 +354,7 @@ impl Project {
         assert!(left.is_empty(), "rm left VM state behind: {left:?}");
         let file = std::fs::read_to_string(&self.file).unwrap();
         assert!(
-            !file.contains("sandbox-builtin"),
+            !file.contains("sandbox-libkrun"),
             "the generated adapter outlived its last VM:\n{file}"
         );
     }
@@ -400,7 +400,7 @@ impl Drop for Project {
 }
 
 /// `sandbox::create`, `sandbox::exec` and `sandbox::stop` through the engine's
-/// router, which forwards them to `sandbox-builtin::*` in the owner's namespace.
+/// router, which forwards them to `sandbox-libkrun::*` in the owner's namespace.
 fn sandbox_exec_through_the_router(project: &Project) {
     let created = project
         .trigger(None, "sandbox::create", json!({ "image": "python" }), LONG)
@@ -434,14 +434,14 @@ fn sandbox_exec_through_the_router(project: &Project) {
 #[test]
 #[ignore = "boots microVMs; run by compose-sandbox-e2e-linux"]
 #[serial_test::serial(sandbox_vm)]
-fn a_registry_bundle_runs_through_sandbox_builtin() {
+fn a_registry_bundle_runs_through_sandbox_libkrun() {
     let mut project = Project::new(&format!(
         "  onboarding:\n    worker: package://onboarding\n    version: {ONBOARDING}\n    restart: always\n"
     ));
     let declared = std::fs::read(&project.file).unwrap();
 
     project.start();
-    project.wait_ready("sandbox-builtin", FIRST_UP);
+    project.wait_ready("sandbox-libkrun", FIRST_UP);
     project.wait_ready("onboarding", FIRST_UP);
     // Compose takes the generated adapter as its own and does not re-resolve it.
     assert_eq!(
@@ -509,7 +509,7 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
     };
 
     project.start();
-    project.wait_ready("sandbox-builtin", FIRST_UP);
+    project.wait_ready("sandbox-libkrun", FIRST_UP);
     project.wait_ready("sandbox-vm-worker", FIRST_UP);
     expect_reply(&project, &std::fs::read_to_string(&reply).unwrap());
 

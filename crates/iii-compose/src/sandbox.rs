@@ -1202,7 +1202,7 @@ pub(crate) mod tests {
         );
         let mut file = parse(
             dir,
-            "engine: {sandbox: {}}\ncontainers:\n  sb: {worker: package://sandbox-builtin, version: 1.0.0}\n  app: {worker: package://app, version: 1.0.0}\n  bin: {worker: package://bin, version: 1.0.0}\n  local: {worker: path://./local}\n",
+            "engine: {sandbox: {}}\ncontainers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  app: {worker: package://app, version: 1.0.0}\n  bin: {worker: package://bin, version: 1.0.0}\n  local: {worker: path://./local}\n",
         );
         file.containers["app"].resolved_package = Some(package("name: app, type: bundle"));
         file.containers["bin"].resolved_package = Some(package("name: bin, type: binary"));
@@ -1267,14 +1267,14 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         manifest(dir, "other", "name: other\n");
-        manifest(dir, "dev", "name: sandbox-builtin\n");
-        let adapter = |text: &str| adapter_key(&parse(dir, text), "sandbox-builtin").unwrap();
+        manifest(dir, "dev", "name: sandbox-libkrun\n");
+        let adapter = |text: &str| adapter_key(&parse(dir, text), "sandbox-libkrun").unwrap();
         assert_eq!(
-            adapter("containers:\n  sb: {worker: package://sandbox-builtin, version: 1.0.0}\n"),
+            adapter("containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n"),
             Some("sb".into())
         );
         assert_eq!(
-            adapter("containers:\n  sandbox-builtin: {worker: path://./other}\n"),
+            adapter("containers:\n  sandbox-libkrun: {worker: path://./other}\n"),
             None
         );
         assert_eq!(
@@ -1287,10 +1287,10 @@ pub(crate) mod tests {
             "containers:\n  sb: {worker: package://my-sandbox, version: 1.0.0}\n",
         );
         file.containers["sb"].resolved_package = Some(package(
-            "name: my-sandbox, alias_of: sandbox-builtin, type: binary",
+            "name: my-sandbox, alias_of: sandbox-libkrun, type: binary",
         ));
         assert_eq!(
-            adapter_key(&file, "sandbox-builtin").unwrap(),
+            adapter_key(&file, "sandbox-libkrun").unwrap(),
             Some("sb".into())
         );
     }
@@ -1315,7 +1315,7 @@ pub(crate) mod tests {
         manifest(
             dir,
             "dev",
-            "name: sandbox-builtin\nruntime: {base_image: python}\nscripts: {start: x}\n",
+            "name: sandbox-libkrun\nruntime: {base_image: python}\nscripts: {start: x}\n",
         );
         let mut file = parse(dir, "containers:\n  dev: {worker: path://./dev}\n");
         assert_eq!(
@@ -1332,7 +1332,7 @@ pub(crate) mod tests {
         assert!(file.containers["dev"].start_after.is_empty());
     }
 
-    /// A registry whose `/resolve` answers `sandbox-builtin` 1.2.3 for this
+    /// A registry whose `/resolve` answers `sandbox-libkrun` 1.2.3 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1340,11 +1340,11 @@ pub(crate) mod tests {
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/resolve"))
             .and(matchers::body_partial_json(
-                serde_json::json!({ "worker": "sandbox-builtin" }),
+                serde_json::json!({ "worker": "sandbox-libkrun" }),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "graph": [{
-                    "name": "sandbox-builtin",
+                    "name": "sandbox-libkrun",
                     "version": "1.2.3",
                     "type": "binary",
                     "binaries": { (crate::registry::host_targets()[0]): {
@@ -1363,9 +1363,9 @@ pub(crate) mod tests {
         server
     }
 
-    /// `text` with a generated `sandbox-builtin` 1.2.3 appended.
+    /// `text` with a generated `sandbox-libkrun` 1.2.3 appended.
     fn with_generated_adapter(text: &str) -> String {
-        let request = edit::parse_worker("sandbox-builtin@1.2.3").unwrap();
+        let request = edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
         let edit::Outcome::Added(text) = edit::upsert_container(text, &request).unwrap() else {
             panic!("the adapter is new");
         };
@@ -1376,13 +1376,13 @@ pub(crate) mod tests {
     async fn the_adapter_resolves_within_the_contract_major_and_pins_the_exact_release() {
         let server = adapter_registry(b"").await;
         let request = crate::registry::TEST_REGISTRY
-            .scope(server.uri(), adapter_request("sandbox-builtin"))
+            .scope(server.uri(), adapter_request("sandbox-libkrun"))
             .await
             .unwrap();
         assert_eq!(
             request.source,
             edit::Source::Package {
-                reference: "api.workers.iii.dev/sandbox-builtin".into(),
+                reference: "api.workers.iii.dev/sandbox-libkrun".into(),
                 version: Some("1.2.3".into())
             }
         );
@@ -1394,7 +1394,7 @@ pub(crate) mod tests {
         else {
             panic!("the adapter is new");
         };
-        assert!(edit::is_generated_container(&text, "sandbox-builtin").unwrap());
+        assert!(edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
     }
 
     #[tokio::test]
@@ -1406,7 +1406,7 @@ pub(crate) mod tests {
             adapter_change(&text, &file, "default", false, true)
                 .await
                 .unwrap(),
-            Some(AdapterChange::Remove("sandbox-builtin".into()))
+            Some(AdapterChange::Remove("sandbox-libkrun".into()))
         );
         // up, build and add never remove it, so up leaves the file as it is.
         assert_eq!(
@@ -1432,13 +1432,13 @@ pub(crate) mod tests {
                 adapter_change(&text, &file, "default", true, true).await
             })
         };
-        let pinned = "containers:\n  sb: {worker: package://sandbox-builtin, version: 1.0.0}\n";
+        let pinned = "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n";
         let app = "  app: {worker: package://app, version: 1.0.0}\n";
         assert_eq!(change(format!("{pinned}{app}"), true).await.unwrap(), None);
         assert_eq!(change(pinned.to_string(), false).await.unwrap(), None);
 
-        manifest(dir, "dev", "name: sandbox-builtin\n");
-        let checkout = "containers:\n  sandbox-builtin: {worker: path://./dev}\n";
+        manifest(dir, "dev", "name: sandbox-libkrun\n");
+        let checkout = "containers:\n  sandbox-libkrun: {worker: path://./dev}\n";
         assert_eq!(
             change(format!("{checkout}{app}"), true).await.unwrap(),
             None
@@ -1447,15 +1447,15 @@ pub(crate) mod tests {
         // Keyed like the adapter but another worker: refused, never rewritten.
         manifest(dir, "other", "name: other\n");
         for taken in [
-            "containers:\n  sandbox-builtin: {worker: package://acme/sandbox-fork, version: 1.0.0}\n",
-            "containers:\n  sandbox-builtin: {worker: path://./other}\n",
+            "containers:\n  sandbox-libkrun: {worker: package://acme/sandbox-fork, version: 1.0.0}\n",
+            "containers:\n  sandbox-libkrun: {worker: path://./other}\n",
         ] {
             let error = change(format!("{taken}{app}"), true).await.unwrap_err();
             assert_eq!(error.code(), "INVALID_WORKER_SPEC");
             assert!(
                 error
                     .to_string()
-                    .contains("container 'sandbox-builtin' does not run the sandbox adapter"),
+                    .contains("container 'sandbox-libkrun' does not run the sandbox adapter"),
                 "{error}"
             );
             // Without a VM the key is the operator's business.
@@ -1510,7 +1510,7 @@ pub(crate) mod tests {
     fn only_the_adapter_container_gets_the_token() {
         let file = parse(
             Path::new("/srv/app"),
-            "engine: {sandbox: {}}\ncontainers:\n  sb: {worker: package://sandbox-builtin, version: 1.0.0}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "engine: {sandbox: {}}\ncontainers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  app: {worker: package://app, version: 1.0.0}\n",
         );
         let layer = |key: &str| {
             let mut env = BTreeMap::from([
@@ -1571,33 +1571,33 @@ pub(crate) mod tests {
         };
         assert!(
             check_info(
-                &info("sandbox-builtin", 1),
-                "sandbox-builtin",
-                "sandbox-builtin",
+                &info("sandbox-libkrun", 1),
+                "sandbox-libkrun",
+                "sandbox-libkrun",
                 "app"
             )
             .is_ok()
         );
         let e = check_info(
-            &info("sandbox-builtin", 2),
-            "sandbox-builtin",
-            "sandbox-builtin",
+            &info("sandbox-libkrun", 2),
+            "sandbox-libkrun",
+            "sandbox-libkrun",
             "app",
         )
         .unwrap_err();
         assert_eq!(e.code(), "SPAWN_FAILED");
         assert_eq!(
             e.to_string(),
-            "container 'app' could not start: adapter sandbox-builtin implements sandbox contract \
-             2.0, but this engine needs major 1; install a sandbox-builtin release whose major \
+            "container 'app' could not start: adapter sandbox-libkrun implements sandbox contract \
+             2.0, but this engine needs major 1; install a sandbox-libkrun release whose major \
              version is 1"
         );
-        let e = check_info(&info("other", 1), "sandbox-builtin", "sb", "app").unwrap_err();
+        let e = check_info(&info("other", 1), "sandbox-libkrun", "sb", "app").unwrap_err();
         assert_eq!(e.code(), "SANDBOX_ADAPTER_MISMATCH");
         assert_eq!(
             e.to_string(),
-            "container 'sb' is the sandbox adapter 'sandbox-builtin', but adapter::info names \
-             'other'. Set engine.sandbox.adapter to 'other' or install 'sandbox-builtin'"
+            "container 'sb' is the sandbox adapter 'sandbox-libkrun', but adapter::info names \
+             'other'. Set engine.sandbox.adapter to 'other' or install 'sandbox-libkrun'"
         );
     }
 
@@ -1736,10 +1736,10 @@ pub(crate) mod tests {
 
         let file = parse(
             Path::new("/srv/app"),
-            "containers:\n  sb: {worker: package://sandbox-builtin, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n",
         );
         let mut children = Children::new();
-        assert!(adapter_gone(&file, "sandbox-builtin", &children));
+        assert!(adapter_gone(&file, "sandbox-libkrun", &children));
 
         let mut adapter = tokio::process::Command::new("sleep");
         adapter.arg("30");
@@ -1747,9 +1747,9 @@ pub(crate) mod tests {
             "sb".into(),
             Child::Process(crate::process::spawn_supervised(adapter).unwrap()),
         );
-        assert!(!adapter_gone(&file, "sandbox-builtin", &children));
+        assert!(!adapter_gone(&file, "sandbox-libkrun", &children));
         children["sb"].stop(Duration::from_secs(1)).await;
-        assert!(adapter_gone(&file, "sandbox-builtin", &children));
+        assert!(adapter_gone(&file, "sandbox-libkrun", &children));
 
         // Not declared here: its VMs are asked, never presumed gone.
         assert!(!adapter_gone(&file, "sandbox-docker", &Children::new()));
@@ -1950,7 +1950,7 @@ pub(crate) mod tests {
     ) -> Vec<(String, Option<u64>)> {
         let mut calls = Vec::new();
         while let Ok((function, payload)) = called.try_recv() {
-            let suffix = function.trim_start_matches("sandbox-builtin::").to_string();
+            let suffix = function.trim_start_matches("sandbox-libkrun::").to_string();
             calls.push((suffix, payload["instance"].as_u64()));
         }
         calls
@@ -1958,7 +1958,7 @@ pub(crate) mod tests {
 
     fn vm_record() -> VmRecord {
         VmRecord {
-            adapter: "sandbox-builtin".into(),
+            adapter: "sandbox-libkrun".into(),
             namespace: "shop".into(),
             vm_id: "v".into(),
             instance: 1,
@@ -1969,7 +1969,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_vm_that_exits_by_the_first_tick_keeps_its_output() {
         let (client, mut called) = fake_engine(|function, _| match function {
-            "sandbox-builtin::worker::logs" => answered(serde_json::json!({})),
+            "sandbox-libkrun::worker::logs" => answered(serde_json::json!({})),
             _ => answered(status(State::Exited, Some(1), None)),
         })
         .await;
@@ -2000,10 +2000,10 @@ pub(crate) mod tests {
         let (client, mut called) =
             fake_engine(
                 |function, payload| match (function, payload["instance"].as_u64()) {
-                    ("sandbox-builtin::worker::status", Some(1)) => {
+                    ("sandbox-libkrun::worker::status", Some(1)) => {
                         refused(SandboxErrorCode::S503, 2)
                     }
-                    ("sandbox-builtin::worker::stop", Some(2)) => {
+                    ("sandbox-libkrun::worker::stop", Some(2)) => {
                         answered(status(State::Stopped, None, Some(15)))
                     }
                     _ => not_found(),
@@ -2028,13 +2028,13 @@ pub(crate) mod tests {
         let (client, mut called) =
             fake_engine(
                 |function, payload| match (function, payload["instance"].as_u64()) {
-                    ("sandbox-builtin::worker::status", _) => {
+                    ("sandbox-libkrun::worker::status", _) => {
                         answered(status(State::Running, None, None))
                     }
-                    ("sandbox-builtin::worker::stop", Some(1)) => {
+                    ("sandbox-libkrun::worker::stop", Some(1)) => {
                         refused(SandboxErrorCode::S503, 2)
                     }
-                    ("sandbox-builtin::worker::stop", Some(2)) => {
+                    ("sandbox-libkrun::worker::stop", Some(2)) => {
                         answered(status(State::Stopped, None, Some(15)))
                     }
                     _ => not_found(),
@@ -2062,15 +2062,15 @@ pub(crate) mod tests {
     async fn a_start_that_finds_a_live_boot_stops_it_and_starts_again() {
         let starts = std::sync::atomic::AtomicUsize::new(0);
         let (url, mut called) = fake_engine_url(move |function, _| match function {
-            "sandbox-builtin::worker::start"
+            "sandbox-libkrun::worker::start"
                 if starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
             {
                 refused(SandboxErrorCode::S502, 1)
             }
-            "sandbox-builtin::worker::start" => {
+            "sandbox-libkrun::worker::start" => {
                 answered(serde_json::json!({ "vm_id": "v", "instance": 2 }))
             }
-            "sandbox-builtin::worker::stop" => answered(status(State::Stopped, None, Some(15))),
+            "sandbox-libkrun::worker::stop" => answered(status(State::Stopped, None, Some(15))),
             _ => not_found(),
         })
         .await;
@@ -2089,7 +2089,7 @@ pub(crate) mod tests {
         .unwrap();
         let started = worker_start(
             &EngineClient::connect(&url, "t", "t"),
-            "sandbox-builtin",
+            "sandbox-libkrun",
             "shop",
             &request,
             Duration::from_secs(5),
@@ -2117,15 +2117,15 @@ pub(crate) mod tests {
     async fn a_start_sends_a_dropped_call_again_once_the_engine_is_back() {
         let prepares = std::sync::atomic::AtomicUsize::new(0);
         let (url, mut called) = fake_engine_url(move |function, _| match function {
-            "sandbox-builtin::adapter::info" => answered(AdapterInfo {
-                adapter: "sandbox-builtin".into(),
+            "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
+                adapter: "sandbox-libkrun".into(),
                 adapter_version: "1.0.0".into(),
                 contract: ContractVersion {
                     major: CONTRACT_MAJOR,
                     minor: 0,
                 },
             }),
-            "sandbox-builtin::worker::prepare" => {
+            "sandbox-libkrun::worker::prepare" => {
                 match prepares.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                     0 | 3 => serde_json::Value::Null,
                     // The adapter has not registered again yet.
@@ -2133,7 +2133,7 @@ pub(crate) mod tests {
                     _ => answered(serde_json::json!({})),
                 }
             }
-            "sandbox-builtin::worker::start" => {
+            "sandbox-libkrun::worker::start" => {
                 answered(serde_json::json!({ "vm_id": "v", "instance": 1 }))
             }
             _ => not_found(),
@@ -2214,7 +2214,7 @@ pub(crate) mod tests {
         let (url, _called) = fake_engine_url(move |function, payload| {
             let (boots, live) = &mut *adapter.lock().unwrap();
             match function {
-                "sandbox-builtin::worker::start" => match *live {
+                "sandbox-libkrun::worker::start" => match *live {
                     Some(instance) => refused(SandboxErrorCode::S502, instance),
                     None => {
                         *boots += 1;
@@ -2225,7 +2225,7 @@ pub(crate) mod tests {
                         answered(serde_json::json!({ "vm_id": "v", "instance": *boots }))
                     }
                 },
-                "sandbox-builtin::worker::stop" => {
+                "sandbox-libkrun::worker::stop" => {
                     if *live == payload["instance"].as_u64() {
                         *live = None;
                     }
@@ -2252,7 +2252,7 @@ pub(crate) mod tests {
             Duration::from_secs(10),
             worker_start(
                 &EngineClient::connect(&url, "t", "t"),
-                "sandbox-builtin",
+                "sandbox-libkrun",
                 "shop",
                 &request,
                 Duration::from_secs(8),
@@ -2286,7 +2286,7 @@ pub(crate) mod tests {
                 Duration::from_secs(5),
                 call::<WorkerPrepareResponse>(
                     &client,
-                    "sandbox-builtin",
+                    "sandbox-libkrun",
                     "shop",
                     WORKER_PREPARE,
                     &request,
@@ -2323,7 +2323,7 @@ pub(crate) mod tests {
                 start_call::<WorkerPrepareResponse>(
                     &engine,
                     "vm",
-                    "sandbox-builtin",
+                    "sandbox-libkrun",
                     "shop",
                     suffix,
                     &request,
@@ -2348,10 +2348,10 @@ pub(crate) mod tests {
         assert_eq!(
             reconnect_line(
                 "web",
-                "sandbox-builtin::worker::start",
+                "sandbox-libkrun::worker::start",
                 Duration::from_millis(3200)
             ),
-            "web: no engine connection for sandbox-builtin::worker::start; waiting up to 4s \
+            "web: no engine connection for sandbox-libkrun::worker::start; waiting up to 4s \
              for it to come back"
         );
     }
@@ -2399,7 +2399,7 @@ pub(crate) mod tests {
         assert_eq!(vm.wait().await.code(), None);
 
         let (client, _called) = fake_engine(|function, _| match function {
-            "sandbox-builtin::worker::stop" => refused(SandboxErrorCode::S504, 1),
+            "sandbox-libkrun::worker::stop" => refused(SandboxErrorCode::S504, 1),
             _ => not_found(),
         })
         .await;

@@ -606,7 +606,7 @@ async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
     assert_eq!(err.code(), "SANDBOX_ADAPTER_NOT_DECLARED");
     assert_eq!(
         err.to_string(),
-        "vm needs the sandbox adapter 'sandbox-builtin', and --frozen does not edit the file. Run up once without --frozen, or: iii trigger compose::add worker=iii-sandbox"
+        "vm needs the sandbox adapter 'sandbox-libkrun', and --frozen does not edit the file. Run up once without --frozen, or: iii trigger compose::add worker=iii-sandbox"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
