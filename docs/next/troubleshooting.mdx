@@ -36,12 +36,13 @@ Find yours by its `target` and read its `state`:
 - `pending` or `error`: `reason` says why, for example the owner has not acknowledged it, the target
   is not registered, or the args were refused (`INVALID_ARGS`). See
   [Observer states](./using-iii/observers#observer-states).
-- `active` with `fires` at 0: no event has reached it. Check `delivery`:
+- `active` with `fires` and `dropped` at 0: no event has reached it. Check `delivery`:
   - `owner`: calling the function is not an event. Its owner must hand each event to the observer
     with `obs.emit` or `obs.call`, and not from `onObserverAdded`, where the observer is not active
     yet. See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
-  - `auto`: only invocations that complete after the observer turned `active`, with the outcome its
-    `on` asks for (`success` by default), and that pass its filters are events.
+  - `auto`: only invocations that start after the observer turned `active`, end with the outcome its
+    `on` asks for (`success` by default), and pass its filters are events. A call already running
+    when the observer turned `active` is not one, so call the function again.
 - `dropped` or `activation_failures` above 0: events reached it and were dropped or failed, counted
   by reason (`OVERFLOW`, `LOOP_GUARD`, ...).
 
