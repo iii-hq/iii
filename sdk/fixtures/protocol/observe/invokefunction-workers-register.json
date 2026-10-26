@@ -1,0 +1,25 @@
+{
+  "type": "invokefunction",
+  "function_id": "engine::workers::register",
+  "data": {
+    "runtime": "node",
+    "version": "0.25.0",
+    "name": "billing",
+    "os": "linux 6.8.0",
+    "pid": 4242,
+    "namespace": "default",
+    "telemetry": {
+      "language": "en-US",
+      "project_name": "billing",
+      "framework": "iii-node"
+    },
+    "features": [
+      "observe.v1",
+      "local-dispatch.v1",
+      "large-messages.v1"
+    ]
+  },
+  "action": {
+    "type": "void"
+  }
+}

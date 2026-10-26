@@ -511,7 +511,8 @@ Configuration for OpenTelemetry initialization.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enabled` | `bool \| None` | No | Enable OTel. Defaults to True. Set OTEL_ENABLED=false/0/no/off to disable. |
-| `engine_ws_url` | `str \| None` | No | III Engine WebSocket URL. Defaults to env III_URL or 'ws://localhost:49134'. |
+| `engine_ws_headers` | `dict[str, str] \| None` | No | HTTP headers sent on the telemetry WebSocket handshake (e.g. Authorization). |
+| `engine_ws_url` | `str \| None` | No | III Engine WebSocket URL. The SDK sets the worker's address; otherwise env III_URL or 'ws://localhost:49134'. |
 | `fetch_instrumentation_enabled` | `bool` | No | Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True. |
 | `logs_batch_size` | `int \| None` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
 | `logs_enabled` | `bool \| None` | No | Enable OTel log export via EngineLogExporter. Defaults to True when OTel is enabled. |
@@ -793,7 +794,7 @@ Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
 
 Engine semantics:
   - Missing/non-object intermediates along a nested path are
-    auto-created/replaced with ``\{\}``.
+    auto-created/replaced with ``{}``.
   - At the leaf:
       - missing/null + nested path -> ``[value]`` (always an array)
       - missing/null + single-string path -> string-as-string for
@@ -857,7 +858,7 @@ Path forms accepted:
 
 Engine semantics:
   - Missing or non-object intermediates along the path are
-    auto-replaced with ``\{\}``.
+    auto-replaced with ``{}``.
   - The merge is shallow at the target node (top-level keys of
     ``value`` overwrite same-named keys; siblings preserved).
 

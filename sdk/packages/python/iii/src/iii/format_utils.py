@@ -63,7 +63,7 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
 
     # Handle list[X]
     origin = get_origin(annotation)
-    if origin is list:
+    if origin is list or annotation is list:
         args = get_args(annotation)
         schema: dict[str, Any] = {"type": "array"}
         if args:
@@ -73,7 +73,7 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
         return schema
 
     # Handle dict[str, X]
-    if origin is dict:
+    if origin is dict or annotation is dict:
         args = get_args(annotation)
         schema_dict: dict[str, Any] = {"type": "object"}
         if args and len(args) >= 2:

@@ -37,6 +37,17 @@ function isDeprecated(comment?: TypeDocReflection['comment']): boolean {
   return !!comment?.blockTags?.some(t => t.tag === '@deprecated')
 }
 
+/** Raw text of a `@deprecated` block tag (markers included), or undefined. */
+function deprecatedRaw(comment?: TypeDocReflection['comment']): string | undefined {
+  const tag = comment?.blockTags?.find(t => t.tag === '@deprecated')
+  return tag ? tag.content.map(c => c.text).join('') : undefined
+}
+
+/** The `@deprecated` text as one line of prose, without doc markers. */
+function deprecationNote(raw: string): string {
+  return raw.replace(EXPAND_PARAMS_RE, '').replace(INTERNAL_RE, '').replace(/\s*\n\s*/g, ' ').trim()
+}
+
 function extractExamples(comment?: TypeDocReflection['comment']): string[] {
   if (!comment?.blockTags) return []
   return comment.blockTags
@@ -117,6 +128,8 @@ function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
   const comment = sig.comment ?? ref.comment
   const params = sig.parameters ?? []
   const returnType = typeToString(sig.type ?? ref.type)
+  // A doc marker written after `@deprecated` lands in that block tag.
+  const deprecated = deprecatedRaw(comment) ?? deprecatedRaw(ref.comment)
 
   return {
     name: ref.name,
@@ -125,7 +138,8 @@ function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
     params: extractParams(sig),
     returns: { type: returnType, description: '' },
     examples: extractExamples(comment),
-    ...parseExpandMarker(comment?.summary?.map(s => s.text).join('')),
+    ...parseExpandMarker(`${comment?.summary?.map(s => s.text).join('') ?? ''}${deprecated ?? ''}`),
+    ...(deprecated !== undefined ? { deprecated: { note: deprecationNote(deprecated) } } : {}),
   }
 }
 
@@ -161,12 +175,48 @@ function extractFieldsFromChildren(children: any[], indexSignatures?: any[]): Pa
     )
 }
 
-function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>): TypeDocType[] {
+/**
+ * `type X = Omit<Y, "a" | "b"> & { extra }`: the extra members' fields now,
+ * and the `Omit` to resolve against Y once every type is known
+ * ({@link resolveOmitAliases}). Null for any other intersection.
+ */
+function omitIntersection(type: any): { omit?: { target: string; omitted: Set<string> }; fields: ParamDoc[] } | null {
+  if (type?.type !== 'intersection') return null
+  const fields: ParamDoc[] = []
+  let omit: { target: string; omitted: Set<string> } | undefined
+  for (const member of type.types ?? []) {
+    if (member.type === 'reflection' && member.declaration?.children?.length) {
+      fields.push(...extractFieldsFromChildren(member.declaration.children, indexSignaturesOf(member.declaration)))
+    } else if (member.type === 'reference' && member.name === 'Omit' && member.typeArguments?.[0]?.type === 'reference' && !omit) {
+      const keys = member.typeArguments[1]
+      const literals = keys?.type === 'union' ? keys.types : [keys]
+      if (!literals.every((k: any) => k?.type === 'literal' && typeof k.value === 'string')) return null
+      omit = { target: member.typeArguments[0].name, omitted: new Set(literals.map((k: any) => k.value)) }
+    } else {
+      return null
+    }
+  }
+  return { omit, fields }
+}
+
+/** Pending `Omit` parts of intersection aliases, resolved by {@link resolveOmitAliases}. */
+const pendingOmits = new WeakMap<TypeDocType, { target: string; omitted: Set<string> }>()
+
+/**
+ * `deprecated: 'skip'` (the Types section) drops `@deprecated` types, which are
+ * legacy aliases and re-exports; `'only'` collects just those, for the
+ * parameters of deprecated methods that are still documented.
+ */
+function extractTypesFrom(
+  children: TypeDocReflection[],
+  skipNames: Set<string>,
+  deprecated: 'skip' | 'only' = 'skip',
+): TypeDocType[] {
   const types: TypeDocType[] = []
 
   for (const child of children) {
     if (skipNames.has(child.name)) continue
-    if (isDeprecated(child.comment)) continue
+    if (isDeprecated(child.comment) !== (deprecated === 'only')) continue
     if (isInternalDoc(child.comment?.summary?.map(s => s.text).join(''))) continue
 
     if (child.kind === KIND_INTERFACE) {
@@ -185,12 +235,18 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
           fields: extractFieldsFromChildren(directChildren ?? [], indexSigs),
         })
       } else if (child.type?.type) {
-        types.push({
+        const t: TypeDocType = {
           name: child.name,
           description: extractText(child.comment?.summary),
           fields: [],
           codeBlock: `type ${child.name} = ${typeToString(child.type)}`,
-        })
+        }
+        const parts = omitIntersection(child.type)
+        if (parts) {
+          t.fields = parts.fields
+          if (parts.omit) pendingOmits.set(t, parts.omit)
+        }
+        types.push(t)
       }
     } else if (child.kind === KIND_ENUM) {
       const fields: ParamDoc[] = (child.children ?? []).map((f: any) => ({
@@ -231,9 +287,17 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
  * and mentally subtract keys. Resolve it: give X a concrete field table (Y's
  * fields minus the omitted keys) alongside the alias definition.
  */
-function resolveOmitAliases(types: TypeDocType[]): void {
-  const byName = new Map(types.map(t => [t.name, t]))
+function resolveOmitAliases(types: TypeDocType[], lookup: TypeDocType[] = types): void {
+  const byName = new Map(lookup.map(t => [t.name, t]))
   for (const t of types) {
+    // `Omit<Y, ...> & { extra }`: Y's remaining fields plus the extra ones.
+    const pending = pendingOmits.get(t)
+    if (pending) {
+      const target = byName.get(pending.target)
+      const base = (target?.fields ?? []).filter(f => !pending.omitted.has(f.name))
+      t.fields = [...base, ...t.fields].sort((a, b) => a.name.localeCompare(b.name))
+      continue
+    }
     const m = t.codeBlock?.match(/^type \w+ = Omit<(\w+), (.+)>$/)
     if (!m) continue
     const target = byName.get(m[1])
@@ -350,11 +414,13 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
     allChildren.find(c => c.name === 'IIIClient' && (c.kind === KIND_CLASS || c.kind === KIND_INTERFACE)) ??
     allChildren.find(c => c.name === 'ISdk')
 
+  // Deprecated client methods stay documented (with a deprecation callout):
+  // they are still the way to reach what has not moved to the new API yet.
+  // Only deprecated *types* and re-exports (legacy aliases) are dropped.
   const methods: FunctionDoc[] = []
   if (client?.children) {
     for (const child of client.children) {
       if (child.kind !== KIND_METHOD) continue
-      if (isDeprecated(child.comment) || isDeprecated(child.signatures?.[0]?.comment)) continue
       const fn = reflectionToFunction(child)
       if (fn) methods.push(fn)
     }
@@ -373,6 +439,13 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
   const skipTypes = new Set(['IIIClient', 'ISdk', ...internalNames])
   const types = dedupeTypes(modules.flatMap(m => extractTypesFrom(m.children ?? [], skipTypes)))
   resolveOmitAliases(types)
+  // Deprecated types only expand under the parameters of deprecated methods.
+  const paramOnlyTypes = methods.some(m => m.deprecated)
+    ? dedupeTypes(modules.flatMap(m => extractTypesFrom(m.children ?? [], skipTypes, 'only'))).filter(
+        t => !types.some(x => x.name === t.name),
+      )
+    : []
+  resolveOmitAliases(paramOnlyTypes, [...types, ...paramOnlyTypes])
   const typeGroups = buildTypeGroups(modules, new Map(types.map(t => [t.name, t])), metadata.packageName)
 
   const entryFn = registerWorker ? reflectionToFunction(registerWorker) : null
@@ -414,6 +487,7 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
     },
     methods,
     types,
+    paramOnlyTypes,
     typeGroups,
     subpathExports,
   }

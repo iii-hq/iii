@@ -69,6 +69,7 @@ test("the KVS route map covers exactly the extensionless marketing pages", () =>
     .map((d) => d.name)
   assert.deepEqual(desiredRoutes(topLevel), [
     { Key: "/a", Value: "/a.html" },
+    { Key: "/benchmarks", Value: "/benchmarks.html" },
     { Key: "/manifesto", Value: "/manifesto.html" },
     { Key: "/privacy-policy", Value: "/privacy-policy.html" },
   ])
@@ -307,6 +308,8 @@ test("robots.txt keeps the roadmap out of every crawler block and points at the 
     assert.match(block, /^Disallow: \/roadmap$/m, `crawler block missing roadmap disallow:\n${block}`)
   }
   assert.match(robots, /^Sitemap: https:\/\/iii\.dev\/sitemap\.xml$/m)
+  // The workers registry (iii.dev/registry, served by its own app) publishes its own sitemap.
+  assert.match(robots, /^Sitemap: https:\/\/iii\.dev\/registry\/sitemap\.xml$/m)
 })
 
 test("llms.txt and AGENTS.md are generated from the built homepage and read as prose", async () => {

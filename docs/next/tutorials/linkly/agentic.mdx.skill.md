@@ -163,6 +163,12 @@ agentic stack you'll use to develop it:
 iii compose --up
 ```
 
+<Note>
+  `iii compose --up` stays in the foreground. Press Ctrl+C in that terminal to stop the engine, the
+  agent stack and your workers. From another terminal, `iii kill --compose <project folder>` stops
+  the same project: its Compose daemon, its engine and its workers.
+</Note>
+
 Open the console and harness which are at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 For the rest of this guide you can copy the example prompts below and paste them into a chat in the
@@ -201,14 +207,20 @@ Add two functions:
 - link::create({ url, code? }): generate a 6-character short code when none is given, make the url
   absolute (add https:// when it has no scheme), and persist it in the state worker (not a local
   variable) with state::set under scope "links" key <code>, value { url }; return { code, url }.
-  Never overwrite an existing link: reject a requested code that is already taken, and retry a
-  generated code until it is free.
+  Never overwrite an existing link: reject a requested code that is already taken by throwing
+  an Error whose message is exactly code `<code>` is already taken, and retry a generated code
+  until it is free.
 - link::resolve({ code }): read it back from the state worker with state::get (scope "links", key
   <code>) and return { url } or { url: null }.
 
 Then expose them over HTTP through the http worker:
-- a POST /links trigger and an http::create function that calls link::create, returns 201 with
-  { code, url }, and 409 when the requested code is taken.
+- a POST /links trigger and an http::create function. When the body has no url it answers 400
+  with { error } without calling link::create. Otherwise it calls link::create and returns 201
+  with { code, url }. When link::create throws, take its message: the SDK rejects with an
+  InvocationError (exported by iii-sdk) whose message is `<err.code>: <message>`, so cut that
+  prefix off with err.message.slice(err.code.length + 2). Answer 409 with { error: <that message> }
+  only when it ends with "is already taken"; log anything else and answer 500 with a generic
+  { error }.
 - a GET /s/:code trigger and an http::redirect function that reads the code from req.path_params.code,
   resolves it, and returns a 302 to the url, or 404 when it is unknown.
 
@@ -253,6 +265,10 @@ curl -i http://127.0.0.1:3111/s/docs
 ```bash
 iii trigger state::get scope="links" key="docs"
 ```
+
+Send the same `POST /links` again. It answers `409` with
+``{"error":"code `docs` is already taken"}``. Only the `is already taken` message from
+`link::create` gives `409`. A body without `url` answers `400`, and any other failure answers `500`.
 
 The exploratory version of [Ch. 1: Foundations](./foundations) explains `registerWorker`,
 `registerTrigger`, and `registerFunction` in depth.
@@ -311,15 +327,24 @@ In link/src/index.ts:
 - at startup, create a links table and a clicks table if they do not exist. The database worker may
   register a moment after link, so retry the schema creation until it answers, and never crash the
   worker if the database is not ready yet.
-- link::create also inserts the link row into the database.
+- link::create also inserts the link row into the database with INSERT ... ON CONFLICT(code) DO
+  NOTHING. When database::execute answers affected_rows 0 the code is taken: throw the same
+  code `<code>` is already taken error as before, so POST /links still answers 409 with that
+  message and never with the database's error text.
 - link::resolve reads state first, falls back to the database, and warms the cache on a hit.
-- add link::record_click that inserts one row for each click into the clicks table, with the code and
-  a clicked_at timestamp. Have http::redirect call it every time a link is requested.
+- add link::record_click that inserts one row for each click into the clicks table (id INTEGER
+  PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL). Later chapters count
+  those rows and read the row id, so do not store a per-day aggregate. Have http::redirect call it
+  every time a link is requested.
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
 
 </CodeGroup>
+
+The links from Chapters 1 and 2 (`home`, `docs`) stay only in `state`. They still resolve from the
+cache. The new `links` table does not have them, so they are gone the next time `state` restarts. To
+keep any of them, create it again with `POST /links`.
 
 Try it in the console.
 
@@ -346,10 +371,11 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 Every iii function is **discoverable**. Run `iii trigger database::query --help` to see the
 arguments that `database::query` accepts.
 
-To confirm that the clicks persist, restart only the `database` worker. A full project restart also
-restarts the harness that runs the agent. Run `iii trigger compose::restart worker=database`. In the
-console, the same call is `compose::restart` on the **Functions** page with
-`{ "worker": "database" }`. Then run the same `database::query` again. The count does not change.
+To confirm that the clicks persist, restart only the `database` worker. The harness that runs the
+agent is part of this project, so a full project restart cuts the agent off in the middle of its
+turn. Run `iii trigger compose::restart container=database`. In the console, the same call is
+`compose::restart` on the **Functions** page with `{ "container": "database" }`. Then run the same
+`database::query` again. The count does not change.
 
 The exploratory version of [Ch. 3: Persist everything](./persistence) steps through the
 cache-then-database read path.
@@ -371,21 +397,27 @@ database write finishes.
 Make redirects fast and add analytics.
 
 - Define a standard "clicks" queue with queue::define and enqueue click records instead of writing them inline on the redirect path.
-- Add the pubsub worker. link::create publishes a link.created event.
+- link::create publishes a link.created event on a durable topic with iii::durable::publish, with
+  { code, url, created_at }, where created_at is the same timestamp it writes to the links row.
 - Add a second SQLite database named "analytics" for the analytics worker.
-- Create a Python analytics worker that subscribes to link.created and counts links per day in a
-  daily_link_counts table (day TEXT PRIMARY KEY, count INTEGER NOT NULL) in the analytics database,
-  and add it with compose.
+- Create a Python analytics worker that binds a durable:subscriber trigger to link.created and keeps
+  one row per link in a link_events table (code TEXT PRIMARY KEY, day TEXT NOT NULL) in the
+  analytics database. day is the UTC date (YYYY-MM-DD) of the event's created_at, not the delivery
+  time. Write the row with a single INSERT ... ON CONFLICT(code) DO NOTHING: delivery is at least
+  once, and a redelivered event must not count twice. Expose the per-day counts as a
+  daily_link_counts view (SELECT day, COUNT(*) AS count FROM link_events GROUP BY day). Add the
+  worker with compose.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
   from a durable subscriber.
 
-Add the pubsub worker and the second database yourself first, then split the rest across two
-subagents that work on separate files at the same time:
-- Subagent A: the Python analytics worker (subscribe to link.created, count links per day, write the
-  daily_link_counts rows to the analytics database) and add it with compose.
+Add the second database yourself first, then split the rest across two subagents that work on
+separate files at the same time:
+- Subagent A: the Python analytics worker (subscribe to link.created with durable:subscriber, record
+  one link_events row per link with the day from created_at, create the daily_link_counts view in
+  the analytics database) and add it with compose.
 - Subagent B: the link worker changes in link/src/index.ts (define and enqueue the clicks queue,
-  publish link.created, add link::update with the PUT /links/:code route, publish link.updated
-  durably, and refresh the cache from a durable subscriber).
+  publish link.created with created_at and link.updated with iii::durable::publish, add
+  link::update with the PUT /links/:code route, and refresh the cache from a durable subscriber).
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -420,32 +452,39 @@ sleep 3
 iii trigger link::resolve code=link1
 ```
 
-The exploratory [Ch. 4: Make it durable](./durable-execution) explains queues, durable pub/sub, and
-regular pub/sub.
+The exploratory [Ch. 4: Make it durable](./durable-execution) explains queues and durable topics.
 
 ## Ch. 5: Stream live clicks
 
-This chapter broadcasts every click to subscribers in real time through a `clicks` stream via the
-stream worker.
+This chapter pushes every click to listeners in real time through a trigger type that a new
+`click-streamer` worker owns. Listeners that join late read the running total with a query.
 
 <CodeGroup>
 
 ```text Prompt
-Push every click to subscribers in real time.
+Push every click to listeners in real time.
 
-- Create a click-streamer worker that stores every click in a "clicks" stream with stream::set
-  (stream_name "clicks", group_id "all", one item per click, so stream::list reads them back), and add
-  it with compose. Use the stream worker and its functionality.
-- Have link::record_click publish each click so the streamer stores it. Build the stored item from the
-  fields you need ({ code, clicked_at }) instead of forwarding the delivered payload as-is: the engine
-  stamps bookkeeping fields such as _caller_worker_id on every delivery. We will make the subscribers
-  in a later step.
+- Create a click-streamer worker that declares its own trigger type, click-streamer::click. It keeps
+  a capped table of the bindings (add in registerTrigger, remove in unregisterTrigger, reject a
+  `code` filter that is not a string). Give it a click-streamer::broadcast function that delivers
+  { id, code, clicked_at } to every matching binding with TriggerAction.Void(): a binding with a
+  `code`, even "", matches only that code, and one without a `code` matches every click. Pass each
+  binding's namespace and metadata. Build the payload from those fields instead of forwarding the
+  delivered payload as-is: the engine stamps bookkeeping fields such as _caller_worker_id on every
+  delivery. Add it with compose.
+- After link::record_click inserts the click row (the clicks table from Chapter 3, one row per
+  click), have it call click-streamer::broadcast with the new row id (database::execute returns it
+  as last_insert_id), without waiting for the result. Do not create a second clicks table.
+- Add link::click_summary, which returns { total, last_id } from that clicks table (SELECT COUNT(*)
+  AS total, MAX(id) AS last_id FROM clicks), so a listener that joins late can start from the current
+  count. We will make the listeners in a later step.
 
-Pick the topic name first, then run two subagents on separate files at the same time:
-- Subagent A: the click-streamer worker that subscribes to that topic and stores each click in the
-  "clicks" stream with stream::set, added with compose.
-- Subagent B: the link::record_click change in link/src/index.ts that publishes each click on the
-  topic.
+Agree on the { id, code, clicked_at } payload first, then run two subagents on separate files at the
+same time:
+- Subagent A: the click-streamer worker with the click-streamer::click trigger type and
+  click-streamer::broadcast, added with compose.
+- Subagent B: the link worker changes in link/src/index.ts (the broadcast after the click insert,
+  and link::click_summary).
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -458,24 +497,26 @@ Select the **Triggers** page, shorten a link with `POST /links` using
 `{"url":"https://example.net/sale","code":"deal"}`, then follow `GET /s/:code` a few times with the
 `code` path parameter set to `deal`.
 
-Select the **Functions** page, invoke `stream::list` with
-`{"stream_name":"clicks","group_id":"all"}`, and read the click messages the stream collected. Each
-redirect is a new message row.
+Select the **Functions** page and invoke `link::click_summary` with `{}`: `total` counts every
+redirect recorded in the `clicks` table since Chapter 3, so it includes the clicks from earlier
+chapters, and `last_id` is the newest click row. Then invoke `click-streamer::broadcast` with
+`{"id":0,"code":"deal","clicked_at":"2026-01-01T00:00:00Z"}`. It answers `{ "delivered": 0 }`
+because nothing listens yet; the browser you add in Chapter 7 will.
 
 The same flow from the CLI:
 
 ```bash
-for n in $(seq 4 6); do
+for n in $(seq 1 3); do
   curl -s -X POST http://127.0.0.1:3111/links \
-    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/feed\",\"code\":\"iii-example-$n\"}"
-  curl -s -o /dev/null "http://127.0.0.1:3111/s/iii-example-$n"
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://example.com/feed\",\"code\":\"stream-$n\"}"
+  curl -s -o /dev/null "http://127.0.0.1:3111/s/stream-$n"
   sleep 2s
 done
-iii trigger stream::list stream_name=clicks group_id=all
+iii trigger link::click_summary
 ```
 
-The exploratory [Ch. 5: Stream live clicks](./streaming) explains streams and
-`TriggerAction.Void()`.
+The exploratory [Ch. 5: Stream live clicks](./streaming) explains worker-owned trigger types, shows
+a terminal listener for the feed, and covers `TriggerAction.Void()`.
 
 ## Ch. 6: Move bulk data with channels
 
@@ -493,9 +534,9 @@ what **extensible** means in iii.
 Bulk-load links from a CSV in a single streamed upload over a channel.
 
 - Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
-  each. Skip a row the application rejects (a code already taken) instead of aborting the batch, but
-  re-throw anything else (a timeout, a worker that is down). Return
-  the imported and skipped counts.
+  each. Skip a row whose code is already taken (link::create's error message ends with "is already
+  taken"; never match the database's error text) instead of aborting the batch, but re-throw
+  anything else (a timeout, a worker that is down). Return the imported and skipped counts.
 - Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
   of links to the importer. Take the CSV path as an OPTIONAL argument that defaults to test.csv, so
   `node channel-client/import-links.js` runs with no arguments.
@@ -544,11 +585,17 @@ connection and gates which functions the tab can call.
 Turn a browser tab into a worker.
 
 - Add an rbac-proxy worker that fronts a public port 3110 and reverse-proxies to the engine at
-  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create and
-  link::request_delete only). Add it with compose.
+  ws://127.0.0.1:49134, with an RBAC allowlist gated by auth::browser (expose link::create,
+  link::request_delete and link::click_summary only). Add it with compose.
 - Create an auth worker with an auth::browser function that admits browser connections (fail closed
   when its LINKLY_BROWSER_TOKEN env var is unset). Each tab sends a unique session id; grant it its
-  own `browser-<session>` namespace so two tabs never collide on the functions they register. Give it
+  own `browser-<session>` namespace so two tabs never collide on the functions they register: return
+  `namespaces: { "browser-<session>": ["ui::on_click", "user::confirm_destructive_op"] }` with
+  `allow_function_registration: true` (rbac-proxy refuses registrations in any namespace that is not
+  a key there), and allow it to bind only the click-streamer::click trigger type
+  (allowed_trigger_types). Pin the same iii-sdk version as link/package.json and call its API the
+  way link/src/index.ts does: that SDK takes the function id as the first argument and the handler
+  as the second, and has no object form. Give it
   the standard node worker manifest (base_image `docker.io/iiidev/node:latest`, npm install and start
   scripts) and set `LINKLY_BROWSER_TOKEN=dev-token` in a .env.browser file at the root where
   worker-compose.yaml is. Add it with compose and set env_file on this worker to open .env.browser.
@@ -556,15 +603,19 @@ Turn a browser tab into a worker.
   link, request_delete calls the tab's user::confirm_destructive_op in browser_namespace. The caller
   passes the full "browser-<uuid>" string, and the handler uses that string as-is.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
-  react-ts`, install iii-browser-sdk, and write frontend/src/iii.ts and frontend/src/App.tsx that
-  connect in a per-tab `browser-<session>` namespace, call link::create and subscribe to the click
-  stream in the default namespace, and register user::confirm_destructive_op.
+  react-ts --no-interactive`, install iii-browser-sdk, and write frontend/src/iii.ts and
+  frontend/src/App.tsx that connect in a per-tab `browser-<session>` namespace, call link::create
+  in the default namespace, and register user::confirm_destructive_op. For a live click counter, bind ui::on_click to the
+  click-streamer::click trigger type first, then read the starting count with link::click_summary
+  (default namespace); skip clicks whose id is at or below the last_id already counted, and read the
+  count again after a reconnect.
 - In App.tsx, call link::request_delete with { code, browser_namespace: `browser-${SESSION_ID}` }.
   Never pass the raw UUID as a namespace argument; always pass the fully-constructed string so the
   server can use it without knowing the prefix convention.
 - Have redirect links point at the http worker serving the redirects, not the frontend.
-- Have the frontend show all existing generated links on load, and show the tab's own
-  `browser-<session>` namespace on the page so it can be copied.
+- Have the frontend show the link it just created, and show the tab's own `browser-<session>`
+  namespace on the page so it can be copied. Do not list the existing links: the allowlist above
+  exposes no function for that.
 
 This chapter has the most independent pieces. Add and configure the rbac-proxy yourself first, since
 the others depend on it, then run three subagents on separate directories at the same time:

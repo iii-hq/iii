@@ -9,13 +9,12 @@ directly from the engine.
 
 ## Open the console
 
-The console is a web interface to monitor and use your iii application. Add it to your project with:
+The iii console (ADE) is a standalone web application to monitor and use your iii application. Add
+it to your project with:
 
 ```bash
-iii trigger compose::add worker=console
+iii trigger compose::add worker=ade
 ```
-
-Compose prints a warning that `console` is an alias of `ade`. You can ignore this warning.
 
 Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"
 and then take a look at what happens in the Traces window within the console when you run the

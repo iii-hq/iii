@@ -1,0 +1,14 @@
+{
+  "description": "implicit ANDs become one explicit $and of single-clause objects, sorted by path",
+  "cases": [
+    { "filters": {},
+      "normalized": {} },
+    { "filters": {"input.a": {"$eq": 1}},
+      "normalized": {"$and": [{"input.a": {"$eq": 1}}]} },
+    { "filters": {"input.b": {"$eq": 1}, "input.a": {"$eq": 2}},
+      "normalized": {"$and": [{"input.a": {"$eq": 2}}, {"input.b": {"$eq": 1}}]} },
+    { "filters": {"input.scheduled_time": {"$gte": "2026-11-01T00:00:00Z"}},
+      "normalized": {"$and": [{"input.scheduled_time": {"$gte": "2026-11-01T00:00:00Z"}}]},
+      "note": "protocol.md §2.3" }
+  ]
+}

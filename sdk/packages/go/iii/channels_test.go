@@ -39,6 +39,30 @@ func TestChannelURL(t *testing.T) {
 			dir:  ChannelRead,
 			want: "ws://localhost:49134/ws/channels/xyz?key=k&dir=read",
 		},
+		{
+			name: "a query on the base comes before the channel's own",
+			base: "ws://localhost:49134/?token=abc",
+			id:   "xyz",
+			key:  "k",
+			dir:  ChannelRead,
+			want: "ws://localhost:49134/ws/channels/xyz?token=abc&key=k&dir=read",
+		},
+		{
+			name: "a base with a path and several query params keeps both",
+			base: "ws://localhost:49134/engine/?token=abc&x=1",
+			id:   "xyz",
+			key:  "k",
+			dir:  ChannelWrite,
+			want: "ws://localhost:49134/engine/ws/channels/xyz?token=abc&x=1&key=k&dir=write",
+		},
+		{
+			name: "an empty query on the base adds nothing",
+			base: "ws://localhost:49134/?",
+			id:   "xyz",
+			key:  "k",
+			dir:  ChannelRead,
+			want: "ws://localhost:49134/ws/channels/xyz?key=k&dir=read",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

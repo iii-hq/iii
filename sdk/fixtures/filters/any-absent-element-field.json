@@ -1,0 +1,10 @@
+{
+  "description": "$ne on an element field matches elements without it",
+  "filters": {"input.items": {"$any": {"@.tag": {"$ne": "x"}}}},
+  "cases": [
+    { "doc": {"input": {"items": [{"tag": "x"}]}}, "expect": false },
+    { "doc": {"input": {"items": [{"tag": "x"}, {}]}}, "expect": true },
+    { "doc": {"input": {"items": []}}, "expect": false },
+    { "doc": {"input": {"items": [1]}}, "expect": true, "note": "@.tag on a scalar element is absent" }
+  ]
+}

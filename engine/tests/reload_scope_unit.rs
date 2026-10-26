@@ -204,6 +204,7 @@ fn minimal_config_for_builder_tests() -> (iii::workers::config::EngineConfig, te
             },
             config_entry,
         ],
+        observers: Default::default(),
     };
     (config, config_dir)
 }
@@ -280,6 +281,7 @@ async fn serve_returns_on_sigterm() {
             },
             config_entry,
         ],
+        observers: Default::default(),
     };
 
     let builder = EngineBuilder::new()

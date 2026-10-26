@@ -1,0 +1,11 @@
+{
+  "description": "$ne null: absent matches, null does not",
+  "filters": {"input.v": {"$ne": null}},
+  "cases": [
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {"input": {"v": 0}}, "expect": true },
+    { "doc": {"input": {"v": false}}, "expect": true },
+    { "doc": {"input": {"v": "x"}}, "expect": true }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "description": "16 segments after @",
+  "filters": {"input.l": {"$any": {"@.s0.s1.s2.s3.s4.s5.s6.s7.s8.s9.s10.s11.s12.s13.s14.s15": {"$exists": true}}}},
+  "cases": [
+    { "doc": {"input": {"l": [{"s0": {"s1": {"s2": {"s3": {"s4": {"s5": {"s6": {"s7": {"s8": {"s9": {"s10": {"s11": {"s12": {"s13": {"s14": {"s15": null}}}}}}}}}}}}}}}}]}}, "expect": true },
+    { "doc": {"input": {"l": [{}]}}, "expect": false }
+  ]
+}

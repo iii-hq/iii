@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.24.5"
+version = "0.25.0"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -68,6 +68,10 @@ harness = false
 name = "worker_invocation_tracking_bench"
 harness = false
 
+[[bench]]
+name = "observe_dispatch_bench"
+harness = false
+
 [features]
 default = ["rabbitmq"]
 rabbitmq = ["lapin"]
@@ -83,7 +87,7 @@ scaffolder-core = { workspace = true }
 console = { workspace = true }
 open = { workspace = true }
 ctrlc = { workspace = true }
-tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std", "io-util"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
@@ -114,6 +118,10 @@ url = { workspace = true }
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
+# observe: lock-free snapshots of the observed-function set on the invocation
+# hot path, and the filter language shared with every SDK.
+arc-swap = "1"
+iii-filter = { workspace = true }
 indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
@@ -149,7 +157,7 @@ indicatif = "0.18"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
 tar = "0.4"
-zip = "2"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 thiserror = "2"
 tokio-tungstenite = "0.28"
 # Used by workers::external::resolve_external_module to locate

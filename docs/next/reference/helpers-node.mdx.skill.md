@@ -690,6 +690,7 @@ Configuration for OpenTelemetry initialization.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | No | Whether OpenTelemetry export is enabled. Defaults to true. Set to false or OTEL_ENABLED=false/0/no/off to disable. |
+| `engineWsHeaders` | `Record<string, string>` | No | HTTP headers sent on the telemetry WebSocket handshake (e.g. `Authorization`). |
 | `engineWsUrl` | `string` | No | III Engine WebSocket URL. Defaults to III_URL or "ws://localhost:49134". |
 | `fetchInstrumentationEnabled` | `boolean` | No | Whether to auto-instrument globalThis.fetch calls. Defaults to true. Works on Node.js, Bun, and Deno. Set to false to disable. |
 | `instrumentations` | `Instrumentation<InstrumentationConfig>[]` | No | OpenTelemetry instrumentations to register (e.g., PrismaInstrumentation). |

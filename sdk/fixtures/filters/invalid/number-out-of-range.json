@@ -1,0 +1,15 @@
+{
+  "description": "numeric literals must lie within ±2^53 (exactly representable values are used here so every language sees them)",
+  "cases": [
+    { "filters": {"input.a": {"$eq": 9007199254740994}}, "code": "INVALID_FILTER", "note": "2^53 + 2" },
+    { "filters": {"input.a": {"$eq": -9007199254740994}}, "code": "INVALID_FILTER", "note": "-(2^53 + 2)" },
+    { "filters": {"input.a": {"$ne": 18014398509481984}}, "code": "INVALID_FILTER", "note": "2^54" },
+    { "filters": {"input.a": {"$in": [1, 18014398509481984]}}, "code": "INVALID_FILTER", "note": "inside $in" },
+    { "filters": {"input.a": {"$nin": [{"x": [9007199254740994]}]}}, "code": "INVALID_FILTER", "note": "nested inside a $nin element" },
+    { "filters": {"input.a": {"$eq": {"a": [1, {"b": -18014398509481984}]}}}, "code": "INVALID_FILTER", "note": "nested inside an $eq object" },
+    { "filters": {"input.a": {"$gt": 1e16}}, "code": "INVALID_FILTER", "note": "float spelling above 2^53" },
+    { "filters": {"input.a": {"$lt": -1e300}}, "code": "INVALID_FILTER", "note": "large negative float" },
+    { "filters": {"input.a": {"$gte": 9007199254740994.0}}, "code": "INVALID_FILTER", "note": "float spelling of 2^53 + 2" },
+    { "filters": {"input.l": {"$any": {"$eq": 9007199254740994}}}, "code": "INVALID_FILTER", "note": "inside $any" }
+  ]
+}

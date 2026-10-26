@@ -28,7 +28,7 @@ pub struct Advisory {
     pub id: String,
     /// Severity level: "critical", "high", "medium", "low"
     pub severity: String,
-    /// The binary affected (e.g., "iii-console")
+    /// The binary affected (e.g., "iii-cloud")
     pub affected_binary: String,
     /// Semver range of affected versions (e.g., "<0.2.5")
     pub affected_versions: String,
@@ -168,7 +168,7 @@ mod tests {
             advisories: vec![Advisory {
                 id: "ADV-2026-001".to_string(),
                 severity: "critical".to_string(),
-                affected_binary: "iii-console".to_string(),
+                affected_binary: "iii-cloud".to_string(),
                 affected_versions: "<0.2.5".to_string(),
                 fixed_version: "0.2.5".to_string(),
                 message: "Security vulnerability".to_string(),
@@ -176,7 +176,7 @@ mod tests {
             }],
         };
 
-        let state = make_state("iii-console", "0.2.4");
+        let state = make_state("iii-cloud", "0.2.4");
         let matched = check_advisories(&doc, &state);
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].advisory.id, "ADV-2026-001");
@@ -188,7 +188,7 @@ mod tests {
             advisories: vec![Advisory {
                 id: "ADV-2026-001".to_string(),
                 severity: "critical".to_string(),
-                affected_binary: "iii-console".to_string(),
+                affected_binary: "iii-cloud".to_string(),
                 affected_versions: "<0.2.5".to_string(),
                 fixed_version: "0.2.5".to_string(),
                 message: "Security vulnerability".to_string(),
@@ -196,7 +196,7 @@ mod tests {
             }],
         };
 
-        let state = make_state("iii-console", "0.2.5");
+        let state = make_state("iii-cloud", "0.2.5");
         let matched = check_advisories(&doc, &state);
         assert_eq!(matched.len(), 0);
     }
@@ -207,7 +207,7 @@ mod tests {
             advisories: vec![Advisory {
                 id: "ADV-2026-001".to_string(),
                 severity: "critical".to_string(),
-                affected_binary: "iii-console".to_string(),
+                affected_binary: "iii-cloud".to_string(),
                 affected_versions: "<0.2.5".to_string(),
                 fixed_version: "0.2.5".to_string(),
                 message: "Security vulnerability".to_string(),

@@ -181,11 +181,14 @@ def calculate_version(
     existing_tags: list[str],
     tag_prefix: str,
     version_override: str | None = None,
+    inflight_tags: list[str] | None = None,
 ) -> str:
     """Decide the next version, accounting for the current prerelease train.
 
     A nonempty explicit override takes precedence over bump and promotion,
     after validation. Omitting it preserves the existing release algorithm.
+    When supplied, inflight_tags limits automatic train discovery to the source
+    history. Counters and exact-version collision checks still use all tags.
 
     Rules:
       - `none` never advances the base: it iterates the prerelease
@@ -228,7 +231,11 @@ def calculate_version(
             raise ValueError(
                 f"bump_type 'none' requires a prerelease label, got {prerelease!r}"
             )
-        inflight = highest_inflight_prerelease_base(existing_tags, tag_prefix, latest_stable)
+        inflight = highest_inflight_prerelease_base(
+            existing_tags if inflight_tags is None else inflight_tags,
+            tag_prefix,
+            latest_stable,
+        )
         new_base = inflight or latest_stable or cur.base
         counter = next_prerelease_counter(new_base, prerelease, existing_tags, tag_prefix)
         return f"{new_base}-{prerelease}.{counter}"
@@ -301,9 +308,12 @@ def _read_cargo_version(path: str) -> str:
     raise RuntimeError(f"no version in {path}")
 
 
-def _git_tags() -> list[str]:
+def _git_tags(reachable_from: str | None = None) -> list[str]:
+    command = ["git", "tag", "-l"]
+    if reachable_from is not None:
+        command.append(f"--merged={reachable_from}")
     out = subprocess.run(
-        ["git", "tag", "-l"], capture_output=True, text=True, check=True
+        command, capture_output=True, text=True, check=True
     )
     return [t for t in out.stdout.splitlines() if t]
 
@@ -336,6 +346,15 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Exact release version; overrides bump/promotion, but must match --prerelease",
     )
+    parser.add_argument(
+        "--inflight-reachable-from",
+        default=None,
+        help=(
+            "Limit automatic prerelease train discovery to tags merged into this "
+            "revision (e.g. HEAD). Stable detection, counters and collisions "
+            "remain global. Omit to retain alpha's cross-branch counter behavior."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--current-version-file", required=True)
     args = parser.parse_args(argv)
@@ -355,6 +374,10 @@ def main(argv: list[str] | None = None) -> int:
             existing_tags=tags,
             tag_prefix=counter_prefix,
             version_override=args.version_override,
+            inflight_tags=(
+                _git_tags(args.inflight_reachable_from)
+                if args.inflight_reachable_from is not None else None
+            ),
         )
     except ValueError as error:
         parser.error(str(error))

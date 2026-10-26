@@ -103,7 +103,7 @@ def init_otel(
     # Route OTEL to the engine's dedicated `/otel` endpoint so the
     # telemetry socket doesn't get registered in `worker_registry` as a
     # ghost null-metadata worker alongside every real worker.
-    _connection = SharedEngineConnection(_append_otel_path(ws_url))
+    _connection = SharedEngineConnection(_append_otel_path(ws_url), cfg.engine_ws_headers)
     if loop is not None:
         _connection.start(loop)
 

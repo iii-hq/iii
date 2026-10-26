@@ -1,0 +1,10 @@
+{
+  "description": "filters.md §7 sample",
+  "filters": {"input.op": {"$in": ["insert", "update"]}, "caller.worker_name": {"$ne": "indexer"}},
+  "cases": [
+    { "doc": {"input": {"op": "insert"}, "caller": {"worker_name": "billing"}}, "expect": true },
+    { "doc": {"input": {"op": "insert"}}, "expect": true },
+    { "doc": {"input": {"op": "delete"}, "caller": {"worker_name": "billing"}}, "expect": false },
+    { "doc": {"input": {"op": "update"}, "caller": {"worker_name": "indexer"}}, "expect": false }
+  ]
+}

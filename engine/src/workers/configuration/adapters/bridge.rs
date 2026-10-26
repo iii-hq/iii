@@ -366,6 +366,9 @@ impl ConfigurationAdapter for BridgeAdapter {
             }),
         );
 
+        // The remote engine's `configuration` trigger type is the only way
+        // to follow it until `configuration::on-updated` can be observed there.
+        #[allow(deprecated)]
         let trigger = self
             .bridge
             .register_trigger(RegisterTriggerInput::new(

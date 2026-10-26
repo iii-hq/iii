@@ -10,6 +10,16 @@ import type {
   StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
+import type { FunctionObservers } from './observable'
+import type {
+  InvocationContext,
+  ObserveHooks,
+  Observer,
+  ObserverHandle,
+  ObserverOptions,
+  ObserveSource,
+  Target,
+} from './observe-types'
 import type { TriggerHandler } from './triggers'
 
 /**
@@ -66,6 +76,8 @@ export type InternalFunctionHandler<TInput = any, TOutput = any> = (
 export type RemoteFunctionData = {
   message: RegisterFunctionMessage
   handler?: InternalFunctionHandler
+  /** Observers of this function as the engine pushed them, local dispatch state, hooks. */
+  observe?: FunctionObservers
 }
 
 export type RemoteServiceFunctionData = {
@@ -73,20 +85,46 @@ export type RemoteServiceFunctionData = {
   handler: RemoteFunctionHandler
 }
 
+/** @deprecated Trigger types are replaced by functions with an observe descriptor. */
 export type RemoteTriggerTypeData = {
   message: RegisterTriggerTypeMessage
   // biome-ignore lint/suspicious/noExplicitAny: handler accepts any trigger config type
   handler: TriggerHandler<any>
 }
 
+/** @deprecated Use `iii.observe(source, target, options)` and its {@link ObserveSource}. */
 export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
-export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
+/**
+ * Options of {@link IIIClient.registerFunction}: description, request/response
+ * formats, metadata, and the observe hooks.
+ */
+export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id' | 'observe'> & {
+  /**
+   * Makes the function observable on its own terms: owner delivery
+   * (`delivery: 'owner'`, `args_format`), and callbacks when an observer is
+   * added or removed. Without it the function is still observable (auto
+   * delivery, no args).
+   */
+  observe?: ObserveHooks
+  /**
+   * Calls this worker makes to its own function run in-process once the
+   * engine confirmed it (default `true`). Set `false` for a handler that must
+   * always run through the engine.
+   */
+  localDispatch?: boolean
+}
+/** @deprecated Register a function with an observe descriptor instead. */
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
 
 export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
+   *
+   * @deprecated Use {@link IIIClient.observe} instead: `iii.observe({ function_id, args, filters }, target, { metadata })`.
+   * Logs a warning once per process. The http, cron, queue, state, stream, pubsub and database workers
+   * still publish trigger types: keep using `registerTrigger` for them until they ship source functions.
+   * Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
    * <!-- docs:expand-params -->
    * @param trigger - The trigger to register.
    * @returns A trigger object that can be used to unregister the trigger.
@@ -180,7 +218,45 @@ export interface IIIClient {
   trigger<TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput>
 
   /**
+   * Observes a function: every event of `source` that passes its `filters`
+   * invokes `target`, a registered function. Returns synchronously (also
+   * before the connection is up); the observer is replayed with the same id
+   * on reconnect. Errors show up as state `error` and reject `ready()`.
+   *
+   * @param source - What is observed: `function_id`, `args` (owner-delivered functions only), `filters`, `on`, `capture`, `deliver`.
+   * @param target - The function to invoke.
+   * @param options - `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
+   *
+   * @example
+   * ```typescript
+   * // A regular function: large orders reach alerts::big-order
+   * worker.observe(
+   *   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
+   *   'alerts::big-order',
+   * )
+   *
+   * // An engine-hosted event source, delivered as the event itself
+   * const workers = worker.observe(
+   *   { function_id: 'engine::on-workers-changed', deliver: 'input' },
+   *   'ops::on-worker-change',
+   * )
+   * await workers.ready()
+   * ```
+   */
+  observe(source: ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle
+
+  /**
+   * The invocation the calling code runs in (remote or local handler), or
+   * `undefined` outside any handler.
+   */
+  currentInvocation(): InvocationContext | undefined
+
+  /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
+   *
+   * @deprecated Register a function with an observe descriptor instead:
+   * `registerFunction(id, handler, { observe: { delivery: 'owner', onObserverAdded, onObserverRemoved } })`.
+   * Logs a warning once per process. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
    * @param triggerType - The trigger type to register.
    * @param handler - The handler for the trigger type.
    * @returns A trigger type object that can be used to unregister the trigger type.
@@ -211,6 +287,8 @@ export interface IIIClient {
 
   /**
    * Unregisters a trigger type.
+   *
+   * @deprecated Trigger types are replaced by functions with an observe descriptor.
    * @param triggerType - The trigger type to unregister.
    *
    * @example
@@ -257,6 +335,8 @@ export interface IIIClient {
 /**
  * Handle returned by {@link IIIClient.registerTrigger}. Use `unregister()` to
  * remove the trigger from the engine.
+ *
+ * @deprecated `registerTrigger` is replaced by `iii.observe`, which returns an {@link ObserverHandle}.
  */
 export type Trigger = {
   /** Removes this trigger from the engine. */
@@ -272,10 +352,21 @@ export type FunctionRef = {
   id: string
   /** Removes this function from the engine. */
   unregister: () => void
+  /**
+   * Whether any observer is active on this function (one load, for the emit
+   * fast path: skip building an event nobody receives).
+   */
+  isObserved: () => boolean
+  /** The active observers, as this owner sees them. */
+  observers: () => readonly Observer[]
 }
 
 /**
  * Typed handle returned by {@link IIIClient.registerTriggerType}.
+ *
+ * @deprecated Trigger types are replaced by functions with an observe
+ * descriptor, and these helpers by `iii.observe`. Migration guide:
+ * https://iii.dev/docs/upgrading/from-0-24-x
  *
  * Provides convenience methods to register triggers and functions scoped
  * to this trigger type, so callers don't need to repeat the `type` field.

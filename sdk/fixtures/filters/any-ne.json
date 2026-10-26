@@ -1,0 +1,11 @@
+{
+  "description": "$ne inside $any applies per element",
+  "filters": {"input.tags": {"$any": {"$ne": "x"}}},
+  "cases": [
+    { "doc": {"input": {"tags": ["x"]}}, "expect": false },
+    { "doc": {"input": {"tags": ["x", "y"]}}, "expect": true },
+    { "doc": {"input": {"tags": []}}, "expect": false, "note": "no element" },
+    { "doc": {"input": {"tags": [null]}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false, "note": "$any on an absent path is false, even with $ne inside" }
+  ]
+}

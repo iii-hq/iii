@@ -1,0 +1,10 @@
+{
+  "description": "-2^53 boundary",
+  "filters": {"input.n": {"$gte": -9007199254740992}},
+  "cases": [
+    { "doc": {"input": {"n": -9007199254740992}}, "expect": true },
+    { "doc": {"input": {"n": -9007199254740993}}, "expect": true, "note": "-2^53-1 is -2^53 as an f64" },
+    { "doc": {"input": {"n": -9007199254740994}}, "expect": false },
+    { "doc": {"input": {"n": 0}}, "expect": true }
+  ]
+}

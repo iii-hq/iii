@@ -58,6 +58,20 @@ impl Drop for HomeGuard {
     }
 }
 
+/// Copies `/bin/sleep` to `~/.iii/workers/<name>/sleep`, a path the ps
+/// matcher attributes to worker `<name>` (the first component under the
+/// workers dir). The copy keeps the basename `sleep` because multicall
+/// coreutils (uutils, the default on Ubuntu 26.04) pick the utility from
+/// argv[0]: a copy named after the worker exits at once with
+/// "unknown program" instead of sleeping.
+fn install_sleeper(workers_dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let dir = workers_dir.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("sleep");
+    std::fs::copy("/bin/sleep", &bin).expect("/bin/sleep must exist on Unix");
+    bin
+}
+
 /// True once `pid`'s own argv is visible to the OS and contains `needle`.
 /// `spawn()` returns pre-exec, and around the exec transition the kernel can
 /// report no cmdline at all; the identity cross-check reads the same source
@@ -136,8 +150,7 @@ fn is_worker_running_true_for_alive_pid() {
 
     let workers_dir = tmp.path().join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
-    let worker_bin = workers_dir.join("alive-worker");
-    std::fs::copy("/bin/sleep", &worker_bin).unwrap();
+    let worker_bin = install_sleeper(&workers_dir, "alive-worker");
     let mut child = std::process::Command::new(&worker_bin)
         .arg("30")
         .spawn()
@@ -233,8 +246,7 @@ async fn kill_stale_worker_sweeps_pidfile_less_process() {
 
     let workers_dir = tmp.path().join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
-    let worker_bin = workers_dir.join("sweep-me");
-    std::fs::copy("/bin/sleep", &worker_bin).unwrap();
+    let worker_bin = install_sleeper(&workers_dir, "sweep-me");
     let mut child = std::process::Command::new(&worker_bin)
         .arg("30")
         .spawn()
@@ -362,8 +374,7 @@ fn find_worker_pid_from_ps_locates_live_orphan_binary() {
     let workers_dir = canonical_home.join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
     let worker_name = format!("test-orphan-{}", std::process::id());
-    let worker_bin = workers_dir.join(&worker_name);
-    std::fs::copy("/bin/sleep", &worker_bin).expect("/bin/sleep must exist on Unix");
+    let worker_bin = install_sleeper(&workers_dir, &worker_name);
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&worker_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -451,8 +462,7 @@ fn restart_orphan_invisible_to_is_worker_running_but_visible_to_ps() {
     let workers_dir = canonical_home.join(".iii/workers");
     std::fs::create_dir_all(&workers_dir).unwrap();
     let worker_name = format!("test-restart-orphan-{}", std::process::id());
-    let worker_bin = workers_dir.join(&worker_name);
-    std::fs::copy("/bin/sleep", &worker_bin).expect("/bin/sleep must exist on Unix");
+    let worker_bin = install_sleeper(&workers_dir, &worker_name);
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&worker_bin, std::fs::Permissions::from_mode(0o755)).unwrap();

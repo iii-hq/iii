@@ -1,0 +1,10 @@
+{
+  "description": "{} matches every document",
+  "filters": {},
+  "cases": [
+    { "doc": {}, "expect": true },
+    { "doc": {"input": null}, "expect": true },
+    { "doc": {"input": {"a": 1}, "output": 2, "error": null, "caller": {}, "metadata": []}, "expect": true },
+    { "doc": {"input": 1}, "expect": true }
+  ]
+}

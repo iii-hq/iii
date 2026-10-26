@@ -538,16 +538,24 @@ fn readdir_pagination_with_nonzero_offset() {
         all_entries.len()
     );
 
-    // Verify that the tail batch entries all have offsets > mid_offset.
-    for e in &tail_entries {
-        assert!(
-            e.offset > mid_offset,
-            "entry '{}' offset {} should be > mid_offset {}",
-            String::from_utf8_lossy(e.name),
-            e.offset,
-            mid_offset,
-        );
-    }
+    // `offset` is an opaque cookie, not a position: on Linux it is the
+    // kernel's `d_off`, and tmpfs on recent kernels hands out cookies that do
+    // not grow along the listing. Resuming from an entry's cookie must return
+    // exactly the entries listed after it.
+    let tail_names: Vec<String> = tail_entries
+        .iter()
+        .map(|e| String::from_utf8_lossy(e.name).into_owned())
+        .collect();
+    let expected_names: Vec<String> = all_entries[mid..]
+        .iter()
+        .map(|e| String::from_utf8_lossy(e.name).into_owned())
+        .collect();
+    assert_eq!(
+        tail_names,
+        expected_names,
+        "readdir from offset {mid_offset} must resume right after entry {}",
+        mid - 1
+    );
 
     // Verify that reading past the last entry returns empty.
     let last_offset = all_entries.last().unwrap().offset;

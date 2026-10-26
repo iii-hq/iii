@@ -1,0 +1,9 @@
+{
+  "description": "a normalized filter normalizes to itself",
+  "cases": [
+    { "filters": {"$and": [{"input.a": {"$eq": 1}}, {"input.b": {"$in": [1, 2]}}]},
+      "normalized": {"$and": [{"input.a": {"$eq": 1}}, {"input.b": {"$in": [1, 2]}}]} },
+    { "filters": {"$and": [{"$or": [{"$and": [{"error.code": {"$eq": "TIMEOUT"}}]}, {"$and": [{"error": {"$exists": true}}, {"input.amount": {"$gt": 500}}]}]}]},
+      "normalized": {"$and": [{"$or": [{"$and": [{"error.code": {"$eq": "TIMEOUT"}}]}, {"$and": [{"error": {"$exists": true}}, {"input.amount": {"$gt": 500}}]}]}]} }
+  ]
+}

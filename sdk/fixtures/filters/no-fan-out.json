@@ -1,0 +1,8 @@
+{
+  "description": "a key on an array is absent: no implicit fan-out (use $any)",
+  "filters": {"input.items.sku": {"$eq": "A"}},
+  "cases": [
+    { "doc": {"input": {"items": [{"sku": "A"}]}}, "expect": false },
+    { "doc": {"input": {"items": {"sku": "A"}}}, "expect": true }
+  ]
+}

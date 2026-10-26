@@ -203,15 +203,39 @@ function buildSignature(obj: GriffeObject): string {
   return `${asyncPrefix}(${parts.join(', ')})${ret}`
 }
 
+/** A `.. deprecated:: <version>` directive and its indented body. */
+const DEPRECATED_DIRECTIVE_RE = /^\.\. deprecated::[ \t]*(\S*)[ \t]*\n((?:[ \t]+\S.*(?:\n|$))*)/m
+
+/**
+ * Moves a method's `.. deprecated::` directive out of its prose into
+ * `deprecated`, which renders as a callout (the directive is reST and would
+ * otherwise show verbatim).
+ */
+function splitDeprecation(description: string): { description: string; deprecated?: FunctionDoc['deprecated'] } {
+  const m = description.match(DEPRECATED_DIRECTIVE_RE)
+  if (!m) return { description }
+  const note = m[2]
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .join(' ')
+  return {
+    description: description.replace(m[0], '').replace(/\n{3,}/g, '\n\n').trim(),
+    deprecated: { ...(m[1] ? { since: m[1] } : {}), note },
+  }
+}
+
 function griffeToFunction(obj: GriffeObject): FunctionDoc {
+  const { description, deprecated } = splitDeprecation(extractDocstring(obj))
   return {
     name: obj.name,
     signature: buildSignature(obj),
-    description: extractDocstring(obj),
+    description,
     params: extractParams(obj),
     returns: { type: annotationToString(returnAnnotation(obj)) || 'None', description: '' },
     examples: extractExamples(obj),
     ...parseExpandMarker(obj.docstring?.value),
+    ...(deprecated ? { deprecated } : {}),
   }
 }
 

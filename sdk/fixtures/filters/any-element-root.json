@@ -1,0 +1,9 @@
+{
+  "description": "a bare @ path is the element itself",
+  "filters": {"input.tags": {"$any": {"@": {"$prefix": "env:"}}}},
+  "cases": [
+    { "doc": {"input": {"tags": ["a", "env:prod"]}}, "expect": true },
+    { "doc": {"input": {"tags": ["a"]}}, "expect": false },
+    { "doc": {"input": {"tags": [1, null]}}, "expect": false }
+  ]
+}

@@ -76,8 +76,14 @@ Move these five engine-owned worker configs from list entries in `config.yaml` t
 | `configuration` | Owns schemas, values, and change notifications used by engine and project workers. |
 | `iii-worker-manager` | Owns engine WebSocket and RBAC listeners. |
 | `iii-http-functions` | Provides outbound HTTP functions inside the engine process. |
-| `iii-stream` | Uses engine internals and engine-owned adapters. |
+| `iii-stream` | Uses engine internals and engine-owned adapters. Deprecated. |
 | `iii-sandbox` | Owns the builtin sandbox lifecycle. |
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
+  Behavior is unchanged for now, so move its configuration as shown. Plan the migration with
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 The map value is the worker config itself; do not keep the old nested `config:` key. Multiple
 instances use a `#instance` suffix, such as `iii-worker-manager#rbac`.
@@ -121,9 +127,14 @@ engine injects them automatically, and declaring one under `engine.workers` fail
 | `iii-cron` or `cron` | `cron` |
 | `iii-queue` or `queue` | `queue` |
 | `iii-state` or `state` | `state` |
-| `iii-pubsub` or `pubsub` | `pubsub` |
+| `iii-pubsub` or `pubsub` | `pubsub` (deprecated) |
 | `iii-bridge` | `bridge` |
 | `iii-exec` | no package; use Compose `scripts` |
+
+<Warning title="Deprecated">
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
+  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 Copy each old project worker's `config:` value to `config_override`, preserve its storage paths,
 and pin the package version.

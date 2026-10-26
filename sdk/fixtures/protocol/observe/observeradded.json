@@ -1,0 +1,26 @@
+{
+  "type": "observeradded",
+  "function_id": "cron::on-tick",
+  "namespace": "default",
+  "revision": 13,
+  "observer": {
+    "id": "a07d4c2e-6b1f-4a3d-9e8c-5f2a1b3c4d5e",
+    "args": {
+      "expression": "0 0 9 * * Mon-Fri"
+    },
+    "filters": {
+      "$and": [
+        {
+          "caller.worker_name": {
+            "$ne": "replayer"
+          }
+        }
+      ]
+    },
+    "target": "billing::send-reminders",
+    "capture": [
+      "input"
+    ],
+    "on": "success"
+  }
+}

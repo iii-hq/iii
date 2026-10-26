@@ -1,0 +1,14 @@
+{
+  "description": "$eq null matches null only, never absent",
+  "filters": {"input.v": {"$eq": null}},
+  "cases": [
+    { "doc": {"input": {"v": null}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false, "note": "absent is not null" },
+    { "doc": {}, "expect": false },
+    { "doc": {"input": {"v": false}}, "expect": false },
+    { "doc": {"input": {"v": 0}}, "expect": false },
+    { "doc": {"input": {"v": ""}}, "expect": false },
+    { "doc": {"input": {"v": []}}, "expect": false },
+    { "doc": {"input": {"v": {}}}, "expect": false }
+  ]
+}

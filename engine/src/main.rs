@@ -132,8 +132,14 @@ enum Commands {
     #[command(visible_alias = "t")]
     Trigger(TriggerArgs),
 
-    /// Launch the iii web console
+    /// Removed: prints where the iii console moved (ADE) and exits non-zero.
+    // TODO(MOT-3619): remove the iii console stub in the next release.
+    // Hidden so help and the CLI reference stop advertising it; still parsed
+    // (with any arguments) so old muscle memory gets the notice, not a clap
+    // "unrecognized subcommand" error. Handled in `run` before telemetry and
+    // without downloading anything.
     #[command(
+        hide = true,
         trailing_var_arg = true,
         allow_hyphen_values = true,
         disable_help_flag = true
@@ -166,6 +172,18 @@ enum Commands {
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
+    /// List iii processes on this machine: engines, compose daemons and
+    /// workers, with the compose project each belongs to
+    Ps {
+        /// Print JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Stop iii processes by engine port, by compose project, or every
+    /// orphaned worker
+    Kill(cli::ps::KillArgs),
+
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
     #[command(name = "gen-cli-docs", hide = true)]
@@ -177,7 +195,7 @@ enum Commands {
 
     /// Update iii and managed binaries to their latest versions
     Update {
-        /// Specific command or binary to update (e.g., "console", "self").
+        /// Specific command or binary to update (e.g., "worker", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
         #[arg(
@@ -222,6 +240,8 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             None => "compose".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
+        Some(Commands::Ps { .. }) => "ps".to_string(),
+        Some(Commands::Kill(_)) => "kill".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
         }) => "update list-targets".to_string(),
@@ -399,6 +419,12 @@ fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> Option<libc::rlim_t>
 }
 
 fn main() -> anyhow::Result<()> {
+    // Started by compose to stop its children if it dies; never a CLI call.
+    #[cfg(unix)]
+    if iii_compose::process::reaper::requested() {
+        iii_compose::process::reaper::run();
+    }
+
     let argv: Vec<String> = std::env::args().collect();
     let cli_args = match Cli::try_parse_from(&argv) {
         Ok(c) => c,
@@ -453,6 +479,14 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // TODO(MOT-3619): remove the iii console stub in the next release.
+    // The legacy iii-console was removed: print the notice and exit non-zero
+    // before telemetry, update checks or any download.
+    if let Some(Commands::Console { .. }) = &cli_args.command {
+        eprintln!("{}", cli::CONSOLE_REMOVED_NOTICE);
+        std::process::exit(1);
+    }
+
     cli::telemetry::record_cli_usage(&cli_usage_command_path(&cli_args));
 
     if cli_args.version {
@@ -484,11 +518,8 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             Err(cli_trigger::TriggerCliError::RemoteAlreadyReported) => std::process::exit(1),
             Err(cli_trigger::TriggerCliError::Other(e)) => Err(e),
         },
-        Some(Commands::Console { args }) => {
-            let exit_code =
-                cli::handle_dispatch("console", args, cli_args.no_update_check, &[]).await;
-            std::process::exit(exit_code);
-        }
+        // Handled before telemetry above.
+        Some(Commands::Console { .. }) => unreachable!("the iii console stub returns early"),
         Some(Commands::Cloud { args }) => {
             let exit_code =
                 cli::handle_dispatch("cloud", args, cli_args.no_update_check, &[]).await;
@@ -510,9 +541,15 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             }
             cli::telemetry::install_compose_reporter();
             iii_compose::set_host_version(env!("CARGO_PKG_VERSION"));
+            #[cfg(unix)]
+            if let Ok(exe) = std::env::current_exe() {
+                iii_compose::process::reaper::set_program(exe, Vec::new());
+            }
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        Some(Commands::Ps { json }) => cli::ps::ps(*json),
+        Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
         Some(Commands::GenDocs { .. }) => unreachable!("gen-cli-docs returns early"),
         Some(Commands::Update {
@@ -700,7 +737,7 @@ mod tests {
     #[test]
     fn cli_usage_command_path_covers_update_modes() {
         let cli =
-            Cli::try_parse_from(["iii", "update", "console"]).expect("should parse update target");
+            Cli::try_parse_from(["iii", "update", "worker"]).expect("should parse update target");
         assert_eq!(cli_usage_command_path(&cli), "update target");
 
         let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
@@ -710,9 +747,9 @@ mod tests {
 
     #[test]
     fn cli_usage_command_path_does_not_capture_flag_values_as_subcommands() {
-        let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
-            .expect("should parse console passthrough");
-        assert_eq!(cli_usage_command_path(&cli), "console");
+        let cli = Cli::try_parse_from(["iii", "cloud", "--config", "prod.yaml"])
+            .expect("should parse cloud passthrough");
+        assert_eq!(cli_usage_command_path(&cli), "cloud");
     }
 
     #[test]
@@ -720,6 +757,27 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "trigger", "orders::charge"])
             .expect("should parse trigger");
         assert_eq!(cli_usage_command_path(&cli), "trigger");
+    }
+
+    #[test]
+    fn console_stub_is_hidden_from_help() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let console = cmd
+            .find_subcommand("console")
+            .expect("the iii console stub still parses");
+        assert!(
+            console.is_hide_set(),
+            "the removed console must not be advertised"
+        );
+    }
+
+    #[test]
+    fn console_removed_notice_points_to_ade() {
+        let notice = cli::CONSOLE_REMOVED_NOTICE;
+        assert!(notice.contains("iii-console has been removed"));
+        assert!(notice.contains("compose::add worker=ade"));
+        assert!(notice.contains("https://iii.dev/docs/using-iii/console"));
     }
 
     #[test]
@@ -760,14 +818,14 @@ mod tests {
 
     #[test]
     fn update_parses_with_target() {
-        let cli = Cli::try_parse_from(["iii", "update", "console"])
+        let cli = Cli::try_parse_from(["iii", "update", "worker"])
             .expect("should parse update with target");
         match cli.command {
             Some(Commands::Update {
                 target,
                 list_targets,
             }) => {
-                assert_eq!(target.as_deref(), Some("console"));
+                assert_eq!(target.as_deref(), Some("worker"));
                 assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
@@ -808,7 +866,7 @@ mod tests {
 
     #[test]
     fn update_target_and_list_targets_conflict() {
-        let result = Cli::try_parse_from(["iii", "update", "console", "--list-targets"]);
+        let result = Cli::try_parse_from(["iii", "update", "worker", "--list-targets"]);
         assert!(
             result.is_err(),
             "--list-targets should conflict with positional target"
@@ -845,12 +903,12 @@ mod tests {
 
     #[test]
     fn no_update_check_flag_works_with_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "--no-update-check", "console"])
+        let cli = Cli::try_parse_from(["iii", "--no-update-check", "cloud"])
             .expect("should parse --no-update-check with subcommand");
         assert!(cli.no_update_check);
         match cli.command {
-            Some(Commands::Console { .. }) => {}
-            _ => panic!("expected Console subcommand"),
+            Some(Commands::Cloud { .. }) => {}
+            _ => panic!("expected Cloud subcommand"),
         }
     }
 

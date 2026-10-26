@@ -11,6 +11,14 @@ type: "how-to"
   triggers to functions, gate triggers with a condition, and unregister triggers.
 </Note>
 
+<Warning>
+  `registerTrigger` is deprecated in 0.25 and will be removed in a future release. It keeps working
+  and logs one warning per process. It is still how you bind functions to the http, cron, queue,
+  state, stream, pubsub, and database workers, which publish trigger types in 0.25. For engine
+  events and any other function, use [observers](./observers) (`iii.observe`). See [Upgrading from
+  0.24.x](../upgrading/from-0-24-x).
+</Warning>
+
 ## Register a trigger
 
 <Note>
@@ -166,6 +174,11 @@ To list registrations with their `status` (`active` or `pending`), run
 `iii trigger engine::registered-triggers::list include_pending=true`. Without `include_pending`, the
 list shows only active registrations.
 
+When no worker provides the type the old way, but a function declares it as its
+`legacy_trigger_type`, the engine turns the registration into an observer of that function and
+answers with its outcome. The registration keeps working unchanged; see
+[Accept old triggers](../creating-workers/observable-functions#accept-old-triggers).
+
 ## Bind multiple triggers to one function
 
 You can bind many triggers to one `function_id`, across any number of trigger types. Register a
@@ -239,6 +252,14 @@ For the `http` type, the condition function gets the same request payload as the
 the channel references `request_body` and `response`. When the condition returns `false`, the `http`
 worker responds with status `422` and the error code `CONDITION_NOT_MET`. When the condition
 function fails, it responds with status `500`. See [http](https://workers.iii.dev/workers/http).
+
+<Tip>
+  When an observer's source is a function, a condition you can state over the event becomes a
+  declarative [filter](../reference/filters), evaluated without an extra function call:
+  `filters: { "input.customer_tier": { "$eq": "gold" } }`. A condition that needs code (a lookup, an
+  auth check) has no filter form: keep `condition_function_id`, which works in 0.25, or move the
+  check into the target function.
+</Tip>
 
 <Tabs>
   <Tab title="Node / TypeScript">

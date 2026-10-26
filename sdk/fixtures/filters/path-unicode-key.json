@@ -1,0 +1,8 @@
+{
+  "description": "keys may hold any Unicode",
+  "filters": {"input.ключ.名前 x": {"$eq": "ok"}},
+  "cases": [
+    { "doc": {"input": {"ключ": {"名前 x": "ok"}}}, "expect": true },
+    { "doc": {"input": {"ключ": {"名前": "ok"}}}, "expect": false }
+  ]
+}

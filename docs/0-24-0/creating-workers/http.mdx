@@ -1,0 +1,166 @@
+---
+title: "HTTP"
+description: "Expose functions as HTTP endpoints with the http worker."
+owner: "devrel"
+type: "how-to"
+---
+
+The `http` worker turns your functions into REST routes exposed as HTTP endpoints.
+
+## Before adding the worker
+
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
+running in separate terminals before using any of the commands below. If this project does not have
+a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+
+```bash
+# terminal 1
+iii --config config.yaml
+
+# terminal 2, from the directory that contains worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134
+```
+
+Run the remaining commands from a third terminal in that same project directory:
+
+```bash
+iii trigger -n dev compose::add worker=http
+```
+
+<Note>
+  This page covers the basic endpoint flow. For path patterns, methods, headers, and response handling, see the
+  [http worker docs](https://workers.iii.dev/workers/http). The worker's server settings
+  (port, host, CORS, timeouts) are managed at runtime through the
+  [configuration worker](../using-iii/configuration).
+</Note>
+
+## Create endpoints
+
+The http worker exposes an `http` trigger type that binds a function to an HTTP method and path; the
+function then runs on every matching request. Here is the full path from a running engine to a live
+endpoint.
+
+1. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
+   not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
+   source. The
+   handler receives the request (`body`, `headers`, method) and its return value becomes the
+   response:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, {
+      workerName: "my-worker",
+      namespace: "orders",
+    });
+
+    worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
+      status_code: 200,
+      body: { c: payload.body.a + payload.body.b },
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    worker.registerTrigger({
+      type: "http",
+      function_id: "http::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="my-worker", namespace="orders"),
+    )
+
+    def add(payload: dict) -> dict:
+        body = payload["body"]
+        return {
+            "status_code": 200,
+            "body": {"c": body["a"] + body["b"]},
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    worker.register_function("http::add", add)
+
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "http::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+    use iii_sdk::trigger::IIITrigger;
+    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddRequest {
+        body: AddBody,
+    }
+    #[derive(Deserialize, JsonSchema)]
+    struct AddBody {
+        a: i64,
+        b: i64,
+    }
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
+
+    worker.register_function(
+        "http::add",
+        RegisterFunction::new(|req: AddRequest| {
+            Ok(json!({
+                "status_code": 200,
+                "body": { "c": req.body.a + req.body.b },
+                "headers": { "Content-Type": "application/json" }
+            }))
+        }),
+    );
+
+    worker.register_trigger(
+        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
+            .for_function("http::add"),
+    )?;
+    ```
+
+  </Tab>
+</Tabs>
+
+2. Add the worker to Compose, pointing at its directory:
+
+```bash
+iii trigger -n dev compose::add worker=./my-worker
+```
+
+For path patterns, request and response shapes, and the other configuration options, see the
+[http worker docs](https://workers.iii.dev/workers/http).
+
+## Calling the endpoint
+
+Once the trigger is registered, set `HTTP_WORKER_URL` to the address configured for the http worker
+and call the endpoint:
+
+```bash
+# call the exposed function
+curl -X POST "$HTTP_WORKER_URL/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
+```

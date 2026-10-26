@@ -277,6 +277,7 @@ pub async fn init_otel(config: OtelConfig) -> bool {
     let channel_capacity = config.channel_capacity.unwrap_or(10_000);
     let connection = Arc::new(SharedEngineConnection::with_channel_capacity(
         ws_url,
+        config.engine_ws_headers,
         reconnection_config,
         channel_capacity,
     ));

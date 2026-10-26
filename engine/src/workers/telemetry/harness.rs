@@ -9,11 +9,13 @@
 //! The `harness` worker publishes one message per reported moment on the
 //! `harness:usage` topic (see the worker's `usage_report` module). The engine
 //! subscribes to that topic and reports each message as one product event:
-//! `harness_session_progress` at root turn 1, 2, 5, 10, 25 and 50, cumulative
-//! so the last report supersedes the ones before it, and
-//! `harness_turn_failed` once per session per outcome.
+//! `harness_user_turns` and `harness_model_calls`, machine-wide counts
+//! reported at 1, 2, 5, 10, 25, 50 and then every 50, cumulative so the last
+//! report supersedes the ones before it; `harness_turn_failed` once per
+//! session per outcome; and `harness_session_progress`, the per-session
+//! report earlier harness releases still send.
 //!
-//! The event name arrives in the message and is checked against the two names
+//! The event name arrives in the message and is checked against the names
 //! above, so a stray publish on the topic cannot mint product events of its
 //! own naming. Everything else in the message becomes the event properties.
 //!
@@ -49,12 +51,24 @@ pub const USAGE_TOPIC: &str = "harness:usage";
 pub const USAGE_FN_ID: &str = "iii-telemetry::on-harness-usage";
 pub const USAGE_TRIGGER_ID: &str = "iii-telemetry::harness-usage-watch";
 
+/// Per-session progress, sent by harness releases before the machine-wide
+/// counts.
 pub const PROGRESS_EVENT: &str = "harness_session_progress";
+pub const USER_TURNS_EVENT: &str = "harness_user_turns";
+pub const MODEL_CALLS_EVENT: &str = "harness_model_calls";
 pub const FAILED_EVENT: &str = "harness_turn_failed";
+
+/// Every event name this handler reports.
+pub const REPORTED_EVENTS: [&str; 4] = [
+    PROGRESS_EVENT,
+    USER_TURNS_EVENT,
+    MODEL_CALLS_EVENT,
+    FAILED_EVENT,
+];
 
 /// The event name and its properties, or `None` for a message this handler
 /// does not report: one that is not an object, names no event, or names one
-/// outside the pair above.
+/// outside [`REPORTED_EVENTS`].
 ///
 /// `event` and `dedupe_key` are the envelope and are dropped; every other
 /// field the worker sent becomes a property, so a new counter needs a change
@@ -64,7 +78,7 @@ pub fn usage_event(payload: Value) -> Option<(String, Value)> {
         return None;
     };
     let event = fields.remove("event")?.as_str()?.to_string();
-    if event != PROGRESS_EVENT && event != FAILED_EVENT {
+    if !REPORTED_EVENTS.contains(&event.as_str()) {
         return None;
     }
     fields.remove("dedupe_key");
@@ -226,7 +240,32 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_known_events_report() {
+    fn the_machine_wide_counts_report() {
+        let (name, props) = usage_event(json!({
+            "event": USER_TURNS_EVENT,
+            "dedupe_key": "user_turns:100",
+            "milestone": 100,
+            "user_turns_total": 100,
+            "user_turns_delta": 50,
+        }))
+        .expect("reported");
+        assert_eq!(name, USER_TURNS_EVENT);
+        assert_eq!(props["user_turns_delta"], 50);
+        assert!(props.get("dedupe_key").is_none());
+
+        let (name, props) = usage_event(json!({
+            "event": MODEL_CALLS_EVENT,
+            "dedupe_key": "model_calls:50",
+            "model_calls_total": 53,
+            "cost_usd": 0.4,
+        }))
+        .expect("reported");
+        assert_eq!(name, MODEL_CALLS_EVENT);
+        assert_eq!(props["model_calls_total"], 53);
+    }
+
+    #[test]
+    fn only_the_known_events_report() {
         assert!(usage_event(json!({ "event": "harness_secret_exfil" })).is_none());
         assert!(usage_event(json!({ "turn_index": 1 })).is_none());
         assert!(usage_event(json!({ "event": 7 })).is_none());

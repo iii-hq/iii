@@ -47,13 +47,13 @@ with `state` kept in front as a fast read cache.
 
 ### Ch. 4: Make it durable
 
-Push click events onto `queue` so redirects stay fast. Publish `link.created` with `pubsub` for an
-analytics worker. Publish `link.updated` with durable pub/sub for a cache refresher.
+Push click events onto `queue` so redirects stay fast. Publish `link.created` and `link.updated`
+events on durable topics that an analytics function and a cache refresher each subscribe to.
 
 ### Ch. 5: Stream live clicks
 
-Push every click to subscribers in real time from a dedicated `click-streamer` worker with
-`iii-stream`.
+Push every click to listeners in real time from a dedicated `click-streamer` worker that owns a
+trigger type, and read the running total with a query.
 
 ### Ch. 6: Move bulk data with channels
 
@@ -61,5 +61,5 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
 
 ### Ch. 7: Bring in the browser
 
-Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, subscribe to
-the click stream, and register a browser-side function the server can call.
+Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, bind to the
+live click feed, and register a browser-side function the server can call.

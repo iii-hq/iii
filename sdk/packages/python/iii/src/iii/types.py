@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -21,6 +20,7 @@ from typing import (
 from iii_helpers.http import HttpInvocationConfig
 from pydantic import BaseModel, ConfigDict
 
+from . import _wire_json
 from .iii_constants import ConnectionStateCallback
 from .iii_types import (
     RegisterFunctionMessage,
@@ -50,6 +50,12 @@ class RemoteFunctionData(BaseModel):
 
     message: RegisterFunctionMessage
     handler: RemoteFunctionHandler | None = None
+    #: Observers of this function as the engine pushed them, local dispatch
+    #: state and hooks (an ``iii.observable.FunctionObservers``).
+    observe: Any = None
+    #: A sync handler, called in-process on the caller's thread by a local
+    #: ``trigger()`` (``None`` for async handlers).
+    call_sync: Callable[[Any, Any], Any] | None = None
 
 
 class RemoteTriggerTypeData(BaseModel):
@@ -104,6 +110,10 @@ class IIIClient(Protocol):
 
     def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
 
+    def observe(self, source: Any, target: Any, options: Any = None) -> Any: ...
+
+    def current_invocation(self) -> Any: ...
+
     def register_trigger_type(
         self,
         trigger_type: RegisterTriggerTypeInput | dict[str, Any],
@@ -150,10 +160,10 @@ class StreamResponse:
         self._writer = writer
 
     async def status(self, status_code: int) -> None:
-        await self._writer.send_message_async(json.dumps({"type": "set_status", "status_code": status_code}))
+        await self._writer.send_message_async(_wire_json.dumps({"type": "set_status", "status_code": status_code}))
 
     async def headers(self, headers: dict[str, str]) -> None:
-        await self._writer.send_message_async(json.dumps({"type": "set_headers", "headers": headers}))
+        await self._writer.send_message_async(_wire_json.dumps({"type": "set_headers", "headers": headers}))
 
     @property
     def stream(self) -> WritableStream:

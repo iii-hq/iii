@@ -41,6 +41,20 @@
 // queue. Errors are typed: [ErrTimeout] for a missed deadline, [ErrNotConnected] for a
 // call cancelled by shutdown, and [InvocationError] (via errors.As) for a remote failure.
 //
+// # Observing functions
+//
+// Every function is observable: [Client.Observe] invokes a target function on each
+// invocation of a source function that passes the observer's filters (the
+// [filter] subpackage is the language). A function registered with [ObserveHooks]
+// learns who observes it and can hand its own events to them with [Observer.Emit]
+// and [Observer.Call]. Inside a handler, [InvocationFromContext] returns the
+// current invocation; pass the handler's ctx to [Client.Trigger] so calls carry it
+// as their caller. A function this worker registered runs in-process once the engine
+// confirmed it for local dispatch.
+//
+// RegisterTrigger and RegisterTriggerType are deprecated in favor of Observe and
+// ObserveHooks; they keep working and log a warning once per process.
+//
 // # Schema inference
 //
 // [RegisterFunctionTyped] infers JSON Schemas for a function's request and response from

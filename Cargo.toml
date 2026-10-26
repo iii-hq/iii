@@ -7,11 +7,12 @@ members = [
   "sdk/packages/rust/iii-example",
   "sdk/packages/rust/observability",
   "sdk/packages/rust/helpers",
-  "console/packages/console-rust",
   "crates/iii-clap-docs",
   "crates/iii-compose",
+  "crates/iii-filter",
   "crates/iii-init",
   "crates/iii-filesystem",
+  "crates/iii-loadtest",
   "crates/iii-network",
   "crates/iii-shell-client",
   "crates/iii-shell-proto",
@@ -22,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.24.5"
+version = "0.25.0"
 edition = "2024"
 authors = ["Motia LLC"]
 repository = "https://github.com/iii-hq/iii"
@@ -30,8 +31,9 @@ homepage = "https://iii.dev"
 
 [workspace.dependencies]
 iii-sdk = { path = "sdk/packages/rust/iii" }
-iii-observability = { path = "sdk/packages/rust/observability", version = "0.24.5" }
-iii-helpers = { path = "sdk/packages/rust/helpers", version = "0.24.5" }
+iii-observability = { path = "sdk/packages/rust/observability", version = "0.25.0" }
+iii-helpers = { path = "sdk/packages/rust/helpers", version = "0.25.0" }
+iii-filter = { path = "crates/iii-filter", version = "0.25.0" }
 scaffolder-core = { path = "crates/scaffolder-core" }
 
 # Shared dependencies used by tooling crates

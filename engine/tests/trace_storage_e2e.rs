@@ -77,6 +77,7 @@ fn span(trace_id: &str, span_id: &str, start_time: u64, payload_bytes: usize) ->
         flags: None,
         trace_state: None,
         pending: false,
+        observe_depth: 0,
     }
 }
 
@@ -286,26 +287,42 @@ fn protected_active_trace_is_not_partially_committed_when_capacity_is_exhausted(
     let root = tempfile::tempdir().expect("temp root");
     let mut archive_config = config(root.path());
     // Keep the configured cap below SQLite's fixed 8 MiB allocation
-    // tolerance. Each 3 MiB payload is indexed separately from the serialized
-    // span, so the second span must either preserve the completed first span
-    // or fail as one protected batch.
+    // tolerance. A 3 MiB payload is stored three times (span payload,
+    // attribute row, lookup index), so it can never fit: it is dropped and
+    // counted, while the trace's durable first span stays and later spans of
+    // the same trace are still archived.
     archive_config.max_disk_bytes = 1;
     let hot = start_archive(archive_config);
 
-    hot.add_spans(vec![span("protected-trace", "span-1", 1, 3 * MIB)]);
+    hot.add_spans(vec![span("protected-trace", "span-1", 1, MIB)]);
     trace_store::flush().expect("persist first protected span");
     hot.add_spans(vec![span("protected-trace", "span-2", 2, 3 * MIB)]);
-    let error = trace_store::flush().expect_err("reject protected batch at capacity");
+    trace_store::flush().expect("drop the irrecoverable span");
 
-    assert!(error.contains("trace storage limit reached"));
-    let stored = trace_store::read_spans().expect("read archive after rejected batch");
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].span_id, "span-1");
+    let stored: Vec<_> = trace_store::read_spans()
+        .unwrap()
+        .into_iter()
+        .map(|stored| stored.span_id)
+        .collect();
+    assert_eq!(stored, vec!["span-1"], "no partial write, durable row kept");
     assert_eq!(
-        hot.dirty_spans(16, 20 * MIB as u64).len(),
-        1,
-        "the rejected span remains eligible for retry"
+        hot.dirty_len(),
+        0,
+        "the dropped span must not retry forever"
     );
+    assert_eq!(trace_store::status()["known_dropped_spans"], 1);
+    assert_eq!(trace_store::status()["completeness"], "partial");
+
+    hot.add_spans(vec![span("protected-trace", "span-3", 3, 1024)]);
+    trace_store::flush().expect("a later span of the trace still fits");
+    let mut stored: Vec<_> = trace_store::read_spans()
+        .unwrap()
+        .into_iter()
+        .map(|stored| stored.span_id)
+        .collect();
+    stored.sort();
+    assert_eq!(stored, vec!["span-1", "span-3"]);
+    assert_eq!(trace_store::status()["known_dropped_spans"], 1);
 }
 
 #[test]
@@ -463,6 +480,30 @@ fn permission_denied_directory_reports_actionable_error_without_partial_archive(
     assert!(!locked.join("traces.sqlite3").exists());
 }
 
+/// Held by the child that runs under `ulimit -S -f`: on drop it raises the
+/// soft file-size limit back to the hard one. The limit is for the test body
+/// only; a coverage build writes its multi-MiB profile when the child exits,
+/// and a capped write leaves a truncated profile that fails the coverage merge.
+#[cfg(unix)]
+struct LiftFileSizeLimitOnDrop;
+
+#[cfg(unix)]
+impl Drop for LiftFileSizeLimitOnDrop {
+    fn drop(&mut self) {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit only read and write the owned struct.
+        unsafe {
+            if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) == 0 {
+                limit.rlim_cur = limit.rlim_max;
+                libc::setrlimit(libc::RLIMIT_FSIZE, &limit);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 const FILE_LIMIT_CHILD: &str = "III_TRACE_STORAGE_FILE_LIMIT_CHILD";
 #[cfg(unix)]
@@ -475,6 +516,7 @@ fn disk_full_degrades_without_partial_commit_and_keeps_committed_data() {
     use std::process::Command;
 
     if std::env::var_os(FILE_LIMIT_CHILD).is_some() {
+        let _lift = LiftFileSizeLimitOnDrop;
         let directory = PathBuf::from(
             std::env::var_os(FILE_LIMIT_DIRECTORY).expect("child directory is provided"),
         );
@@ -514,7 +556,7 @@ fn disk_full_degrades_without_partial_commit_and_keeps_committed_data() {
     let output = Command::new("bash")
         .args([
             "-c",
-            "ulimit -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
+            "ulimit -S -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
             "trace-storage-file-limit-child",
         ])
         .arg(executable)

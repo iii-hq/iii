@@ -32,8 +32,9 @@ class SharedEngineConnection:
 
     MAX_QUEUE: int = 1000
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, headers: dict[str, str] | None = None) -> None:
         self._url = url
+        self._headers = headers
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._queue: asyncio.Queue | None = None  # type: ignore[type-arg]
@@ -79,7 +80,7 @@ class SharedEngineConnection:
         delay = 1.0
         while True:
             try:
-                async with websockets.connect(self._url) as ws:
+                async with websockets.connect(self._url, additional_headers=self._headers) as ws:
                     log.debug("OTel WS connected to %s", self._url)
                     delay = 1.0
                     while True:

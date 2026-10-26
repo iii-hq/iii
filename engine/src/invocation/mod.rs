@@ -18,6 +18,7 @@ use crate::telemetry::SpanExt;
 
 use crate::{
     function::{Function, FunctionResult, HandlerFn},
+    observer::{InvocationCtx, ObserverRegistry},
     protocol::ErrorBody,
     worker_connections::WorkerConnection,
     workers::observability::metrics::get_engine_metrics,
@@ -31,8 +32,8 @@ pub mod method;
 pub mod signature;
 pub mod url_validator;
 
-// Own the handler snapshot and original payload only until the callback returns,
-// including when dispatch subsequently waits for a deferred worker response.
+// Keep the handler snapshot until its callback returns, and transfer the payload
+// to it even when dispatch subsequently waits for a deferred worker response.
 async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     handler: H,
     invocation_id: Option<Uuid>,
@@ -40,7 +41,7 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     session: Option<Arc<Session>>,
     metadata: Option<Value>,
 ) -> FunctionResult<Option<Value>, ErrorBody> {
-    (handler.as_ref())(invocation_id, data.clone(), session, metadata).await
+    (handler.as_ref())(invocation_id, data, session, metadata).await
 }
 
 pub struct Invocation {
@@ -71,12 +72,20 @@ impl Drop for InvocationRegistration<'_> {
 #[derive(Default)]
 pub struct InvocationHandler {
     invocations: Invocations,
+    /// Consulted on every invocation (the routed observer hook). Set once by
+    /// `Engine::new`; a handler without it observes nothing.
+    observers: std::sync::OnceLock<Arc<ObserverRegistry>>,
 }
 impl InvocationHandler {
     pub fn new() -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
+            observers: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn set_observers(&self, observers: Arc<ObserverRegistry>) {
+        let _ = self.observers.set(observers);
     }
 
     pub fn remove(&self, invocation_id: &Uuid) -> Option<Invocation> {
@@ -115,40 +124,48 @@ impl InvocationHandler {
             worker_id,
             None,
             function_id,
+            crate::protocol::DEFAULT_NAMESPACE,
             body,
             function_handler,
             traceparent,
             baggage,
             session,
             metadata,
+            InvocationCtx::engine_internal(),
         )
         .await
     }
 
+    /// `namespace` is where `function_handler` was resolved; `ctx` carries
+    /// the caller, observe depth and activation the call arrived with.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn handle_invocation_with_handler(
         &self,
         invocation_id: Option<Uuid>,
         caller: Option<&WorkerConnection>,
         function_id: String,
+        namespace: &str,
         body: Value,
         function_handler: Arc<HandlerFn>,
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
         metadata: Option<Value>,
+        ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         self.handle_invocation_inner(
             invocation_id,
             caller.map(|worker| worker.id),
             caller.filter(|_| invocation_id.is_some()),
             function_id,
+            namespace,
             body,
             function_handler,
             traceparent,
             baggage,
             session,
             metadata,
+            ctx,
         )
         .await
     }
@@ -160,13 +177,37 @@ impl InvocationHandler {
         worker_id: Option<Uuid>,
         caller: Option<&WorkerConnection>,
         function_id: String,
+        namespace: &str,
         body: Value,
         function_handler: H,
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
         metadata: Option<Value>,
+        ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        // The routed observer hook (protocol.md §3.2). Unobserved — the usual
+        // case — it costs one atomic load and copies nothing; observed, it
+        // keeps only what the active observers need.
+        let observers = self.observers.get();
+        // An owner-delivered function is invoked by its owner only.
+        if let Some(registry) = observers
+            && let Err(refused) = registry.may_invoke(namespace, &function_id, worker_id)
+        {
+            return Ok(Err(refused));
+        }
+        let observed = observers.and_then(|registry| {
+            registry
+                .watch_routed(namespace, &function_id)
+                .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage, &ctx))
+        });
+        // The context goes in scope around the handler (and is kept for the
+        // hook) unless there is nothing in it: engine orchestration at depth 0,
+        // with no context around it already, is the same as none.
+        let ctx: Option<Arc<InvocationCtx>> =
+            (observed.is_some() || !ctx.is_blank() || InvocationCtx::current().is_some())
+                .then(|| Arc::new(ctx));
+
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
         let is_builtin = crate::workers::telemetry::is_iii_builtin_function_id(&function_id);
@@ -209,9 +250,19 @@ impl InvocationHandler {
                 function_id = %function_id,
                 // Tag internal vs user functions for filtering
                 "iii.function.kind" = if is_builtin { "internal" } else { "user" },
+                // Set below when the call sits in a chain of observers: an
+                // `observability::on-span` event takes it (loop guard).
+                "iii.observe_depth" = tracing::field::Empty,
             )
             .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref())
         };
+        let depth = ctx.as_ref().map_or(0, |ctx| ctx.observe_depth);
+        if depth > 0 {
+            span.record(
+                crate::workers::observability::otel::OBSERVE_DEPTH_ATTRIBUTE,
+                depth,
+            );
+        }
 
         // Run the dispatch under the caller's OTel context whenever one was
         // provided, for BOTH worker-routed and built-in calls:
@@ -277,14 +328,20 @@ impl InvocationHandler {
             let start_time = std::time::Instant::now();
             let metrics = get_engine_metrics();
 
-            let result = call_handler_with_metadata(
+            // In scope while the handler runs, so a worker-hosted function's
+            // `InvokeFunction` frame carries this call's caller, depth and
+            // activation (`WorkerConnection::handle_function`).
+            let handler = call_handler_with_metadata(
                 function_handler,
                 Some(invocation_id),
                 body,
                 session,
                 metadata,
-            )
-            .await;
+            );
+            let result = match &ctx {
+                Some(ctx) => InvocationCtx::scope(ctx.clone(), handler).await,
+                None => handler.await,
+            };
 
             // Calculate duration
             let duration = start_time.elapsed().as_secs_f64();
@@ -295,20 +352,12 @@ impl InvocationHandler {
                     tracing::Span::current().record("otel.status_code", "OK");
 
                     // Record metrics
-                    metrics.invocations_total.add(
-                        1,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "ok"),
-                        ],
-                    );
-                    metrics.invocation_duration.record(
-                        duration,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "ok"),
-                        ],
-                    );
+                    let attributes = [
+                        KeyValue::new("function_id", function_id.clone()),
+                        KeyValue::new("status", "ok"),
+                    ];
+                    metrics.invocations_total.add(1, &attributes);
+                    metrics.invocation_duration.record(duration, &attributes);
 
                     // Update accumulator for readable metrics
                     let acc = crate::workers::observability::metrics::get_metrics_accumulator();
@@ -344,27 +393,14 @@ impl InvocationHandler {
                     current_span.add_event("exception", exception_attrs);
 
                     // Record metrics
-                    metrics.invocations_total.add(
-                        1,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "error"),
-                        ],
-                    );
-                    metrics.invocation_duration.record(
-                        duration,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "error"),
-                        ],
-                    );
-                    metrics.invocation_errors_total.add(
-                        1,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("error_code", error.code.clone()),
-                        ],
-                    );
+                    let mut attributes = [
+                        KeyValue::new("function_id", function_id.clone()),
+                        KeyValue::new("status", "error"),
+                    ];
+                    metrics.invocations_total.add(1, &attributes);
+                    metrics.invocation_duration.record(duration, &attributes);
+                    attributes[1] = KeyValue::new("error_code", error.code.clone());
+                    metrics.invocation_errors_total.add(1, &attributes);
 
                     // Update accumulator for readable metrics
                     let acc = crate::workers::observability::metrics::get_metrics_accumulator();
@@ -382,20 +418,12 @@ impl InvocationHandler {
                     tracing::Span::current().record("otel.status_code", "OK");
 
                     // Record metrics
-                    metrics.invocations_total.add(
-                        1,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "ok"),
-                        ],
-                    );
-                    metrics.invocation_duration.record(
-                        duration,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "ok"),
-                        ],
-                    );
+                    let attributes = [
+                        KeyValue::new("function_id", function_id.clone()),
+                        KeyValue::new("status", "ok"),
+                    ];
+                    metrics.invocations_total.add(1, &attributes);
+                    metrics.invocation_duration.record(duration, &attributes);
 
                     // Update accumulator for readable metrics
                     let acc = crate::workers::observability::metrics::get_metrics_accumulator();
@@ -408,21 +436,15 @@ impl InvocationHandler {
                 FunctionResult::Deferred => {
                     tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function deferred");
 
-                    // Record metrics for deferred invocations
-                    metrics.invocations_total.add(
-                        1,
-                        &[
+                    // Drop metric attributes before waiting for the worker response.
+                    {
+                        let attributes = [
                             KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "deferred"),
-                        ],
-                    );
-                    metrics.invocation_duration.record(
-                        duration,
-                        &[
-                            KeyValue::new("function_id", function_id.clone()),
-                            KeyValue::new("status", "deferred"),
-                        ],
-                    );
+                        ];
+                        metrics.invocations_total.add(1, &attributes);
+                        metrics.invocation_duration.record(duration, &attributes);
+                    }
 
                     // Update accumulator for readable metrics
                     let acc = crate::workers::observability::metrics::get_metrics_accumulator();
@@ -441,6 +463,9 @@ impl InvocationHandler {
                     tracing::Span::current().record("otel.status_code", "ERROR");
                 }
             };
+            if let (Some(registry), Some(observed), Some(ctx)) = (observers, observed, &ctx) {
+                registry.complete(observed, namespace, &function_id, invocation_id, &result, ctx);
+            }
             result
         }
         .instrument(span);
@@ -461,6 +486,63 @@ impl InvocationHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine's span of a call made inside a chain of observers records
+    /// the depth (`iii.observe_depth`), and the stored span carries it: what
+    /// `observability::on-span` takes for its loop guard.
+    #[tokio::test]
+    async fn an_invocation_span_records_its_observe_depth() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::prelude::*;
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let storage = Arc::new(crate::workers::observability::otel::InMemorySpanStorage::new(100));
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(
+                crate::workers::observability::otel::InMemorySpanExporter::with_storage(
+                    storage.clone(),
+                    "engine".to_string(),
+                ),
+            )
+            .build();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_opentelemetry::OpenTelemetryLayer::new(provider.tracer("test")),
+        );
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let handler = InvocationHandler::new();
+        let function: Arc<HandlerFn> =
+            Arc::new(|_, data, _, _| Box::pin(async move { FunctionResult::Success(Some(data)) }));
+        // A built-in call is traced when it carries the caller's context.
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        for (function_id, depth) in [("iii::depth-probe", 2), ("iii::flat-probe", 0)] {
+            let result = handler
+                .handle_invocation_with_handler(
+                    Some(Uuid::new_v4()),
+                    None,
+                    function_id.to_string(),
+                    "default",
+                    serde_json::json!({}),
+                    function.clone(),
+                    Some(traceparent.to_string()),
+                    None,
+                    None,
+                    None,
+                    InvocationCtx::engine_internal_at(depth),
+                )
+                .await;
+            assert!(matches!(result, Ok(Ok(_))));
+        }
+        let depth_of = |name: &str| {
+            storage
+                .get_spans()
+                .into_iter()
+                .find(|span| span.name == name)
+                .map(|span| span.observe_depth)
+        };
+        assert_eq!(depth_of("call iii::depth-probe"), Some(2));
+        assert_eq!(depth_of("call iii::flat-probe"), Some(0));
+    }
 
     #[test]
     fn test_invocation_handler_new() {

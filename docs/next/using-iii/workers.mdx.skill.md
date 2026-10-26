@@ -154,6 +154,11 @@ one, put it under `engine.workers` in `worker-compose.yaml`. When an external su
 engine, declare it in `config.yaml`. For the list of these workers, and the workers that always run,
 see [Compose: Engine fields](./compose#engine-fields).
 
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is
+  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
+
 To admit untrusted workers, browsers, or agents, keep the engine port internal and add the
 [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) with
 `iii trigger compose::add worker=rbac-proxy`. It opens its own public port and applies the engine's

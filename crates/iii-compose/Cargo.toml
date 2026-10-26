@@ -29,6 +29,7 @@ reqwest = { workspace = true }
 url = { workspace = true }
 flate2 = "1"
 tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 uuid = { workspace = true }
 schemars = "0.8"
 thiserror = { workspace = true }
@@ -52,6 +53,9 @@ semver = { workspace = true }
 # One managed engine owns a project's compose namespace at a time. The kernel-backed
 # lock is released automatically if the foreground compose process crashes.
 fslock = "0.2"
+# `iii ps` reads other processes' command lines and environments, which every
+# platform exposes differently.
+sysinfo = "0.38"
 
 # Teardown signals whole process groups, which std cannot express.
 [target.'cfg(unix)'.dependencies]

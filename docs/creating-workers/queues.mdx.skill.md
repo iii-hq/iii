@@ -110,6 +110,13 @@ The engine runs the function once per message, passing the published `data` as t
 Returning normally acknowledges the message; throwing nacks it, so it is retried and eventually
 dead-lettered.
 
+<Note>
+  `registerTrigger` is deprecated in 0.25, but the queue worker still publishes the
+  `durable:subscriber` trigger type, so it remains the way to consume messages. It logs one warning
+  per process. See [Providers not migrated
+  yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
+
 In a worker, register the consumer function and subscribe it to the topic. If you do not have a
 worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
 
@@ -193,12 +200,11 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
         Ok(json!({ "sent": true }))
     }));
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "durable:subscriber".into(),
-        function_id: "email::send".into(),
-        config: json!({ "topic": "emails" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "durable:subscriber",
+        "email::send",
+        json!({ "topic": "emails" }),
+    ))?;
     ```
 
   </Tab>
@@ -268,12 +274,11 @@ trigger with a `fifo` queue:
   </Tab>
   <Tab title="Rust">
     ```rust
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "durable:subscriber".into(),
-        function_id: "email::send".into(),
-        config: json!({ "topic": "emails", "queue_config": { "type": "fifo" } }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "durable:subscriber",
+        "email::send",
+        json!({ "topic": "emails", "queue_config": { "type": "fifo" } }),
+    ))?;
     ```
 
   </Tab>
@@ -354,12 +359,11 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
         Err::<serde_json::Value, _>(iii_sdk::Error::Handler("forced failure".into()))
     }));
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "durable:subscriber".into(),
-        function_id: "email::send".into(),
-        config: json!({ "topic": "emails" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "durable:subscriber",
+        "email::send",
+        json!({ "topic": "emails" }),
+    ))?;
     ```
 
   </Tab>

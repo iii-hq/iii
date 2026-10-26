@@ -206,14 +206,14 @@ async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes()
     let file = tmp.path().join("worker-compose.yaml");
     std::fs::write(
         &file,
-        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "engine: { url: 'ws://127.0.0.1:1/ws', workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
     )
     .unwrap();
     let initial = iii_compose::ComposeFile::load(&file).unwrap();
     let policy = EnginePolicy::managed(&initial).unwrap();
     std::fs::write(
         &file,
-        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "engine:\n  url: ws://127.0.0.1:1/ws\n  workers:\n    iii-stream: { port: 3112 }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
     )
     .unwrap();
 
@@ -235,7 +235,11 @@ async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
     isolate_state();
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("worker-compose.yaml");
-    std::fs::write(&file, "engine: { workers: {} }\ncontainers: {}\n").unwrap();
+    std::fs::write(
+        &file,
+        "engine: { url: 'ws://127.0.0.1:1/ws', workers: {} }\ncontainers: {}\n",
+    )
+    .unwrap();
 
     let initial = iii_compose::ComposeFile::load(&file).unwrap();
     let daemon = Daemon::start(
@@ -251,7 +255,7 @@ async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
 
     std::fs::write(
         &file,
-        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers: {}\n",
+        "engine:\n  url: ws://127.0.0.1:1/ws\n  workers:\n    iii-stream: { port: 3112 }\ncontainers: {}\n",
     )
     .unwrap();
 
@@ -268,7 +272,7 @@ async fn managed_daemon_rejects_a_second_engine_owner() {
     let tmp = project_dir();
     let owner = tmp.path().join("owner.yaml");
     let other = tmp.path().join("other.yaml");
-    let text = "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+    let text = "engine: { url: 'ws://127.0.0.1:1/ws', workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n";
     std::fs::write(&owner, text).unwrap();
     std::fs::write(&other, text).unwrap();
     let initial = iii_compose::ComposeFile::load(&owner).unwrap();

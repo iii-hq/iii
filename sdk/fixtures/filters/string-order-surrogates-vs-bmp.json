@@ -1,0 +1,9 @@
+{
+  "description": "an astral character sorts after the end of the BMP private-use area",
+  "filters": {"input.s": {"$lt": ""}},
+  "cases": [
+    { "doc": {"input": {"s": "😀"}}, "expect": false, "note": "U+1F600 > U+E000; UTF-16 comparison would say less" },
+    { "doc": {"input": {"s": "퟿"}}, "expect": true },
+    { "doc": {"input": {"s": "a"}}, "expect": true }
+  ]
+}

@@ -88,3 +88,28 @@ export function isErrorBody(value: unknown): value is {
     (v.stacktrace === undefined || typeof v.stacktrace === 'string')
   )
 }
+
+/**
+ * Thrown by an `onObserverAdded` hook to reject an observer with a code of
+ * its own (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...); any other
+ * error rejects it with `OBSERVE_REJECTED`. Also the error `ObserverHandle.ready()`
+ * rejects with when the observer turns `error` or `disposed`.
+ *
+ * @example
+ * ```typescript
+ * onObserverAdded(obs) {
+ *   if (!isValidCron(obs.args.expression)) {
+ *     throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'invalid day-of-week field')
+ *   }
+ * }
+ * ```
+ */
+export class ObserveRejection extends Error {
+  public readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'ObserveRejection'
+    this.code = code
+  }
+}

@@ -6,9 +6,9 @@ type: "how-to"
 ---
 
 Channels move large or binary payloads between iii workers outside the JSON function payload. Use a
-channel when the data can be larger than 16 MiB (files, images, datasets), when you stream it
-(audio, video), or when you send progress updates during long-running work. For small JSON, use a
-regular `worker.trigger(...)` call.
+channel for files, images, datasets, payloads above the JSON message limit, audio or video streams,
+or progress updates during long-running work. For small JSON, use a regular `worker.trigger(...)`
+call.
 
 <Note>
   For how channels work (refs, lifecycle, and ownership), see
@@ -17,16 +17,55 @@ regular `worker.trigger(...)` call.
 
 ## Payload size
 
-The Node, Python, Rust, and Go SDKs limit each JSON message that they send to 16 MiB (16,777,216
-bytes). The limit applies to the full serialized message, so the payload must be a little smaller.
-When a trigger payload or a function result is too large, the call fails with the error code
-`payload_too_large`. The browser SDK (`iii-browser-sdk`) does not do this check. The engine also
-limits each JSON frame to 16 MiB, and each WebSocket message to 64 MiB (67,108,864 bytes). When a
-worker sends a larger frame or message, the engine closes the connection of that worker.
+The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust, Node,
+Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB** outbound
+limit and does not fragment messages because browser WebSocket APIs do not expose frame control.
+Browser workers also have a **16 MiB** receive limit.
 
-For payloads larger than 16 MiB, use a channel. Channel data uses a separate WebSocket connection,
-and the SDK splits each write into 64 KiB frames. For this reason, the 16 MiB limit does not apply
-to channel data.
+For Rust, Node, Python, and Go, messages up to **16 MiB** are sent as one text frame. Larger
+messages, up to and including 64 MiB, are sent as one fragmented WebSocket text message using
+multiple frames. The engine sends every message larger than **1 MiB** to a worker as one fragmented
+text message of 1 MiB frames, so no frame it sends exceeds a worker's frame size limit. Applications
+send and receive these messages through the usual function APIs.
+
+The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than 16 MiB.
+An updated engine checks the serialized envelope against the target worker's receive limit and
+returns `payload_too_large` to the caller when the target cannot accept it. The engine sets that
+limit when the worker registers:
+
+- A browser worker gets **16 MiB**.
+- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**, whatever version
+  it reports. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser SDK does not.
+- Any other worker gets **64 MiB** when the version it reports is an SDK version of 0.24.5 or later,
+  written as semver (`0.24.6`, `0.25.0-rc.5`) or PEP 440 (`0.25.0rc5`, `0.24.5.post1`). It gets **16
+  MiB** when the version is missing, cannot be parsed, or is older, including pre-releases of
+  0.24.5. Other features, such as `observe.v1`, do not count.
+
+SDK 0.24.5 through 0.25.0-rc.5 do not declare `large-messages.v1`, so the engine relies on the
+version they report. A Rust worker on one of them that sets `WorkerMetadata.version` to its own
+version instead of the SDK version therefore stays at 16 MiB. Upgrade it to SDK 0.25.0 or later.
+
+Above **64 MiB**, the Rust, Node, Python, and Go SDKs reject the message locally with
+`payload_too_large`; the error message links to this [Payload size](#payload-size) section. Engines
+older than the updated size check forward messages as a single frame without checking the target's
+limit. An older worker may then disconnect if the message is too large for it. Use an engine and
+SDKs from the same release, or newer.
+
+The engine reads up to **64 MiB** per message from a worker, whether the message arrives as one
+frame or as fragments, so it also accepts the single large frames of SDKs older than 0.24.5. When a
+worker sends a larger message, the engine drops it and the connection stays open. A call gets
+`payload_too_large` as its result, and when a function returns a result that is too large, its
+caller gets `payload_too_large` instead. Other calls on the connection are not affected. A message
+the engine cannot answer, such as a call that expects no result, is dropped and logged.
+
+Observer activations follow the same limits, and the engine keeps at most **64 MiB** of one observed
+event (every field its observers capture, input and output counted separately). An event over either
+limit is not delivered: the observer counts a `TOO_LARGE` drop and the engine logs a warning. See
+[Observers / Event size](../using-iii/observers#event-size).
+
+Use a channel for payloads above **64 MiB**. Channels stream payload bytes separately from the JSON
+function envelope. Channel data uses a separate WebSocket connection, and the SDK splits each write
+into 64 KiB frames. See [Using channels](#using-channels).
 
 ## Using channels
 

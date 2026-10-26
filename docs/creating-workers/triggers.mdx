@@ -19,6 +19,15 @@ functions to events your worker emits.
 This page primarily covers the latter: making your own triggers, if you want to use existing
 triggers in new workers then refer to [Using iii / Triggers](../using-iii/triggers).
 
+<Warning>
+  `registerTriggerType` and `registerTrigger` are deprecated in 0.25 and will be removed in a future
+  release. They keep working and log one warning per process. For a new event source, register an
+  [observable function](./observable-functions) instead: a function with an `observe` descriptor
+  whose hooks replace `TriggerHandler`, and whose observers replace triggers. Declaring
+  `legacy_trigger_type` on it keeps the `registerTrigger` calls of existing consumers working. See
+  [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
+</Warning>
+
 <Note>
   For the caller-side mechanics (direct invocation with `worker.trigger` or `iii trigger`, the
   `TriggerAction` variants, gating with conditions, multiple bindings per function), see [Using iii
@@ -61,15 +70,14 @@ functions to a trigger type with `worker.registerTrigger({ type, function_id, co
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "math::add".into(),
-        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
-        metadata: None,
-    })?;
+    worker.register_trigger(RegisterTriggerInput::new(
+        "http",
+        "math::add",
+        json!({ "api_path": "/math/add", "http_method": "POST" }),
+    ))?;
     ```
 
   </Tab>
@@ -119,15 +127,17 @@ time. The engine stores it as-is and surfaces it in two places:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
-    worker.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".into(),
-        function_id: "math::add".into(),
-        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
-        metadata: Some(json!({ "team": "platform", "env": "staging" })),
-    })?;
+    worker.register_trigger(
+        RegisterTriggerInput::new(
+            "http",
+            "math::add",
+            json!({ "api_path": "/math/add", "http_method": "POST" }),
+        )
+        .with_metadata(json!({ "team": "platform", "env": "staging" })),
+    )?;
     ```
 
   </Tab>
@@ -155,6 +165,12 @@ Don't confuse trigger _metadata_ with trigger type [_schemas_](#attach-schemas-t
 </Note>
 
 ## Declaring a Trigger Type
+
+<Note>
+  The rest of this page documents the 0.24 trigger type API, which still works in 0.25. New
+  providers should write an [observable function](./observable-functions): the engine then stores
+  the bindings, validates their args, applies filters and policy, and replays them on reconnect.
+</Note>
 
 So far this documentation has focused on being the _consumer_: your worker's functions get bound to
 trigger types other workers publish. This section flips the roles. Your worker is now the
@@ -188,6 +204,7 @@ your publisher worker whenever a consumer binds or unbinds:
 
 The trigger type can be torn down at any point during runtime with
 `worker.unregisterTriggerType(...)` (or `worker.unregister_trigger_type(...)` in Python and Rust).
+From 0.25 the engine acts on it: before, it ignored the message and kept the type registered.
 See the [Unregister a Trigger Type](#unregister-a-trigger-type) section below for per-language
 signatures.
 
@@ -241,13 +258,9 @@ worker that publishes the real `http` trigger type. The publisher worker:
     <Tab title="Python">
       ```python
       import os
-      from iii import (
-          InitOptions,
-          RegisterTriggerTypeInput,
-          TriggerConfig,
-          TriggerHandler,
-          register_worker,
-      )
+      from iii import InitOptions, register_worker
+      from iii.iii_types import RegisterTriggerTypeInput
+      from iii.trigger import TriggerConfig, TriggerHandler
 
       worker = register_worker(
           os.environ.get("III_URL"),
@@ -279,9 +292,8 @@ worker that publishes the real `http` trigger type. The publisher worker:
       ```rust
       use std::collections::HashMap;
       use std::sync::{Arc, Mutex};
-      use iii_sdk::{
-          InitOptions, RegisterTriggerType, TriggerConfig, TriggerHandler, register_worker,
-      };
+      use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+      use iii_sdk::{InitOptions, RegisterTriggerType, register_worker};
 
       let url = std::env::var("III_URL").expect("III_URL must be set");
       let worker = register_worker(
@@ -299,12 +311,12 @@ worker that publishes the real `http` trigger type. The publisher worker:
 
       #[async_trait::async_trait]
       impl TriggerHandler for HttpHandler {
-          async fn register_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+          async fn register_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::Error> {
               self.bindings.lock().unwrap().insert(config.id.clone(), config);
               Ok(())
           }
 
-          async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::IIIError> {
+          async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::Error> {
               self.bindings.lock().unwrap().remove(&config.id);
               Ok(())
           }
@@ -438,7 +450,7 @@ Continuing the `mini-http` example from above:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerRequest;
+    use iii_sdk::protocol::TriggerRequest;
     use serde_json::json;
 
     // Inside the worker's HTTP listener, after matching method+path to an

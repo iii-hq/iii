@@ -122,6 +122,40 @@ iii trigger engine::traces::tree trace_id=$TID
   docs](https://workers.iii.dev/workers/iii-observability).
 </Note>
 
+## React to logs and spans
+
+The observability worker hosts two event sources you can [observe](../using-iii/observers):
+`observability::on-log`, one event per log record, and `observability::on-span`, the ids of the
+traces that recorded spans in each window of about 300 ms. They replace the `log` and `trace`
+trigger types, which keep working.
+
+```typescript
+// invoke alerts::log for every ERROR log record
+worker.observe(
+  {
+    function_id: "observability::on-log",
+    deliver: "input",
+    filters: { "input.severity_text": { $eq: "ERROR" } },
+  },
+  "alerts::log",
+);
+```
+
+Each event runs its targets in a trace of its own, and log records and spans in that trace are not
+events again. A target that logs while it handles an event does not trigger itself: the SDK loggers
+record the trace the handler runs in, and so does `engine::log::*` when the call passes no
+`trace_id`.
+
+Activity outside that trace is bounded by depth. A span the engine records for a call made inside a
+chain of observers carries an `iii.observe_depth` attribute (set when the depth is above 0). These
+events take that depth, so a target that logs or makes calls on every event stops at
+`observers.max_observe_depth`.
+
+Observers have their own metrics (`iii.observer.activations.total`, `iii.observer.dropped.total`,
+`iii.observers`, and more), and calls a worker makes to its own functions are counted in
+`iii.invocations.total` with `dispatch="local"`. See
+[Engine-collected metrics](../reference/engine-protocol#engine-collected-metrics).
+
 ## Seeing it in the console
 
 The [console](../using-iii/console) shows the traces, logs, and metrics of a running system. During

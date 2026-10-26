@@ -46,3 +46,6 @@ next-env.d.ts
 
 # keep the example env file
 !.env.example
+
+# generated before every build/dev by scripts/generate-benchmarks.ts
+/content/benchmarks/data.json

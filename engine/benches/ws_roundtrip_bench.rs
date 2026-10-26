@@ -2,7 +2,7 @@ mod common;
 
 use std::{net::TcpListener as StdTcpListener, time::Duration};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use iii::{EngineBuilder, protocol::Message, protocol::TriggerAction};
 use serde_json::json;
@@ -138,6 +138,9 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 action: None,
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             };
             let _ = socket
                 .send(WsMessage::Text(
@@ -202,6 +205,9 @@ async fn run_service_worker(ws_url: String) {
                 action: Some(TriggerAction::Void),
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             })
             .expect("serialize workers::register")
             .into(),
@@ -219,6 +225,7 @@ async fn run_service_worker(ws_url: String) {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             })
             .expect("serialize RegisterFunction")
             .into(),
@@ -295,6 +302,9 @@ async fn invoke_and_wait(
         action: None,
         metadata: None,
         namespace: None,
+        caller: None,
+        observe_depth: None,
+        activation: None,
     };
     writer
         .send(WsMessage::Text(
@@ -364,6 +374,26 @@ fn ws_roundtrip_benchmark(c: &mut Criterion) {
             ));
         });
     });
+
+    let mut group = c.benchmark_group("ws_roundtrip_payload_sizes");
+    for (label, size) in common::payload_sizes().into_iter().take(3) {
+        let payload = common::sized_payload(size);
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(label),
+            &payload,
+            |b, payload| {
+                b.iter(|| {
+                    rt.block_on(invoke_and_wait(
+                        &mut writer.borrow_mut(),
+                        &mut reader.borrow_mut(),
+                        payload,
+                    ));
+                });
+            },
+        );
+    }
+    group.finish();
 
     rt.block_on(runtime.shutdown());
 }

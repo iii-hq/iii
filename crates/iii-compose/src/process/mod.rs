@@ -19,6 +19,8 @@
 use std::{process::ExitStatus, time::Duration};
 
 #[cfg(unix)]
+pub mod reaper;
+#[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]
 pub mod windows;
@@ -33,6 +35,9 @@ pub use windows::{
     ChildOutput, Supervised, spawn_supervised, spawn_supervised_piped,
     spawn_supervised_piped_with_stdin,
 };
+
+/// Present in the environment of compose's reaper process; see `reaper`.
+pub const REAPER_ENV: &str = "III_COMPOSE_REAPER";
 
 /// Fingerprint that distinguishes a live process from a recycled PID.
 ///

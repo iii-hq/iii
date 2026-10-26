@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod mock_engine;
+pub mod proxy;
 
 use std::sync::OnceLock;
 use std::time::Duration;

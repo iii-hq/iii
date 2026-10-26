@@ -1,0 +1,12 @@
+{
+  "description": "$in / $nin take an array",
+  "cases": [
+    { "filters": {"input.a": {"$in": "a"}}, "code": "INVALID_FILTER", "note": "string" },
+    { "filters": {"input.a": {"$in": {}}}, "code": "INVALID_FILTER", "note": "object" },
+    { "filters": {"input.a": {"$in": null}}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"input.a": {"$in": 1}}, "code": "INVALID_FILTER", "note": "number" },
+    { "filters": {"input.a": {"$nin": "a"}}, "code": "INVALID_FILTER", "note": "$nin string" },
+    { "filters": {"input.a": {"$nin": {"a": 1}}}, "code": "INVALID_FILTER", "note": "$nin object" },
+    { "filters": {"input.a": {"$nin": true}}, "code": "INVALID_FILTER", "note": "$nin boolean" }
+  ]
+}

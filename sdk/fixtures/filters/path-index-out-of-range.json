@@ -1,0 +1,8 @@
+{
+  "description": "an out-of-range index is absent",
+  "filters": {"input.items.5": {"$exists": false}},
+  "cases": [
+    { "doc": {"input": {"items": [1, 2]}}, "expect": true },
+    { "doc": {"input": {"items": [0, 1, 2, 3, 4, 5]}}, "expect": false }
+  ]
+}

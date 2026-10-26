@@ -237,6 +237,13 @@ struct StatusOutcome {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, JsonSchema)]
+struct PsOutcome {
+    daemon_pid: u32,
+    processes: Vec<crate::ps::IiiProcess>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, JsonSchema)]
 struct ValidateOutcome {
     namespace: String,
     start_order: Vec<String>,
@@ -331,6 +338,7 @@ enum Operation {
     Down,
     List,
     Status,
+    Ps,
     Logs,
     Stop,
     Validate,
@@ -420,6 +428,7 @@ const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("down", Operation::Down),
     ("list", Operation::List),
     ("status", Operation::Status),
+    ("ps", Operation::Ps),
     ("logs", Operation::Logs),
     ("stop", Operation::Stop),
     ("validate", Operation::Validate),
@@ -647,6 +656,32 @@ async fn dispatch(
             })),
             Err(err) => Err(compose_error(&err)),
         },
+        // What the operating system sees, which is not always what the daemon
+        // believes: descendants of a container, and anything still carrying
+        // this project's environment after the process compose started is
+        // gone.
+        Operation::Ps => {
+            let wanted = match file {
+                Some(file) => vec![file.canonicalize().unwrap_or(file)],
+                None => daemon.project_files().await,
+            };
+            let me = std::process::id();
+            let processes: Vec<crate::ps::IiiProcess> =
+                tokio::task::spawn_blocking(crate::ps::scan)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|process| {
+                        process.pid == me
+                            || process.ppid == Some(me)
+                            || process
+                                .compose_file
+                                .as_ref()
+                                .is_some_and(|file| wanted.contains(file))
+                    })
+                    .collect();
+            Ok(json!({ "daemon_pid": me, "processes": processes }))
+        }
         Operation::Logs => match daemon
             .logs(
                 file.as_deref(),
@@ -968,6 +1003,12 @@ fn op_description(function_id: &str) -> &'static str {
              a 'restart' policy reports as 'restarting' while it waits for the \
              supervisor's next attempt."
         }
+        "compose::ps" => {
+            "List the operating-system processes of this daemon's projects, or of \
+             one project: the daemon, its managed engine, every worker and \
+             whatever those workers spawned. A worker marked orphan is no \
+             longer supervised by any compose daemon."
+        }
         "compose::logs" => {
             "Read bounded worker stdout and stderr. A cursor continues from the last response; \
              callers may long-poll for new output."
@@ -1024,6 +1065,7 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
         "compose::down" => (60_000, true),
         "compose::list" => (10_000, true),
         "compose::status" => (10_000, true),
+        "compose::ps" => (10_000, true),
         "compose::logs" => (10_000, true),
         "compose::stop" => (30_000, false),
         "compose::validate" => (10_000, true),
@@ -1063,6 +1105,11 @@ fn schema_table() -> &'static [SchemaTriple] {
                 "compose::status",
                 schema_for_value::<ProjectOptions>(),
                 schema_for_value::<StatusOutcome>(),
+            ),
+            (
+                "compose::ps",
+                schema_for_value::<ProjectOptions>(),
+                schema_for_value::<PsOutcome>(),
             ),
             (
                 "compose::logs",

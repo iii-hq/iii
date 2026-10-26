@@ -8,7 +8,9 @@
 //
 // They mirror the Rust suite under sdk/packages/rust/iii/tests and honor the same
 // III_URL / III_HTTP_URL environment variables the sdk-rust-ci job sets. With no env
-// vars they target a default local engine (`iii --use-default-config`).
+// vars they target the same SDK test engine as the Rust, Python and Node suites
+// (sdk/fixtures/config-test.yaml on :49199 / :3199), never an engine on the default
+// port, which would get this suite's functions and triggers registered on it.
 package iii_test
 
 import (
@@ -37,13 +39,13 @@ func uniqueSuffix(t *testing.T) string {
 	return fmt.Sprintf("%s-%d", name, suffixCounter.Add(1))
 }
 
-// engineWSURL is the worker WebSocket endpoint. Default matches a local
-// `iii --use-default-config`; CI overrides it to the test engine on :49199.
+// engineWSURL is the worker WebSocket endpoint. Default is the SDK test engine on
+// :49199, as in the Rust, Python and Node suites.
 func engineWSURL() string {
 	if v := os.Getenv("III_URL"); v != "" {
 		return v
 	}
-	return "ws://localhost:49134"
+	return "ws://localhost:49199"
 }
 
 // engineHTTPURL is the engine HTTP API base, for exercising HTTP triggers.
@@ -51,7 +53,7 @@ func engineHTTPURL() string {
 	if v := os.Getenv("III_HTTP_URL"); v != "" {
 		return v
 	}
-	return "http://localhost:3111"
+	return "http://localhost:3199"
 }
 
 // settle waits for registrations to propagate on the engine before a dependent action,

@@ -1,0 +1,10 @@
+{
+  "description": "false is not 0, null or ''",
+  "filters": {"input.v": {"$eq": false}},
+  "cases": [
+    { "doc": {"input": {"v": false}}, "expect": true },
+    { "doc": {"input": {"v": 0}}, "expect": false },
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {"v": ""}}, "expect": false }
+  ]
+}

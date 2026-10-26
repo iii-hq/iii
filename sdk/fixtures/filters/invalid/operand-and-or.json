@@ -1,0 +1,16 @@
+{
+  "description": "$and / $or take a non-empty array of filter objects",
+  "cases": [
+    { "filters": {"$and": {}}, "code": "INVALID_FILTER", "note": "$and object" },
+    { "filters": {"$and": []}, "code": "INVALID_FILTER", "note": "$and empty array" },
+    { "filters": {"$and": "x"}, "code": "INVALID_FILTER", "note": "$and string" },
+    { "filters": {"$and": null}, "code": "INVALID_FILTER", "note": "$and null" },
+    { "filters": {"$and": [1]}, "code": "INVALID_FILTER", "note": "$and element not an object" },
+    { "filters": {"$and": [[]]}, "code": "INVALID_FILTER", "note": "$and element array" },
+    { "filters": {"$or": {}}, "code": "INVALID_FILTER", "note": "$or object" },
+    { "filters": {"$or": []}, "code": "INVALID_FILTER", "note": "$or empty array" },
+    { "filters": {"$or": [null]}, "code": "INVALID_FILTER", "note": "$or element null" },
+    { "filters": {"$or": [{"input.a": {"$eq": 1}}, "x"]}, "code": "INVALID_FILTER", "note": "$or element string" },
+    { "filters": {"input.l": {"$any": {"$and": []}}}, "code": "INVALID_FILTER", "note": "empty $and inside $any" }
+  ]
+}

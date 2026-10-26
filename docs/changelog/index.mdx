@@ -5,6 +5,376 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.25.0" description="October 2026">
+  ## Observe: every function is observable
+
+  - `iii.observe(source, target, options?)` creates an observer: every invocation of the `source`
+    function that passes its `filters` invokes the `target`, a registered function. It is available
+    in the Node, browser, Python, Rust, and Go SDKs. Any worker can observe any function it may
+    invoke, and the observed function's worker needs no code for it.
+  - The source chooses what the target receives: `on` (`success`, `error`, or `complete`),
+    `capture` (`input`, `output`, `error`, `caller`, `metadata`), and `deliver` (the `Observed`
+    envelope, or the observed `input` or `output` alone). Options set the observer's id,
+    `max_fires`, `expires_in_ms`, `max_in_flight`, and `metadata`, which reaches the target as the
+    activation's metadata sidecar.
+  - `observe` returns a handle at once. It reports the observer's state (`pending`, `active`,
+    `suspended`, `error`, `disposed`), resolves `ready()` once the observer is active, and replays the
+    observer with the same id after a reconnect. An observer outlives a disconnect of its worker for
+    30 seconds by default.
+  - Every invocation carries a `caller`: the calling worker, stamped by the engine, and the function
+    and invocation it was made from, with its own caller as `caller.parent`. Filters can read it, and
+    `iii.currentInvocation()` returns it inside any handler.
+  - Every invocation also carries an observe depth. Activations deeper than 8 hops are dropped as
+    `LOOP_GUARD`, and an observer whose target is the observed function is rejected with
+    `SELF_TARGET`.
+
+  See [Observers](/using-iii/observers).
+
+  ## Observable functions
+
+  - `registerFunction(id, handler, { observe })` declares how a function is observed. Hooks
+    (`onObserverAdded`, `onObserverRemoved`) run when an observer is added or removed, before the
+    engine marks it `active`; throwing rejects the observer with your own code.
+  - With `delivery: "owner"`, the function's worker routes events itself: it reads each observer's
+    `args`, validated by the engine against `args_format`, and hands each event to the observers it
+    belongs to with `obs.emit(event)` (fire-and-forget) or `obs.call(payload)` (request/response,
+    returning the target's result). The SDK applies each observer's filters in both.
+  - `legacy_trigger_type` lets a function stand in for a trigger type: the engine turns old
+    `registerTrigger` calls of that type into observers of the function, so existing consumers keep
+    working while the provider moves to a function.
+  - `observe: { allow: false }` refuses every observer (`NOT_OBSERVABLE`). `FunctionRef.isObserved()`
+    and `observers()` report the function's active observers.
+
+  See [Observable functions](/creating-workers/observable-functions).
+
+  ## Filters
+
+  - Observer filters are declarative JSON objects over `input`, `output`, `error`, `caller`, and
+    `metadata`, with explicit operators only: `$eq`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`,
+    `$lte`, `$exists`, `$prefix`, `$any`, `$and`, `$or`, and `$not`.
+  - The new `iii-filter` crate is the evaluator of the engine and the Rust SDK. The Node, browser,
+    Python, and Go SDKs ship evaluators with the same semantics, and every implementation runs the
+    shared conformance vectors in `sdk/fixtures/filters`.
+  - The engine validates filters when an observer is created (`INVALID_FILTER`) and checks their
+    paths against the function's `request_format` and `response_format` (`INVALID_FILTER_PATH`).
+    Limits: depth 8, 64 operators, 256 items per `$in` / `$nin`, 16 path segments, and 8 KiB.
+
+  See [Filter language](/reference/filters).
+
+  ## Local dispatch
+
+  - A worker that calls a function it registered itself runs the handler in-process once the engine
+    confirmed the registration. An unobserved local call puts nothing on the wire; when observers
+    match, the SDK reports the call to the engine in batches.
+  - Turn it off per function (`localDispatch: false`), per call (`dispatch: "remote"`), or for the
+    engine (`observers.local_dispatch: false`). It is off for sessions with an RBAC
+    `middleware_function_id`.
+
+  <Callout type="warning">
+    Local calls skip the message size limit and the engine's call span and metrics; their counts
+    reach `iii.invocations.total` with `dispatch="local"` every 10 seconds. In Rust, a sync handler
+    called locally runs inline on the caller's task. See
+    [Upgrading from 0.24.x](/upgrading/from-0-24-x#local-dispatch).
+  </Callout>
+
+  ## Engine
+
+  - A new top-level `observers:` section in `config.yaml` (and `engine.observers` in
+    `worker-compose.yaml`) sets `local_dispatch`, per-connection and per-function limits,
+    `max_observe_depth`, the observer grace period, the owner acknowledgement and activation
+    timeouts, and the default `max_in_flight` and queue size. Zero limits are rejected at startup.
+    See [Configuration](/using-iii/configuration#observers).
+  - Built-in functions `engine::observers::list`, `engine::observers::get`, and
+    `engine::observers::dispose` inspect and remove observers. Results are filtered by what the
+    caller may invoke and never include an observer's metadata.
+  - New metrics: `iii.observer.activations.total`, `iii.observer.dropped.total`, `iii.observers`,
+    `iii.observer.reports.total`, and `iii.observer.activation.failures.total`. Dropped events are
+    counted per function and reason.
+  - Observer queues share each event among the observers it matched, and all queues together
+    hold at most 64 MiB of events. Past that budget, or past an observer's own queue
+    (`observers.max_queue_per_observer`), an activation is dropped as `OVERFLOW`.
+  - Filters run on one evaluator per runtime thread, up to 16. A function's completions always go
+    to the same evaluator, so each observer's activations keep the order their invocations
+    completed in.
+  - When an owner's reports overflow a queue, the engine stops reading from that connection until
+    the queue is back to half, the observer leaves `active`, or 250 ms pass. The owner's SDK drops
+    the excess from its bounded report buffer (`BUFFER_FULL`). A connection that hosts the
+    observer's target is never held.
+  - Creating an observer requires that the session may invoke both the observed function and the
+    target. The RBAC hook `on_observer_registration_function_id` can rewrite or deny observers, with
+    the same contract as `on_trigger_registration_function_id`.
+  - The engine hosts event sources as functions: `engine::on-functions-changed`,
+    `engine::on-workers-changed`, `configuration::on-updated`, `observability::on-log`, and
+    `observability::on-span`. The trigger types they replace keep firing.
+  - The protocol gains feature negotiation (`observe.v1`, `local-dispatch.v1`) and the messages
+    `observe`, `unobserve`, `observeresult`, `observerstatechanged`, `functionregistered`,
+    `observeradded`, `observerremoved`, `observerack`, `invocationsobserved`, and
+    `localinvocationstats`. The engine sends them only to workers that declared `observe.v1`. See
+    [Engine protocol](/reference/engine-protocol).
+
+  <Callout type="warning">
+    The engine now handles `UnregisterTriggerType`, which every SDK sent and earlier engines ignored:
+    the trigger type is removed when the sending worker is its provider, and its triggers move to
+    another provider or wait for one. Remove `unregisterTriggerType` calls that expected the type to
+    stay registered.
+  </Callout>
+
+  ## SDKs
+
+  - **Node:** `iii.observe`, the `observe` and `localDispatch` options of `registerFunction`,
+    `trigger({ dispatch })`, `iii.currentInvocation()` (carried across `await`), and the
+    `ObserveRejection` error.
+  - **Browser:** the same API. `trigger` now sends `metadata`, `traceparent`, and `baggage`, and
+    handlers receive the metadata as their second argument. The current invocation is known until a
+    handler's first `await`; `iii.withInvocation(inv, fn)` carries it further.
+  - **Python:** `iii.observe` returns a handle with `ready()` (blocking) and `ready_async()`. Hooks
+    are declared with `ObserveHooks`, by keyword or in a subclass, sync or async. `Observer.call` has
+    an async twin, `call_async`. The invocation context reaches sync handlers' threads, and
+    `iii.filter.compile_filter` evaluates filters in tests.
+  - **Rust:** `iii.observe(Source::function(..), target)` and `observe_with(.., ObserverOptions)`,
+    `RegisterFunction::observe(Observe::owner()..)` with an `ObserveHandler`,
+    `RegisterFunction::local_dispatch`, `TriggerRequest::dispatch`, and
+    `iii_sdk::{current_invocation, scope}`. The SDK depends on the new `iii-filter` crate.
+  - **Go:** `client.Observe(iii.Source{..}, target, opts)`, `RegisterFunctionOptions.Observe`
+    (`iii.ObserveHooks`) and `LocalDispatch`, `TriggerRequest.Dispatch`,
+    `iii.InvocationFromContext(ctx)`, `client.IsObserved` / `client.Observers`, and the `filter`
+    subpackage.
+
+  <Callout type="warning">
+    Rust: public protocol structs gained fields and `Message` gained variants, so struct literals of
+    them and exhaustive matches need updating. The connection state turns `Reconnecting` as soon as
+    the link drops, a panicking handler returns `invocation_failed` instead of leaving its caller to
+    time out, and an absent `invocation_id` is omitted instead of sent as `null`.
+  </Callout>
+
+  ## JSON messages up to 64 MiB
+
+  - The Rust, Node, Python, and Go SDKs send JSON messages up to 64 MiB, up from 16 MiB. Messages
+    up to 16 MiB still go out as one WebSocket text frame; larger ones are sent as one fragmented
+    text message. Above 64 MiB, the SDK rejects the message locally with `payload_too_large`.
+  - The engine reads up to 64 MiB per message from a worker, as one frame or as fragments, and
+    sends every message larger than 1 MiB as a fragmented message of 1 MiB frames. A message that
+    is too large is dropped without closing the connection: the call, or the caller of a function
+    whose result is too large, gets `payload_too_large`.
+  - The engine checks each message against the target worker's receive limit and returns
+    `payload_too_large` to the caller when the target cannot accept it. Workers that declare the
+    new `large-messages.v1` protocol feature (the Rust, Node, Python, and Go SDKs from 0.25.0), or
+    that report SDK version 0.24.5 or later, receive up to 64 MiB. Browser workers and older SDKs
+    receive up to 16 MiB.
+  - The browser SDK checks its 16 MiB limit before sending and does not fragment messages.
+
+  <Callout type="warning">
+    Messages larger than 16 MiB need a 0.25.0 engine and a target worker on SDK 0.24.5 or later.
+    Older engines forward large messages without checking the target's limit, and an older worker
+    may disconnect. A Rust worker on SDK 0.24.5 through 0.25.0-rc.5 that sets
+    `WorkerMetadata.version` to its own version stays at 16 MiB until it moves to SDK 0.25.0. See
+    [Payload size](/creating-workers/channels#payload-size).
+  </Callout>
+
+  ## Faster invocation and trigger dispatch
+
+  - Function payloads move through handlers and WebSocket dispatch without extra copies, live
+    triggers are indexed by type, and metric attributes are reused within each invocation.
+  - In local benchmarks, dispatching to 8 matching triggers among 1,000 bindings took 8.6 µs
+    instead of 20.5 µs (58% less time). In isolated benchmarks, direct 100 KiB calls took 28%
+    less time and 100 KiB WebSocket round trips 11% less. These are measured examples, not a
+    guarantee for every workload.
+
+  ## Deprecations
+
+  - `registerTrigger` and `registerTriggerType` (and their spellings in every SDK, including the
+    `TriggerTypeRef` helpers) are deprecated and will be removed in a future release. They keep
+    working in 0.25 and log one warning per process per API. Use `iii.observe` and
+    `registerFunction` with an `observe` descriptor instead.
+  - The http, cron, queue, state, stream, pubsub, and database workers still publish trigger types in
+    0.25. Keep using `registerTrigger` for them until they ship source functions.
+
+  <Callout type="warning">
+    Rust marks the deprecated methods `#[deprecated(since = "0.25.0")]`. Crates built with
+    `-D warnings` must allow the deprecation or migrate. See
+    [Upgrading from 0.24.x](/upgrading/from-0-24-x).
+  </Callout>
+
+  ## iii-stream and pubsub are deprecated
+
+  The `iii-stream` engine worker and the `pubsub` worker are deprecated. Behavior is unchanged in
+  this release: existing configurations, calls and bindings keep working, and response contracts do
+  not change. This release only adds warnings and documentation.
+
+  Deprecated:
+
+  - The `iii-stream` worker, its functions `stream::set`, `stream::get`, `stream::delete`,
+    `stream::list`, `stream::list_groups`, `stream::list_all`, `stream::send` and `stream::update`,
+    and its trigger types `stream`, `stream:join` and `stream:leave`.
+  - The dedicated Streams WebSocket listener (default port `3112`) and the `iii-stream`
+    `auth_function` setting.
+  - SDK helpers: Node and Browser `createStream` and `IStream`, Python `create_stream` and `IStream`,
+    and the Rust legacy stream helpers.
+  - The `pubsub` worker: function `publish`, trigger type `subscribe`, its `pubsub` configuration
+    entry, and the Rust SDK `SubscribeTriggerConfig` and `IIITrigger::Subscribe`.
+
+  Not deprecated: channels, channel readers and writers, `StreamChannelRef`, `StreamRequest` and
+  `StreamResponse`, the generic function and trigger registration APIs, the shared state types
+  (`UpdateOp`, `MergePath`, `StreamSetResult` and related), the `queue` worker, and the
+  `auth_function_id` of `iii-worker-manager` and `rbac-proxy`.
+
+  <Callout type="warning">
+    `iii-stream` and `pubsub` will be removed in an upcoming release, a separately announced
+    breaking release listed in this changelog. Start moving producers and consumers to worker-owned
+    trigger types, explicit storage with queries, channels, or durable queue topics now.
+  </Callout>
+
+  See [Migrate from iii-stream and pubsub](/upgrading/migrate-from-streams) for the replacement
+  recipes, authorization changes and the pubsub mapping.
+
+  ## Removed
+
+  - The legacy console package (the `iii-console` binary and its frontend) is no longer built or
+    released from this repository.
+  - `iii console` no longer downloads or starts the legacy console. It prints a notice that points
+    to the iii console in ADE (`iii trigger compose::add worker=ade`, then open
+    `http://127.0.0.1:3113`) and exits with a non-zero status. The command itself will be removed in
+    an upcoming release. See [Console](/using-iii/console).
+  - `iii update` no longer installs or updates `iii-console`, and `iii update console` and
+    `iii update --list-targets` no longer accept or list it. An `iii-console` binary that is
+    already installed is left in place.
+
+  ## Other updates
+
+  - The engine reports log broadcast lag at most once every 10 seconds, with the number of
+    messages skipped since the last report. Previously each lag warning was itself a log that
+    refilled the channel, so after a burst of logs, such as 1,000 workers disconnecting, the engine
+    kept CPU cores busy and its log grew until it was stopped. In that test, idle CPU use fell from
+    2 cores to none and the log from 264 MB to 755 KB.
+  - Compose extracts ZIP worker packages, such as Windows worker artifacts, as well as gzip tar
+    archives. The format is detected from the archive signature, so artifact URLs need no file
+    extension. ZIP entries that escape the install directory or are symlinks are rejected, and Unix
+    executable permissions are kept without setuid, setgid, or sticky bits.
+
+  [Compare 0.24.6 to 0.25.0](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.6...iii%2Fv0.25.0).
+</Update>
+
+<Update label="0.24.6" description="October 2026">
+  ## Compose worker cleanup and process management
+
+  - On Linux and macOS, Compose starts a reaper process that stops its workers and their process
+    groups if Compose crashes, receives `SIGKILL`, or exits on a second shutdown signal. The
+    reaper sends `SIGTERM`, waits up to 10 seconds, then sends `SIGKILL`. Windows behavior is
+    unchanged.
+  - Workers left running by a Compose process that is gone are stopped and started fresh on the
+    next startup instead of being reused with their old configuration. Workers owned by a live
+    Compose process can still be adopted.
+  - Shutdown signals received within 200 ms of the first count as one request. A wrapper such as
+    `dotenv --` forwarding the terminal's `Ctrl+C` no longer skips orderly shutdown. A later
+    second signal still exits immediately, leaving the reaper to stop the remaining workers.
+  - `iii ps` lists the current user's local engines, Compose daemons, and workers, with ports,
+    project ownership, uptime, and `orphan` or `no engine` status. Use `iii ps --json` for JSON.
+    `compose::ps` provides the daemon's view, optionally filtered by project, including processes
+    started by its workers.
+  - `iii kill --port <PORT>`, `iii kill --compose [PATH]`, and `iii kill --orphans` stop processes
+    by engine port, project, or orphan status. Compose daemons receive `SIGTERM` first so they
+    can stop their projects in reverse dependency order. Remaining processes receive `SIGTERM`,
+    then `SIGKILL` after 15 seconds; `--force` sends `SIGKILL` immediately.
+  - Engines and the Node, Python, Rust, and Go SDKs write process markers under `~/.iii/run` so
+    `iii ps` can also find workers started outside Compose. Compose workers are identified by
+    their environment, including workers built with older SDKs. Stale markers are removed when
+    listing processes; an unwritable marker directory does not prevent a worker from starting.
+
+  See [Worker Compose](/using-iii/compose#finding-and-stopping-iii-processes) and the
+  [CLI reference](/cli-reference/index).
+
+  ## Lower latency between the engine and Rust workers
+
+  - The engine enables `TCP_NODELAY` on accepted worker connections and advertises
+    `x-iii-capabilities: tcp-nodelay` on the worker listener, including WebSocket upgrades,
+    telemetry, and channel endpoints.
+  - The Rust SDK enables `TCP_NODELAY` on its worker and channel sockets only when the engine
+    advertises support. This removes delayed-ACK stalls on small messages while preserving the
+    existing behavior against older engines. Upgrading both the engine and Rust workers enables
+    both sides of the change; no particular upgrade order is required.
+  - In a Linux loopback benchmark with the engine and workers both updated, p95 latency fell
+    76–96% across the tested agentmemory routes. These are measured examples, not a guarantee
+    for every workload; bulk channel throughput was not benchmarked.
+
+  See [Engine protocol](/reference/engine-protocol) for capability negotiation and
+  [the benchmark results](https://github.com/iii-hq/iii/pull/2325) for the version comparisons.
+
+  ## SDK authentication without tokens in URLs
+
+  - The Node, Python, Rust, and Go SDKs send a nonblank `III_TOKEN` as an
+    `Authorization: Bearer <token>` header during the WebSocket handshake. An explicit
+    `Authorization` header takes precedence, regardless of its capitalization. Workers can
+    authenticate to an RBAC listener without adding the token to the engine URL.
+  - Channels created or resolved by the SDK send the client's handshake headers too. Channel
+    URLs preserve existing query parameters when adding the channel path, access key, and
+    direction, fixing connections that previously lost URL-based authentication.
+  - The Node, Python, and Rust SDKs also pass handshake headers to their telemetry connection.
+    Telemetry helpers accept explicit headers, and Python telemetry defaults to the worker's
+    engine address instead of a separate default address.
+  - Go adds `WithHeaders(http.Header)` for the main connection and channels created by the
+    client. Rust now returns a connection error instead of panicking when an invalid engine
+    address is used with custom headers.
+  - The browser SDK is unchanged because browsers cannot set WebSocket handshake headers.
+    Manually constructed Rust and Go channel endpoints use `III_TOKEN` but do not inherit a
+    client's explicit headers.
+
+  <Callout type="note">
+    Rust's `OtelConfig` adds `engine_ws_headers`. Code that constructs the struct by listing
+    every field must add it or use `..Default::default()`.
+  </Callout>
+
+  ## Trace sampling and archive limits
+
+  - Worker spans received over OTLP are sampled per trace before local storage and collector
+    export. Local roots now honor sampling ratios, operation rules, and rate limits instead of
+    bypassing them because the SDK marked its spans sampled. Parent-based sampling still honors
+    an explicitly remote parent's sampled decision.
+  - With operation rules, child spans arriving before their root can wait up to 2 seconds in a
+    bounded buffer so the root's operation determines the sampling decision. Sampling decisions
+    are retained across live and completed span snapshots and reset when the policy changes.
+  - SQLite archive capacity checks account for page and index costs. Existing archives gain
+    per-trace size accounting automatically. A span that can never fit is counted in
+    `known_dropped_spans`, and its trace reports `completeness: partial`; later smaller spans
+    can still be stored without deleting that trace's existing durable rows.
+  - Archive writes use bounded batches, retry backoff, and rate-limited warnings so a trace that
+    cannot currently fit, or encounters a storage error, does not stop unrelated writes. Flush
+    reports an error when spans remain unwritten rather than reporting success.
+  - Retention returns freed SQLite pages in checkpointed batches instead of creating a WAL as
+    large as the space being reclaimed. Archive and sampling configuration defaults are unchanged.
+  - Clearing metrics now updates both indexes and the total count atomically with respect to
+    concurrent writes, queries, and retention.
+
+  <Callout type="note">
+    The archive's committed SQLite image is bounded by the configured cap plus a tolerance of
+    the larger of 1% or 8 MiB. Temporary WAL and VACUUM space, readers holding snapshots, and
+    slow storage can still cause transient disk growth or control-call timeouts; this is not a
+    strict cap on every filesystem byte at every instant.
+  </Callout>
+
+  ## Lower memory use for queued HTTP bodies
+
+  - Queued binary channel messages retain only their payload instead of the WebSocket's entire
+    read buffer, typically 128 KiB. Small unread HTTP POST bodies no longer keep that buffer
+    alive until the channel expires.
+  - In six-minute tests at 20 requests per second with 100-byte POST bodies, engine RSS growth
+    fell from about 130 KiB per request to about 2 KiB. Channel lifetime, streaming behavior,
+    and delivery to readers that connect after the writer disconnects are unchanged. Unread
+    channels still expire normally; this fixes buffer amplification, not channel lifetime.
+
+  ## Python schema inference
+
+  - Bare `dict` and `list` annotations now produce object and array schemas for function inputs
+    and outputs. Nullable forms, including `Optional[dict]` and `list | None`, are supported.
+    Parameterized containers keep their existing behavior.
+
+  ## Other updates
+
+  - The engine's ZIP dependency moves from the yanked 2.x release line to 9.x, with deflate
+    decoding for Windows release archives. Invalid archive entry names return an extraction error.
+
+  [Compare 0.24.5 to 0.24.6](https://github.com/iii-hq/iii/compare/iii%2Fv0.24.5...iii%2Fv0.24.6).
+</Update>
+
 <Update label="0.24.5" description="October 2026">
   ## Namespace routing in the SDKs
 

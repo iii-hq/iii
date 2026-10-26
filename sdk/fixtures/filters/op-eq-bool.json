@@ -1,0 +1,11 @@
+{
+  "description": "$eq on a boolean",
+  "filters": {"input.flag": {"$eq": true}},
+  "cases": [
+    { "doc": {"input": {"flag": true}}, "expect": true },
+    { "doc": {"input": {"flag": false}}, "expect": false },
+    { "doc": {"input": {"flag": 1}}, "expect": false },
+    { "doc": {"input": {"flag": "true"}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

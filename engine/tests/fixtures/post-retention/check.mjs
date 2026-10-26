@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { registerWorker } from 'iii-sdk';
+import { ChannelReader, ChannelWriter } from 'iii-sdk/channel';
+import { finished } from 'node:stream/promises';
+const sha = b => createHash('sha256').update(b).digest('hex');
+for (const n of [100, 4000, 1048576]) {
+  const body = Buffer.alloc(n);
+  for (let i = 0; i < n; i++) body[i] = i % 251;
+  const response = await fetch('http://127.0.0.1:3711/read', { method: 'POST', body, signal: AbortSignal.timeout(10000) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { bytes: n, sha256: sha(body) });
+  console.log(`request_body integrity verified: ${n} bytes`);
+}
+const sse = await fetch('http://127.0.0.1:3711/sse', { method: 'POST', body: 'sse', signal: AbortSignal.timeout(10000) });
+assert.equal(sse.status, 200);
+assert.match(sse.headers.get('content-type'), /text\/event-stream/);
+assert.equal(await sse.text(), Array.from({length:5}, (_,i)=>`data: ${i}\n\n`).join(''));
+console.log('SSE: five intact events');
+const url = 'ws://127.0.0.1:49734';
+const iii = registerWorker(url, { workerName: 'post-retention-channel-check' });
+const channel = await iii.trigger({ function_id: 'engine::channels::create', payload: { buffer_size: 8 } });
+const writer = new ChannelWriter(url, channel.writer);
+writer.sendMessage('control');
+writer.stream.end(Buffer.from('late reader'));
+await finished(writer.stream);
+await new Promise(r=>setTimeout(r, 100));
+const reader = new ChannelReader(url, channel.reader);
+const texts = []; reader.onMessage(t=>texts.push(t));
+const chunks = [];
+for await (const chunk of reader.stream) chunks.push(chunk);
+assert.equal(Buffer.concat(chunks).toString(), 'late reader');
+assert.deepEqual(texts, ['control']);
+console.log('Generic channel: writer closed before reader attached; text/binary/EOF verified');
+process.exit(0);

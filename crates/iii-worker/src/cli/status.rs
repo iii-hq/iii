@@ -546,11 +546,18 @@ impl WorkerStatus {
     /// reads at most 4 KiB from the tail. Returns `None` when there's no
     /// log file yet or it's empty.
     fn last_stderr_line(&self) -> Option<String> {
-        use std::io::{Read, Seek, SeekFrom};
         let dir = self.logs_dir.as_ref()?;
         let path = dir.join("stderr.log");
         let mut f = std::fs::File::open(&path).ok()?;
         let len = f.metadata().ok()?.len();
+        Self::last_stderr_line_from_reader(&mut f, len)
+    }
+
+    fn last_stderr_line_from_reader(
+        f: &mut (impl std::io::Read + std::io::Seek),
+        len: u64,
+    ) -> Option<String> {
+        use std::io::{Read, SeekFrom};
         let read_from = len.saturating_sub(4096);
         f.seek(SeekFrom::Start(read_from)).ok()?;
         let mut buf = Vec::with_capacity(4096);
@@ -1136,20 +1143,10 @@ mod tests {
         assert!(out.chars().filter(|c| *c == '…').count() == 1);
     }
 
-    /// Regression: `last_stderr_line` must NOT drain a file that's
-    /// being concurrently appended to. The prior `read_to_end` after
-    /// `seek(len - 4096)` was effectively unbounded because EOF moves
-    /// forward as the writer appends — during a heavy OCI pull
-    /// (subprocess writing at MB/s) each call took ~2s, pushing the
-    /// `watch_until_ready` per-iteration latency to ~2s and making
-    /// the headline elapsed counter visibly skip seconds. The fix
-    /// wraps the file in `Read::take(4096)` so the read is hard-
-    /// capped regardless of file growth.
-    ///
-    /// This test simulates the scenario with a 5 MiB existing log
-    /// and asserts the call returns in well under one redraw budget.
+    // Exercise the filesystem path without a wall-clock bound: runner scheduling
+    // and filesystem latency do not prove how many bytes the function reads.
     #[test]
-    fn last_stderr_line_is_bounded_on_large_log() {
+    fn last_stderr_line_returns_tail_of_large_log() {
         use std::io::Write;
         let tmp = tempfile::tempdir().expect("tempdir");
         let logs_dir = tmp.path().to_path_buf();
@@ -1181,24 +1178,57 @@ mod tests {
             logs_last_modified: Some(SystemTime::now()),
         };
 
-        let started = Instant::now();
         let line = status.last_stderr_line().expect("tail line");
-        let elapsed = started.elapsed();
 
         assert!(
             line.contains("99% done"),
             "tail line must surface the last real entry: {:?}",
             line
         );
-        // 50ms is generous — the bounded read should take sub-
-        // millisecond on any modern filesystem. Anything close to
-        // 1s would mean the read drained the whole file again.
-        assert!(
-            elapsed < Duration::from_millis(50),
-            "last_stderr_line took {:?} on a 5 MiB file — must be \
-             bounded by the 4 KiB cap, not the file size",
-            elapsed
-        );
+    }
+
+    #[test]
+    fn last_stderr_line_caps_reads_when_log_grows_after_metadata() {
+        use std::io::{Cursor, Read, Seek, SeekFrom};
+
+        struct CountingReader {
+            inner: Cursor<Vec<u8>>,
+            bytes_read: usize,
+        }
+
+        impl Read for CountingReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                // Short reads also exercise the loop in read_to_end.
+                let limit = buf.len().min(127);
+                let read = self.inner.read(&mut buf[..limit])?;
+                self.bytes_read += read;
+                assert!(self.bytes_read <= 4096, "tail read exceeded the 4 KiB cap");
+                Ok(read)
+            }
+        }
+
+        impl Seek for CountingReader {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(pos)
+            }
+        }
+
+        let mut contents = vec![b'X'; 5 * 1024 * 1024];
+        contents.extend_from_slice(b"\n  Pulling image: 99% done\n");
+        let snapshot_len = contents.len() as u64;
+        // A writer appends after metadata was read. A bare read_to_end would
+        // consume this data too, even though the read started at len - 4096.
+        contents.extend_from_slice(b"new data beyond the metadata snapshot\n");
+        let mut reader = CountingReader {
+            inner: Cursor::new(contents),
+            bytes_read: 0,
+        };
+
+        let line = WorkerStatus::last_stderr_line_from_reader(&mut reader, snapshot_len);
+
+        assert_eq!(line.as_deref(), Some("Pulling image: 99% done"));
+        assert_eq!(reader.bytes_read, 4096);
+        assert_eq!(reader.inner.position(), snapshot_len);
     }
 
     /// Regression: the headline elapsed counter must advance by

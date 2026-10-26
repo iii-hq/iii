@@ -18,7 +18,9 @@ def otel_setup(monkeypatch):
 
     monkeypatch.setattr(iii_module.III, "_do_connect", fake_do_connect)
 
-    init_otel(OtelConfig(enabled=True))
+    # Telemetry starts with the client's loop and would otherwise dial III_URL or
+    # the default engine port; port 1 refuses the connection.
+    init_otel(OtelConfig(enabled=True, engine_ws_url="ws://127.0.0.1:1"))
     yield
     shutdown_otel()
     # Reset all OTel global singletons so tests don't bleed state

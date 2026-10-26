@@ -134,6 +134,13 @@ all the retries fail, the queue worker moves the message to the dead-letter queu
 message, throw an error in Node, raise an exception in Python, or return an `Err` (for example,
 `iii_sdk::Error::Handler`) in Rust.
 
+<Note>
+  `registerTrigger` is deprecated in 0.25, but the queue worker still publishes the
+  `durable:subscriber` trigger type, so it remains the way to consume messages. It logs one warning
+  per process. See [Providers not migrated
+  yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
+
 In a worker, register the consumer function and subscribe it to the topic. If you do not have a
 worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
 

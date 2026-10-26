@@ -1,0 +1,10 @@
+{
+  "description": "$prefix takes a string",
+  "cases": [
+    { "filters": {"input.a": {"$prefix": 1}}, "code": "INVALID_FILTER", "note": "number" },
+    { "filters": {"input.a": {"$prefix": null}}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"input.a": {"$prefix": ["a"]}}, "code": "INVALID_FILTER", "note": "array" },
+    { "filters": {"input.a": {"$prefix": {}}}, "code": "INVALID_FILTER", "note": "object" },
+    { "filters": {"input.a": {"$prefix": true}}, "code": "INVALID_FILTER", "note": "boolean" }
+  ]
+}

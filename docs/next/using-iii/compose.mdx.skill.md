@@ -25,6 +25,13 @@ the next `iii compose --up` starts a fresh engine. An engine that the `iii` comm
 lifecycle separate from the Compose process. For process supervision, see
 [Deployment](./deployment#run-a-compose-project).
 
+Workers are tied to the Compose process in the same way. Compose starts a small reaper process next
+to its workers. When Compose exits without stopping them, whether from `SIGKILL`, a crash, or a
+second `Ctrl^C`, the reaper sends each worker `SIGTERM`, waits up to 10 seconds, then sends
+`SIGKILL`. A worker's child processes stop with it. A worker that is still running when Compose
+starts again, left by a Compose that is gone, is stopped and started fresh rather than reused. The
+reaper runs on Linux and macOS.
+
 ### Starting a project with the daemon
 
 ```text
@@ -38,6 +45,11 @@ For every option, see the [CLI reference](../cli-reference/index#iii-compose). `
 daemon, and the iii engine if Compose was started with `--up`. When `--up` has started the engine,
 every project and worker stops before the engine process is stopped. `compose::stop` is the function
 equivalent of this operation.
+
+A second signal during that shutdown makes Compose exit at once, and the reaper stops the remaining
+workers. Signals that arrive within 200 milliseconds of the first count as the same request: a
+wrapper such as `dotenv --` or a package-manager script forwards the terminal's `Ctrl^C` to Compose,
+which already received it, and one key press must not skip the orderly shutdown.
 
 Compose only stops an engine it started itself. An external engine, selected with `--engine`,
 `III_URL`, or an external engine in the compose file, keeps running when Compose exits. If the
@@ -112,6 +124,7 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | `compose::up`        | `file`, `container`, `frozen`                                           | When the change is complete: `status`, `changed`, and `affected_workers`.                                      |
 | `compose::down`      | `file`, `container`                                                     | The same fields as `compose::up`.                                                                              |
 | `compose::status`    | `file`                                                                  | The project's namespace, file, state directory, daemon pid, worker states.                                     |
+| `compose::ps`        | `file`                                                                  | The daemon pid and the operating-system processes of its projects.                                             |
 | `compose::logs`      | `file`, `container` or `worker`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                                                       |
 | `compose::list`      | nothing                                                                 | The daemon name, its namespace, its pid, and every project it holds.                                           |
 | `compose::validate`  | `file`                                                                  | A validation report.                                                                                           |
@@ -409,6 +422,22 @@ daemon started the worker process and can still stop it. Otherwise `owned` is `f
 | `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
 | `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                       |
 
+### Listing processes
+
+`compose::ps` lists what the operating system sees for this daemon's projects, or for one project
+when `file` is set: the daemon, its managed engine, every worker, and the processes those workers
+started. Each entry has `pid`, `ppid`, `kind` (`engine`, `compose` or `worker`), `name` (the
+worker's container key), `ports`, `compose_file`, `orphan`, `started_at` (seconds since the Unix
+epoch), and `command`. `orphan` is `true` for a worker of the project that no Compose daemon
+supervises.
+
+```bash
+iii trigger compose::ps --namespace dev file=./worker-compose.yaml
+```
+
+To see every iii process on the machine, including other projects, use
+[`iii ps`](#finding-and-stopping-iii-processes).
+
 ### Viewing logs
 
 `compose::logs` returns recent stdout and stderr for the workers of one project.
@@ -570,17 +599,23 @@ containers:
 | --------------------------------- | ------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `url`                             | string  | `ws://127.0.0.1:49134` | Managed engine endpoint used by Compose and its workers. When `engine.workers` has no `iii-worker-manager` entry, the `iii-worker-manager` of the managed engine listens on the host and port of this URL. When that entry exists, its `port` (`49134` when omitted) must match the port of this URL, or the start fails with `MANAGED_ENGINE_ENDPOINT_MISMATCH`. |
 | `registration_namespace_grace_ms` | integer | engine default         | Namespace-registration grace passed to the engine.                                                                                                                                                                                                                                                                                                                |
+| `observers`                       | map     | engine defaults        | Observer limits and timeouts passed to the engine as written. See [Observers](./configuration#observers).                                                                                                                                                                                                                                                         |
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults.                                                                                                                                                                                                                                                                          |
 
-Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
-and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
-`iii-worker-manager#rbac`. `configuration` and `iii-worker-manager` always run.
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`
+(deprecated; still accepted), and `iii-sandbox`. Use `#instance` for another instance of an allowed
+type, for example `iii-worker-manager#rbac`. `configuration` and `iii-worker-manager` always run.
 `iii-http-functions`, `iii-stream`, and `iii-sandbox` run only when you declare them. The engine
 injects `iii-engine-functions`, `iii-telemetry` for anonymous usage analytics, and
 `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare these workers. A
 declaration under `engine.workers` fails with `ENGINE_WORKER_IS_INJECTED`. When a `compose::add` or
 `compose::update` call requests a worker that ships with the engine, its operation fails with
 `ENGINE_WORKER_IS_BUILTIN`. Compose leaves out a dependency of this kind.
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is
+  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 <Note>Changes to these worker configurations take effect only after the engine restarts.</Note>
 
@@ -992,6 +1027,41 @@ engines, or workers that an earlier version started, so it cannot stop them. Bef
 stop the Compose daemons with the earlier version and make sure that their engines and workers
 stopped. The old directory also holds the logs and VM data of the earlier version. Copy the files
 that you need before you remove it.
+
+## Finding and stopping iii processes
+
+`iii ps` lists every iii process the current user runs: engines with the ports they listen on,
+Compose daemons, and workers with the project each belongs to.
+
+```text
+$ iii ps
+PID    KIND     NAME   PORT   STATUS     UPTIME  COMPOSE
+41200  engine   -      49134  running    2h5m    ~/shop
+41198  compose  -      49134  running    2h5m    ~/shop
+41260  worker   api    49134  running    2h5m    ~/shop
+38811  worker   cron   5202   orphan     3d2h    ~/billing
+```
+
+`STATUS` is `orphan` for a worker whose Compose daemon is gone, and `no engine` for a worker whose
+engine port has no engine listening. `iii ps --json` prints the same list as JSON.
+
+`iii kill` stops a selection of those processes:
+
+| Option             | Stops                                                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `--port <PORT>`    | The engine listening on `PORT`, the Compose daemon that manages it, and every worker using it. |
+| `--compose [PATH]` | A project's daemon, managed engine and workers. `PATH` is the compose file or its directory.   |
+| `--orphans`        | Every worker whose Compose daemon is gone.                                                     |
+| `--force`          | Sends `SIGKILL` at once instead of waiting for a graceful exit.                                |
+
+Compose daemons receive `SIGTERM` first, so each one stops its project in reverse dependency order.
+The remaining processes then receive `SIGTERM`, and `SIGKILL` after 15 seconds. `iii kill` exits
+with `1` when nothing matches or a process is still running afterwards.
+
+Compose marks each worker through its environment (`III_COMPOSE_FILE`, `III_WORKER_NAME`,
+`III_URL`), which identifies it whichever SDK version it was built with. Engines and SDK workers
+started outside Compose write a marker file, `~/.iii/run/<kind>-<pid>.json`, while they run.
+`iii ps` deletes markers whose process is gone.
 
 ## Error codes
 

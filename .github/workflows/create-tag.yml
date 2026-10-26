@@ -28,7 +28,7 @@ on:
           - rc
         default: none
       version_override:
-        description: 'Optional exact version, e.g. 0.24.1. Overrides bump; must match prerelease. Publishes current main.'
+        description: 'Exact version, e.g. 0.25.0-rc.1. Required outside main (RC only); overrides bump. Publishes the selected branch.'
         required: false
         type: string
         default: ''
@@ -41,6 +41,11 @@ on:
 permissions:
   contents: write
   actions: write
+
+# Serialize preparation across branches: version/tag checks share one namespace.
+concurrency:
+  group: create-tag-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   create-tag:
@@ -63,17 +68,36 @@ jobs:
           token: ${{ steps.generate_token.outputs.token }}
 
       - name: Pre-flight checks
+        id: preflight
         env:
+          SOURCE_REF_TYPE: ${{ github.ref_type }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
           TARGET: ${{ inputs.target }}
           BUMP: ${{ inputs.bump }}
           PRERELEASE: ${{ inputs.prerelease }}
           VERSION_OVERRIDE: ${{ inputs.version_override }}
         run: |
-          BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          if [[ "$BRANCH" != "main" ]]; then
-            echo "::error::Must be on main branch (currently on $BRANCH)"
+          if [[ "$SOURCE_REF_TYPE" != "branch" ]]; then
+            echo "::error::Select a branch, not a tag, for release preparation"
             exit 1
           fi
+          BRANCH=$(git symbolic-ref --quiet --short HEAD)
+          if [[ "$BRANCH" != "$SOURCE_BRANCH" ]]; then
+            echo "::error::Checkout does not match the selected source branch"
+            exit 1
+          fi
+          if [[ "$BRANCH" != "main" ]]; then
+            if [[ "$PRERELEASE" != "rc" ]]; then
+              echo "::error::Only RC releases are allowed outside main; stable releases require main"
+              exit 1
+            fi
+            if [[ -z "$VERSION_OVERRIDE" ]]; then
+              echo "::error::RC releases outside main require version_override (e.g. 0.25.0-rc.1)"
+              exit 1
+            fi
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           # bump=none only iterates an existing pre-release train, so it
           # requires a pre-release label. Use patch/minor/major to START a
@@ -96,7 +120,7 @@ jobs:
                      sdk/packages/python/iii/pyproject.toml \
                      sdk/packages/python/observability/pyproject.toml \
                      sdk/packages/python/helpers/pyproject.toml \
-                     console/packages/console-rust/Cargo.toml \
+                     crates/iii-filter/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
               if [[ ! -f "$f" ]]; then
@@ -131,11 +155,15 @@ jobs:
             --bump "$BUMP" \
             --prerelease "$PRERELEASE" \
             --version-override "$VERSION_OVERRIDE" \
+            --inflight-reachable-from HEAD \
             "${extra_args[@]}" \
             --current-version-file "$current_version_file"
 
       - name: Summarize selected release
         env:
+          SOURCE_BRANCH: ${{ steps.preflight.outputs.branch }}
+          SOURCE_SHA: ${{ steps.preflight.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
           CURRENT_VERSION: ${{ steps.versions.outputs.current }}
           SELECTED_VERSION: ${{ steps.versions.outputs.version }}
           SELECTED_TAG: ${{ steps.versions.outputs.tag }}
@@ -143,11 +171,20 @@ jobs:
         run: |
           {
             printf '## Release selection\n\n'
+            printf -- '- Source branch: `%s`\n' "$SOURCE_BRANCH"
+            printf -- '- Source commit: `%s`\n' "$SOURCE_SHA"
             printf -- '- Current manifest: `%s`\n' "$CURRENT_VERSION"
             printf -- '- Selected version: `%s`\n' "$SELECTED_VERSION"
             printf -- '- Tag: `%s`\n' "$SELECTED_TAG"
             if [[ -n "$VERSION_OVERRIDE" ]]; then
-              printf '\nExplicit version selected; bump was ignored. This releases the checked-out main code, not a historical maintenance branch.\n'
+              printf '\nExplicit version selected; bump was ignored. This releases the checked-out source commit.\n'
+            fi
+            if [[ "$DRY_RUN" == "true" ]]; then
+              printf '\nDry run: pushes a dry-run tag, but does not update any branch or publish packages.\n'
+            elif [[ "$SOURCE_BRANCH" == "main" ]]; then
+              printf '\nThe release preparation commit is pushed to main and tagged.\n'
+            else
+              printf '\nOnly the tag is pushed. The preparation commit is reachable through it; neither main nor the source branch is updated. This release updates the shared rc channel, never latest.\n'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -248,13 +285,14 @@ jobs:
           }
 
           check_workspace_dep() {
-            local actual
-            actual=$(grep -E "^iii-observability\s*=" "$1" | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
+            # $1=file $2=expected_version $3=dep_name (default iii-observability)
+            local actual dep="${3:-iii-observability}"
+            actual=$(grep -E "^${dep}\s*=" "$1" | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
             if [[ "$actual" != "$2" ]]; then
-              echo "::error::$1 iii-observability dep version mismatch: expected $2, got $actual"
+              echo "::error::$1 ${dep} dep version mismatch: expected $2, got $actual"
               exit 1
             fi
-            echo "  $1 iii-observability -> $actual"
+            echo "  $1 ${dep} -> $actual"
           }
 
           check_pep440_pin() {
@@ -282,9 +320,9 @@ jobs:
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/observability/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/helpers/pyproject.toml" "$PY_VERSION"
-            check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"
+            check_workspace_dep "Cargo.toml" "$VERSION" "iii-filter"
             check_pep440_pin "sdk/packages/python/iii/pyproject.toml" "iii-helpers" "$PY_VERSION"
             check_pep440_pin "sdk/packages/python/observability/pyproject.toml" "iii-helpers" "$PY_VERSION"
           fi
@@ -305,22 +343,30 @@ jobs:
           git config user.name "iii-ci[bot]"
           git config user.email "iii-ci[bot]@users.noreply.github.com"
 
-      - name: Commit and push
+      - name: Commit release preparation
         if: inputs.dry_run != true
         env:
+          TARGET: ${{ inputs.target }}
           TAG: ${{ steps.versions.outputs.tag }}
         run: |
           git add -A
-          git commit -m "chore: bump versions for release -- ${{ inputs.target }}($TAG)"
+          git commit -m "chore: bump versions for release -- $TARGET($TAG)" \
+            -m "Co-authored-by: iii harness (codex/gpt-6-astra) <noreply@iii.dev>"
 
-          git push origin main
+      # RCs from another branch keep the preparation commit only on the tag.
+      - name: Push main branch
+        if: inputs.dry_run != true && steps.preflight.outputs.branch == 'main'
+        run: git push origin HEAD:refs/heads/main
 
       - name: Create and push tag
         env:
           TAG: ${{ steps.versions.outputs.tag }}
+          SOURCE_BRANCH: ${{ steps.preflight.outputs.branch }}
+          SOURCE_SHA: ${{ steps.preflight.outputs.sha }}
         run: |
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
+          git tag -a "$TAG" -m "Release $TAG" \
+            -m "Source branch: $SOURCE_BRANCH" -m "Source commit: $SOURCE_SHA"
+          git push origin "refs/tags/$TAG"
           echo "Created tag: $TAG"
 
       # Tell the templates repo to bump its iii-sdk / iii-observability pins to
@@ -360,7 +406,7 @@ jobs:
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: "${{ inputs.dry_run == true && ':test_tube: *Dry Run — Tag Preview*' || ':label: *Tag Created*' }}\n\n:package: ${{ inputs.target }}: `${{ steps.versions.outputs.tag }}`\nPre-release: `${{ inputs.prerelease }}`\nTriggered by: ${{ github.actor }}${{ inputs.dry_run == true && '\n\n_No commits, tags, or publishes — validation only_' || '' }}"
+                  text: "${{ inputs.dry_run == true && ':test_tube: *Dry Run — Tag Preview*' || ':label: *Tag Created*' }}\n\n:package: ${{ inputs.target }}: `${{ steps.versions.outputs.tag }}`\nPre-release: `${{ inputs.prerelease }}`\nTriggered by: ${{ github.actor }}${{ inputs.dry_run == true && '\n\n_Dry-run tag pushed; no branch updates or package uploads_' || '' }}"
               - type: "context"
                 elements:
                   - type: "mrkdwn"

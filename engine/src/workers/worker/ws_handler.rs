@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{
         Path, Query, State, WebSocketUpgrade,
         ws::{Message as WsMessage, WebSocket},
@@ -170,7 +171,11 @@ async fn handle_channel_socket(
                             total_bytes += len as u64;
                             msg_count += 1;
                             tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Write: received binary chunk from WS");
-                            ChannelItem::Binary(data)
+                            // Tungstenite frames share its read buffer (128 KiB
+                            // by default). A queued frame can outlive the socket
+                            // until a late reader attaches or the channel TTL
+                            // expires. Retain only the payload, not that buffer.
+                            ChannelItem::Binary(Bytes::copy_from_slice(&data))
                         }
                         WsMessage::Close(_) => {
                             tracing::info!(channel_id = %channel_id, "Write: received WS close frame");
@@ -187,7 +192,13 @@ async fn handle_channel_socket(
                                         total_bytes += len as u64;
                                         msg_count += 1;
                                         tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Write: drained binary after close");
-                                        if tx.send(ChannelItem::Binary(data)).await.is_err() {
+                                        if tx
+                                            .send(ChannelItem::Binary(Bytes::copy_from_slice(
+                                                &data,
+                                            )))
+                                            .await
+                                            .is_err()
+                                        {
                                             break;
                                         }
                                     }
@@ -340,6 +351,59 @@ mod tests {
             next,
             None | Some(Ok(Message::Close(_))) | Some(Err(_))
         ));
+    }
+
+    // A late reader must still receive queued data after the writer disconnects,
+    // but a tiny frame must not pin the WebSocket's entire 128 KiB read buffer
+    // for the channel's five-minute orphan TTL.
+    #[tokio::test]
+    async fn queued_binary_does_not_retain_websocket_read_buffer() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let (mut writer, _) = connect_async(format!(
+            "{base_url}/channels/{}?key={}&dir=write",
+            writer_ref.channel_id, writer_ref.access_key
+        ))
+        .await
+        .expect("connect write socket");
+        let payload = vec![42; 100];
+        writer
+            .send(Message::Binary(payload.clone().into()))
+            .await
+            .unwrap();
+        writer.close(None).await.unwrap();
+        drop(writer);
+
+        let mut receiver = engine
+            .channel_manager
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+        let item = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+                .await
+                .unwrap()
+                .is_none(),
+            "writer must release the sender"
+        );
+        let ChannelItem::Binary(data) = item else {
+            panic!("expected binary")
+        };
+        assert_eq!(data.as_ref(), payload.as_slice());
+        // The socket is gone, so the queued frame owns the backing allocation.
+        let allocation = data.try_into_mut().expect("frame should be uniquely owned");
+        assert!(
+            allocation.capacity() <= payload.len(),
+            "100-byte frame retained {} bytes",
+            allocation.capacity()
+        );
+        engine
+            .channel_manager
+            .remove_channel(&reader_ref.channel_id);
     }
 
     #[tokio::test]

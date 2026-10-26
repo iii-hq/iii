@@ -1,3 +1,4 @@
+#![allow(deprecated)] // MOT-3619: legacy stream/subscribe triggers; see the migrate-from-streams guide
 use iii_helpers::stream::StreamTriggerConfig;
 use iii_sdk::builtin_triggers::*;
 use iii_sdk::trigger::IIITrigger;
@@ -5,6 +6,13 @@ use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// Examples using built-in trigger types with the typed `IIITrigger` enum.
+///
+/// `register_trigger` is deprecated since 0.25.0 in favour of `iii.observe`.
+/// These trigger types are provided by the cron, state, http, pubsub, queue,
+/// stream and observability workers; until each of them ships its source
+/// function (`cron::on-tick`, `http::on-request`, ...), `register_trigger`
+/// keeps binding to them, and to those functions once they replace the types.
+#[allow(deprecated)]
 pub fn setup(iii: &IIIClient) {
     // ── Cron trigger ────────────────────────────────────────────────
     iii.register_function(

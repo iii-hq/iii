@@ -1,4 +1,4 @@
-import { ArrowUpRightIcon } from 'lucide-react'
+import { ArrowRightIcon } from 'lucide-react'
 
 import { Reveal } from '@/components/site/reveal'
 import { stagger } from '@/lib/motion'
@@ -47,12 +47,10 @@ export function Numbers() {
           {footnote.setup} {footnote.bench}{' '}
           <a
             href={footnote.link.href}
-            target="_blank"
-            rel="noreferrer"
             className="inline-flex items-center gap-0.5 text-foreground underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground"
           >
             {footnote.link.label}
-            <ArrowUpRightIcon aria-hidden className="size-3.5" />
+            <ArrowRightIcon aria-hidden className="size-3.5" />
           </a>
         </p>
       </Reveal>

@@ -1,0 +1,11 @@
+{
+  "description": "nested $any: the inner @ is the inner element",
+  "filters": {"input.orders": {"$any": {"@.lines": {"$any": {"@.sku": {"$eq": "A-1"}, "@.qty": {"$gt": 1}}}}}},
+  "cases": [
+    { "doc": {"input": {"orders": [{"lines": [{"sku": "A-1", "qty": 2}]}]}}, "expect": true },
+    { "doc": {"input": {"orders": [{"lines": [{"sku": "A-1", "qty": 1}, {"sku": "B", "qty": 5}]}]}}, "expect": false },
+    { "doc": {"input": {"orders": [{"lines": []}, {"lines": [{"sku": "A-1", "qty": 3}]}]}}, "expect": true },
+    { "doc": {"input": {"orders": [{"lines": "A-1"}]}}, "expect": false },
+    { "doc": {"input": {"orders": [{"sku": "A-1", "qty": 2}]}}, "expect": false }
+  ]
+}

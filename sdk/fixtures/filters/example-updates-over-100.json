@@ -1,0 +1,10 @@
+{
+  "description": "filters.md §6: updates that touched more than 100 rows",
+  "filters": {"input.op": {"$eq": "update"}, "input.affected_rows": {"$gt": 100}},
+  "cases": [
+    { "doc": {"input": {"op": "update", "affected_rows": 101}}, "expect": true },
+    { "doc": {"input": {"op": "update", "affected_rows": 100}}, "expect": false },
+    { "doc": {"input": {"op": "insert", "affected_rows": 500}}, "expect": false },
+    { "doc": {"input": {"op": "update"}}, "expect": false }
+  ]
+}

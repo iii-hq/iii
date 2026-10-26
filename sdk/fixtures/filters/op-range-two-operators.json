@@ -1,0 +1,11 @@
+{
+  "description": "two operators on one path are ANDed",
+  "filters": {"input.date": {"$gte": "2026-11-01T00:00:00Z", "$lt": "2026-12-01T00:00:00Z"}},
+  "cases": [
+    { "doc": {"input": {"date": "2026-11-01T00:00:00Z"}}, "expect": true },
+    { "doc": {"input": {"date": "2026-11-15"}}, "expect": true },
+    { "doc": {"input": {"date": "2026-12-01T00:00:00Z"}}, "expect": false },
+    { "doc": {"input": {"date": "2026-10-31T23:59:59Z"}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

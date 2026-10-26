@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Callable
@@ -64,14 +65,29 @@ class ChannelItem:
         return self.binary is not None
 
 
+def resolve_headers(explicit: dict[str, str] | None = None) -> dict[str, str] | None:
+    """Handshake headers for an engine connection: the caller's, plus
+    Authorization: Bearer $III_TOKEN when the variable is set and not blank.
+
+    An Authorization header the caller passed wins (names match
+    case-insensitively).
+    """
+    token = os.environ.get("III_TOKEN", "").strip()
+    if not token or any(name.lower() == "authorization" for name in explicit or {}):
+        return explicit
+    return {**(explicit or {}), "Authorization": f"Bearer {token}"}
+
+
 def build_channel_url(
     engine_ws_base: str,
     channel_id: str,
     access_key: str,
     direction: str,
 ) -> str:
-    base = engine_ws_base.rstrip("/")
-    return f"{base}/ws/channels/{channel_id}?key={quote(access_key)}&dir={direction}"
+    # Keep a query already on the engine URL (e.g. ?token=...); the channel's own come after it.
+    base, _, query = engine_ws_base.partition("?")
+    query = "&".join(part for part in (query, f"key={quote(access_key)}", f"dir={direction}") if part)
+    return f"{base.rstrip('/')}/ws/channels/{channel_id}?{query}"
 
 
 class WritableStream:
@@ -127,8 +143,11 @@ class ReadableStream:
 class ChannelWriter:
     """WebSocket-backed writer for streaming binary data and text messages."""
 
-    def __init__(self, engine_ws_base: str, ref: StreamChannelRef) -> None:
+    def __init__(
+        self, engine_ws_base: str, ref: StreamChannelRef, headers: dict[str, str] | None = None
+    ) -> None:
         self._url = build_channel_url(engine_ws_base, ref.channel_id, ref.access_key, "write")
+        self._headers = resolve_headers(headers)
         self._ws: ClientConnection | None = None
         self._connected = False
         self._lock = asyncio.Lock()
@@ -140,7 +159,7 @@ class ChannelWriter:
         async with self._lock:
             if self._ws is not None and self._connected:
                 return self._ws
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, additional_headers=self._headers)
             self._connected = True
             return self._ws
 
@@ -187,8 +206,11 @@ class ChannelWriter:
 class ChannelReader:
     """WebSocket-backed reader for streaming binary data and text messages."""
 
-    def __init__(self, engine_ws_base: str, ref: StreamChannelRef) -> None:
+    def __init__(
+        self, engine_ws_base: str, ref: StreamChannelRef, headers: dict[str, str] | None = None
+    ) -> None:
         self._url = build_channel_url(engine_ws_base, ref.channel_id, ref.access_key, "read")
+        self._headers = resolve_headers(headers)
         self._ws: ClientConnection | None = None
         self._connected = False
         self._lock = asyncio.Lock()
@@ -201,7 +223,7 @@ class ChannelReader:
         async with self._lock:
             if self._ws is not None and self._connected:
                 return self._ws
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, additional_headers=self._headers)
             self._connected = True
             return self._ws
 

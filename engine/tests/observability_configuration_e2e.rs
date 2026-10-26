@@ -750,6 +750,7 @@ fn make_span(i: u64) -> iii::workers::observability::otel::StoredSpan {
         flags: None,
         trace_state: None,
         pending: false,
+        observe_depth: 0,
     }
 }
 
@@ -896,6 +897,7 @@ fn trace_span(
         flags: None,
         trace_state: None,
         pending: false,
+        observe_depth: 0,
     }
 }
 

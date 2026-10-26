@@ -223,15 +223,21 @@ The HTTP trigger invokes `http::add_two_numbers`. That function calls `math::add
 the endpoint and `iii trigger` use the same logic. `math::add` and `math::add_two_numbers` stay the
 same in this step.
 
+<Note>
+  The worker logs a deprecation warning for `registerTrigger` once. In 0.25 it is still the way to
+  bind HTTP routes, because the http worker publishes the `http` trigger type; the warning is
+  informational. See [Upgrading from 0.24.x](./upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
+
 ## How it works
 
 For a walkthrough of how the engine, workers, triggers, and functions in this project fit together,
 see [Understanding iii](./understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
-  Open the iii Console with `iii console` in a new terminal: an interactive UI for workers,
-  triggers, functions, logs, traces, and state. See the full [Console
-  documentation](./using-iii/console) for details.
+  Open the iii console in ADE: run `iii trigger compose::add worker=ade` in a new terminal in the
+  project folder, then open `http://127.0.0.1:3113`. It shows your workers, traces, and logs, and
+  lets you chat with agents. See the full [Console documentation](./using-iii/console) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skills add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}

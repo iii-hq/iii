@@ -1,0 +1,12 @@
+{
+  "description": "$any {} matches any non-empty array",
+  "filters": {"input.list": {"$any": {}}},
+  "cases": [
+    { "doc": {"input": {"list": []}}, "expect": false },
+    { "doc": {"input": {"list": [null]}}, "expect": true },
+    { "doc": {"input": {"list": [1, 2]}}, "expect": true },
+    { "doc": {"input": {"list": {}}}, "expect": false },
+    { "doc": {"input": {"list": "ab"}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

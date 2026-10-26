@@ -1,0 +1,15 @@
+{
+  "description": "a path clause always takes an operator object",
+  "cases": [
+    { "filters": {"input.op": "insert"}, "code": "INVALID_FILTER", "note": "string literal (filters.md §2)" },
+    { "filters": {"input.n": 5}, "code": "INVALID_FILTER", "note": "number literal" },
+    { "filters": {"input.v": null}, "code": "INVALID_FILTER", "note": "null literal" },
+    { "filters": {"input.b": true}, "code": "INVALID_FILTER", "note": "boolean literal" },
+    { "filters": {"input.a": [1]}, "code": "INVALID_FILTER", "note": "array literal" },
+    { "filters": {"input.o": {"a": 1}}, "code": "INVALID_FILTER", "note": "object literal without operators" },
+    { "filters": {"input.o": {"$eq": 1, "a": 1}}, "code": "INVALID_FILTER", "note": "operators mixed with a literal key" },
+    { "filters": {"input.o": {}}, "code": "INVALID_FILTER", "note": "empty operator object" },
+    { "filters": {"$or": [{"input.op": "insert"}]}, "code": "INVALID_FILTER", "note": "shorthand nested in $or" },
+    { "filters": {"input.l": {"$any": {"@.status": "paid"}}}, "code": "INVALID_FILTER", "note": "shorthand inside $any" }
+  ]
+}

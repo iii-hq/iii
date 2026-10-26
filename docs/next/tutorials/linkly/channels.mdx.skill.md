@@ -58,11 +58,11 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
       });
       imported += 1;
     } catch (err) {
-      // Skip a row the database rejects (a code already taken, refused by the
-      // PRIMARY KEY on links.code). Re-throw anything else (a timeout, a worker
-      // that is down) so a broken import fails loudly instead of counting rows
-      // it never created as "skipped".
-      if (!String(err).includes("UNIQUE constraint failed")) throw err;
+      // link::create refuses a taken code with its own error, "code `<code>`
+      // is already taken". Skip that row. Re-throw anything else (a timeout, a
+      // worker that is down) so a broken import fails loudly instead of
+      // counting rows it never created as "skipped".
+      if (!(err instanceof Error && err.message.endsWith("is already taken"))) throw err;
       skipped += 1;
       logger.warn("bulk import row skipped", { code, error: String(err) });
     }
@@ -108,8 +108,10 @@ Uncomment the Ch. 6 block in `channel-client/import-links.js`:
 import { registerWorker } from "iii-sdk";
 import { createChannel } from "iii-sdk/helpers";
 
-const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134", {
   workerName: "uploader",
+  // The project's namespace, where bulk-importer::import_csv lives.
+  namespace: process.env.III_NAMESPACE || "default",
 });
 
 const csv = ["code,url", "mylink,https://iii.dev", "mydocslink,https://iii.dev/docs"].join("\n");
@@ -138,8 +140,10 @@ node import-links.js
 The SDK prints a few `[iii]` / `[OTel]` connection lines around that object; the
 `{ imported, skipped }` line is the importer's answer.
 
-Run it again and it reports `{ imported: 0, skipped: 2 }`. The codes are already taken, so the
-importer skips those rows and continues with the batch.
+Run it again and it reports `{ imported: 0, skipped: 2 }`. The codes are already taken, so
+`link::create` throws its `is already taken` error for each row. The importer skips those rows and
+continues with the batch. The check reads the error message of `link::create`, which this chapter
+controls, so a change to the database error text does not affect it.
 
 Both new links resolve immediately:
 

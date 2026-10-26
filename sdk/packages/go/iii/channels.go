@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -67,8 +68,8 @@ func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, 
 		return nil, fmt.Errorf("iii: decoding channel refs: %w", err)
 	}
 	return &Channel{
-		Writer:    OpenWriter(c.Address(), refs.Writer),
-		Reader:    OpenReader(c.Address(), refs.Reader),
+		Writer:    openWriter(c.Address(), refs.Writer, c.headers),
+		Reader:    openReader(c.Address(), refs.Reader, c.headers),
 		WriterRef: refs.Writer,
 		ReaderRef: refs.Reader,
 	}, nil
@@ -78,12 +79,17 @@ func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, 
 // buildChannelUrl (channels.ts:243, channels.rs:41): strip one trailing slash, append
 // /ws/channels/{id}, and add the percent-encoded access key plus the raw direction.
 func channelURL(engineWSBase, channelID, accessKey string, dir ChannelDirection) string {
-	base := strings.TrimRight(engineWSBase, "/")
+	// Keep a query already on the engine URL (e.g. ?token=...); the channel's own come after it.
+	base, query, _ := strings.Cut(engineWSBase, "?")
+	base = strings.TrimRight(base, "/")
+	if query != "" {
+		query += "&"
+	}
 	// Encode the key with the RFC-3986 unreserved set (space -> %20), matching the Rust
 	// encoder; url.QueryEscape would emit "+" for space. Access keys are UUIDs so this
 	// is belt-and-suspenders, but it keeps us byte-identical to the references.
 	key := strings.ReplaceAll(url.QueryEscape(accessKey), "+", "%20")
-	return fmt.Sprintf("%s/ws/channels/%s?key=%s&dir=%s", base, channelID, key, dir)
+	return fmt.Sprintf("%s/ws/channels/%s?%skey=%s&dir=%s", base, channelID, query, key, dir)
 }
 
 // ChannelWriter is the write end of a channel: a WebSocket opened lazily on first use.
@@ -91,16 +97,26 @@ func channelURL(engineWSBase, channelID, accessKey string, dir ChannelDirection)
 // finishes the stream. A ChannelWriter is safe for serial use by one goroutine; it is
 // not designed for concurrent writers (mirroring the reference SDKs).
 type ChannelWriter struct {
-	url string
+	url     string
+	headers http.Header
 
 	mu   sync.Mutex
 	conn *websocket.Conn
 }
 
 // OpenWriter returns a writer for the write end described by ref, against the given
-// engine WS base (typically Client.Address()). The socket connects on first send.
+// engine WS base (typically Client.Address()). The socket connects on first send and
+// authenticates with III_TOKEN, when set; channels from [Client.CreateChannel] also send
+// the client's [WithHeaders].
 func OpenWriter(engineWSBase string, ref StreamChannelRef) *ChannelWriter {
-	return &ChannelWriter{url: channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelWrite)}
+	return openWriter(engineWSBase, ref, nil)
+}
+
+func openWriter(engineWSBase string, ref StreamChannelRef, headers http.Header) *ChannelWriter {
+	return &ChannelWriter{
+		url:     channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelWrite),
+		headers: handshakeHeaders(headers),
+	}
 }
 
 func (w *ChannelWriter) ensureConnected(ctx context.Context) (*websocket.Conn, error) {
@@ -109,7 +125,7 @@ func (w *ChannelWriter) ensureConnected(ctx context.Context) (*websocket.Conn, e
 	if w.conn != nil {
 		return w.conn, nil
 	}
-	conn, _, err := websocket.Dial(ctx, w.url, nil)
+	conn, _, err := websocket.Dial(ctx, w.url, &websocket.DialOptions{HTTPHeader: w.headers})
 	if err != nil {
 		return nil, fmt.Errorf("iii: dialing channel writer: %w", err)
 	}
@@ -175,7 +191,8 @@ func (w *ChannelWriter) Close() error {
 // delivered to OnMessage callbacks. The reader reads from a single goroutine internally,
 // so register OnMessage callbacks before the first NextBinary/ReadAll call.
 type ChannelReader struct {
-	url string
+	url     string
+	headers http.Header
 
 	mu         sync.Mutex
 	conn       *websocket.Conn
@@ -184,9 +201,18 @@ type ChannelReader struct {
 }
 
 // OpenReader returns a reader for the read end described by ref, against the given engine
-// WS base (typically Client.Address()). The socket connects on first read.
+// WS base (typically Client.Address()). The socket connects on first read and
+// authenticates with III_TOKEN, when set; channels from [Client.CreateChannel] also send
+// the client's [WithHeaders].
 func OpenReader(engineWSBase string, ref StreamChannelRef) *ChannelReader {
-	return &ChannelReader{url: channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelRead)}
+	return openReader(engineWSBase, ref, nil)
+}
+
+func openReader(engineWSBase string, ref StreamChannelRef, headers http.Header) *ChannelReader {
+	return &ChannelReader{
+		url:     channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelRead),
+		headers: handshakeHeaders(headers),
+	}
 }
 
 // OnMessage registers a callback for inbound text messages. Callbacks fire from the
@@ -203,7 +229,7 @@ func (r *ChannelReader) ensureConnected(ctx context.Context) (*websocket.Conn, e
 	if r.conn != nil {
 		return r.conn, nil
 	}
-	conn, _, err := websocket.Dial(ctx, r.url, nil)
+	conn, _, err := websocket.Dial(ctx, r.url, &websocket.DialOptions{HTTPHeader: r.headers})
 	if err != nil {
 		return nil, fmt.Errorf("iii: dialing channel reader: %w", err)
 	}

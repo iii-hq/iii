@@ -2,6 +2,10 @@
  * Configuration passed to a trigger handler when a trigger instance is
  * registered or unregistered.
  *
+ * @deprecated Replaced by the `Observer` an `onObserverAdded` hook
+ * receives (`{ id, args, filters, target }`). Migration guide:
+ * https://iii.dev/docs/upgrading/from-0-24-x
+ *
  * @typeParam TConfig - Type of the trigger-specific configuration.
  */
 export type TriggerConfig<TConfig> = {
@@ -24,6 +28,10 @@ export type TriggerConfig<TConfig> = {
 /**
  * Handler interface for custom trigger types. Passed to
  * `IIIClient.registerTriggerType`.
+ *
+ * @deprecated Replaced by `ObserveHooks` (`onObserverAdded` /
+ * `onObserverRemoved`) on `registerFunction`. Migration guide:
+ * https://iii.dev/docs/upgrading/from-0-24-x
  *
  * @typeParam TConfig - Type of the trigger-specific configuration.
  *

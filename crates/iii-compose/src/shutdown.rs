@@ -237,13 +237,31 @@ pub(crate) async fn drain_blocking_jobs() {
     let _ = jobs.wait_for(|count| *count == 0).await;
 }
 
+/// Repeats closer than this to the first signal are the same request.
+///
+/// A wrapper such as `dotenv --` or a package-manager script forwards the
+/// terminal's Ctrl+C to compose, which the terminal already delivered to the
+/// whole foreground group: one key press, two signals, microseconds apart.
+/// Treating the copy as a second press skipped the orderly teardown.
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
 // Tokio keeps its handler installed even after a signal stream is dropped.
 // Keep listening through teardown so another Ctrl+C remains an escape hatch,
-// including when no ShutdownSignal receivers remain alive.
+// including when no ShutdownSignal receivers remain alive. Exiting here skips
+// teardown; the reaper stops the children this process leaves behind.
 fn request_shutdown(sender: &watch::Sender<bool>, exit_code: i32) {
-    if sender.send_replace(true) {
-        std::process::exit(exit_code);
+    static FIRST: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if !sender.send_replace(true) {
+        let _ = FIRST.set(std::time::Instant::now());
+        return;
     }
+    if FIRST
+        .get()
+        .is_some_and(|first| first.elapsed() < REPEAT_WINDOW)
+    {
+        return;
+    }
+    std::process::exit(exit_code);
 }
 
 #[cfg(any(unix, windows))]
@@ -352,6 +370,9 @@ mod tests {
         .expect("fixture should install its handlers");
 
         kill(pid, first).unwrap();
+        // A copy forwarded by a wrapper lands with the first signal and is the
+        // same request, not a second press.
+        kill(pid, Signal::SIGINT).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(line) = lines.next_line().await.unwrap() {
                 if line == "shutdown-requested" {
@@ -363,6 +384,13 @@ mod tests {
         .await
         .expect("the first signal should latch shutdown");
 
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "a duplicate delivered with the first signal must not skip teardown"
+        );
+
+        tokio::time::sleep(REPEAT_WINDOW).await;
         kill(pid, Signal::SIGINT).unwrap();
         let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await

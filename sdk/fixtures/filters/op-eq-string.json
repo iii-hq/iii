@@ -1,0 +1,14 @@
+{
+  "description": "$eq on a string: exact, case-sensitive, no array fan-out",
+  "filters": {"input.op": {"$eq": "insert"}},
+  "cases": [
+    { "doc": {"input": {"op": "insert"}}, "expect": true },
+    { "doc": {"input": {"op": "update"}}, "expect": false },
+    { "doc": {"input": {"op": "Insert"}}, "expect": false, "note": "case-sensitive" },
+    { "doc": {"input": {}}, "expect": false, "note": "absent path" },
+    { "doc": {}, "expect": false, "note": "absent root" },
+    { "doc": {"input": {"op": null}}, "expect": false, "note": "null is a value, not insert" },
+    { "doc": {"input": {"op": ["insert"]}}, "expect": false, "note": "no implicit fan-out over arrays" },
+    { "doc": {"input": "insert"}, "expect": false, "note": "stepping into a string is absent" }
+  ]
+}

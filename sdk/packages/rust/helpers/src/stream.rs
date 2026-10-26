@@ -1,4 +1,14 @@
 //! iii stream helpers.
+//!
+//! The update-op family ([`UpdateOp`], [`MergePath`], [`UpdateOpError`]) and the
+//! result types ([`StreamSetResult`], [`StreamUpdateResult`], [`StreamDeleteResult`])
+//! are shared with `state::*` and the engine KV store and are **not** deprecated.
+//! The remaining legacy Streams-only models are deprecated (iii-stream); see
+//! <https://iii.dev/docs/upgrading/migrate-from-streams>.
+
+// The deprecated legacy models below are still derived, implemented and
+// unit-tested here; keep the lint for downstream users only.
+#![allow(deprecated)]
 
 use std::collections::HashMap;
 
@@ -242,6 +252,9 @@ pub struct StreamDeleteResult {
 // ============================================================================
 
 /// Input for retrieving a single stream item.
+#[deprecated(
+    note = "StreamGetInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamGetInput {
     /// Name of the stream.
@@ -253,6 +266,9 @@ pub struct StreamGetInput {
 }
 
 /// Input for setting a stream item.
+#[deprecated(
+    note = "StreamSetInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamSetInput {
     /// Name of the stream.
@@ -266,6 +282,9 @@ pub struct StreamSetInput {
 }
 
 /// Input for deleting a stream item.
+#[deprecated(
+    note = "StreamDeleteInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDeleteInput {
     /// Name of the stream.
@@ -277,6 +296,9 @@ pub struct StreamDeleteInput {
 }
 
 /// Input for listing all items in a stream group.
+#[deprecated(
+    note = "StreamListInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListInput {
     /// Name of the stream.
@@ -286,6 +308,9 @@ pub struct StreamListInput {
 }
 
 /// Input for listing all groups in a stream.
+#[deprecated(
+    note = "StreamListGroupsInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListGroupsInput {
     /// Name of the stream.
@@ -293,6 +318,9 @@ pub struct StreamListGroupsInput {
 }
 
 /// Input for atomically updating a stream item.
+#[deprecated(
+    note = "StreamUpdateInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
     /// Name of the stream.
@@ -310,6 +338,9 @@ pub struct StreamUpdateInput {
 // ============================================================================
 
 /// Input for stream authentication.
+#[deprecated(
+    note = "StreamAuthInput is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthInput {
     /// Request headers.
@@ -323,6 +354,9 @@ pub struct StreamAuthInput {
 }
 
 /// Result of stream authentication.
+#[deprecated(
+    note = "StreamAuthResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthResult {
     /// Arbitrary context passed to stream handlers after authentication.
@@ -330,6 +364,9 @@ pub struct StreamAuthResult {
 }
 
 /// Result of a stream join request.
+#[deprecated(
+    note = "StreamJoinResult is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamJoinResult {
     /// Whether the join was unauthorized.
@@ -341,6 +378,9 @@ pub struct StreamJoinResult {
 // ============================================================================
 
 /// Trigger config for `stream:join` and `stream:leave` triggers.
+#[deprecated(
+    note = "StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamJoinLeaveTriggerConfig {
     /// Stream name to watch
@@ -377,6 +417,9 @@ impl Default for StreamJoinLeaveTriggerConfig {
 }
 
 /// Trigger config for `stream` triggers. Filters which item changes fire the handler.
+#[deprecated(
+    note = "StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamTriggerConfig {
     /// Stream name to watch
@@ -435,6 +478,9 @@ impl Default for StreamTriggerConfig {
 // ============================================================================
 
 /// Event payload for stream join/leave triggers.
+#[deprecated(
+    note = "StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamJoinLeaveEvent {
     /// Unique subscription identifier.
@@ -450,6 +496,9 @@ pub struct StreamJoinLeaveEvent {
 }
 
 /// The kind of mutation that occurred on a stream item.
+#[deprecated(
+    note = "StreamEventType is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamEventType {
@@ -459,6 +508,9 @@ pub enum StreamEventType {
 }
 
 /// Detail of a stream change event containing the mutation type and data.
+#[deprecated(
+    note = "StreamChangeEventDetail is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamChangeEventDetail {
     /// The kind of mutation (create, update, or delete).
@@ -470,6 +522,9 @@ pub struct StreamChangeEventDetail {
 
 /// Handler input for `stream` triggers, fired when an item changes
 /// via `stream::set`, `stream::update`, or `stream::delete`.
+#[deprecated(
+    note = "StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamChangeEvent {
     /// Always `"stream"`.

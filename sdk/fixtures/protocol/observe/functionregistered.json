@@ -1,0 +1,43 @@
+{
+  "type": "functionregistered",
+  "id": "cron::on-tick",
+  "namespace": "default",
+  "revision": 12,
+  "local_dispatch": true,
+  "observers": [
+    {
+      "id": "9e1f7a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b",
+      "args": {
+        "expression": "0 0 9 * * Mon-Fri"
+      },
+      "filters": {
+        "$and": [
+          {
+            "input.scheduled_time": {
+              "$gte": "2026-11-01T00:00:00Z"
+            }
+          }
+        ]
+      },
+      "target": "local::cron-handler",
+      "capture": [
+        "input"
+      ],
+      "on": "success"
+    },
+    {
+      "id": "3d8c1b7a-2e4f-4a9b-8c6d-0e1f2a3b4c5d",
+      "args": {
+        "expression": "0 */5 * * * *"
+      },
+      "filters": {},
+      "target": "reports::refresh",
+      "capture": [
+        "input",
+        "output",
+        "caller"
+      ],
+      "on": "success"
+    }
+  ]
+}

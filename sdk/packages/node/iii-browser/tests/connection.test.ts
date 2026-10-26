@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerWorker } from '../src/iii'
 import { EngineFunctions, type IIIConnectionState } from '../src/iii-constants'
 import type { ISdk } from '../src/types'
-import { MockEngine } from './mock-websocket'
+import { MockEngine, MockWebSocket } from './mock-websocket'
 
 describe('addConnectionStateListener', () => {
   let engine: MockEngine
@@ -199,5 +199,37 @@ describe('namespace', () => {
     expect(invoke?.namespace).toBe('orders')
 
     await sdk.shutdown()
+  })
+})
+
+describe('shutdown', () => {
+  it('while the socket is still connecting leaves no close-time error unhandled', async () => {
+    // `ws` (which runs this SDK in Node) reports closing a connecting socket as
+    // an error event on the next tick, and throws it when nothing handles it.
+    const engine = new MockEngine({ autoOpen: false })
+    engine.install()
+    const sdk = registerWorker('ws://test:49135')
+    const socket = engine.socket
+    let unhandled: Error | undefined
+    socket.close = function (this: typeof socket) {
+      if (this.readyState === MockWebSocket.CONNECTING) {
+        setTimeout(() => {
+          if (!this.onerror) {
+            unhandled = new Error('WebSocket was closed before the connection was established')
+            return
+          }
+          this.onerror.call(this as unknown as WebSocket, new Event('error'))
+        }, 0)
+      }
+      this.readyState = MockWebSocket.CLOSED
+    }
+    // Neither thrown nor reported: the SDK's own error handler (which logs) is gone too.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await expect(sdk.shutdown()).resolves.toBeUndefined()
+    await new Promise((r) => setTimeout(r, 0)) // after the close-time error was reported
+    expect(unhandled).toBeUndefined()
+    expect(errors).not.toHaveBeenCalled()
+    errors.mockRestore()
+    engine.uninstall()
   })
 })

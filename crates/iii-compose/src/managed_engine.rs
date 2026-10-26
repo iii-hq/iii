@@ -243,6 +243,8 @@ fn spawn_managed_engine(
 struct MaterializedEngineConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_namespace_grace_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observers: Option<&'a serde_yaml::Value>,
     workers: Vec<MaterializedWorker<'a>>,
 }
 
@@ -284,6 +286,7 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
     }
     let document = MaterializedEngineConfig {
         registration_namespace_grace_ms: spec.registration_namespace_grace_ms,
+        observers: spec.observers.as_ref(),
         workers,
     };
     let text = serde_yaml::to_string(&document).map_err(|err| ComposeError::EngineSpawnFailed {
@@ -905,6 +908,8 @@ mod tests {
 engine:
   url: ws://127.0.0.1:50123
   registration_namespace_grace_ms: 2500
+  observers:
+    max_observe_depth: 4
   workers:
     iii-sandbox:
       auto_install: false
@@ -934,6 +939,7 @@ containers: {}
             serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
         assert_eq!(document["registration_namespace_grace_ms"], 2500);
+        assert_eq!(document["observers"]["max_observe_depth"], 4);
         assert!(document.get("url").is_none());
         assert!(document.get("containers").is_none());
         let workers = document["workers"].as_sequence().unwrap();

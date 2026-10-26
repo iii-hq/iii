@@ -1,0 +1,14 @@
+{
+  "description": "$any with a filter over @ (filters.md §2.1)",
+  "filters": {"input.returning": {"$any": {"@.status": {"$eq": "paid"}, "@.amount": {"$gte": 500}}}},
+  "cases": [
+    { "doc": {"input": {"returning": [{"status": "paid", "amount": 600}]}}, "expect": true },
+    { "doc": {"input": {"returning": [{"status": "paid", "amount": 100}, {"status": "open", "amount": 900}]}}, "expect": false, "note": "both clauses on the same element" },
+    { "doc": {"input": {"returning": [{"status": "open", "amount": 1}, {"status": "paid", "amount": 500}]}}, "expect": true },
+    { "doc": {"input": {"returning": [{"status": "paid"}]}}, "expect": false },
+    { "doc": {"input": {"returning": []}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": {"returning": {"status": "paid", "amount": 600}}}, "expect": false, "note": "not an array" },
+    { "doc": {"input": {"returning": ["paid"]}}, "expect": false, "note": "scalar elements: @.status is absent" }
+  ]
+}

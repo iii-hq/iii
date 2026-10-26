@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IIIClient } from '../src/types'
 
-const LIMIT = 16 * 1024 * 1024
+const LIMIT = 64 * 1024 * 1024
 const sockets: MockWebSocket[] = []
 
 class MockWebSocket extends EventEmitter {

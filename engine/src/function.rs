@@ -68,7 +68,7 @@ impl Function {
         session: Option<Arc<Session>>,
         metadata: Option<Value>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        (self.handler)(invocation_id, data.clone(), session, metadata).await
+        (self.handler)(invocation_id, data, session, metadata).await
     }
 }
 
@@ -94,7 +94,8 @@ pub enum FunctionChange {
 pub type FunctionChangeListener = dyn Fn(FunctionChange, &str, &str) + Send + Sync;
 
 // Borrow both key components without changing the registry's stored tuple keys.
-trait FunctionKey {
+// Also how the observer registry looks up `(namespace, id)` without allocating.
+pub(crate) trait FunctionKey {
     fn parts(&self) -> (&str, &str);
 }
 
@@ -138,6 +139,9 @@ pub struct FunctionsRegistry {
     pub functions: Arc<DashMap<(String, String), Function>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     change_listener: Arc<RwLock<Option<Arc<FunctionChangeListener>>>>,
+    /// The observer registry's listener, kept apart from `change_listener`,
+    /// which `engine::functions-available` replaces on every reload.
+    observer_listener: Arc<RwLock<Option<Arc<FunctionChangeListener>>>>,
 }
 
 impl FunctionsRegistry {
@@ -161,6 +165,7 @@ impl FunctionsRegistry {
             functions: Arc::new(DashMap::new()),
             active_scope: scope,
             change_listener: Arc::new(RwLock::new(None)),
+            observer_listener: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -172,14 +177,20 @@ impl FunctionsRegistry {
         }
     }
 
+    /// Installs the observer registry's listener. Told about every change
+    /// before `change_listener`, so observers settle first.
+    pub(crate) fn set_observer_listener(&self, listener: Arc<FunctionChangeListener>) {
+        if let Ok(mut slot) = self.observer_listener.write() {
+            *slot = Some(listener);
+        }
+    }
+
     fn notify_change(&self, change: FunctionChange, namespace: &str, function_id: &str) {
-        let listener = self
-            .change_listener
-            .read()
-            .ok()
-            .and_then(|slot| slot.clone());
-        if let Some(listener) = listener {
-            listener(change, namespace, function_id);
+        for slot in [&self.observer_listener, &self.change_listener] {
+            let listener = slot.read().ok().and_then(|slot| slot.clone());
+            if let Some(listener) = listener {
+                listener(change, namespace, function_id);
+            }
         }
     }
 

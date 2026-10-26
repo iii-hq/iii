@@ -317,22 +317,30 @@ fn load_or_migrate_v2_state() -> TelemetryYaml {
 }
 
 pub fn get_or_create_device_id() -> String {
+    let id = ensure_device_id();
+    if !is_container_environment() {
+        write_device_id_to_project_ini(&id);
+    }
+    id
+}
+
+/// The device id from `~/.iii/telemetry.yaml`, creating the version-2 file
+/// when it is missing.
+///
+/// Unlike [`get_or_create_device_id`], this never writes `device_id=` into the
+/// `.iii/project.ini` found from the current directory, which may belong to an
+/// unrelated project.
+pub fn ensure_device_id() -> String {
     let mut state = load_or_migrate_v2_state();
     if let Some(existing) = state.identity.device_id.clone()
         && !existing.is_empty()
     {
-        if !is_container_environment() {
-            write_device_id_to_project_ini(&existing);
-        }
         return existing;
     }
 
     let id = generate_new_device_id();
     state.identity.device_id = Some(id.clone());
     write_telemetry_yaml(&state);
-    if !is_container_environment() {
-        write_device_id_to_project_ini(&id);
-    }
     id
 }
 
@@ -606,6 +614,34 @@ mod tests {
         unsafe {
             env::remove_var("HOME");
         }
+    }
+
+    #[test]
+    #[serial]
+    fn ensure_device_id_writes_the_yaml_and_leaves_project_ini_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+        let ini = unrelated.path().join(".iii").join("project.ini");
+        std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
+        let before = "[project]\nproject_id=unrelated\n";
+        std::fs::write(&ini, before).unwrap();
+        unsafe {
+            env::set_var("HOME", home.path());
+            env::set_var("III_PROJECT_ROOT", unrelated.path());
+        }
+
+        let id = ensure_device_id();
+        let state = read_telemetry_yaml(&telemetry_config_path());
+        let after = std::fs::read_to_string(&ini).unwrap();
+
+        unsafe {
+            env::remove_var("HOME");
+            env::remove_var("III_PROJECT_ROOT");
+        }
+        let state = state.expect("telemetry.yaml written");
+        assert_eq!(state.version, Some(TELEMETRY_SCHEMA_VERSION));
+        assert_eq!(state.identity.device_id.as_deref(), Some(id.as_str()));
+        assert_eq!(after, before);
     }
 
     #[test]

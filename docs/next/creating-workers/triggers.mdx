@@ -19,6 +19,15 @@ functions to events your worker emits.
 This page shows how to make your own trigger types. To bind functions to existing trigger types, see
 [Using iii / Triggers](../using-iii/triggers).
 
+<Warning>
+  `registerTriggerType` and `registerTrigger` are deprecated in 0.25 and will be removed in a future
+  release. They keep working and log one warning per process. For a new event source, register an
+  [observable function](./observable-functions) instead: a function with an `observe` descriptor
+  whose hooks replace `TriggerHandler`, and whose observers replace triggers. Declaring
+  `legacy_trigger_type` on it keeps the `registerTrigger` calls of existing consumers working. See
+  [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
+</Warning>
+
 <Note>
   For direct calls (`worker.trigger`, `iii trigger`) and `TriggerAction`, see [Using iii /
   Functions](../using-iii/functions#triggering-invoking-functions). For conditions and multiple
@@ -53,6 +62,12 @@ returns it.
 
 ## Declaring a Trigger Type
 
+<Note>
+  The rest of this page documents the 0.24 trigger type API, which still works in 0.25. New
+  providers should write an [observable function](./observable-functions): the engine then stores
+  the bindings, validates their args, applies filters and policy, and replays them on reconnect.
+</Note>
+
 A _publisher_ worker declares a trigger type. Functions that other workers register then fire on
 events the publisher observes (an HTTP request, a webhook hit, a file change, a database update).
 For how trigger types fit into iii, see [Trigger types](../understanding-iii#trigger-types).
@@ -78,8 +93,9 @@ To see the bindings that the engine records, call
 [`engine::registered-triggers::list`](../reference/engine-protocol#engine-discovery-functions). Pass
 `include_pending: true` to also see the stored bindings that are `pending`.
 
-The engine removes the trigger type when your worker disconnects. See
-[Unregister a Trigger Type](#unregister-a-trigger-type).
+To remove the trigger type at runtime, call `worker.unregisterTriggerType(...)` (Node) or
+`worker.unregister_trigger_type(...)` (Python, Rust). The engine also removes it when your worker
+disconnects. See [Unregister a Trigger Type](#unregister-a-trigger-type).
 
 ### Example: A mini `http` from scratch
 
@@ -132,7 +148,7 @@ worker that publishes the real `http` trigger type. The publisher worker:
       ```python
       import os
       from iii import InitOptions, register_worker
-      from iii.protocol import RegisterTriggerTypeInput
+      from iii.iii_types import RegisterTriggerTypeInput
       from iii.trigger import TriggerConfig, TriggerHandler
 
       worker = register_worker(
@@ -165,7 +181,6 @@ worker that publishes the real `http` trigger type. The publisher worker:
       ```rust
       use std::collections::HashMap;
       use std::sync::{Arc, Mutex};
-      use iii_sdk::errors::Error;
       use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
       use iii_sdk::{InitOptions, RegisterTriggerType, register_worker};
 
@@ -184,12 +199,12 @@ worker that publishes the real `http` trigger type. The publisher worker:
 
       #[async_trait::async_trait]
       impl TriggerHandler for HttpHandler {
-          async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+          async fn register_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::Error> {
               self.bindings.lock().unwrap().insert(config.id.clone(), config);
               Ok(())
           }
 
-          async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
+          async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), iii_sdk::Error> {
               self.bindings.lock().unwrap().remove(&config.id);
               Ok(())
           }
@@ -240,13 +255,16 @@ Each SDK accepts these in its own idiomatic way:
 
 ### Unregister a Trigger Type
 
-The engine removes a trigger type when the worker that registered it disconnects. The engine stores
-the bindings to that type. When a worker registers the type again, the engine activates them again.
+The engine removes a trigger type when the worker that registered it disconnects or calls
+`worker.unregisterTriggerType(...)` (Node) or `worker.unregister_trigger_type(...)` (Python, Rust).
+Rust takes the type `id`. Node and Python take the input object and use only its `id`. The engine
+ignores the call from a worker that does not provide the type. Engines before 0.25 ignored the call
+in all cases.
 
-The SDKs have `worker.unregisterTriggerType(...)` (Node) and `worker.unregister_trigger_type(...)`
-(Python, Rust). At this release, the engine ignores the message that these calls send. The type
-stays registered in the engine until the worker disconnects. The call removes the handler from your
-worker only. To remove a trigger type at runtime, stop the worker with `worker.shutdown()`.
+The bindings to the removed type then move to another provider of the type, go to a function that
+declares the type as `legacy_trigger_type`, or stay stored until a worker registers the type again.
+See
+[`unregisterTriggerType` now takes effect](../upgrading/from-0-24-x#unregistertriggertype-now-takes-effect).
 
 ## Dispatch events to bound functions
 

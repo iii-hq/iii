@@ -68,6 +68,8 @@ pub struct OtelConfig {
     pub service_instance_id: Option<String>,
     /// III Engine WebSocket URL. Defaults to the `III_URL` env var or "ws://localhost:49134".
     pub engine_ws_url: Option<String>,
+    /// HTTP headers sent on the telemetry WebSocket handshake (e.g. `Authorization`).
+    pub engine_ws_headers: Option<std::collections::HashMap<String, String>>,
     /// Whether metrics export is enabled. Defaults to true. Set to false or `OTEL_METRICS_ENABLED=false/0/no/off` to disable.
     pub metrics_enabled: Option<bool>,
     /// Metrics export interval in milliseconds. Defaults to 60000 (60 seconds).

@@ -1,0 +1,19 @@
+{
+  "description": "$in: deep-equal to some element; no fan-out",
+  "filters": {"input.op": {"$in": ["insert", "update", 3, null, {"k": 1}, [1, 2]]}},
+  "cases": [
+    { "doc": {"input": {"op": "insert"}}, "expect": true },
+    { "doc": {"input": {"op": "update"}}, "expect": true },
+    { "doc": {"input": {"op": "delete"}}, "expect": false },
+    { "doc": {"input": {"op": 3}}, "expect": true },
+    { "doc": {"input": {"op": 3.0}}, "expect": true },
+    { "doc": {"input": {"op": "3"}}, "expect": false },
+    { "doc": {"input": {"op": null}}, "expect": true, "note": "null is a value" },
+    { "doc": {"input": {}}, "expect": false, "note": "absent never matches $in" },
+    { "doc": {"input": {"op": {"k": 1.0}}}, "expect": true },
+    { "doc": {"input": {"op": {"k": 1, "j": 2}}}, "expect": false },
+    { "doc": {"input": {"op": [1, 2]}}, "expect": true, "note": "array element compared as a whole" },
+    { "doc": {"input": {"op": [2, 1]}}, "expect": false },
+    { "doc": {"input": {"op": ["insert"]}}, "expect": false, "note": "no fan-out" }
+  ]
+}

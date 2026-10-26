@@ -20,7 +20,7 @@ You can declare five engine-owned workers:
 - `configuration`
 - `iii-worker-manager`
 - `iii-http-functions`
-- `iii-stream`
+- `iii-stream` (deprecated)
 - `iii-sandbox`
 
 `configuration` and `iii-worker-manager` always run. Declare them only to change their settings.
@@ -67,6 +67,12 @@ Declare the [engine-owned workers](#configure-the-engine-owned-workers) as a `wo
 file. Any other name makes startup or a config reload fail with `UNSUPPORTED_CONFIG_WORKERS` (see
 [Common errors](../upgrading/workers-to-compose#common-errors)).
 
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is
+  unchanged for now: the engine still accepts the configuration shown below. See [Migrate from
+  iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
+
 ```yaml
 workers:
   - name: iii-http-functions
@@ -111,7 +117,8 @@ settings, see [Two configuration layers](./configuration#two-configuration-layer
 ## Project workers
 
 HTTP, cron, queue, state, pubsub, bridge, application workers, and other registry workers belong in
-`worker-compose.yaml`.
+`worker-compose.yaml`. The `pubsub` worker is deprecated; see
+[Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 
 Keep the list-shaped `config.yaml` only when you or another supervisor starts the engine. In that
 case omit `engine:` from the Compose file, run the processes separately, and connect with

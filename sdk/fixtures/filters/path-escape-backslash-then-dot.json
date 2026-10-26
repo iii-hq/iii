@@ -1,0 +1,8 @@
+{
+  "description": "\\\\ then \\. inside one key: the key is x\\.y",
+  "filters": {"input.x\\\\\\.y": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"x\\.y": 1}}, "expect": true },
+    { "doc": {"input": {"x\\": {"y": 1}}}, "expect": false }
+  ]
+}

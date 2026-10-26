@@ -329,6 +329,9 @@ pub struct Container {
 pub struct EngineSpec {
     pub url: String,
     pub registration_namespace_grace_ms: Option<u64>,
+    /// The engine's `observers:` section, passed through as written; the
+    /// engine validates it.
+    pub observers: Option<serde_yaml::Value>,
     pub workers: BTreeMap<String, serde_yaml::Value>,
 }
 
@@ -492,9 +495,16 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
         None => DEFAULT_ENGINE_URL.to_string(),
     };
 
+    let observers = match raw.observers {
+        None | Some(serde_yaml::Value::Null) => None,
+        Some(observers @ serde_yaml::Value::Mapping(_)) => Some(observers),
+        Some(_) => return Err(ComposeError::InvalidEngineObservers),
+    };
+
     Ok(EngineSpec {
         url,
         registration_namespace_grace_ms: raw.registration_namespace_grace_ms,
+        observers,
         workers,
     })
 }
@@ -1021,6 +1031,11 @@ struct RawEngineSpec {
     url: Option<String>,
     #[serde(default)]
     registration_namespace_grace_ms: Option<u64>,
+    /// Observer limits and timeouts, as in the engine config's `observers:`
+    /// section.
+    #[serde(default)]
+    #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
+    observers: Option<serde_yaml::Value>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     workers: IndexMap<String, serde_yaml::Value>,
@@ -1263,6 +1278,28 @@ containers:
 
         assert_eq!(engine.url, "ws://127.0.0.1:49134");
         assert!(engine.workers.contains_key("iii-stream"));
+    }
+
+    #[test]
+    fn engine_observers_pass_through_as_a_mapping_only() {
+        let parse = |observers: &str| {
+            parse_engine_section(
+                &format!("engine:\n  url: ws://127.0.0.1:49134\n  observers: {observers}\n"),
+                Path::new("worker-compose.yaml"),
+            )
+        };
+        let engine = parse("{ max_observe_depth: 4, observer_grace_ms: 1000 }")
+            .unwrap()
+            .unwrap();
+        let observers = engine.observers.expect("observers kept");
+        assert_eq!(observers["max_observe_depth"], 4);
+        assert_eq!(observers["observer_grace_ms"], 1000);
+
+        assert!(parse("null").unwrap().unwrap().observers.is_none());
+        assert!(matches!(
+            parse("8"),
+            Err(ComposeError::InvalidEngineObservers)
+        ));
     }
 
     #[test]

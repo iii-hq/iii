@@ -1,0 +1,11 @@
+{
+  "description": "filters.md §6: failed charges above 500, or any failure with a timeout code",
+  "filters": {"$or": [{"input.amount": {"$gt": 500}, "error": {"$exists": true}}, {"error.code": {"$eq": "TIMEOUT"}}]},
+  "cases": [
+    { "doc": {"input": {"amount": 600}, "error": {"code": "DECLINED", "message": "no"}}, "expect": true },
+    { "doc": {"input": {"amount": 600}, "output": {"ok": true}}, "expect": false },
+    { "doc": {"input": {"amount": 100}, "error": {"code": "DECLINED", "message": "no"}}, "expect": false },
+    { "doc": {"input": {"amount": 100}, "error": {"code": "TIMEOUT", "message": "slow"}}, "expect": true },
+    { "doc": {"input": {"amount": 600}, "error": null}, "expect": true, "note": "a null error is present" }
+  ]
+}

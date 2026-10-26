@@ -2,6 +2,9 @@
 //!
 //! Requires a running III engine. Set III_URL and III_HTTP_URL, or use the IPv4 loopback defaults.
 
+// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
+#![allow(deprecated)]
+
 mod common;
 
 use std::path::PathBuf;

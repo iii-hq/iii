@@ -1,0 +1,14 @@
+{
+  "description": "$prefix: string values that start with the operand",
+  "filters": {"input.path": {"$prefix": "/api/"}},
+  "cases": [
+    { "doc": {"input": {"path": "/api/users"}}, "expect": true },
+    { "doc": {"input": {"path": "/api/"}}, "expect": true, "note": "equal string is a prefix" },
+    { "doc": {"input": {"path": "/api"}}, "expect": false },
+    { "doc": {"input": {"path": "/API/x"}}, "expect": false },
+    { "doc": {"input": {"path": null}}, "expect": false },
+    { "doc": {"input": {"path": 5}}, "expect": false },
+    { "doc": {"input": {"path": ["/api/x"]}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

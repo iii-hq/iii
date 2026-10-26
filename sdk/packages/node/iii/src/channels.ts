@@ -2,6 +2,7 @@ import { Readable, Writable } from 'node:stream'
 import { WebSocket } from 'ws'
 import { WS_HANDSHAKE_TIMEOUT_MS } from './iii-constants'
 import type { StreamChannelRef } from './iii-types'
+import { resolveHeaders } from './utils'
 
 /**
  * Direction of a streaming channel endpoint. Mirrors the Rust SDK's
@@ -64,9 +65,11 @@ export class ChannelWriter {
   /** Node.js Writable stream for binary data. */
   public readonly stream: Writable
   private readonly url: string
+  private readonly headers?: Record<string, string>
 
-  constructor(engineWsBase: string, ref: StreamChannelRef) {
+  constructor(engineWsBase: string, ref: StreamChannelRef, headers?: Record<string, string>) {
     this.url = buildChannelUrl(engineWsBase, ref.channel_id, ref.access_key, 'write')
+    this.headers = resolveHeaders(headers)
 
     this.stream = new Writable({
       write: (chunk: Buffer, _encoding, callback) => {
@@ -113,7 +116,7 @@ export class ChannelWriter {
       return
     }
     this.wsReady = false
-    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS })
+    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS, headers: this.headers })
 
     this.ws.on('open', () => {
       this.wsReady = true
@@ -221,9 +224,11 @@ export class ChannelReader {
   /** Node.js Readable stream for binary data. */
   public readonly stream: Readable
   private readonly url: string
+  private readonly headers?: Record<string, string>
 
-  constructor(engineWsBase: string, ref: StreamChannelRef) {
+  constructor(engineWsBase: string, ref: StreamChannelRef, headers?: Record<string, string>) {
     this.url = buildChannelUrl(engineWsBase, ref.channel_id, ref.access_key, 'read')
+    this.headers = resolveHeaders(headers)
 
     const self = this
     this.stream = new Readable({
@@ -244,7 +249,7 @@ export class ChannelReader {
   private ensureConnected(): void {
     if (this.connected) return
     this.connected = true
-    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS })
+    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS, headers: this.headers })
 
     this.ws.on('open', () => {
       ;(this.ws as unknown as { binaryType: string }).binaryType = 'nodebuffer'
@@ -302,6 +307,8 @@ function buildChannelUrl(
   accessKey: string,
   direction: 'read' | 'write',
 ): string {
-  const base = engineWsBase.replace(/\/$/, '')
-  return `${base}/ws/channels/${channelId}?key=${encodeURIComponent(accessKey)}&dir=${direction}`
+  // Keep a query already on the engine URL (e.g. `?token=...`); the channel's own come after it.
+  const [base, ...rest] = engineWsBase.split('?')
+  const query = [rest.join('?'), `key=${encodeURIComponent(accessKey)}`, `dir=${direction}`].filter(Boolean).join('&')
+  return `${base.replace(/\/$/, '')}/ws/channels/${channelId}?${query}`
 }

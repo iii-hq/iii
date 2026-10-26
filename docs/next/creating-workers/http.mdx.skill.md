@@ -26,8 +26,11 @@ iii --config config.yaml
 iii compose --engine ws://127.0.0.1:49134
 ```
 
-For the daemon options, see [Compose](../using-iii/compose). Run the remaining commands from a third
-terminal in that same project directory:
+`iii compose` without a subcommand starts the Compose daemon. `--engine` connects it to the existing
+engine. For all daemon options, see the generated
+[CLI reference](../cli-reference/index#iii-compose) and [Compose](../using-iii/compose).
+
+Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
 iii trigger compose::add worker=http
@@ -44,6 +47,12 @@ namespace, add `-n <namespace>` to each `iii trigger` command.
 </Note>
 
 ## Create endpoints
+
+<Note>
+  `registerTrigger` is deprecated in 0.25, but the http worker still publishes the `http` trigger
+  type, so it remains the way to create endpoints. It logs one warning per process. See [Providers
+  not migrated yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
 
 1. In a worker, bind an `http` trigger to the function you want to expose and register that
    function. If you do not have a worker yet, follow
@@ -104,6 +113,7 @@ namespace, add `-n <namespace>` to each `iii trigger` command.
   <Tab title="Rust">
     ```rust
     use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+    use iii_sdk::runtime::WorkerMetadata;
     use iii_sdk::trigger::IIITrigger;
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
     use schemars::JsonSchema;
@@ -121,7 +131,16 @@ namespace, add `-n <namespace>` to each `iii trigger` command.
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: "my-worker".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
 
     worker.register_trigger(
         IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
@@ -142,6 +161,9 @@ namespace, add `-n <namespace>` to each `iii trigger` command.
 
   </Tab>
 </Tabs>
+
+The Rust SDK sets the worker name through `InitOptions.metadata.name`; Node uses `workerName`, and
+Python uses `worker_name`. All three examples register the name `my-worker`.
 
 2. Add the worker to Compose, pointing at its directory:
 

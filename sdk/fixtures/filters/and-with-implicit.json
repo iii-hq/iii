@@ -1,0 +1,9 @@
+{
+  "description": "explicit $and next to implicit clauses",
+  "filters": {"$and": [{"input.a": {"$eq": 1}}], "input.b": {"$eq": 2}},
+  "cases": [
+    { "doc": {"input": {"a": 1, "b": 2}}, "expect": true },
+    { "doc": {"input": {"a": 1}}, "expect": false },
+    { "doc": {"input": {"b": 2}}, "expect": false }
+  ]
+}

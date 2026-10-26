@@ -1,0 +1,10 @@
+{
+  "description": "metadata root",
+  "filters": {"metadata.__binding": {"$exists": true}},
+  "cases": [
+    { "doc": {"metadata": {"__binding": {"id": "b1"}}}, "expect": true },
+    { "doc": {"metadata": {}}, "expect": false },
+    { "doc": {"metadata": "x"}, "expect": false },
+    { "doc": {}, "expect": false }
+  ]
+}

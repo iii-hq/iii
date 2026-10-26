@@ -7,8 +7,12 @@ use common::mock_engine::{MockEngine, count_type};
 use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 
-// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
-const JSON_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+// Outbound JSON message limit: 64 MiB (67,108,864 bytes).
+const JSON_MESSAGE_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+// Building, serializing and rejecting a 64 MiB result takes ~4 s in an
+// unoptimized build on a fast machine, and longer on CI runners, so the
+// oversized case gets its own, larger budget.
+const OVERSIZED_RESULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn null_absent_and_oversized_results_preserve_wire_semantics() {
@@ -24,7 +28,7 @@ async fn null_absent_and_oversized_results_preserve_wire_semantics() {
                     message: "No result".into(),
                     stacktrace: None,
                 }),
-                "oversized" => Ok(Value::String("x".repeat(JSON_FRAME_LIMIT_BYTES))),
+                "oversized" => Ok(Value::String("x".repeat(JSON_MESSAGE_LIMIT_BYTES + 1))),
                 _ => unreachable!(),
             }
         }),
@@ -52,13 +56,17 @@ async fn null_absent_and_oversized_results_preserve_wire_semantics() {
                     msgs.iter()
                         .any(|msg| msg["type"] == "invocationresult" && msg["invocation_id"] == id)
                 },
-                Duration::from_secs(5),
+                if mode == "oversized" {
+                    OVERSIZED_RESULT_TIMEOUT
+                } else {
+                    Duration::from_secs(5)
+                },
             )
             .await;
         let frame = msgs
             .iter()
             .find(|msg| msg["type"] == "invocationresult" && msg["invocation_id"] == id)
-            .expect("correlated invocationresult frame");
+            .unwrap_or_else(|| panic!("correlated invocationresult frame for {mode}"));
         assert_eq!(frame["function_id"], "test::result_wire");
         match mode {
             "null" => {

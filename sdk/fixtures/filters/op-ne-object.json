@@ -1,0 +1,10 @@
+{
+  "description": "$ne on an object uses deep equality",
+  "filters": {"input.o": {"$ne": {"x": 1, "y": 2}}},
+  "cases": [
+    { "doc": {"input": {"o": {"y": 2, "x": 1}}}, "expect": false, "note": "key order does not matter" },
+    { "doc": {"input": {"o": {"x": 1, "y": 2.0}}}, "expect": false, "note": "numbers by value" },
+    { "doc": {"input": {"o": {"x": 1}}}, "expect": true },
+    { "doc": {"input": {}}, "expect": true }
+  ]
+}

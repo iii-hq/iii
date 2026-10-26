@@ -1,0 +1,10 @@
+{
+  "description": "$prefix on non-ASCII strings works on code points",
+  "filters": {"input.s": {"$prefix": "日本"}},
+  "cases": [
+    { "doc": {"input": {"s": "日本語"}}, "expect": true },
+    { "doc": {"input": {"s": "日"}}, "expect": false },
+    { "doc": {"input": {"s": "本日本"}}, "expect": false },
+    { "doc": {"input": {"s": "😀日本"}}, "expect": false }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "-0 equals 0",
+  "filters": {"input.n": {"$eq": 0}},
+  "cases": [
+    { "doc": {"input": {"n": 0}}, "expect": true },
+    { "doc": {"input": {"n": -0}}, "expect": true },
+    { "doc": {"input": {"n": 0.0}}, "expect": true },
+    { "doc": {"input": {"n": -0.0}}, "expect": true },
+    { "doc": {"input": {"n": 1e-07}}, "expect": false }
+  ]
+}

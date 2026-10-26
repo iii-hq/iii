@@ -1,0 +1,9 @@
+{
+  "description": "caller.parent.function_id",
+  "filters": {"caller.parent.function_id": {"$prefix": "billing::"}},
+  "cases": [
+    { "doc": {"caller": {"worker_name": "db", "parent": {"worker_name": "billing", "function_id": "billing::close-invoice", "invocation_id": "i"}}}, "expect": true },
+    { "doc": {"caller": {"worker_name": "db", "parent": {"worker_name": "billing"}}}, "expect": false },
+    { "doc": {"caller": {"worker_name": "db"}}, "expect": false }
+  ]
+}

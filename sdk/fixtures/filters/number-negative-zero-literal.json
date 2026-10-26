@@ -1,0 +1,9 @@
+{
+  "description": "a -0 literal equals 0 and is not below it",
+  "filters": {"input.n": {"$eq": -0.0}},
+  "cases": [
+    { "doc": {"input": {"n": 0}}, "expect": true },
+    { "doc": {"input": {"n": -0}}, "expect": true },
+    { "doc": {"input": {"n": 1}}, "expect": false }
+  ]
+}

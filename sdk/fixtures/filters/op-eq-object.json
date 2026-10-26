@@ -1,0 +1,15 @@
+{
+  "description": "$eq on an object: deep equality, key order irrelevant, numbers by value",
+  "filters": {"input.addr": {"$eq": {"city": "Lisbon", "geo": {"lat": 38.7, "lon": -9.1}, "tags": ["a", "b"]}}},
+  "cases": [
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.7, "lon": -9.1}, "tags": ["a", "b"]}}}, "expect": true },
+    { "doc": {"input": {"addr": {"tags": ["a", "b"], "geo": {"lon": -9.1, "lat": 38.7}, "city": "Lisbon"}}}, "expect": true, "note": "key order does not matter" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.70, "lon": -9.10}, "tags": ["a", "b"]}}}, "expect": true, "note": "same numbers" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.7}, "tags": ["a", "b"]}}}, "expect": false, "note": "missing nested key" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.7, "lon": -9.1}, "tags": ["a", "b"], "zip": "1000"}}}, "expect": false, "note": "extra key" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.7, "lon": -9.1}, "tags": ["b", "a"]}}}, "expect": false, "note": "array order matters" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": "38.7", "lon": -9.1}, "tags": ["a", "b"]}}}, "expect": false, "note": "string is not a number" },
+    { "doc": {"input": {"addr": {"city": "Lisbon", "geo": {"lat": 38.7, "lon": -9.1}, "tags": ["a", "b", null]}}}, "expect": false },
+    { "doc": {"input": {"addr": null}}, "expect": false }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "description": "without fan-out, $ne on an array of objects sees absent",
+  "filters": {"input.items.sku": {"$ne": "A"}},
+  "cases": [
+    { "doc": {"input": {"items": [{"sku": "A"}]}}, "expect": true },
+    { "doc": {"input": {"items": {"sku": "A"}}}, "expect": false }
+  ]
+}

@@ -1,0 +1,68 @@
+---
+title: "Build a real-time todo app"
+description: "End-to-end reactive todo app over a single browser-to-engine WebSocket."
+owner: "devrel"
+type: "how-to"
+---
+
+A full-stack reactive todo app over a single browser-to-engine WebSocket. Function calls and live
+change notifications flow over the same connection. The app follows the stored records pattern from
+[Recipe 2: stored records with live updates](../upgrading/migrate-from-streams#recipe-2-stored-records-with-live-updates):
+the todo worker owns the data, serves queries, and announces each change through a trigger type it
+owns.
+
+## Engine configuration
+
+The workers needed to support a browser-driven reactive app: `state` for storage and an RBAC
+listener (`rbac-proxy` or `iii-worker-manager`) for browser connections. No streaming worker is
+required.
+
+## Backend
+
+The worker, auth, storage, change trigger, and CRUD functions that power the app server-side.
+
+### Worker setup
+
+Connect a worker, register the functions the app needs, and bind triggers.
+
+### Auth function (RBAC)
+
+An auth function runs on each new browser WebSocket connection, issues a session ID, and namespaces
+the session's registered functions to prevent collisions. It also limits the trigger types the
+session may bind to the todo change trigger.
+
+### Storage
+
+Todos live in the `state` worker under one scope, one key per todo, each with a revision number that
+every write increments.
+
+### Change trigger
+
+The todo worker declares a `todos::changed` trigger type, keeps a capped table of its bindings, and
+after every committed write delivers `{ id, revision, op }` to each binding in the binding's
+namespace.
+
+### Functions
+
+The CRUD functions the browser calls (create, toggle, delete) write to storage and then fire
+`todos::changed`. `todos::get` and a paginated `todos::list` serve reads.
+
+## Frontend
+
+The browser-side WebSocket connection and reactive hook that render live updates.
+
+### Connection
+
+Connect the browser to the engine over a single WebSocket using `iii-browser-sdk`.
+
+### Real-time hook
+
+A hook that binds a browser function to `todos::changed`, then loads the list with `todos::list`.
+Each notification re-reads one todo unless the hook already has that revision, and the hook reloads
+the list after a reconnect.
+
+## Key concepts
+
+The reactive primitives this app relies on: single-WebSocket transport, per-session RBAC
+namespacing, a worker-owned trigger type for change notifications, and a query for the initial
+state and recovery.

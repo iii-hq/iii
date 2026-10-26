@@ -31,10 +31,11 @@ use tracing::Instrument;
 
 use crate::{
     condition::check_condition,
+    deprecation::{self, Caller},
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     protocol::ErrorBody,
-    trigger::TriggerType,
+    trigger::{Trigger, TriggerType},
     workers::{
         stream::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
@@ -100,6 +101,39 @@ fn is_loopback_host(host: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Deprecation entry points that are not function ids or trigger types.
+const WORKER_ENTRY: &str = "iii-stream worker";
+const WS_LISTENER_ENTRY: &str = "iii-stream WebSocket listener";
+const WS_CONNECTION_ENTRY: &str = "iii-stream WebSocket connection";
+
+impl StreamWorker {
+    /// Rate-limited deprecation warning for a `stream::*` function call,
+    /// attributed to the engine-injected `_caller_worker_id` when present.
+    fn warn_deprecated_call(&self, entry: &'static str, caller_worker_id: Option<&str>) {
+        deprecation::warn_stream_deprecated(
+            entry,
+            Caller::from_worker_id(caller_worker_id),
+            &self.engine.worker_registry,
+        );
+    }
+
+    /// Rate-limited deprecation warning for binding one of the iii-stream
+    /// trigger types. Called on bind only, never per delivered event.
+    pub(crate) fn warn_deprecated_trigger_bind(&self, trigger: &Trigger) {
+        let entry = match trigger.trigger_type.as_str() {
+            STREAM_TRIGGER_TYPE => "stream trigger type",
+            JOIN_TRIGGER_TYPE => "stream:join trigger type",
+            LEAVE_TRIGGER_TYPE => "stream:leave trigger type",
+            _ => return,
+        };
+        deprecation::warn_stream_deprecated(
+            entry,
+            Caller::from_worker_uuid(trigger.worker_id),
+            &self.engine.worker_registry,
+        );
+    }
+}
+
 async fn ws_handler(
     State(module): State<Arc<StreamSocketManager>>,
     ws: WebSocketUpgrade,
@@ -108,6 +142,13 @@ async fn ws_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     let module = module.clone();
+    // Once per client IP per interval, never per frame. The IP is the only
+    // client detail logged: no headers, path or query string.
+    deprecation::warn_stream_deprecated(
+        WS_CONNECTION_ENTRY,
+        Caller::Remote(addr.ip()),
+        &module.engine.worker_registry,
+    );
 
     if let Some(auth_function) = module.auth_function() {
         let engine = module.engine.clone();
@@ -216,6 +257,8 @@ impl Worker for StreamWorker {
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamWorker");
+        // Once per process: a reload re-runs initialize but must not repeat it.
+        deprecation::warn_stream_deprecated_once(WORKER_ENTRY);
 
         let _ = self
             .engine
@@ -336,6 +379,7 @@ impl Worker for StreamWorker {
             format!("{}:{}", config.host, config.port)
         };
         tracing::info!("Starting StreamWorker on {}", addr.purple());
+        deprecation::warn_stream_deprecated_once(WS_LISTENER_ENTRY);
 
         // Boot adoption of the adapter, reconciled against the config actually
         // served (post-bind, so a fallback's reverted config is honored).
@@ -992,6 +1036,7 @@ impl StreamWorker {
 impl StreamWorker {
     #[function(id = "stream::set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<StreamSetResult, ErrorBody> {
+        self.warn_deprecated_call("stream::set", input.caller_worker_id.as_deref());
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1068,7 +1113,14 @@ impl StreamWorker {
                 self.invoke_triggers(message.clone()).await;
 
                 if let Err(e) = adapter.emit_event(message).await {
-                    tracing::error!(error = %e, "Failed to emit event");
+                    // The value is stored; only live subscribers miss this
+                    // event. The Success response is kept (contract unchanged).
+                    tracing::error!(
+                        entry_point = "stream::set",
+                        error = %e,
+                        "stream::set stored the value but failed to emit the change event; \
+                         WebSocket subscribers will not receive it"
+                    );
                 }
 
                 FunctionResult::Success(result)
@@ -1083,6 +1135,16 @@ impl StreamWorker {
 
     #[function(id = "stream::get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.warn_deprecated_call("stream::get", input.caller_worker_id.as_deref());
+        self.get_item(input).await
+    }
+
+    /// `stream::get` without the deprecation warning, for the WebSocket join
+    /// sync (that connection is already warned about once per client IP).
+    pub(crate) async fn get_item(
+        &self,
+        input: StreamGetInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1137,6 +1199,7 @@ impl StreamWorker {
         &self,
         input: StreamDeleteInput,
     ) -> FunctionResult<StreamDeleteResult, ErrorBody> {
+        self.warn_deprecated_call("stream::delete", input.caller_worker_id.as_deref());
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1200,7 +1263,14 @@ impl StreamWorker {
                     self.invoke_triggers(message.clone()).await;
 
                     if let Err(e) = adapter.emit_event(message).await {
-                        tracing::error!(error = %e, "Failed to emit delete event");
+                        // The delete happened; only live subscribers miss
+                        // this event. The Success response is kept.
+                        tracing::error!(
+                            entry_point = "stream::delete",
+                            error = %e,
+                            "stream::delete removed the value but failed to emit the change \
+                             event; WebSocket subscribers will not receive it"
+                        );
                     }
                 }
 
@@ -1216,6 +1286,16 @@ impl StreamWorker {
 
     #[function(id = "stream::list", description = "List all items in a stream group")]
     pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.warn_deprecated_call("stream::list", input.caller_worker_id.as_deref());
+        self.list_items(input).await
+    }
+
+    /// `stream::list` without the deprecation warning, for the WebSocket join
+    /// sync (that connection is already warned about once per client IP).
+    pub(crate) async fn list_items(
+        &self,
+        input: StreamListInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1272,6 +1352,7 @@ impl StreamWorker {
         &self,
         input: StreamListGroupsInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.warn_deprecated_call("stream::list_groups", input.caller_worker_id.as_deref());
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
@@ -1323,8 +1404,9 @@ impl StreamWorker {
     )]
     pub async fn list_all(
         &self,
-        _input: StreamListAllInput,
+        input: StreamListAllInput,
     ) -> FunctionResult<StreamListAllResult, ErrorBody> {
+        self.warn_deprecated_call("stream::list_all", input.caller_worker_id.as_deref());
         let adapter = self.adapter_snapshot();
 
         match adapter.list_all_stream().await {
@@ -1348,6 +1430,7 @@ impl StreamWorker {
         description = "Send a custom event to stream subscribers"
     )]
     pub async fn send(&self, input: StreamSendInput) -> FunctionResult<(), ErrorBody> {
+        self.warn_deprecated_call("stream::send", input.caller_worker_id.as_deref());
         let message = StreamWrapperMessage {
             event_type: "stream".to_string(),
             timestamp: Utc::now().timestamp_millis(),
@@ -1384,6 +1467,7 @@ impl StreamWorker {
         &self,
         input: StreamUpdateInput,
     ) -> FunctionResult<StreamUpdateResult, ErrorBody> {
+        self.warn_deprecated_call("stream::update", input.caller_worker_id.as_deref());
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1460,7 +1544,14 @@ impl StreamWorker {
                 self.invoke_triggers(message.clone()).await;
 
                 if let Err(e) = adapter.emit_event(message).await {
-                    tracing::error!(error = %e, "Failed to emit event");
+                    // The value is stored; only live subscribers miss this
+                    // event. The Success response is kept (contract unchanged).
+                    tracing::error!(
+                        entry_point = "stream::update",
+                        error = %e,
+                        "stream::update stored the value but failed to emit the change event; \
+                         WebSocket subscribers will not receive it"
+                    );
                 }
 
                 FunctionResult::Success(result)
@@ -1801,6 +1892,7 @@ mod tests {
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
                 data: data1.clone(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1819,6 +1911,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1836,6 +1929,7 @@ mod tests {
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
                 data: data2.clone(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1854,6 +1948,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1870,6 +1965,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1888,6 +1984,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1935,6 +2032,7 @@ mod tests {
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
                 data: initial_data.clone(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -1950,6 +2048,7 @@ mod tests {
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
                 ops: vec![iii_helpers::stream::UpdateOp::set("", updated_data.clone())],
+                caller_worker_id: None,
             })
             .await;
 
@@ -1969,6 +2068,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -2015,6 +2115,7 @@ mod tests {
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
                 ops: vec![iii_helpers::stream::UpdateOp::set("", new_data.clone())],
+                caller_worker_id: None,
             })
             .await;
 
@@ -2034,6 +2135,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
+                caller_worker_id: None,
             })
             .await;
 
@@ -2082,6 +2184,7 @@ mod tests {
             .list(StreamListInput {
                 stream_name: "stream-a".to_string(),
                 group_id: "group-a".to_string(),
+                caller_worker_id: None,
             })
             .await
         {
@@ -2094,6 +2197,7 @@ mod tests {
         match module
             .list_groups(StreamListGroupsInput {
                 stream_name: "stream-a".to_string(),
+                caller_worker_id: None,
             })
             .await
         {
@@ -2103,7 +2207,12 @@ mod tests {
             _ => panic!("expected list_groups success"),
         }
 
-        match module.list_all(StreamListAllInput {}).await {
+        match module
+            .list_all(StreamListAllInput {
+                caller_worker_id: None,
+            })
+            .await
+        {
             FunctionResult::Success(result) => {
                 assert_eq!(result.count, 2);
                 assert_eq!(result.stream.len(), 2);
@@ -2122,6 +2231,7 @@ mod tests {
                 id: Some("item-1".to_string()),
                 event_type: "custom".to_string(),
                 data: serde_json::json!({ "message": "hello" }),
+                caller_worker_id: None,
             })
             .await;
         assert!(matches!(send_result, FunctionResult::Success(())));
@@ -2180,6 +2290,7 @@ mod tests {
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
                     data: serde_json::json!({ "k": "v" }),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_SET_ERROR"
@@ -2190,6 +2301,7 @@ mod tests {
                     stream_name: "stream".to_string(),
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_GET_ERROR"
@@ -2200,6 +2312,7 @@ mod tests {
                     stream_name: "stream".to_string(),
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_DELETE_ERROR"
@@ -2209,6 +2322,7 @@ mod tests {
                 .list(StreamListInput {
                     stream_name: "stream".to_string(),
                     group_id: "group".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_GET_GROUP_ERROR"
@@ -2217,12 +2331,13 @@ mod tests {
             module
                 .list_groups(StreamListGroupsInput {
                     stream_name: "stream".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_LIST_GROUPS_ERROR"
         ));
         assert!(matches!(
-            module.list_all(StreamListAllInput {}).await,
+            module.list_all(StreamListAllInput { caller_worker_id: None }).await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_LIST_ALL_ERROR"
         ));
         assert!(matches!(
@@ -2233,6 +2348,7 @@ mod tests {
                     id: None,
                     event_type: "boom".to_string(),
                     data: serde_json::json!({}),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_SEND_ERROR"
@@ -2244,6 +2360,7 @@ mod tests {
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
                     ops: vec![UpdateOp::set("", serde_json::json!({ "count": 1 }))],
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_UPDATE_ERROR"
@@ -2342,6 +2459,7 @@ mod tests {
                     stream_name: stream_name.to_string(),
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(Some(value)) if value == serde_json::json!({ "from": "custom-get" })
@@ -2351,6 +2469,7 @@ mod tests {
                 .list(StreamListInput {
                     stream_name: stream_name.to_string(),
                     group_id: "group".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(Some(value)) if value == serde_json::json!([{ "from": "custom-list" }])
@@ -2359,6 +2478,7 @@ mod tests {
             module
                 .list_groups(StreamListGroupsInput {
                     stream_name: stream_name.to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(Some(value)) if value == serde_json::json!(["alpha", "beta"])
@@ -2370,6 +2490,7 @@ mod tests {
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
                     data: serde_json::json!({ "ignored": true }),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(StreamSetResult { new_value, .. }) if new_value == serde_json::json!({ "from": "custom-set" })
@@ -2380,6 +2501,7 @@ mod tests {
                     stream_name: stream_name.to_string(),
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(StreamDeleteResult { old_value: Some(value) }) if value == serde_json::json!({ "from": "custom-delete" })
@@ -2391,6 +2513,7 @@ mod tests {
                     group_id: "group".to_string(),
                     item_id: "item".to_string(),
                     ops: vec![UpdateOp::set("", serde_json::json!({ "count": 2 }))],
+                    caller_worker_id: None,
                 })
                 .await,
             FunctionResult::Success(StreamUpdateResult { new_value, .. }) if new_value == serde_json::json!({ "count": 2 })
@@ -2832,6 +2955,7 @@ mod tests {
             .list(StreamListInput {
                 stream_name: "s".into(),
                 group_id: "g".into(),
+                caller_worker_id: None,
             })
             .await
         {
@@ -2840,8 +2964,97 @@ mod tests {
         }
         *adapter.get_group_result.lock().unwrap() = Ok(Vec::new());
         assert!(
-            matches!(worker.list(StreamListInput {stream_name:"s".into(),group_id:"g".into()}).await,
+            matches!(worker.list(StreamListInput {stream_name:"s".into(),group_id:"g".into(),caller_worker_id: None}).await,
             FunctionResult::Success(Some(Value::Array(values))) if values.is_empty())
         );
+    }
+
+    /// `stream::set` called the way a worker calls it (engine-injected
+    /// `_caller_worker_id`) still succeeds, forwards the exact pre-change
+    /// payload to a custom `stream::set(<name>)` function, and logs one
+    /// rate-limited deprecation warning carrying the caller but no payload.
+    #[tokio::test]
+    async fn test_set_with_caller_worker_id_forwards_unchanged_payload_and_warns_once() {
+        let _lock = crate::deprecation::test_support::GLOBAL_LIMITER_LOCK
+            .lock()
+            .await;
+
+        let module = create_test_module();
+        module.register_functions(module.engine.clone());
+        let stream_name = "caller_payload_stream";
+        let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let received_clone = received.clone();
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::set({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let received = received_clone.clone();
+                async move {
+                    received.lock().unwrap().push(input);
+                    FunctionResult::Success(Some(serde_json::json!({
+                        "old_value": null,
+                        "new_value": { "secret": "payload-value-123" }
+                    })))
+                }
+            }),
+        );
+
+        let caller = uuid::Uuid::new_v4().to_string();
+        let call_input = serde_json::json!({
+            "stream_name": stream_name,
+            "group_id": "group-xyz",
+            "item_id": "item-xyz",
+            "data": { "secret": "payload-value-123" },
+            "_caller_worker_id": caller,
+        });
+        for _ in 0..2 {
+            let value = module
+                .engine
+                .call("stream::set", call_input.clone())
+                .await
+                .expect("stream::set must still succeed")
+                .expect("stream::set returns its result");
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "old_value": null,
+                    "new_value": { "secret": "payload-value-123" }
+                })
+            );
+        }
+
+        let expected = serde_json::json!({
+            "stream_name": stream_name,
+            "group_id": "group-xyz",
+            "item_id": "item-xyz",
+            "data": { "secret": "payload-value-123" },
+        });
+        let received = received.lock().unwrap().clone();
+        assert_eq!(received, vec![expected.clone(), expected.clone()]);
+        assert_eq!(
+            serde_json::to_string(&received[0]).unwrap(),
+            serde_json::to_string(&expected).unwrap(),
+            "forwarded payload must be byte-identical"
+        );
+
+        let warnings = crate::deprecation::test_support::emitted_for(&caller);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one rate-limited warning for two calls: {warnings:?}"
+        );
+        assert_eq!(warnings[0].entry_point, "stream::set");
+        let rendered = format!("{:?}", warnings[0]);
+        for secret in ["payload-value-123", "group-xyz", "item-xyz", stream_name] {
+            assert!(
+                !rendered.contains(secret),
+                "warning leaked {secret}: {rendered}"
+            );
+        }
     }
 }

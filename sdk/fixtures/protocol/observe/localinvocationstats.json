@@ -1,0 +1,25 @@
+{
+  "type": "localinvocationstats",
+  "window_ms": 10000,
+  "functions": [
+    {
+      "function_id": "database::on-row-changed",
+      "count": 48211,
+      "errors": 0,
+      "duration_ms_sum": 190.2
+    },
+    {
+      "function_id": "orders::archive",
+      "count": 37,
+      "errors": 2,
+      "duration_ms_sum": 15.5
+    }
+  ],
+  "dropped_reports": [
+    {
+      "function_id": "database::on-row-changed",
+      "reason": "BUFFER_FULL",
+      "count": 12
+    }
+  ]
+}

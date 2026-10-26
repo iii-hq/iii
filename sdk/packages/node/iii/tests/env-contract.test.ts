@@ -1,5 +1,39 @@
+import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_ENGINE_URL, registerWorker as connect } from '../src/iii'
+
+// Inline mock for the 'ws' module, following handshake-token.test.ts. The
+// default address is the developer's own engine port: a real socket there would
+// register these workers on a running engine.
+class MockWebSocket extends EventEmitter {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+
+  readyState: number = MockWebSocket.CONNECTING
+
+  // Nothing asserts on these; the SDK only needs them to exist.
+  send = vi.fn()
+  ping = vi.fn()
+  resume = vi.fn()
+
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED
+  }
+  terminate(): void {
+    this.readyState = MockWebSocket.CLOSED
+  }
+}
+
+vi.mock('ws', () => ({
+  WebSocket: MockWebSocket,
+  default: { WebSocket: MockWebSocket },
+}))
+
+// setup.ts eagerly imports the SDK (and the real 'ws') before this file's mock
+// takes hold, so drop the cached graph and re-import against the mock.
+vi.resetModules()
+const { DEFAULT_ENGINE_URL, registerWorker: connect } = await import('../src/iii')
 
 /**
  * `registerWorker()` with no address: the supervisor that spawned this process
@@ -8,9 +42,9 @@ import { DEFAULT_ENGINE_URL, registerWorker as connect } from '../src/iii'
  */
 describe('registerWorker — engine address resolution', () => {
   let previous: string | undefined
-  // Every worker here dials an engine that is not there. Left running, its
-  // reconnect and OTel sockets log after the file ends, and vitest fails the
-  // run when a log is still in flight as it closes the worker rpc.
+  // Shut every worker down after its test. Left running, its reconnect and
+  // OTel timers log after the file ends, and vitest fails the run when a log
+  // is still in flight as it closes the worker rpc.
   const workers: ReturnType<typeof connect>[] = []
   const registerWorker = (...args: Parameters<typeof connect>) => {
     const worker = connect(...args)

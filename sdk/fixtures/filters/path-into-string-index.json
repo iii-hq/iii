@@ -1,0 +1,8 @@
+{
+  "description": "a numeric segment on a string is absent",
+  "filters": {"input.s.0": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"s": "abc"}}, "expect": false },
+    { "doc": {"input": {"s": [1]}}, "expect": true }
+  ]
+}

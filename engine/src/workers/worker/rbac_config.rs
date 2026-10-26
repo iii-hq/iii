@@ -25,6 +25,12 @@ pub struct RbacConfig {
     pub on_trigger_type_registration_function_id: Option<String>,
     #[serde(default)]
     pub on_function_registration_function_id: Option<String>,
+    /// Called before an observer is created, with the same contract as
+    /// `on_trigger_registration_function_id`: an object answer may rewrite
+    /// `function_id`, `target_function_id`, `args`, `filters` and `metadata`;
+    /// anything else denies (`FORBIDDEN`).
+    #[serde(default)]
+    pub on_observer_registration_function_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -649,6 +655,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
         let allowed = vec!["test::fn".to_string()];
         let forbidden = vec!["test::fn".to_string()];
@@ -671,6 +678,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
         let allowed = vec!["test::fn".to_string()];
         assert!(is_function_allowed(
@@ -692,6 +700,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
         assert!(is_function_allowed(
             "engine::channels::create",
@@ -712,6 +721,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
         assert!(!is_function_allowed(
             "internal::fn",
@@ -734,6 +744,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         }
     }
 
@@ -982,6 +993,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
         // Exposed in the rule's namespace.
         assert!(is_function_allowed(
@@ -1155,6 +1167,7 @@ mod tests {
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         };
 
         for id in [

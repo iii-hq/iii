@@ -5,4 +5,14 @@ owner: "devrel"
 type: "how-to"
 ---
 
+<Note>
+  `condition_function_id` belongs to the trigger APIs, which are deprecated in 0.25 and keep working.
+  Observers offer declarative [filters](../reference/filters) for conditions you can state over the
+  event, evaluated without an extra function call. A condition that needs code (a lookup, an auth
+  check) has no filter form: keep `condition_function_id`, or move the check into the target
+  function. See [Gate a trigger with a
+  condition](../using-iii/triggers#gate-a-trigger-with-a-condition) for the trigger form and
+  [Observers](../using-iii/observers#filters) for the filter form.
+</Note>
+
 {/* TODO: write the how-to. Cover registering a condition function (returns truthy/falsey from the same payload the handler would see), registering the trigger with `condition_function_id` set, verifying the handler runs only when the condition passes. Show one realistic example (e.g. HTTP trigger gated by an auth check) and call out when to prefer this over branching inside the handler. */}

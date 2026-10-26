@@ -23,7 +23,11 @@ export class SharedEngineConnection {
   private onConnectedCallbacks: Array<() => void> = []
   private onFailedCallbacks: Array<() => void> = []
 
-  constructor(wsUrl: string, config: Partial<ReconnectionConfig> = {}) {
+  constructor(
+    wsUrl: string,
+    config: Partial<ReconnectionConfig> = {},
+    private readonly headers?: Record<string, string>,
+  ) {
     this.wsUrl = wsUrl
     this.config = { ...DEFAULT_RECONNECTION_CONFIG, ...config }
     this.connect()
@@ -39,7 +43,7 @@ export class SharedEngineConnection {
 
     try {
       // 10s handshake cap, parity with iii-sdk / Rust SDK (MOT-3857/MOT-3968)
-      this.ws = new WebSocket(this.wsUrl, { handshakeTimeout: 10000 })
+      this.ws = new WebSocket(this.wsUrl, { handshakeTimeout: 10000, headers: this.headers })
 
       this.ws.on('open', () => {
         this.connecting = false

@@ -350,6 +350,14 @@ metadata. It fires `engine::functions-available` when the set of registered Func
 it checks for changes every 5 seconds. For the `event` values, see
 [Engine discovery triggers](../reference/engine-protocol#engine-discovery-triggers).
 
+<Note>
+  From 0.25, observe the engine-hosted sources `engine::on-workers-changed` and
+  `engine::on-functions-changed` instead; the trigger types keep firing. With `deliver: "input"` the
+  target receives the same payload:
+  `worker.observe({ function_id: "engine::on-workers-changed", deliver: "input" }, "discovery::on-workers")`.
+  See [Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
+</Note>
+
 <Accordion title="Example: subscribe to discovery events">
   <Tabs>
     <Tab title="Node / TypeScript">

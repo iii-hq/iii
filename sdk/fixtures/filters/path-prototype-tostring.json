@@ -1,0 +1,8 @@
+{
+  "description": "toString is an ordinary key",
+  "filters": {"input.toString": {"$eq": "x"}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": {"toString": "x"}}, "expect": true }
+  ]
+}

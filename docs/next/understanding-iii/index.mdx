@@ -205,6 +205,12 @@ The Quickstart tutorial invokes Functions with Triggers in three different ways:
    1. The response flows back the same way. `math::add` gets a plain payload. Only
       `http::add_two_numbers` sees the HTTP request fields.
 
+Functions can also be **observed**. With `iii.observe(source, target)`, any Worker allowed to invoke
+a Function can have another Function invoked for each of its invocations that passes declarative
+filters, without changing the observed Function. In 0.25 observers replace `registerTrigger` for
+sources that are Functions, while the http, cron, and queue Workers still publish Trigger types. See
+[Observers](../using-iii/observers).
+
 ## Functions
 
 From the iii system's perspective, a Function is identified by its name and addressable across

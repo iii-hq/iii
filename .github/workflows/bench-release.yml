@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # dispatch the website deploy
 
 concurrency:
   group: bench-release-${{ github.repository }}
@@ -56,6 +57,12 @@ jobs:
           comment-on-alert: true
           summary-always: true
           alert-comment-cc-users: '@iii-hq/engine'
+
+      # iii.dev/benchmarks reads the history above when it builds.
+      - name: Rebuild iii.dev/benchmarks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-website.yml --repo "${{ github.repository }}" --ref main
 
       - name: Upload raw criterion data
         uses: actions/upload-artifact@v4

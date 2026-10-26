@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Supply-chain gate for the Node SDK packages.
 // Fails on any advisory whose dependency path starts in sdk/packages/node/*;
-// advisories reachable only from website/console/docs are reported, not gated
+// advisories reachable only from website/docs are reported, not gated
 // (they are tracked separately).
 import { execFileSync } from 'node:child_process'
 

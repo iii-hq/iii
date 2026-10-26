@@ -1,0 +1,12 @@
+{
+  "description": "a number bound orders numbers only",
+  "filters": {"input.v": {"$lt": 10}},
+  "cases": [
+    { "doc": {"input": {"v": 5}}, "expect": true },
+    { "doc": {"input": {"v": "5"}}, "expect": false },
+    { "doc": {"input": {"v": true}}, "expect": false },
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {"v": [5]}}, "expect": false },
+    { "doc": {"input": {"v": {"a": 5}}}, "expect": false }
+  ]
+}

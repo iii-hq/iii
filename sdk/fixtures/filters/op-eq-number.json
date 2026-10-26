@@ -1,0 +1,16 @@
+{
+  "description": "$eq on a number: numbers compare by value",
+  "filters": {"input.n": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"n": 1}}, "expect": true },
+    { "doc": {"input": {"n": 1.0}}, "expect": true, "note": "1 == 1.0" },
+    { "doc": {"input": {"n": 1e0}}, "expect": true, "note": "exponent spelling" },
+    { "doc": {"input": {"n": 10e-1}}, "expect": true },
+    { "doc": {"input": {"n": 1.5}}, "expect": false },
+    { "doc": {"input": {"n": "1"}}, "expect": false, "note": "no coercion from string" },
+    { "doc": {"input": {"n": true}}, "expect": false, "note": "no coercion from bool" },
+    { "doc": {"input": {"n": null}}, "expect": false },
+    { "doc": {"input": {"n": [1]}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

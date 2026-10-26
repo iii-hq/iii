@@ -1,0 +1,8 @@
+{
+  "description": "$not {} never matches",
+  "filters": {"$not": {}},
+  "cases": [
+    { "doc": {}, "expect": false },
+    { "doc": {"input": {"a": 1}}, "expect": false }
+  ]
+}

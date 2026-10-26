@@ -1,3 +1,17 @@
+//! Typed configs for the trigger types the iii workers provide, for
+//! [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
+//!
+//! **Deprecated since 0.25.0** together with `register_trigger`. The http,
+//! cron, queue, state, stream, pubsub and database workers still publish these
+//! trigger types in 0.25, so keep using these configs with `register_trigger`
+//! until a provider ships its source function. Migration guide:
+//! <https://iii.dev/docs/upgrading/from-0-24-x>.
+
+// The deprecated legacy trigger variants and `SubscribeTriggerConfig` are still
+// derived (schemars/serde), matched and unit-tested in this file; the lint keeps
+// firing for downstream users.
+#![allow(deprecated)]
+
 use std::collections::HashMap;
 
 use iii_helpers::stream::{StreamJoinLeaveTriggerConfig, StreamTriggerConfig};
@@ -114,6 +128,10 @@ impl QueueTriggerConfig {
 
 // ── PubSub (subscribe) ─────────────────────────────────────────────────
 
+/// Trigger config for the `subscribe` trigger type served by the `pubsub` worker.
+#[deprecated(
+    note = "SubscribeTriggerConfig is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubscribeTriggerConfig {
     /// Topic to subscribe to
@@ -280,6 +298,9 @@ pub struct LogCallRequest {
 
 /// Enum of all built-in trigger types with typed configuration.
 ///
+/// **Deprecated since 0.25.0** with [`IIIClient::register_trigger`](crate::IIIClient::register_trigger);
+/// see the [module docs](self).
+///
 /// Use `.for_function()` to create a [`RegisterTriggerInput`]:
 /// ```rust,no_run
 /// # use iii_sdk::builtin_triggers::*;
@@ -292,10 +313,22 @@ pub enum IIITrigger {
     Http(HttpTriggerConfig),
     Cron(CronTriggerConfig),
     Queue(QueueTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::Subscribe is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     Subscribe(SubscribeTriggerConfig),
     State(StateTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::Stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     Stream(StreamTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::StreamJoin is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     StreamJoin(StreamJoinLeaveTriggerConfig),
+    #[deprecated(
+        note = "IIITrigger::StreamLeave is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
+    )]
     StreamLeave(StreamJoinLeaveTriggerConfig),
     Log(LogTriggerConfig),
 }

@@ -1,0 +1,31 @@
+[package]
+name = "iii-filter"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.85"
+license = "Apache-2.0"
+authors.workspace = true
+description = "The iii observer filter language: parse, validate, normalize and evaluate filters."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["iii", "filter", "observe", "json"]
+categories = ["data-structures", "development-tools"]
+# These tests read the shared vectors in the repository (sdk/fixtures/filters),
+# which are not part of the package.
+exclude = ["tests/vectors.rs", "tests/diff_corpus.rs"]
+
+[lib]
+name = "iii_filter"
+path = "src/lib.rs"
+
+[dependencies]
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "filter_bench"
+harness = false

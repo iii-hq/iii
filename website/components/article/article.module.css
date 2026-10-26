@@ -49,34 +49,72 @@ a.eyebrow:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-/* Article beside its contents list. The list only shows where there is room for it. */
+/* Article beside its contents list. The list only shows where there is room for it. Long-form text uses a stronger
+   muted grey than the rest of the site: body copy and meta clear WCAG AAA (7:1), and the dimmer contents links and
+   captions still clear AA (4.5:1). */
 .layout {
+  --muted-foreground: oklch(0.42 0 0);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
   gap: clamp(48px, 6vw, 96px);
 }
+:global(.dark) .layout {
+  --muted-foreground: oklch(0.71 0 0);
+}
 .main {
   min-width: 0;
-  max-width: 720px;
+  max-width: 760px;
 }
 .aside {
   min-width: 0;
 }
+/* Blog: contents on the left, article to its right, 15% of the row between them. The article stays first in the
+   source so reading order is unchanged; only the grid placement flips. */
+.layoutTocStart {
+  grid-template-columns: 220px minmax(0, 1fr);
+  column-gap: 15%;
+}
+.layoutTocStart .aside {
+  grid-column: 1;
+  grid-row: 1;
+}
+.layoutTocStart .main {
+  grid-column: 2;
+}
 
 /* ---------- Contents ---------- */
+/* The thread: a 30px gutter at the list's left edge holds one SVG path that traces every entry (bending where the
+   outline nests); the line runs 6px in so the diamond on it clears the scroll container's edge, and links start at
+   32px so each label sits beside its run of the line. Geometry is measured from the links at runtime. */
 .toc {
   position: sticky;
   top: 112px;
   max-height: calc(100vh - 144px);
   overflow-y: auto;
+  overflow-x: visible;
 }
 .tocTitle {
-  margin-block-end: 12px;
-  padding-inline-start: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block-end: 10px;
+  padding-inline-start: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+.tocIcon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  opacity: 0.8;
+}
+.tocList {
+  position: relative;
 }
 .tocGroupLabel {
-  margin-block: 20px 6px;
-  padding-inline-start: 16px;
+  margin-block: 18px 4px;
+  padding-inline-start: 32px;
   font-size: 12px;
   color: var(--muted-foreground);
   opacity: 0.8;
@@ -84,21 +122,23 @@ a.eyebrow:focus-visible {
 .toc ul {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .tocLink {
   position: relative;
   display: block;
-  padding: 7px 12px 7px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.4;
+  padding: 7px 10px 7px 32px;
+  font-size: 13.5px;
+  line-height: 1.45;
   color: var(--muted-foreground);
-  opacity: 0.7;
+  opacity: 0.85;
   text-wrap: pretty;
+  transition:
+    color var(--motion-base) var(--motion-ease-out),
+    opacity var(--motion-base) var(--motion-ease-out);
 }
 .tocLink[data-depth="3"] {
-  padding-inline-start: 28px;
+  padding-inline-start: 54px;
+  font-size: 13px;
 }
 .tocLink[aria-current] {
   color: var(--foreground);
@@ -106,15 +146,46 @@ a.eyebrow:focus-visible {
 }
 .tocLink:focus-visible {
   outline: 2px solid var(--foreground);
-  outline-offset: 2px;
+  outline-offset: -2px;
+  border-radius: 6px;
 }
-.tocMarker {
+
+/* The SVG overlays the list; nothing in it takes the pointer. */
+.tocRail {
   position: absolute;
-  inset-block: 7px;
-  inset-inline-start: 0;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--hero-accent);
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+/* The track is dotted (zero-length dashes with round caps read as dots); the progress stroke over it is solid. */
+.tocThread {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.01 5;
+}
+.tocLit {
+  fill: none;
+  stroke: var(--foreground);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.tocEnd {
+  fill: var(--line-strong);
+}
+/* The diamond punches a gap out of the line with a background-coloured ring, so the two never merge. */
+.tocTip rect {
+  fill: var(--foreground);
+  stroke: var(--background);
+  stroke-width: 3;
+  paint-order: stroke;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tocLink {
+    transition: none;
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -130,6 +201,9 @@ a.eyebrow:focus-visible {
 @media (max-width: 1023px) {
   .layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .layoutTocStart .main {
+    grid-column: 1;
   }
   .aside {
     display: none;

@@ -1,0 +1,13 @@
+{
+  "description": "filters.md §6 examples",
+  "cases": [
+    { "filters": {"input.op": {"$eq": "update"}, "input.affected_rows": {"$gt": 100}},
+      "normalized": {"$and": [{"input.affected_rows": {"$gt": 100}}, {"input.op": {"$eq": "update"}}]} },
+    { "filters": {"caller.parent.worker_name": {"$ne": "search-indexer"}},
+      "normalized": {"$and": [{"caller.parent.worker_name": {"$ne": "search-indexer"}}]} },
+    { "filters": {"$or": [{"input.amount": {"$gt": 500}, "error": {"$exists": true}}, {"error.code": {"$eq": "TIMEOUT"}}]},
+      "normalized": {"$and": [{"$or": [{"$and": [{"error": {"$exists": true}}, {"input.amount": {"$gt": 500}}]}, {"$and": [{"error.code": {"$eq": "TIMEOUT"}}]}]}]} },
+    { "filters": {"input.returning": {"$any": {"@.status": {"$eq": "paid"}}}},
+      "normalized": {"$and": [{"input.returning": {"$any": {"$and": [{"@.status": {"$eq": "paid"}}]}}}]} }
+  ]
+}

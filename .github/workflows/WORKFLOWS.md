@@ -65,9 +65,8 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `sdk-node-ci` | `engine-build` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
 | `sdk-node-browser-ci` | `engine-build` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
 | `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability` against a live engine |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
 | `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
-| `console-ci` | — | Lint + build frontend (Node 22), build console Rust binary |
 
 All SDK tests download the engine binary artifact and start a live engine instance before running.
 
@@ -79,19 +78,19 @@ Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`
 
 **Triggers:** manual dispatch only
 
-Entry point for all releases. Provides a form with:
+Entry point for stable and RC releases. Provides a form with:
 
 | Input | Options |
 |-------|---------|
 | `target` | `iii` |
 | `bump` | `patch`, `minor`, `major`, `none` (ignored with a nonempty override) |
 | `prerelease` | `none`, `rc` |
-| `version_override` | Optional exact version, e.g. `0.24.1` or `0.24.1-rc.1`; blank keeps automatic calculation |
+| `version_override` | Exact version, e.g. `0.25.0-rc.1`; required outside `main`; blank on `main` keeps automatic calculation |
 | `dry_run` | boolean |
 
 **What it does:**
 
-1. Validates it's running on `main` and all required manifest files exist
+1. Validates the selected source is a branch and all required manifests exist. Stable releases require `main`; other branches require `prerelease=rc` and an explicit `version_override`
 2. Reads the current version from the canonical manifest
 3. Calculates the next version, or validates and uses `version_override` when supplied; dry-run suffixes are applied afterward
 4. **Stable releases only** — validates docs are ready (`pin_docs.py validate`): `docs/docs.json` must have a `Next` block and the `docs/next/` folder must be non-empty (stable releases pull their docs from `docs/next/`). If not, the workflow posts a Slack alert and aborts **before** bumping or tagging. Runs even on dry runs.
@@ -102,7 +101,7 @@ Entry point for all releases. Provides a form with:
    - **patch** — syncs in place: replaces the root content with `docs/next/`. No archive, no `Next` bump, no version-block changes — it just refreshes the current Latest's docs.
    - **release candidates** (`rc`) leave docs untouched.
    - In-content links are version-relative, so files move verbatim; only `docs.json` nav paths carry the version prefix.
-8. Commits the version bump (including any docs changes), creates an annotated tag, and pushes both
+8. Commits the version bump (including any docs changes) and creates an annotated tag with the source branch and SHA. On `main`, pushes the branch and tag; on any other branch, pushes **only the tag**, leaving both the source branch and `main` unchanged
 9. Posts a Slack notification
 
 > **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. `docs/changelog/` is shared by all versions — it stays at the root, is never copied into a version folder, and every version's Changelog tab points at it. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
@@ -126,19 +125,59 @@ prevent selecting a lower base that is still above the latest stable. Keep an
 unused version: deleted Git tags do not reveal packages already published to
 npm, PyPI, crates.io, or Go, so operators must check those registries separately.
 
-The override changes version selection only. It publishes the checked-out
-`main` code, updates the release manifests and lockfile, and uses the normal
-documentation flow. It does **not** select an older source revision, backport
+The override changes version selection only, not the source branch chosen in
+the Actions form. On `main`, it publishes the checked-out `main` code, updates
+the release manifests and lockfile, and uses the normal documentation flow. It does **not** select an older source revision, backport
 changes, delete earlier packages, or preserve the previous manifest version on
 `main` after the release bump commits. Review the current code and `docs/next/`
-before using a maintenance-looking version number. A release from a historical
-maintenance branch remains a separate workflow capability.
+before using a maintenance-looking version number. Stable releases from
+maintenance branches remain unsupported; other branches can publish RCs only.
 
 A dry run retains the existing behavior: an override of `0.24.1` produces
 `iii/v0.24.1-dry-run.N`, builds without publishing packages, but still creates
 and pushes that dry-run tag. It is not a side-effect-free version preview.
 The calculation step validates the override before updating any manifests or
-creating a tag; the workflow summary records the selected version and tag.
+creating a tag; the workflow summary records the source branch and SHA, selected
+version, tag, and whether a branch will be updated.
+
+**RC from an unmerged branch:** run `Create Tag` with:
+
+```text
+Use workflow from: 0.25.0
+ target: iii
+ prerelease: rc
+ version_override: 0.25.0-rc.1
+ dry_run: false
+```
+
+`bump` is ignored when the override is supplied. The updated workflow must
+already exist on the selected branch: merge or cherry-pick the CI changes there
+without merging the product branch into `main` first.
+
+The workflow uses the source commit selected at dispatch, bumps manifests and
+`Cargo.lock` in a preparation commit, and pushes **only** `iii/v0.25.0-rc.1`.
+The preparation commit is reachable through that tag; neither `0.25.0` nor
+`main` is advanced. Subsequent candidates use explicit unused versions such as
+`0.25.0-rc.2`. Use the existing canonical `-rc.N` spelling (not `-rcN`); Python
+packages use the corresponding PEP 440 spelling, e.g. `0.25.0rc1`.
+
+The GitHub App token makes the tag push trigger `release-iii.yml`, reusing the
+normal RC pipeline: GitHub prerelease, SDK packages, binaries, builtin workers
+and skills. **This updates the shared `rc` channel** (including npm `@rc` and
+installer `--rc`), not a private channel for this branch. It does not update
+`latest`, rotate stable docs, bump templates, or publish Docker/Homebrew.
+For isolated experimentation without moving `rc`, keep using Alpha Release.
+
+Automatic train discovery in `Create Tag` considers only tags whose commits
+are reachable from the source checkout. An ephemeral branch RC therefore cannot
+redirect `main`'s `bump=none` selection. Stable-version discovery, counters and
+collision checks still use **all** tags; a version cannot be reused just because
+its tag is on another branch. Alpha retains its existing cross-branch behavior.
+Release preparation is serialized across branches to reduce tag-allocation races.
+
+After the product branch is approved and merged, publish stable from `main`
+with `prerelease=none` and `version_override=0.25.0`. Branch RC preparation does
+not change `main`'s manifest, so do not rely on implicit prerelease promotion.
 
 ---
 
@@ -163,7 +202,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
    - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
-**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Console, docker and homebrew are intentionally excluded.**
+**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Docker and Homebrew are intentionally excluded.**
 
 **Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`. The worker-publish job uses the same override to pin the engine CLI.
 
@@ -188,15 +227,12 @@ setup (parse tag metadata, Slack notification)
   │     │     │
   │     │     └─► homebrew-engine ► _homebrew.yml (stable only)
   │     │
-  │     ├─► console-frontend ───► Build React frontend for embedding
-  │     │     │
-  │     │     └─► console-release ► _rust-binary.yml (with embedded frontend)
-  │     │           │
-  │     │           └─► homebrew-console ► _homebrew.yml (stable only)
-  │     │
   │     ├─► sdk-npm ─────────────► _npm.yml
   │     ├─► sdk-py ──────────────► _py.yml
-  │     ├─► sdk-rust ────────────► _rust-cargo.yml
+  │     ├─► helpers-rust ────────► _rust-cargo.yml
+  │     │     └─► observability-rust ► _rust-cargo.yml
+  │     ├─► filter-rust ─────────► _rust-cargo.yml (crates/iii-filter)
+  │     ├─► sdk-rust ────────────► _rust-cargo.yml (after helpers-rust, observability-rust, filter-rust)
   │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
   │
   ├─► publish-builtin-workers ► _publish-engine-workers.yml
@@ -253,7 +289,7 @@ Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers a
 | Job | What it does |
 |-----|--------------|
 | `rust-advisories` | `cargo deny check advisories bans` over the workspace `Cargo.lock`, configured in `deny.toml` (vulnerabilities fail; unmaintained notices fail only for direct dependencies; duplicate versions warn) |
-| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website`, `console` or `docs` are reported without failing |
+| `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website` or `docs` are reported without failing |
 
 Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm and GitHub Actions.
 
@@ -316,7 +352,7 @@ Cross-compiles a Rust binary for 9 platform targets and uploads them to a GitHub
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04` |
 | `armv7-unknown-linux-gnueabihf` | `ubuntu-22.04` |
 
-Supports downloading a pre-built artifact (used by console to embed the frontend build).
+Supports downloading a pre-built artifact into the build tree before compiling (optional `artifact_name` / `artifact_dest` inputs).
 
 Uses `taiki-e/upload-rust-binary-action` for building and uploading.
 

@@ -98,8 +98,16 @@ fn send_fire_and_forget(event: ProductEvent) {
     });
 }
 
+/// Sends one event and waits for it, for at most [`REPORT_TIMEOUT`].
+///
+/// For events sent on the way out of a command: a spawned send is dropped
+/// with the runtime when `main` returns, before its request completes.
+async fn send_before_exit(event: ProductEvent) {
+    let _ = tokio::time::timeout(REPORT_TIMEOUT, send_direct(event)).await;
+}
+
 /// How long an awaited report may hold the command that is sending it.
-const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Lets `iii-compose` report through the same CLI path as every other
 /// command.
@@ -145,6 +153,28 @@ async fn report_compose_batch(reports: Vec<iii_compose::telemetry::Report>) {
     .await;
 }
 
+/// Makes sure `~/.iii/telemetry.yaml` holds a device id before the
+/// scaffolder runs.
+///
+/// The scaffolder only reads that file. On a machine where neither the
+/// engine nor the curl installer has run, it is missing, and the scaffolder
+/// reports `iii_tools_telemetry_failed` in place of `project_created`.
+/// Nothing is written when telemetry is off.
+pub(crate) fn ensure_device_id_for_scaffolder() {
+    if is_telemetry_disabled() {
+        return;
+    }
+    environment::ensure_device_id();
+}
+
+/// Waits for a report that was spawned earlier, for at most
+/// [`REPORT_TIMEOUT`].
+pub(crate) async fn wait_for_report(handle: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        let _ = tokio::time::timeout(REPORT_TIMEOUT, handle).await;
+    }
+}
+
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
     let install_method = properties
         .get("install_method")
@@ -154,7 +184,7 @@ pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_js
         event.platform = "install-script".to_string();
         // The install script exits right after this; the retry ladder in
         // send_direct can otherwise hold it for over a minute.
-        let _ = tokio::time::timeout(REPORT_TIMEOUT, send_direct(event)).await;
+        send_before_exit(event).await;
     }
 }
 
@@ -188,7 +218,7 @@ pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
     }
 }
 
-pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_version: &str) {
+pub async fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_version: &str) {
     if let Some(event) = build_event(
         "cli_update_succeeded",
         serde_json::json!({
@@ -199,11 +229,11 @@ pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_ver
         }),
         None,
     ) {
-        send_fire_and_forget(event);
+        send_before_exit(event).await;
     }
 }
 
-pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &str) {
+pub async fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &str) {
     if let Some(event) = build_event(
         "cli_update_failed",
         serde_json::json!({
@@ -214,11 +244,11 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
         }),
         None,
     ) {
-        send_fire_and_forget(event);
+        send_before_exit(event).await;
     }
 }
 
-pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
+pub async fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
     if let Some(event) = build_event(
         "project_init_succeeded",
         serde_json::json!({
@@ -228,11 +258,11 @@ pub fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
         }),
         None,
     ) {
-        send_fire_and_forget(event);
+        send_before_exit(event).await;
     }
 }
 
-pub fn send_project_init_failed(stage: &str, error: &str) {
+pub async fn send_project_init_failed(stage: &str, error: &str) {
     if let Some(event) = build_event(
         "project_init_failed",
         serde_json::json!({
@@ -242,7 +272,7 @@ pub fn send_project_init_failed(stage: &str, error: &str) {
         }),
         None,
     ) {
-        send_fire_and_forget(event);
+        send_before_exit(event).await;
     }
 }
 
@@ -329,7 +359,12 @@ mod tests {
     }
 
     /// Generous slack over the bound, for a slow machine.
-    const RELEASED_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+    const RELEASED_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
+
+    #[test]
+    fn an_awaited_report_may_hold_the_command_for_three_seconds() {
+        assert_eq!(REPORT_TIMEOUT, std::time::Duration::from_secs(3));
+    }
 
     #[tokio::test]
     #[serial]
@@ -369,6 +404,121 @@ mod tests {
             env::remove_var("POSTHOG_HOST");
         }
         assert!(elapsed < RELEASED_WITHIN, "held for {elapsed:?}");
+    }
+
+    /// Points HOME and the project root at a throwaway directory, so building
+    /// an event neither reads nor writes the developer's own `~/.iii` or the
+    /// project the tests run from.
+    fn isolated_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temp home");
+        unsafe {
+            env::set_var("HOME", home.path());
+            env::set_var("III_PROJECT_ROOT", home.path());
+        }
+        home
+    }
+
+    fn restore_home() {
+        unsafe {
+            env::remove_var("HOME");
+            env::remove_var("III_PROJECT_ROOT");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn events_sent_on_the_way_out_reach_the_host_before_the_call_returns() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        clear_opt_out_vars();
+        let _home = isolated_home();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/batch/"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        unsafe {
+            env::set_var("POSTHOG_HOST", server.uri());
+        }
+
+        let mut delivered = Vec::new();
+        send_project_init_succeeded(false, "project-1").await;
+        delivered.push(server.received_requests().await.unwrap_or_default().len());
+        send_project_init_failed("apply_bare", "boom").await;
+        delivered.push(server.received_requests().await.unwrap_or_default().len());
+        send_cli_update_succeeded("iii", "0.1.0", "0.2.0").await;
+        delivered.push(server.received_requests().await.unwrap_or_default().len());
+        send_cli_update_failed("iii", "0.1.0", "boom").await;
+        delivered.push(server.received_requests().await.unwrap_or_default().len());
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        restore_home();
+        assert_eq!(delivered, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn project_init_events_to_an_unreachable_host_release_within_the_report_timeout() {
+        clear_opt_out_vars();
+        let _home = isolated_home();
+        unsafe {
+            env::set_var("POSTHOG_HOST", black_hole_host());
+        }
+
+        let began = std::time::Instant::now();
+        send_project_init_succeeded(false, "project-1").await;
+        let succeeded = began.elapsed();
+        let began = std::time::Instant::now();
+        send_project_init_failed("apply_bare", "boom").await;
+        let failed = began.elapsed();
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        restore_home();
+        assert!(
+            succeeded < RELEASED_WITHIN,
+            "succeeded held for {succeeded:?}"
+        );
+        assert!(failed < RELEASED_WITHIN, "failed held for {failed:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn the_scaffolder_finds_a_device_id_on_a_machine_where_the_engine_never_ran() {
+        clear_opt_out_vars();
+        let _home = isolated_home();
+
+        ensure_device_id_for_scaffolder();
+        let written = environment::telemetry_config_path().exists();
+
+        restore_home();
+        assert!(written, "telemetry.yaml should exist for the scaffolder");
+    }
+
+    #[test]
+    #[serial]
+    fn an_opted_out_machine_gets_no_device_id_for_the_scaffolder() {
+        for (var, value) in [("III_TELEMETRY_ENABLED", "false"), ("CI", "true")] {
+            clear_opt_out_vars();
+            let _home = isolated_home();
+            unsafe {
+                env::set_var(var, value);
+            }
+
+            ensure_device_id_for_scaffolder();
+            let written = environment::telemetry_config_path().exists();
+
+            unsafe {
+                env::remove_var(var);
+            }
+            restore_home();
+            assert!(!written, "{var}={value} should write no telemetry.yaml");
+        }
     }
 
     #[tokio::test]

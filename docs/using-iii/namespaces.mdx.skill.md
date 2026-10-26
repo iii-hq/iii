@@ -193,6 +193,21 @@ worker.registerTrigger({
 });
 ```
 
+## Observe a namespaced function
+
+An observer resolves its source like a call: `source.namespace` when set, else the observing
+worker's namespace (`engine::*` and `configuration::*` resolve to `default`). The target resolves the
+same way; name another namespace with the object form of the target (Go: `ObserverOptions.TargetNamespace`).
+
+```typescript
+worker.observe(
+  { function_id: "orders::create", namespace: "shop" },
+  { function_id: "audit::record", namespace: "audit" },
+);
+```
+
+See [Observers](./observers).
+
 ## Inspect namespaces
 
 Every row from `engine::functions::list` and `engine::workers::list` contains a `namespace` field.

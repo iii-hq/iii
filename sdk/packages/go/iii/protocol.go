@@ -47,6 +47,20 @@ const (
 	MsgWorkerRegistered          MessageType = "workerregistered"
 	MsgReattach                  MessageType = "reattach"
 	MsgRegistrationRejected      MessageType = "registrationrejected"
+	MsgUnregisterTriggerType     MessageType = "unregistertriggertype"
+
+	// observe (tech-specs/2026-10-13-observe/protocol.md §2). The engine pushes the
+	// engine -> worker variants only to connections that declared observe.v1.
+	MsgObserve              MessageType = "observe"
+	MsgUnobserve            MessageType = "unobserve"
+	MsgObserveResult        MessageType = "observeresult"
+	MsgObserverStateChanged MessageType = "observerstatechanged"
+	MsgFunctionRegistered   MessageType = "functionregistered"
+	MsgObserverAdded        MessageType = "observeradded"
+	MsgObserverRemoved      MessageType = "observerremoved"
+	MsgObserverAck          MessageType = "observerack"
+	MsgInvocationsObserved  MessageType = "invocationsobserved"
+	MsgLocalInvocationStats MessageType = "localinvocationstats"
 )
 
 // ErrorBody is the wire representation of a remote error
@@ -163,18 +177,33 @@ type UnregisterTriggerMessage struct {
 
 // RegisterFunction announces a function this worker can handle. RequestFormat and
 // ResponseFormat are optional JSON Schemas; Invocation is set only for externally
-// HTTP-hosted functions (engine/src/protocol.rs:71-81).
+// HTTP-hosted functions (engine/src/protocol.rs).
 //
-// Note: per the engine, request_format/response_format are serialized even when null
-// (they lack skip_serializing_if), so these are RawMessage values that emit JSON null
-// when unset — matching the engine byte-for-byte.
+// Optional fields are omitted when unset, as the engine writes them
+// (skip_serializing_if); the engine reads an absent format and a JSON null alike.
+// Observe is the function's observe descriptor (protocol.md §2.2): how its observers
+// are delivered. Absent means delivery auto, observable, no args.
 type RegisterFunctionMessage struct {
 	ID             string             `json:"id"`
 	Description    *string            `json:"description,omitempty"`
-	RequestFormat  json.RawMessage    `json:"request_format"`
-	ResponseFormat json.RawMessage    `json:"response_format"`
+	RequestFormat  json.RawMessage    `json:"request_format,omitempty"`
+	ResponseFormat json.RawMessage    `json:"response_format,omitempty"`
 	Metadata       json.RawMessage    `json:"metadata,omitempty"`
 	Invocation     *HTTPInvocationRef `json:"invocation,omitempty"`
+	Observe        *ObserveDescriptor `json:"observe,omitempty"`
+}
+
+// ObserveDescriptor is RegisterFunction.observe: the four fields of
+// [ObserveHooks] that travel. The callbacks stay in the SDK.
+type ObserveDescriptor struct {
+	// Delivery is "auto" (absent) or "owner".
+	Delivery Delivery `json:"delivery,omitempty"`
+	// ArgsFormat is the JSON Schema of the observers' args (owner delivery only).
+	ArgsFormat json.RawMessage `json:"args_format,omitempty"`
+	// LegacyTriggerType accepts old RegisterTrigger calls of this trigger type.
+	LegacyTriggerType string `json:"legacy_trigger_type,omitempty"`
+	// Allow false refuses every observer (NOT_OBSERVABLE); absent means true.
+	Allow *bool `json:"allow,omitempty"`
 }
 
 // UnregisterFunction removes a previously registered function (engine/src/protocol.rs:82-84).
@@ -205,6 +234,101 @@ type InvokeFunctionMessage struct {
 	// Namespace routes this invocation to a specific namespace. Absent means the
 	// engine's default namespace, independent of the caller's own namespace.
 	Namespace string `json:"namespace,omitempty"`
+	// Caller is who made the call (protocol.md §2.4). Worker -> engine: the handler the
+	// call was made from and its own caller; engine -> worker: also the calling worker,
+	// stamped by the engine. Sent and received only with observe.v1.
+	Caller *Caller `json:"caller,omitempty"`
+	// ObserveDepth is the depth of the causal chain in observe hops; 0 is omitted.
+	ObserveDepth uint32 `json:"observe_depth,omitempty"`
+	// Activation marks an observer activation (engine -> worker) or an owner delivery,
+	// obs.Call (worker -> engine).
+	Activation *Activation `json:"activation,omitempty"`
+}
+
+// UnmarshalJSON decodes an InvokeFunction, reading the observe fields (caller,
+// observe_depth, activation) leniently: a malformed value is treated as absent rather
+// than failing the frame, so the invocation is still answered.
+func (m *InvokeFunctionMessage) UnmarshalJSON(data []byte) error {
+	type plain InvokeFunctionMessage
+	var aux struct {
+		*plain
+		Caller       json.RawMessage `json:"caller"`
+		ObserveDepth json.RawMessage `json:"observe_depth"`
+		Activation   json.RawMessage `json:"activation"`
+	}
+	aux.plain = (*plain)(m)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.Caller = decodeCaller(aux.Caller, 0)
+	m.ObserveDepth = 0
+	if len(aux.ObserveDepth) > 0 {
+		var depth uint32
+		if json.Unmarshal(aux.ObserveDepth, &depth) == nil {
+			m.ObserveDepth = depth
+		}
+	}
+	m.Activation = nil
+	if len(aux.Activation) > 0 {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(aux.Activation, &fields) == nil {
+			if id, ok := jsonString(fields["observer_id"]); ok {
+				m.Activation = &Activation{ObserverID: id}
+				m.Activation.ActivationID, _ = jsonString(fields["activation_id"])
+			}
+		}
+	}
+	return nil
+}
+
+// Caller is who started an invocation: the worker (WorkerID / WorkerName, stamped by
+// the engine and never forgeable), and the function and invocation the call was made
+// from. Parent is the caller of that handler, one level only. Every field may be
+// empty: a top-level call has no function.
+type Caller struct {
+	WorkerID     string  `json:"worker_id,omitempty"`
+	WorkerName   string  `json:"worker_name,omitempty"`
+	FunctionID   string  `json:"function_id,omitempty"`
+	InvocationID string  `json:"invocation_id,omitempty"`
+	Parent       *Caller `json:"parent,omitempty"`
+}
+
+// Activation marks the invocation of an observer's target.
+type Activation struct {
+	ObserverID   string `json:"observer_id"`
+	ActivationID string `json:"activation_id,omitempty"`
+}
+
+// decodeCaller copies a wire caller, dropping values that are not strings and a
+// parent inside the parent (one level only). A value that is not an object is absent.
+func decodeCaller(raw json.RawMessage, depth int) *Caller {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil
+	}
+	c := &Caller{}
+	c.WorkerID, _ = jsonString(fields["worker_id"])
+	c.WorkerName, _ = jsonString(fields["worker_name"])
+	c.FunctionID, _ = jsonString(fields["function_id"])
+	c.InvocationID, _ = jsonString(fields["invocation_id"])
+	if depth == 0 {
+		c.Parent = decodeCaller(fields["parent"], 1)
+	}
+	return c
+}
+
+func jsonString(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // RegistrationRejectedMessage is the engine's refusal of a registration.
@@ -248,6 +372,9 @@ type WorkerRegisteredMessage struct {
 	// ReattachToken is the secret to present in a ReattachMessage on reconnect;
 	// empty on older engines.
 	ReattachToken string `json:"reattach_token,omitempty"`
+	// Features the engine supports, e.g. "observe.v1" and "local-dispatch.v1". Absent
+	// on engines before 0.25: observe is then unsupported.
+	Features []string `json:"features,omitempty"`
 }
 
 // Reattach is sent worker->engine as the first message of a reconnect, before the
@@ -269,6 +396,174 @@ type PingMessage struct{}
 // PongMessage is the payloadless reply to a PingMessage; it serializes to
 // {"type":"pong"} (engine/src/protocol.rs:121-122).
 type PongMessage struct{}
+
+// UnregisterTriggerTypeMessage retires a trigger type this connection provides. The
+// engine removes it only when the sending connection is its provider. Namespace absent
+// means the sending connection's namespace.
+type UnregisterTriggerTypeMessage struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// --- observe (protocol.md §2.2, §2.3; golden JSON in sdk/fixtures/protocol/observe) ---
+
+// ObserveMessage creates, or idempotently replays, an observer owned by this
+// connection: Source is the left side of [Client.Observe], Target the right side.
+type ObserveMessage struct {
+	ID          string               `json:"id"`
+	Source      ObserveMessageSource `json:"source"`
+	Target      ObserveMessageTarget `json:"target"`
+	Metadata    json.RawMessage      `json:"metadata,omitempty"`
+	MaxFires    *uint64              `json:"max_fires,omitempty"`
+	ExpiresInMs *uint64              `json:"expires_in_ms,omitempty"`
+	MaxInFlight *uint64              `json:"max_in_flight,omitempty"`
+}
+
+// ObserveMessageSource is what an observer observes. Capture is omitted when nil and
+// sent when empty (capture: [] is valid: ids, status and timings only).
+type ObserveMessageSource struct {
+	FunctionID string          `json:"function_id"`
+	Namespace  string          `json:"namespace,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	Filters    json.RawMessage `json:"filters,omitempty"`
+	Capture    []Capture       `json:"capture,omitzero"`
+	On         On              `json:"on,omitempty"`
+	Deliver    Deliver         `json:"deliver,omitempty"`
+}
+
+// ObserveMessageTarget is the function an observer invokes.
+type ObserveMessageTarget struct {
+	FunctionID string `json:"function_id"`
+	Namespace  string `json:"namespace,omitempty"`
+}
+
+// UnobserveMessage removes an observer this connection owns.
+type UnobserveMessage struct {
+	ID string `json:"id"`
+}
+
+// ObserverAckMessage is the owner's answer to one added observer, sent after its
+// OnObserverAdded hook returned. Error rejects it; an owner may re-send it with an
+// error for an active observer (a late rejection).
+type ObserverAckMessage struct {
+	FunctionID string     `json:"function_id"`
+	Namespace  string     `json:"namespace,omitempty"`
+	ID         string     `json:"id"`
+	Revision   uint64     `json:"revision"`
+	Error      *ErrorBody `json:"error,omitempty"`
+}
+
+// InvocationsObservedMessage carries matched local invocations of auto functions and
+// obs.Emit events of owner functions, batched.
+type InvocationsObservedMessage struct {
+	Items []ObservedItem `json:"items"`
+}
+
+// ObservedItem is one reported invocation or event. Input, Output, Error and Metadata
+// keep JSON null apart from absent: "output": null is a function that returned null,
+// a nil Output was not captured.
+type ObservedItem struct {
+	FunctionID   string          `json:"function_id"`
+	Namespace    string          `json:"namespace,omitempty"`
+	InvocationID string          `json:"invocation_id"`
+	Matched      []string        `json:"matched"`
+	Status       string          `json:"status"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	Output       json.RawMessage `json:"output,omitempty"`
+	Error        json.RawMessage `json:"error,omitempty"`
+	Caller       *Caller         `json:"caller,omitempty"`
+	Metadata     json.RawMessage `json:"metadata,omitempty"`
+	StartedAtMs  int64           `json:"started_at_ms"`
+	DurationMs   float64         `json:"duration_ms"`
+	ObserveDepth uint32          `json:"observe_depth"`
+	Traceparent  *string         `json:"traceparent,omitempty"`
+	Baggage      *string         `json:"baggage,omitempty"`
+}
+
+// LocalInvocationStatsMessage reports local invocations and SDK-side report drops,
+// periodically and only when non-zero.
+type LocalInvocationStatsMessage struct {
+	WindowMs       uint64               `json:"window_ms"`
+	Functions      []LocalFunctionStats `json:"functions,omitempty"`
+	DroppedReports []DroppedReports     `json:"dropped_reports,omitempty"`
+}
+
+// LocalFunctionStats counts one function's local invocations in a stats window.
+type LocalFunctionStats struct {
+	FunctionID    string  `json:"function_id"`
+	Count         uint64  `json:"count"`
+	Errors        uint64  `json:"errors"`
+	DurationMsSum float64 `json:"duration_ms_sum"`
+}
+
+// DroppedReports counts report items the SDK dropped (BUFFER_FULL, TOO_LARGE).
+type DroppedReports struct {
+	FunctionID string `json:"function_id"`
+	Reason     string `json:"reason"`
+	Count      uint64 `json:"count"`
+}
+
+// FunctionRegisteredMessage is the RegisterFunction success ack, with the full current
+// observer set. Always accepted: it replaces the set the SDK holds.
+type FunctionRegisteredMessage struct {
+	ID            string         `json:"id"`
+	Namespace     string         `json:"namespace"`
+	Revision      uint64         `json:"revision"`
+	LocalDispatch bool           `json:"local_dispatch"`
+	Observers     []ObserverInfo `json:"observers"`
+}
+
+// ObserverAddedMessage attaches one observer to a function this connection hosts.
+type ObserverAddedMessage struct {
+	FunctionID string       `json:"function_id"`
+	Namespace  string       `json:"namespace"`
+	Revision   uint64       `json:"revision"`
+	Observer   ObserverInfo `json:"observer"`
+}
+
+// ObserverRemovedMessage detaches one observer.
+type ObserverRemovedMessage struct {
+	FunctionID string `json:"function_id"`
+	Namespace  string `json:"namespace"`
+	Revision   uint64 `json:"revision"`
+	ID         string `json:"id"`
+}
+
+// ObserverInfo is an observer as the owner sees it: never its metadata, policy or the
+// observing worker. Filters are in normal form.
+type ObserverInfo struct {
+	ID      string          `json:"id"`
+	Args    json.RawMessage `json:"args,omitempty"`
+	Filters json.RawMessage `json:"filters,omitempty"`
+	Target  string          `json:"target"`
+	Capture []Capture       `json:"capture,omitzero"`
+	On      On              `json:"on,omitempty"`
+	Legacy  *LegacyTrigger  `json:"legacy,omitempty"`
+}
+
+// LegacyTrigger is the old trigger an observer was created from by the engine's legacy
+// shim (protocol.md §6): the owner reads Config as the observer's args.
+type LegacyTrigger struct {
+	TriggerType string          `json:"trigger_type"`
+	Config      json.RawMessage `json:"config"`
+}
+
+// ObserveResultMessage is the engine's reply to an observe (also on a replay).
+type ObserveResultMessage struct {
+	ID       string     `json:"id"`
+	State    string     `json:"state"`
+	Error    *ErrorBody `json:"error,omitempty"`
+	Warnings []string   `json:"warnings,omitempty"`
+}
+
+// ObserverStateChangedMessage is a lifecycle transition of an observer this
+// connection owns.
+type ObserverStateChangedMessage struct {
+	ID     string     `json:"id"`
+	State  string     `json:"state"`
+	Reason *ErrorBody `json:"reason,omitempty"`
+	Fires  uint64     `json:"fires"`
+}
 
 // marshalEnvelope serializes a variant struct into a single tagged JSON object by
 // merging {"type": msgType} with the struct's own fields. This is how we reproduce
@@ -326,6 +621,28 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgPing, struct{}{})
 	case *PongMessage:
 		return marshalEnvelope(MsgPong, struct{}{})
+	case *UnregisterTriggerTypeMessage:
+		return marshalEnvelope(MsgUnregisterTriggerType, m)
+	case *ObserveMessage:
+		return marshalEnvelope(MsgObserve, m)
+	case *UnobserveMessage:
+		return marshalEnvelope(MsgUnobserve, m)
+	case *ObserverAckMessage:
+		return marshalEnvelope(MsgObserverAck, m)
+	case *InvocationsObservedMessage:
+		return marshalEnvelope(MsgInvocationsObserved, m)
+	case *LocalInvocationStatsMessage:
+		return marshalEnvelope(MsgLocalInvocationStats, m)
+	case *FunctionRegisteredMessage:
+		return marshalEnvelope(MsgFunctionRegistered, m)
+	case *ObserverAddedMessage:
+		return marshalEnvelope(MsgObserverAdded, m)
+	case *ObserverRemovedMessage:
+		return marshalEnvelope(MsgObserverRemoved, m)
+	case *ObserveResultMessage:
+		return marshalEnvelope(MsgObserveResult, m)
+	case *ObserverStateChangedMessage:
+		return marshalEnvelope(MsgObserverStateChanged, m)
 
 	// Value forms, so the documented "by pointer or value" contract holds (e.g.
 	// MarshalMessage(PingMessage{})). Each delegates to the pointer case above.
@@ -357,6 +674,28 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgPing, struct{}{})
 	case PongMessage:
 		return marshalEnvelope(MsgPong, struct{}{})
+	case UnregisterTriggerTypeMessage:
+		return marshalEnvelope(MsgUnregisterTriggerType, &m)
+	case ObserveMessage:
+		return marshalEnvelope(MsgObserve, &m)
+	case UnobserveMessage:
+		return marshalEnvelope(MsgUnobserve, &m)
+	case ObserverAckMessage:
+		return marshalEnvelope(MsgObserverAck, &m)
+	case InvocationsObservedMessage:
+		return marshalEnvelope(MsgInvocationsObserved, &m)
+	case LocalInvocationStatsMessage:
+		return marshalEnvelope(MsgLocalInvocationStats, &m)
+	case FunctionRegisteredMessage:
+		return marshalEnvelope(MsgFunctionRegistered, &m)
+	case ObserverAddedMessage:
+		return marshalEnvelope(MsgObserverAdded, &m)
+	case ObserverRemovedMessage:
+		return marshalEnvelope(MsgObserverRemoved, &m)
+	case ObserveResultMessage:
+		return marshalEnvelope(MsgObserveResult, &m)
+	case ObserverStateChangedMessage:
+		return marshalEnvelope(MsgObserverStateChanged, &m)
 
 	default:
 		return nil, fmt.Errorf("iii: cannot marshal unknown message type %T", msg)
@@ -382,6 +721,18 @@ type DecodedMessage struct {
 	RegistrationRejected      *RegistrationRejectedMessage
 	Ping                      *PingMessage
 	Pong                      *PongMessage
+
+	UnregisterTriggerType *UnregisterTriggerTypeMessage
+	Observe               *ObserveMessage
+	Unobserve             *UnobserveMessage
+	ObserverAck           *ObserverAckMessage
+	InvocationsObserved   *InvocationsObservedMessage
+	LocalInvocationStats  *LocalInvocationStatsMessage
+	FunctionRegistered    *FunctionRegisteredMessage
+	ObserverAdded         *ObserverAddedMessage
+	ObserverRemoved       *ObserverRemovedMessage
+	ObserveResult         *ObserveResultMessage
+	ObserverStateChanged  *ObserverStateChangedMessage
 }
 
 // UnmarshalMessage decodes a wire frame by peeking at "type" and then decoding into
@@ -435,6 +786,39 @@ func UnmarshalMessage(data []byte) (*DecodedMessage, error) {
 	case MsgPong:
 		out.Pong = &PongMessage{}
 		return out, nil
+	case MsgUnregisterTriggerType:
+		out.UnregisterTriggerType = &UnregisterTriggerTypeMessage{}
+		return out, decodeInto(data, out.UnregisterTriggerType)
+	case MsgObserve:
+		out.Observe = &ObserveMessage{}
+		return out, decodeInto(data, out.Observe)
+	case MsgUnobserve:
+		out.Unobserve = &UnobserveMessage{}
+		return out, decodeInto(data, out.Unobserve)
+	case MsgObserverAck:
+		out.ObserverAck = &ObserverAckMessage{}
+		return out, decodeInto(data, out.ObserverAck)
+	case MsgInvocationsObserved:
+		out.InvocationsObserved = &InvocationsObservedMessage{}
+		return out, decodeInto(data, out.InvocationsObserved)
+	case MsgLocalInvocationStats:
+		out.LocalInvocationStats = &LocalInvocationStatsMessage{}
+		return out, decodeInto(data, out.LocalInvocationStats)
+	case MsgFunctionRegistered:
+		out.FunctionRegistered = &FunctionRegisteredMessage{}
+		return out, decodeInto(data, out.FunctionRegistered)
+	case MsgObserverAdded:
+		out.ObserverAdded = &ObserverAddedMessage{}
+		return out, decodeInto(data, out.ObserverAdded)
+	case MsgObserverRemoved:
+		out.ObserverRemoved = &ObserverRemovedMessage{}
+		return out, decodeInto(data, out.ObserverRemoved)
+	case MsgObserveResult:
+		out.ObserveResult = &ObserveResultMessage{}
+		return out, decodeInto(data, out.ObserveResult)
+	case MsgObserverStateChanged:
+		out.ObserverStateChanged = &ObserverStateChangedMessage{}
+		return out, decodeInto(data, out.ObserverStateChanged)
 	default:
 		return nil, fmt.Errorf("iii: unknown message type %q", envelope.Type)
 	}

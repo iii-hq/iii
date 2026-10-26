@@ -1,0 +1,11 @@
+{
+  "description": "$eq {} matches an empty object only",
+  "filters": {"input.o": {"$eq": {}}},
+  "cases": [
+    { "doc": {"input": {"o": {}}}, "expect": true },
+    { "doc": {"input": {"o": []}}, "expect": false },
+    { "doc": {"input": {"o": null}}, "expect": false },
+    { "doc": {"input": {"o": {"a": 1}}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

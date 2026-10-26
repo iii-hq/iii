@@ -50,6 +50,14 @@ workers:
             namespace: browser
 ```
 
+<Warning title="Deprecated">
+  The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream) and
+  will be removed in an upcoming release. Behavior is unchanged for now. Expose your own
+  domain functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only the
+  separate `auth_function` setting of `iii-stream` is.
+</Warning>
+
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
 to connect (or reject it if authorization fails). That is covered in the next section.
 
@@ -342,3 +350,15 @@ The `rbac` block also accepts `on_function_registration_function_id`,
 `on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id` hooks. Each
 runs when an untrusted session registers a function, trigger, or trigger type, and can remap the
 registration (return the mapped fields) or throw to deny it.
+
+`on_observer_registration_function_id` does the same for [observers](../using-iii/observers). It
+receives `{ observer_id, function_id, namespace, args, filters, target_function_id,
+target_namespace, metadata, context }`. An object answer may rewrite `function_id`,
+`target_function_id`, `args`, `filters`, and `metadata`; any other answer, or an error, denies the
+observer with `FORBIDDEN`. Independently of the hook, a session may observe a function only when it
+may invoke both the observed function and the target.
+
+Calls a worker makes to its own functions normally run in-process
+([local dispatch](../using-iii/observers#local-dispatch)). For a session with a
+`middleware_function_id`, the engine turns local dispatch off, so every call still passes through
+the middleware.

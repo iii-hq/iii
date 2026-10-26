@@ -33,7 +33,6 @@
   <a href="#add-workers">Add Workers</a> ·
   <a href="#sdks">SDKs</a> ·
   <a href="#agent-skills-for-3rd-party-harnesses">Agent Skills</a> ·
-  <a href="#console">Console</a> ·
   <a href="#resources">Resources</a>
 </p>
 
@@ -159,30 +158,23 @@ Compose workers. Install an engine skill with
 `npx skills add iii-hq/iii --full-depth --skill <name>`; standalone workers ship their own skills in
 [iii-hq/workers](https://github.com/iii-hq/workers).
 
-## Console
-
-The [iii-console](console/) is a developer and operations console for inspecting workers, functions,
-triggers, queues, traces, logs, and real-time state. See the
-[Console docs](https://iii.dev/docs/using-iii/console) for setup and usage.
-
 ## Repository Structure
 
 | Directory  | What it is                                              | README                                 |
 | ---------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
 | `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)         |
-| `console/` | Developer console (React + Rust)                        | [console/README.md](console/README.md) |
 | `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii website                                             | [website/](website/)                   |
 | `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
 
-See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain, and CI/CD details.
+See [CONTRIBUTING.md](CONTRIBUTING.md#how-dependencies-work) for workspace dependencies and
+[CI/CD details](CONTRIBUTING.md#cicd).
 
 ## Resources
 
 - [Documentation](https://iii.dev/docs)
 - [CLI & Engine](https://github.com/iii-hq/iii)
-- [Console](console/)
 - [Examples](https://github.com/iii-hq/iii-examples)
 - [Contributing](CONTRIBUTING.md)
 
@@ -206,11 +198,10 @@ The iii is licensed as such:
 | ---------- | ------------------------------------- |
 | `engine/`  | [Elastic License 2.0](engine/LICENSE) |
 | `sdk/`     | [Apache License 2.0](sdk/LICENSE)     |
-| `console/` | [Apache License 2.0](console/LICENSE) |
 | `docs/`    | [Apache License 2.0](docs/LICENSE)    |
-| `website/` | [Apache License 2.0](website/LICENSE) |
+| `website/` | [Apache License 2.0](docs/LICENSE) |
 
-The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, CLI, console,
-documentation, and the website are licensed under the Apache License 2.0.
+The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, CLI, documentation,
+and the website are licensed under the Apache License 2.0.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for additional details.

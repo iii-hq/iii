@@ -25,7 +25,7 @@ class OtelConfig:
     """Service instance ID. Defaults to a random UUID."""
 
     engine_ws_url: str | None = None
-    """III Engine WebSocket URL. Defaults to env III_URL or 'ws://localhost:49134'."""
+    """III Engine WebSocket URL. The SDK sets the worker's address; otherwise env III_URL or 'ws://localhost:49134'."""
 
     fetch_instrumentation_enabled: bool = True
     """Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True."""
@@ -51,3 +51,6 @@ class OtelConfig:
 
     metrics_export_interval_ms: int = 60000
     """Metrics export interval in milliseconds. Defaults to 60000 (60 seconds)."""
+
+    engine_ws_headers: dict[str, str] | None = None
+    """HTTP headers sent on the telemetry WebSocket handshake (e.g. Authorization)."""

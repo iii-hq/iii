@@ -248,6 +248,7 @@ fn session_exposing_metadata(
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
         }),
         ..Default::default()
     };

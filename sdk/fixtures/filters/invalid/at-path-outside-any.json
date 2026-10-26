@@ -1,0 +1,11 @@
+{
+  "description": "@ paths exist only inside $any",
+  "cases": [
+    { "filters": {"@.a": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "top level" },
+    { "filters": {"@": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "bare @ at the top level" },
+    { "filters": {"$or": [{"@.a": {"$eq": 1}}]}, "code": "INVALID_FILTER", "note": "inside $or" },
+    { "filters": {"$not": {"@": {"$exists": true}}}, "code": "INVALID_FILTER", "note": "inside $not" },
+    { "filters": {"input.l": {"$any": {"@.m": {"$eq": 1}}}, "@.x": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "next to a valid $any" },
+    { "filters": {"@x": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "@x is not a root" }
+  ]
+}

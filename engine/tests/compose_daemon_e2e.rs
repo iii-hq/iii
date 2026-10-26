@@ -340,6 +340,8 @@ async fn subscribe_to_terminal_operation(
             }
         }),
     );
+    // `compose-operation` is still a trigger type of the compose daemon.
+    #[allow(deprecated)]
     let trigger = observer
         .register_trigger(
             RegisterTriggerInput::new(
@@ -1969,6 +1971,56 @@ containers:
     daemon.shutdown().await;
 }
 
+fn has_log_line(entries: &[Value], stream: &str, message: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry["stream"] == stream && entry["message"] == message)
+}
+
+/// Follows `compose::logs` for the `queue` container from `cursor` until every
+/// `(stream, message)` in `wanted` has been returned, or 10 s pass. A long poll
+/// answers on the first new line, and stdout and stderr are captured by
+/// separate readers, so lines a worker writes together can arrive in
+/// different responses.
+async fn follow_queue_logs(
+    port: u16,
+    file: &std::path::Path,
+    mut cursor: Value,
+    wanted: &[(&str, &str)],
+) -> Vec<Value> {
+    let mut entries = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !wanted
+        .iter()
+        .all(|(stream, message)| has_log_line(&entries, stream, message))
+        && tokio::time::Instant::now() < deadline
+    {
+        let after = call(
+            port,
+            "compose::logs",
+            json!({
+                "file": file.to_str().unwrap(),
+                "container": "queue",
+                "cursors": { "queue": cursor },
+                "tail": 10,
+                "wait_ms": 2_000,
+            }),
+        )
+        .await
+        .expect("compose::logs should continue after its cursor");
+        let batch = &after["containers"][0];
+        entries.extend(
+            batch["entries"]
+                .as_array()
+                .expect("log entries")
+                .iter()
+                .cloned(),
+        );
+        cursor = batch["cursor"].clone();
+    }
+    entries
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_continue_from_a_cursor_after_the_worker_is_ready() {
     isolate_state();
@@ -2033,33 +2085,23 @@ containers:
     let cursor = before["containers"][0]["cursor"].clone();
 
     std::fs::write(&emit, "now").expect("release worker output");
-    let after = call(
+    let entries = follow_queue_logs(
         port,
-        "compose::logs",
-        json!({
-            "file": file.to_str().unwrap(),
-            "container": "queue",
-            "cursors": { "queue": cursor },
-            "tail": 10,
-            "wait_ms": 2_000,
-        }),
+        &file,
+        cursor,
+        &[
+            ("stdout", "output after ready"),
+            ("stderr", "error after ready"),
+        ],
     )
-    .await
-    .expect("compose::logs should continue after its cursor");
-    let entries = after["containers"][0]["entries"]
-        .as_array()
-        .expect("log entries");
+    .await;
     assert!(
-        entries.iter().any(|entry| {
-            entry["stream"] == "stdout" && entry["message"] == "output after ready"
-        }),
-        "stdout after readiness was not returned: {after}"
+        has_log_line(&entries, "stdout", "output after ready"),
+        "stdout after readiness was not returned: {entries:?}"
     );
     assert!(
-        entries.iter().any(|entry| {
-            entry["stream"] == "stderr" && entry["message"] == "error after ready"
-        }),
-        "stderr after readiness was not returned: {after}"
+        has_log_line(&entries, "stderr", "error after ready"),
+        "stderr after readiness was not returned: {entries:?}"
     );
 
     worker.shutdown_async().await;

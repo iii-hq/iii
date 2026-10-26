@@ -1,0 +1,8 @@
+{
+  "description": "depth 8: seven nested $not (the innermost filter is at depth 8)",
+  "filters": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"$not": {"input.a": {"$eq": 1}}}}}}}}},
+  "cases": [
+    { "doc": {"input": {"a": 1}}, "expect": false, "note": "odd number of negations" },
+    { "doc": {"input": {}}, "expect": true }
+  ]
+}

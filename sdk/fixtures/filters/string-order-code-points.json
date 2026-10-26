@@ -1,0 +1,11 @@
+{
+  "description": "strings order by Unicode code point (UTF-8 byte order), not UTF-16 code unit",
+  "filters": {"input.s": {"$gt": "｡"}},
+  "cases": [
+    { "doc": {"input": {"s": "😀"}}, "expect": true, "note": "U+1F600 > U+FF61, although its UTF-16 high surrogate 0xD83D < 0xFF61" },
+    { "doc": {"input": {"s": "｢"}}, "expect": true },
+    { "doc": {"input": {"s": "｠"}}, "expect": false },
+    { "doc": {"input": {"s": "z"}}, "expect": false },
+    { "doc": {"input": {"s": "é"}}, "expect": false }
+  ]
+}

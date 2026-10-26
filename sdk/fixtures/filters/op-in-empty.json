@@ -1,0 +1,9 @@
+{
+  "description": "$in [] matches nothing",
+  "filters": {"input.op": {"$in": []}},
+  "cases": [
+    { "doc": {"input": {"op": "x"}}, "expect": false },
+    { "doc": {"input": {"op": null}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

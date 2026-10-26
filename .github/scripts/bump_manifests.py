@@ -94,7 +94,6 @@ _CARGO_PACKAGE_FILES = (
     "sdk/packages/rust/iii/Cargo.toml",
     "sdk/packages/rust/observability/Cargo.toml",
     "sdk/packages/rust/helpers/Cargo.toml",
-    "console/packages/console-rust/Cargo.toml",
 )
 _JSON_PACKAGE_FILES = (
     "sdk/packages/node/iii/package.json",
@@ -104,8 +103,20 @@ _JSON_PACKAGE_FILES = (
 )
 
 
-def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
-    """Rewrite every release manifest under ``root`` in lockstep."""
+def rewrite_all(
+    root: Path,
+    new_version: str,
+    new_py_version: str,
+    exact_internal_pins: bool = False,
+) -> None:
+    """Rewrite every release manifest under ``root`` in lockstep.
+
+    ``exact_internal_pins`` writes the Rust workspace-dep pins as ``=X``.
+    Alpha versions anchor on the latest stable (``0.24.5-alpha.1``), and a
+    caret requirement on them also accepts that stable, which is higher and
+    lacks what the alpha needs, so the published crates would resolve their
+    siblings to the stable release.
+    """
     # Cargo package versions
     for rel in _CARGO_PACKAGE_FILES:
         path = root / rel
@@ -115,10 +126,13 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
     # workspace-dep version pins. The pins are plain "X.Y.Z" requirements, so
     # they must move to the prerelease too — otherwise `cargo` can't match the
     # prerelease candidate (e.g. ^0.19.4 won't accept 0.19.4-alpha.1).
+    pin = f"={new_version}" if exact_internal_pins else new_version
     workspace_path = root / "Cargo.toml"
     body = bump_cargo_package_version(workspace_path.read_text(), new_version)
-    body = bump_cargo_workspace_dep_version(body, "iii-observability", new_version)
-    body = bump_cargo_workspace_dep_version(body, "iii-helpers", new_version)
+    body = bump_cargo_workspace_dep_version(body, "iii-observability", pin)
+    body = bump_cargo_workspace_dep_version(body, "iii-helpers", pin)
+    # iii-filter inherits workspace.package.version; only its pin moves here.
+    body = bump_cargo_workspace_dep_version(body, "iii-filter", pin)
     workspace_path.write_text(body)
 
     # JSON package versions
@@ -162,9 +176,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--python-version", required=True)
+    parser.add_argument(
+        "--exact-internal-pins",
+        action="store_true",
+        help="pin the Rust workspace deps with =VERSION (alpha releases)",
+    )
     args = parser.parse_args(argv)
 
-    rewrite_all(root=args.root, new_version=args.version, new_py_version=args.python_version)
+    rewrite_all(
+        root=args.root,
+        new_version=args.version,
+        new_py_version=args.python_version,
+        exact_internal_pins=args.exact_internal_pins,
+    )
     print(f"Bumped manifests to {args.version} (python: {args.python_version})")
     return 0
 

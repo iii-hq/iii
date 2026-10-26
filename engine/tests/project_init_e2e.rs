@@ -448,3 +448,103 @@ fn project_init_failure_emits_problem_cause_fix() {
         "stderr should contain 'fix:':\n{stderr}"
     );
 }
+
+/// Runs `iii project init` with telemetry on and pointed at `posthog`, in a
+/// throwaway HOME so the run reads and writes no real `~/.iii`.
+fn init_reporting_to(posthog: &str, home: &Path, project: &Path) -> std::process::Output {
+    let mut cmd = iii_bin();
+    cmd.args(["project", "init", "--template-dir"])
+        .arg(fixtures())
+        .arg("--directory")
+        .arg(project)
+        .current_dir(home)
+        .env("HOME", home)
+        .env("POSTHOG_HOST", posthog)
+        .env_remove("III_PROJECT_ROOT")
+        .env_remove("III_TELEMETRY_ENABLED")
+        .env_remove("III_TELEMETRY_DEV");
+    for ci in [
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "JENKINS_URL",
+        "TRAVIS",
+        "BUILDKITE",
+        "TF_BUILD",
+        "CODEBUILD_BUILD_ID",
+        "BITBUCKET_BUILD_NUMBER",
+        "DRONE",
+        "TEAMCITY_VERSION",
+    ] {
+        cmd.env_remove(ci);
+    }
+    cmd.output().expect("failed to run iii")
+}
+
+/// Every event the mock PostHog has received, across all batches.
+async fn received_events(server: &wiremock::MockServer) -> Vec<serde_json::Value> {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).ok())
+        .flat_map(|body| body["batch"].as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
+fn named<'a>(events: &'a [serde_json::Value], name: &str) -> Vec<&'a serde_json::Value> {
+    events.iter().filter(|e| e["event"] == name).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_init_reports_project_created_once_per_project() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/batch/"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let home = tempdir().unwrap();
+    let project = home.path().join("my-bare-app");
+
+    let first = init_reporting_to(&server.uri(), home.path(), &project);
+    assert!(
+        first.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let events = received_events(&server).await;
+    let created = named(&events, "project_created");
+    assert_eq!(created.len(), 1, "events: {events:#?}");
+    let ini = std::fs::read_to_string(project.join(".iii").join("project.ini")).unwrap();
+    let project_id = ini
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("project_id="))
+        .unwrap()
+        .trim()
+        .to_string();
+    let props = &created[0]["properties"];
+    assert_eq!(props["project_id"], project_id.as_str());
+    assert_eq!(props["project_name"], "my-bare-app");
+    assert_eq!(props["template"], "bare");
+    assert_eq!(props["product"], "iii");
+    assert_eq!(named(&events, "project_init_succeeded").len(), 1);
+    assert!(named(&events, "iii_tools_telemetry_failed").is_empty());
+
+    // Re-init keeps the project_id, so it is the same project: no second
+    // project_created.
+    let second = init_reporting_to(&server.uri(), home.path(), &project);
+    assert!(second.status.success());
+    let events = received_events(&server).await;
+    assert_eq!(
+        named(&events, "project_created").len(),
+        1,
+        "events: {events:#?}"
+    );
+    assert_eq!(named(&events, "project_init_succeeded").len(), 2);
+}

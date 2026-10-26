@@ -34,6 +34,7 @@ export function Footer({ container }: { container?: string } = {}) {
         { label: 'Quickstart', href: links.quickstart },
         { label: 'Worker registry', href: links.registry, external: true },
         { label: 'Roadmap', href: links.roadmap },
+        { label: 'Benchmarks', href: links.benchmarks },
         { label: 'Manifesto', href: links.manifesto },
         { label: 'Blog', href: links.blog },
       ],

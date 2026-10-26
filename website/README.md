@@ -66,8 +66,44 @@ draft: false
 ---
 ```
 
+Optional SEO fields: `seoTitle` replaces the `<title>` and share-card title when it should differ from the on-page
+heading (the heading stays `title`); `faq` is a list of `{ q, a }` entries emitted as FAQPage JSON-LD next to the
+BlogPosting entry, so keep the answers plain text and in sync with the section they summarise.
+
 Images: put the files in `public/blog/<slug>/` and reference them as `../../assets/blog/<slug>/<file>` in the
 markdown (the historical path, rewritten at render time and in the `.md` export).
+
+Blocks a post can opt into, all plain HTML around ordinary markdown (blank lines on both sides) and styled in
+`globals.css` under `.prose`: `<figure>` with an `<img>` and a `<figcaption>` for a captioned screenshot (the
+`../../assets/...` path is rewritten like a markdown image); `<div class="facts">` around a bullet list of
+`**Label:** value` items to show them as rows in a card; `<div class="verdict">` of `.verdict-card`s (eyebrow
+`.verdict-pick`, `.verdict-tool`, `.verdict-reason`, `.verdict-cta` link; `data-highlight` marks the recommended
+pick); and `<div class="compare">` around a GFM table to render it as a matrix, with the last column (iii, by
+convention) emphasized and its header shown as the iii logo. `data-highlight` on a `.facts` div or a `<figure>` gives
+it the same neutral-800 frame as the highlighted verdict card, whose name is also shown as the logo alone. Long-form
+pages are black and white only: no accent colour, no glow, and code blocks render in greys. `####`
+headings are label-style (small caps) and stay out of the contents list. See
+`content/blog/opencode-vs-claude-code-vs-iii.md`.
+
+## The benchmarks page
+
+`/benchmarks` draws two data sets that CI publishes to the `gh-pages` branch:
+- **Load benchmarks.** These come from `.github/workflows/loadtest.yml` and `crates/iii-loadtest`, and live in `loadtest/index.json` (every run, newest first) and `loadtest/runs/<id>.json`.
+- **Criterion history.** This comes from `bench-release.yml` and lives in `dev/bench/data.js`.
+
+`scripts/generate-benchmarks.ts` runs before `dev` and `build`. It fetches both and writes `content/benchmarks/data.json`, which is gitignored and is what the page imports. Each workflow dispatches a website deploy once it has published, so the page follows every run.
+
+A part that cannot be fetched falls back to `content/benchmarks/snapshot.json`, which is committed, so a build never fails or ships an empty page. Two environment variables change where the data comes from:
+- `BENCHMARKS_OFFLINE=1` skips the network.
+- `BENCHMARKS_SOURCE` points at another copy of the branch, either a URL or a local checkout.
+
+Every number in the page's text is computed from the same run its charts draw (`lib/benchmarks/page.ts`), and the charts are in `components/benchmarks/`. To refresh the snapshot from a local run:
+
+```bash
+target/release/iii-loadtest export target/loadtest/<run> --version <x.y.z>
+pnpm tsx scripts/generate-benchmarks.ts --snapshot --summary ../target/loadtest/<run>/summary.json \
+  --micro <a copy of gh-pages dev/bench/data.js>
+```
 
 ## Adding a tech spec or a deck
 

@@ -1,0 +1,33 @@
+[package]
+name = "iii-loadtest"
+version.workspace = true
+edition = "2024"
+license = "Elastic-2.0"
+description = "Capacity and resource benchmarks for the iii engine, run inside resource-limited microVMs (Linux)"
+publish = false
+
+[[bin]]
+name = "iii-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+hdrhistogram = { version = "7", default-features = false }
+iii-helpers = { workspace = true }
+iii-sdk = { workspace = true }
+libc = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "process", "signal", "sync", "time", "fs"] }
+tokio-tungstenite = "0.28"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iii-filesystem = { path = "../iii-filesystem" }
+# Same pin as iii-worker and iii-filesystem.
+msb_krun = { version = "=0.1.16" }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

@@ -1,0 +1,10 @@
+{
+  "description": "only $ne, $nin and $exists:false match an absent path",
+  "filters": {"input.missing": {"$ne": 1, "$nin": [1], "$exists": false}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": true },
+    { "doc": {}, "expect": true },
+    { "doc": {"input": {"missing": 2}}, "expect": false, "note": "$exists:false fails on a present value" },
+    { "doc": {"input": {"missing": null}}, "expect": false }
+  ]
+}

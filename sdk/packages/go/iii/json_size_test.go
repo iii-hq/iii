@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"strings"
@@ -15,21 +16,55 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 	base := &InvokeFunctionMessage{FunctionID: "f", Data: json.RawMessage(`""`)}
 	wire, _ := MarshalMessage(base)
 	for _, delta := range []int{-1, 0, 1} {
-		base.Data = json.RawMessage(`"` + strings.Repeat("x", maxJSONFrameBytes-len(wire)+delta) + `"`)
+		base.Data = json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes-len(wire)+delta) + `"`)
 		frame, err := prepareJSON(base)
 		if delta > 0 {
 			var ie *InvocationError
 			if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
 				t.Fatalf("above: %v", err)
 			}
-		} else if err != nil || len(frame) != maxJSONFrameBytes+delta {
+			want := "Serialized JSON envelope is 67108865 bytes; limit is 67108864 bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+			if ie.Message != want {
+				t.Fatalf("message = %q, want %q", ie.Message, want)
+			}
+		} else if err != nil || len(frame) != maxJSONMessageBytes+delta {
 			t.Fatalf("boundary: %d %v", len(frame), err)
 		}
 	}
-	escaped, _ := json.Marshal(strings.Repeat("😀é<\n\"\\", 1500000))
-	if _, err := prepareJSON(&InvokeFunctionMessage{FunctionID: "f", Data: escaped}); err == nil {
-		t.Fatal("escapes accepted")
+	escaped, err := json.Marshal(strings.Repeat("😀é<\n\"\\", 1_500_000))
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, err := prepareJSON(&InvokeFunctionMessage{FunctionID: "f", Data: escaped}); err != nil {
+		t.Fatalf("valid multibyte JSON above 16 MiB rejected below 64 MiB: %v", err)
+	}
+
+	escapedRaw := strings.Repeat("😀é<\n\"\\", 4_000_000)
+	if rawBytes := len(escapedRaw); rawBytes != 40_000_000 {
+		t.Fatalf("raw escaped input bytes = %d, want 40000000", rawBytes)
+	}
+	escapedJSON, err := json.Marshal(escapedRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedMsg := &InvokeFunctionMessage{FunctionID: "f", Data: escapedJSON}
+	serialized, err := MarshalMessage(escapedMsg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(serialized) <= maxJSONMessageBytes {
+		t.Fatalf("serialized escaped envelope is only %d bytes", len(serialized))
+	}
+	_, err = prepareJSON(escapedMsg)
+	var escapeSizeErr *InvocationError
+	if !errors.As(err, &escapeSizeErr) || escapeSizeErr.Code != "payload_too_large" {
+		t.Fatalf("escaped envelope above 64 MiB error: %v", err)
+	}
+	wantEscapeMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(serialized), maxJSONMessageBytes)
+	if escapeSizeErr.Message != wantEscapeMessage {
+		t.Fatalf("escaped envelope message = %q, want %q", escapeSizeErr.Message, wantEscapeMessage)
+	}
+
 	id := uuid.New()
 	for _, result := range []json.RawMessage{nil, json.RawMessage(`null`)} {
 		f, err := prepareJSON(&InvocationResultMessage{InvocationID: id, FunctionID: "f", Result: result})
@@ -44,7 +79,12 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 		}
 	}
 	secret := "PRIVATE_MARKER"
-	f, err := prepareJSON(&InvocationResultMessage{InvocationID: id, FunctionID: "f", Result: base.Data, Baggage: &secret})
+	oversized, err := MarshalMessage(&InvocationResultMessage{InvocationID: id, FunctionID: "f", Result: json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`), Baggage: &secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(oversized), maxJSONMessageBytes)
+	f, err := prepareFrame(oversized)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,15 +95,15 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 	}
 	var body ErrorBody
 	json.Unmarshal(m["error"], &body)
-	if body.Code != "payload_too_large" {
-		t.Fatalf("fallback: %s", f)
+	if body.Code != "payload_too_large" || body.Message != want {
+		t.Fatalf("fallback: %+v", body)
 	}
 }
 
 func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	c := New("ws://127.0.0.1:0")
 	defer c.Close()
-	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONFrameBytes) + `"`)
+	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`)
 	for _, action := range []*TriggerAction{nil, VoidAction(), EnqueueAction("q")} {
 		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "f", Data: huge, Action: action})
 		var ie *InvocationError
@@ -88,7 +128,7 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	if len(c.functions) != 0 || len(c.offline) != 0 || len(c.outbound) != 0 {
 		t.Fatal("typed registration retained or enqueued oversized envelope")
 	}
-	if err := c.RegisterTriggerType("t", strings.Repeat("x", maxJSONFrameBytes), &stubTriggerHandler{}); err == nil {
+	if err := c.RegisterTriggerType("t", strings.Repeat("x", maxJSONMessageBytes), &stubTriggerHandler{}); err == nil {
 		t.Fatal("trigger type accepted")
 	}
 	if err := c.RegisterTrigger("t", "t", "f", huge); err == nil {
@@ -110,6 +150,15 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	json.Unmarshal(<-c.reply, &result)
 	if result["result"] != nil || result["error"] == nil {
 		t.Fatal("direct fallback")
+	}
+	var fallback struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	expectedSize := len(raw)
+	expectedMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", expectedSize, maxJSONMessageBytes)
+	if err := json.Unmarshal(result["error"], &fallback); err != nil || fallback.Code != "payload_too_large" || fallback.Message != expectedMessage {
+		t.Fatalf("fallback error: %+v (%v)", fallback, err)
 	}
 }
 
@@ -139,7 +188,9 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 	m.mu.Lock()
 	socket := m.active
 	m.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Race-instrumented encoding and parsing of large frames can take several times
+	// longer on shared CI runners; bound a stuck exchange, not expected work.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	out, err := c.Trigger(ctx, TriggerRequest{FunctionID: "remote"})
 	if err != nil || len(out) != len(huge) {
@@ -152,7 +203,7 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 		}
 		msgs := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
 			return firstWhere(msgs, func(msg map[string]json.RawMessage) bool { return stringField(msg, "invocation_id") == id.String() }) != nil
-		}, 5*time.Second)
+		}, time.Minute)
 		frame := firstWhere(msgs, func(msg map[string]json.RawMessage) bool { return stringField(msg, "invocation_id") == id.String() })
 		if frame == nil || frame["error"] != nil {
 			t.Fatalf("incoming invocation: %v", frame)
@@ -189,7 +240,7 @@ func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 	m.mu.Lock()
 	socket := m.active
 	m.mu.Unlock()
-	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONFrameBytes) + `"`)
+	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`)
 	id := uuid.New()
 	raw, _ := MarshalMessage(&InvokeFunctionMessage{InvocationID: &id, FunctionID: "f", Data: huge})
 	pending := make(chan invocationOutcome, 1)
@@ -234,7 +285,7 @@ func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 	if !same {
 		t.Fatal("reconnected")
 	}
-	if _, err := prepareJSON(&ReattachMessage{PreviousWorkerID: strings.Repeat("x", maxJSONFrameBytes)}); err == nil {
+	if _, err := prepareJSON(&ReattachMessage{PreviousWorkerID: strings.Repeat("x", maxJSONMessageBytes)}); err == nil {
 		t.Fatal("reattach bypass")
 	}
 	c.mu.Lock()
@@ -328,7 +379,7 @@ func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testi
 			}
 			retained := c.triggerTypes["schemas"]
 			beforeOffline, beforeOutbound := len(c.offline), len(c.outbound)
-			schema := json.RawMessage(`{"description":"` + strings.Repeat("x", maxJSONFrameBytes/2) + `"}`)
+			schema := json.RawMessage(`{"description":"` + strings.Repeat("x", maxJSONMessageBytes/2) + `"}`)
 			opts := RegisterTriggerTypeOptions{TriggerRequestFormat: schema, CallRequestFormat: append(json.RawMessage(nil), schema...)}
 			for _, single := range []RegisterTriggerTypeOptions{{TriggerRequestFormat: schema}, {CallRequestFormat: schema}} {
 				if _, err := prepareJSON(&RegisterTriggerTypeMessage{ID: "schemas", Description: "Replacement", TriggerRequestFormat: single.TriggerRequestFormat, CallRequestFormat: single.CallRequestFormat}); err != nil {

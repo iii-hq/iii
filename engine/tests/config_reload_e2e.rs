@@ -29,19 +29,22 @@ use serial_test::serial;
 // ---------------------------------------------------------------------------
 
 /// A minimal YAML config whose `configuration` worker persists into
-/// `store_dir`, with `extra_workers` (yaml list items, or "") appended to the
-/// workers list. Mandatory workers (telemetry, observability,
-/// engine-functions) are auto-injected by `EngineBuilder::build()` and do not
-/// bind fixed ports.
+/// `store_dir` and whose `iii-worker-manager` listens on an ephemeral
+/// loopback port, with `extra_workers` (yaml list items, or "") appended to
+/// the workers list. The remaining mandatory workers (telemetry,
+/// observability, engine-functions) are auto-injected by
+/// `EngineBuilder::build()` and do not bind fixed ports.
 ///
 /// Every yaml revision a reload test writes must keep the `configuration`
 /// entry: reload re-reads the file, and a config without it re-injects the
 /// mandatory configuration worker with its default cwd-relative `./config`
 /// store — littering the repo tree and leaking persisted entries into later
-/// runs.
+/// runs. Likewise the `iii-worker-manager` entry: without it the manager is
+/// injected on the default `0.0.0.0:49134`, which collides with a local
+/// engine.
 fn minimal_config_yaml(store_dir: &str, extra_workers: &str) -> String {
     format!(
-        "workers:\n  - name: configuration\n    config:\n      adapter:\n        name: fs\n        config:\n          directory: {store_dir}\n{extra_workers}modules: []\n"
+        "workers:\n  - name: configuration\n    config:\n      adapter:\n        name: fs\n        config:\n          directory: {store_dir}\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: 0\n{extra_workers}modules: []\n"
     )
 }
 
@@ -371,6 +374,10 @@ async fn first_seed_strips_config_block_and_moves_value_to_store() {
         config:
           directory: {store_dir}
       ttl_seconds: 0
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 0
   - name: iii-stream
     config:
       port: 0
@@ -443,12 +450,13 @@ async fn already_persisted_value_also_strips_stale_config_block() {
     let store = tempfile::tempdir().expect("store dir");
     let store_dir = store.path().to_str().unwrap().to_string();
 
-    // Simulate a prior boot: the store already holds iii-stream's value (empty
-    // config = default adapter). The config.yaml block below is therefore being
-    // ignored at runtime — it must still get stripped.
+    // Simulate a prior boot: the store already holds iii-stream's value (default
+    // adapter, ephemeral loopback port — an empty value would bind the default
+    // 0.0.0.0:3112). The config.yaml block below is therefore being ignored at
+    // runtime — it must still get stripped.
     std::fs::write(
         store.path().join("iii-stream.yaml"),
-        "id: iii-stream\nname: Stream\ndescription: pre-existing from a prior boot\nvalue: {}\n",
+        "id: iii-stream\nname: Stream\ndescription: pre-existing from a prior boot\nvalue:\n  host: 127.0.0.1\n  port: 0\n",
     )
     .expect("pre-seed store");
 
@@ -464,6 +472,10 @@ async fn already_persisted_value_also_strips_stale_config_block() {
         config:
           directory: {store_dir}
       ttl_seconds: 0
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 0
   - name: iii-stream
     config:
       port: 0
@@ -500,8 +512,8 @@ modules: []
     let stored = std::fs::read_to_string(store.path().join("iii-stream.yaml"))
         .expect("store file should exist");
     assert!(
-        stored.contains("value: {}"),
-        "stored value must stay the pre-existing empty config, not the config.yaml block, got:\n{stored}"
+        stored.contains("host: 127.0.0.1") && !stored.contains("in_memory"),
+        "stored value must stay the pre-existing config, not the config.yaml block, got:\n{stored}"
     );
 
     handle.abort();
@@ -542,6 +554,10 @@ async fn external_worker_block_stripped_from_store_value_alone() {
         config:
           directory: {store_dir}
       ttl_seconds: 0
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: 0
   - name: iii-sandbox
     config:
       some_key: from_config_yaml

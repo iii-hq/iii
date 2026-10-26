@@ -13,6 +13,14 @@ function by its `id` in the worker's namespace. For the steps in each SDK, see
 this page call the `math::add` function from that page. A worker registers it in the `orders`
 namespace.
 
+### Every function is observable
+
+Any worker allowed to invoke a function can also observe it: `iii.observe` invokes another function
+for each invocation that passes declarative filters, with no code in the observed function's worker.
+A function can declare how it is observed, or refuse observers, with the `observe` option of
+`registerFunction`. See [Observers](./observers) and
+[Observable functions](../creating-workers/observable-functions).
+
 ## Triggering (Invoking) functions
 
 A function runs when something calls it. A caller can be the CLI (`iii trigger`), worker code
@@ -84,8 +92,17 @@ The SDK samples run in the `orders` worker, so they leave out `namespace`.
 </Tabs>
 
 <Note>
+  A call to a function that the calling worker registered itself runs in-process once the engine
+  confirmed the registration (local dispatch), with the same result, errors, and timeout as a call
+  through the engine. Pass `dispatch: "remote"` (Python `"dispatch": "remote"`, Rust
+  `.dispatch(Dispatch::Remote)`, Go `Dispatch: iii.DispatchRemote`) to send one call through the
+  engine anyway. See [Local dispatch](./observers#local-dispatch).
+</Note>
+
+<Note>
   Bind a trigger to a function to run it on an event, such as an `http` request, a `cron` schedule,
-  or a `state` change. See [Triggers / Register a trigger](./triggers#register-a-trigger).
+  or a `state` change. See [Triggers / Register a trigger](./triggers#register-a-trigger). To run a
+  function when another function is invoked, or on an engine event, see [Observers](./observers).
 </Note>
 
 <Note>
@@ -130,11 +147,17 @@ see the request schema of one function, run `iii trigger <function> --help`.
 
 To list the connected workers, call `engine::workers::list`. To list the trigger types and the
 registered triggers, call `engine::triggers::list` and `engine::registered-triggers::list`. To list
-the registered functions, call `engine::functions::list`. To run a function when a worker connects
-or disconnects, or when the set of functions changes, bind it to the `engine::workers-available` or
+the registered functions, call `engine::functions::list`. To list, read, or remove observers, call
+`engine::observers::list`, `engine::observers::get`, or `engine::observers::dispose`. See
+[Inspect observers](./observers#inspect-observers). To run a function when a worker connects or
+disconnects, or when the set of functions changes, bind it to the `engine::workers-available` or
 `engine::functions-available` trigger type. For every function, its filters, and the trigger events,
 see [Engine discovery functions](../reference/engine-protocol#engine-discovery-functions) and
 [Engine discovery triggers](../reference/engine-protocol#engine-discovery-triggers).
+
+From 0.25, observe the equivalent event sources instead: `engine::on-functions-changed` and
+`engine::on-workers-changed`, with `deliver: "input"` so the target receives the same payload. See
+[Engine-hosted event sources](./observers#engine-hosted-event-sources).
 
 <Note>
   For the `engine::*` trigger types and functions, see the [iii-engine-functions worker
@@ -146,15 +169,24 @@ see [Engine discovery functions](../reference/engine-protocol#engine-discovery-f
 Each of these workers registers its own functions. For function ids and payloads, see the docs of
 each worker:
 
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. `pubsub` is
+  deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. See
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
+
 - **State**: key-value state, grouped by `scope`, with a `state` trigger type that fires when a key
   is created, updated, or deleted. A `scope` is separate from the
   [routing namespaces](../understanding-iii/namespaces). See
   [state](https://workers.iii.dev/workers/state).
-- **Stream**: real-time push to connected clients over WebSocket. See
-  [iii-stream](https://workers.iii.dev/workers/iii-stream).
+- **Stream** (deprecated): real-time push to connected clients over WebSocket. See
+  [iii-stream](https://workers.iii.dev/workers/iii-stream). For new work, use
+  [worker-owned trigger types](../creating-workers/triggers#declaring-a-trigger-type) or
+  [channels](../creating-workers/channels).
 - **Queue**: durable job processing with retries, FIFO or concurrent delivery, concurrency limits,
   and a dead-letter queue. See [queue](https://workers.iii.dev/workers/queue).
-- **Pub/Sub**: topic fan-out with no durability guarantees. See
-  [pubsub](https://workers.iii.dev/workers/pubsub).
+- **Pub/Sub** (deprecated): topic fan-out with no durability guarantees. See
+  [pubsub](https://workers.iii.dev/workers/pubsub). For new work, use worker-owned trigger types or
+  durable queue topics.
 - **Observability**: traces, logs, metrics, alerts, sampling rules, and rollups. See
   [iii-observability](https://workers.iii.dev/workers/iii-observability).

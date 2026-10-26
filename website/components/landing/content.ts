@@ -296,7 +296,7 @@ export const numbers = {
     setup:
       'Measured on a standard GitHub-hosted runner (ubuntu-latest: 4 CPU cores, 16 GB RAM, 14 GB SSD, x64), with the benchmarks using all 4 cores.',
     bench: 'We benchmark every change to iii as part of our performance analysis.',
-    link: { label: 'View the benchmarks', href: 'https://iii-hq.github.io/iii/dev/bench/' },
+    link: { label: 'View the benchmarks', href: '/benchmarks' },
   },
 }
 

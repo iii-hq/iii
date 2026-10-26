@@ -4,38 +4,47 @@ fn iii_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_iii"))
 }
 
-/// Spawn the engine in `dir`, wait for it to create `file_name`, then kill it.
-/// Returns whether the file appeared within the deadline. The engine may fail
-/// later (e.g. port already bound by a concurrent test) — irrelevant here, the
-/// config file is written before any listener binds.
+/// Spawn the engine in `dir`, wait for it to exit, and return whether it
+/// created `file_name`.
+///
+/// The engine must never reach its listeners here: the mandatory
+/// `iii-worker-manager` would bind the default `0.0.0.0:49134`, racing the
+/// other test in this file and any engine already running on this machine.
+/// A regular file named `config` blocks the configuration worker's default
+/// cwd-relative `./config` store, so `build()` fails right after the config
+/// file is written and the engine exits before anything binds.
 fn spawn_and_wait_for_config(dir: &std::path::Path, args: &[&str], file_name: &str) -> bool {
+    std::fs::write(dir.join("config"), "").expect("block the default configuration store");
+    let stderr = tempfile::NamedTempFile::new().expect("create stderr capture");
     let mut child = iii_bin()
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr.reopen().expect("reopen stderr capture"))
         .spawn()
         .expect("failed to spawn iii");
 
-    let config_path = dir.join(file_name);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let mut created = false;
-    while std::time::Instant::now() < deadline {
-        if config_path.exists() {
-            created = true;
-            break;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll iii") {
+            break Some(status);
         }
-        // A crashed child will never create the file; stop early.
-        if let Ok(Some(_)) = child.try_wait() {
-            created = config_path.exists();
-            break;
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    created
+    };
+    let stderr = std::fs::read_to_string(stderr.path()).unwrap_or_default();
+    assert!(
+        status.is_some_and(|status| !status.success())
+            && stderr.contains("configuration directory"),
+        "engine should stop at the blocked configuration store, before binding \
+         any port; status: {status:?}, stderr:\n{stderr}"
+    );
+    dir.join(file_name).exists()
 }
 
 #[test]

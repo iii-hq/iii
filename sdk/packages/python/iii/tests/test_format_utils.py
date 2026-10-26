@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
+import pytest
 from pydantic import BaseModel, Field
 
 from iii.format_utils import _JSON_SCHEMA_DRAFT, extract_request_format, extract_response_format, python_type_to_format
@@ -41,6 +42,29 @@ def test_none_type() -> None:
 # ---------------------------------------------------------------------------
 # python_type_to_format — containers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("annotation", "schema_type"),
+    [
+        (dict, "object"),
+        (list, "array"),
+        (Optional[dict], ["object", "null"]),
+        (Optional[list], ["array", "null"]),
+        (dict | None, ["object", "null"]),
+        (list | None, ["array", "null"]),
+    ],
+)
+def test_bare_container_type(annotation: Any, schema_type: str | list[str]) -> None:
+    assert python_type_to_format(annotation) == {"type": schema_type, "$schema": _JSON_SCHEMA_DRAFT}
+
+
+def test_extract_bare_container_request_and_response() -> None:
+    def handler(data: dict) -> list | None:
+        return None
+
+    assert extract_request_format(handler) == {"type": "object", "$schema": _JSON_SCHEMA_DRAFT}
+    assert extract_response_format(handler) == {"type": ["array", "null"], "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_list_of_str() -> None:

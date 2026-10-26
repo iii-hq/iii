@@ -5,7 +5,7 @@
 
 {/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
-Reference for the `iii` binary and the `iii console` runtime it dispatches to. Running `iii` with no subcommand starts the engine. The same information is available from the binaries themselves via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
+Reference for the `iii` binary. Running `iii` with no subcommand starts the engine. The same information is available from the binary itself via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
 
 ## `iii`
 
@@ -27,8 +27,9 @@ iii [OPTIONS] [COMMAND]
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
 | [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
-| [`console`](#iii-console) | Launch the iii web console. |
+| [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
@@ -89,6 +90,21 @@ iii compose logs [OPTIONS] [WORKER]
   Without `--follow`, this command prints a recent snapshot and exits. With `--follow`, it long-polls and continues from per-worker cursors. Each worker has a 10 MiB active file and three archives; older output is deleted after rotation, and a cursor older than the retained history resumes from the most recent retained lines with a warning. See [The `compose::*` functions](../using-iii/compose#the-compose-functions) for the remote `compose::logs` fields: `cursors`, `tail`, `stream`, and `wait_ms`.
 </Note>
 
+### `iii kill`
+
+Stop iii processes by engine port, by compose project, or every orphaned worker
+
+```text
+iii kill [OPTIONS] <--port <PORT>|--compose [<PATH>]|--orphans>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--port <PORT>` | Stop the engine on this port, the compose daemon that manages it, and every worker pointed at it |
+| `--compose <PATH>` | Stop a compose project: its daemon, managed engine and workers. Takes the compose file or its directory [default: ./worker-compose.yaml] |
+| `--orphans` | Stop every compose worker whose compose daemon is gone |
+| `--force` | Send SIGKILL at once instead of letting processes shut down |
+
 ### `iii project`
 
 Manage iii projects (init, generate-docker)
@@ -132,6 +148,18 @@ iii project init [OPTIONS] [NAME]
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
 | `--learn-iii` | Start the iii harness and take a quick look at what iii can do: scaffold the "harness" template into NAME, or into ./learn-iii (learn-iii-1, learn-iii-2, ... when taken) if no NAME is given, then start `iii compose --up` inside it. Cannot be combined with any other scaffolding option |
 
+### `iii ps`
+
+List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to
+
+```text
+iii ps [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--json` | Print JSON instead of a table |
+
 ### `iii trigger`
 
 Invoke a function on a running iii engine
@@ -170,33 +198,11 @@ iii update [OPTIONS] [COMMAND]
 
 | Argument | Description |
 | -------- | ----------- |
-| `[COMMAND]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+| `[COMMAND]` | Specific command or binary to update (e.g., "worker", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
 
 | Option | Description |
 | ------ | ----------- |
 | `--list-targets` | List the targets you can pass to `iii update [COMMAND]` and exit |
-
-## `iii console`
-
-Developer console for the iii engine
-
-The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`.
-
-```text
-iii console [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `-p, --port <PORT>` | Port to run the console server on [default: 3113] |
-| `--host <HOST>` | Host to bind the console server to [default: 127.0.0.1] |
-| `--engine-host <ENGINE_HOST>` | Host where the iii engine is running [default: 127.0.0.1] |
-| `--engine-port <ENGINE_PORT>` | Port for the iii engine REST API [default: 3111] |
-| `--ws-port <WS_PORT>` | Port for the iii engine WebSocket [default: 3112] |
-| `--bridge-port <BRIDGE_PORT>` | Engine WebSocket port the console registers its worker functions on [default: 49134] |
-| `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
-| `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
-| `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |
 
 ## Telemetry
 

@@ -1,0 +1,9 @@
+{
+  "description": "filters.md §6: a row change touching a paid invoice",
+  "filters": {"input.returning": {"$any": {"@.status": {"$eq": "paid"}}}},
+  "cases": [
+    { "doc": {"input": {"op": "update", "returning": [{"id": 1, "status": "open"}, {"id": 2, "status": "paid"}]}}, "expect": true },
+    { "doc": {"input": {"op": "update", "returning": [{"id": 1, "status": "open"}]}}, "expect": false },
+    { "doc": {"input": {"op": "update", "keys": [{"id": 1}]}}, "expect": false, "note": "native capture reports keys only" }
+  ]
+}

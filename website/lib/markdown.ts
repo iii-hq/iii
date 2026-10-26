@@ -82,15 +82,10 @@ const processor = unified()
  * tree is turned into elements directly, so no HTML string is ever injected.
  */
 export async function renderMarkdown(markdown: string, options: Options = {}): Promise<Rendered> {
-  const source = options.image
-    ? markdown.replace(
-        /!\[([^\]]*)\]\(([^)\s]+)([^)]*)\)/g,
-        (_m, alt, src, rest) => `![${alt}](${options.image?.(src) ?? src}${rest})`,
-      )
-    : markdown
-  const tree = (await processor.run(processor.parse(source))) as Root
+  const tree = (await processor.run(processor.parse(markdown))) as Root
   wrapTables(tree)
-  lazyImages(tree)
+  breakInlineCode(tree)
+  lazyImages(tree, options.image)
   if (options.idPrefix) prefixIds(tree, options.idPrefix)
   const content = toJsxRuntime(tree, { Fragment, jsx, jsxs, development: false })
   return { content, headings: extractHeadings(tree) }
@@ -120,13 +115,36 @@ function wrapTables(tree: Root) {
 }
 
 /**
- * Article images load lazily. They sit below the fold in long posts, and React
- * only emits preload hints for eager images, so this also keeps a post's RSC
- * payload from preloading every picture when the index prefetches it.
+ * Inline code may wrap only at its seams: before a `.`, after a `/`, after a `::`. A `<wbr>` at each one lets a
+ * narrow table column fold `options.functions.allow` into `options.functions` / `.allow` instead of splitting a word,
+ * and adds nothing to copied text.
  */
-function lazyImages(tree: Root) {
+const CODE_SEAM = /(?<=.)(?=\.)|(?<=\/)(?=.)|(?<=::)(?=.)/
+
+function breakInlineCode(tree: Root) {
+  visit(tree, (node, _index, parent) => {
+    if (node.tagName !== 'code' || (parent.type === 'element' && parent.tagName === 'pre')) return
+    node.children = node.children.flatMap((child) => {
+      if (child.type !== 'text') return [child]
+      return child.value.split(CODE_SEAM).flatMap((value, i): Element['children'] => {
+        const text = { type: 'text' as const, value }
+        return i === 0 ? [text] : [{ type: 'element', tagName: 'wbr', properties: {}, children: [] }, text]
+      })
+    })
+  })
+}
+
+/**
+ * Article images get their public URL and load lazily. They sit below the fold
+ * in long posts, and React only emits preload hints for eager images, so this
+ * also keeps a post's RSC payload from preloading every picture when the index
+ * prefetches it.
+ */
+function lazyImages(tree: Root, image?: (src: string) => string) {
   visit(tree, (node) => {
     if (node.tagName !== 'img') return
+    // Markdown images and raw <img> (inside a <figure>) both get the public URL.
+    if (image && typeof node.properties.src === 'string') node.properties.src = image(node.properties.src)
     node.properties.loading ??= 'lazy'
     node.properties.decoding ??= 'async'
   })
@@ -163,11 +181,15 @@ function toText(node: Nodes): string {
   return ''
 }
 
-/** Reading time from the raw markdown, rounded up, at 220 words a minute. */
-export function readingTime(markdown: string) {
-  const words = markdown
+/** Words in the raw markdown, code blocks excluded. */
+export function wordCount(markdown: string) {
+  return markdown
     .replace(/```[\s\S]*?```/g, '')
     .split(/\s+/)
     .filter(Boolean).length
-  return Math.max(1, Math.ceil(words / 220))
+}
+
+/** Reading time from the raw markdown, rounded up, at 220 words a minute. */
+export function readingTime(markdown: string) {
+  return Math.max(1, Math.ceil(wordCount(markdown) / 220))
 }

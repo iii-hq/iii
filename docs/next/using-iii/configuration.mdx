@@ -2,7 +2,7 @@
 title: "Configuration"
 description:
   "Worker settings are stored in the configuration worker: one file per entry, updated in real time
-  from disk, the ade web UI, or configuration::set."
+  from disk, the console, or configuration::set."
 owner: "devrel"
 type: "how-to"
 ---
@@ -94,14 +94,13 @@ validated against the worker's registered schema and applied through exactly the
 `configuration::set`. An edit that fails validation is rejected with a warning in the engine logs
 and the previous good value stays in effect, so a typo can't take a worker down.
 
-### Use the `ade` web UI
+### Use the console
 
-The [`ade` worker](https://workers.iii.dev/workers/ade) gives a web UI for iii. It is a separate app
-from the iii Console. For the iii Console, see [Console](./console). The settings view of `ade`
-lists the registered entries. Each worker supplies the form for its own entry. The UI validates each
-edit against the JSON Schema of the entry before it saves the edit. The form shows `${VAR:default}`
-templates as written and saves them as written, so an edit keeps a value that comes from an
-environment variable. A save applies immediately.
+The **Settings** view of the [console](./console) (ADE) lists the registered entries. Each worker
+supplies the form for its own entry. The console validates each edit against the JSON Schema of the
+entry before it saves the edit. The form shows `${VAR:default}` templates as written and saves them
+as written, so an edit keeps a value that comes from an environment variable. A save applies
+immediately.
 
 ```bash
 iii trigger compose::add worker=ade
@@ -165,6 +164,33 @@ variable has no value and no default, the read fails with `EXPAND_FAILED`. To re
 template, pass `raw: true` to `configuration::get`. For the other error codes, see the
 [configuration worker docs](https://workers.iii.dev/workers/configuration).
 
+## Observers
+
+The top-level `observers:` section of `config.yaml` sets the engine's limits and timeouts for
+[observers](./observers). Every key is optional; an absent section uses the defaults below.
+
+```yaml config.yaml
+observers:
+  local_dispatch: true # let workers run calls to their own functions in-process
+  max_per_connection: 1024 # observers one worker connection may create
+  max_per_function: 4096 # observers one function may have
+  max_observe_depth: 8 # activations deeper than this are dropped (LOOP_GUARD)
+  observer_grace_ms: 30000 # how long a disconnected worker's observers wait for it
+  disposed_retention_ms: 3600000 # how long a worker back later is told they were disposed
+  owner_ack_timeout_ms: 30000 # an owner that does not acknowledge in time fails the observer (OWNER_TIMEOUT)
+  activation_timeout_ms: 30000 # how long an activation may run before its slot is freed (TIMEOUT)
+  default_max_in_flight: 64 # max_in_flight of observers that set none
+  max_queue_per_observer: 1024 # activations queued behind max_in_flight before OVERFLOW
+```
+
+- The engine reads the section when it starts. Changing it needs an engine restart.
+- A limit of `0` (`max_per_connection`, `max_per_function`, `max_observe_depth`,
+  `default_max_in_flight`, `max_queue_per_observer`) stops the engine at startup with an
+  `invalid engine config` error. A timeout of `0` is accepted with a warning. Unknown keys are
+  rejected.
+- When Compose manages the engine, set the same keys under `engine.observers` in
+  `worker-compose.yaml`; Compose passes them to the engine as written.
+
 ## How changes apply
 
 Most settings apply when they change, for example the CORS, timeout, and port settings of `http`.
@@ -221,3 +247,22 @@ register, set, and delete, including file edits. Workers use the same trigger to
 settings while they run. See the
 [configuration worker docs](https://workers.iii.dev/workers/configuration) for the config fields and
 event types of the trigger.
+
+From 0.25 you can observe `configuration::on-updated` instead, with a filter on the entry and the
+event type. The `configuration` trigger type keeps working.
+
+```typescript
+worker.observe(
+  {
+    function_id: "configuration::on-updated",
+    deliver: "input",
+    filters: {
+      "input.id": { $eq: "my-worker" },
+      "input.event_type": { $eq: "configuration:updated" },
+    },
+  },
+  "my-worker::reload",
+);
+```
+
+See [Engine-hosted event sources](./observers#engine-hosted-event-sources) for the event's fields.

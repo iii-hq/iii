@@ -4,9 +4,9 @@
 
 
 In this chapter the browser becomes a worker. It connects over WebSocket through the `rbac-proxy`
-worker and calls `link::create` directly, with no REST API gateway. It subscribes to the live click
-stream to update a counter. It also registers a `user::confirm_destructive_op` function. The server
-calls that function when a delete needs a human's approval.
+worker and calls `link::create` directly, with no REST API gateway. It binds to the live click feed
+from Chapter 5 to update a counter. It also registers a `user::confirm_destructive_op` function. The
+server calls that function when a delete needs a human's approval.
 
 ## Add the workers
 
@@ -50,15 +50,17 @@ rbac-proxy:
       expose_functions:
         - match("link::create")
         - match("link::request_delete")
+        - match("link::click_summary")
 ```
 
 `expose_functions` lists the functions that a browser can call. `link::request_delete` is on the
 list so that a browser can also start a delete. In this chapter you start the delete from the CLI.
-The list has no `stream::*` function. The browser reads the click stream through a `stream` trigger
-that calls its own `ui::on_click` function, and a trigger bound to a function of the same tab needs
-no entry in the list. `auth_function_id` names the function that admits each browser connection. You
-write it next. The [rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) define each
-config field.
+The browser reads the starting click total with `link::click_summary`, so that query is on the list
+too. The browser hears about each new click through the `click-streamer::click` trigger type, which
+calls its own `ui::on_click` function. A trigger bound to a function of the same tab needs no entry
+in the list. `auth_function_id` names the function that admits each browser connection. You write it
+next. The [rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) define each config
+field.
 
 ## Gate connections with an auth function
 
@@ -99,6 +101,8 @@ worker.registerFunction(
     }
     return {
       allow_trigger_type_registration: false,
+      // The tab may listen to the live click feed and nothing else.
+      allowed_trigger_types: ["click-streamer::click"],
       allow_function_registration: true,
       context: { source: "browser" },
     };
@@ -111,14 +115,17 @@ logger.info("auth worker ready");
 The scaffold's block also returns a `namespaces` key. Delete that key, because `rbac-proxy` ignores
 it.
 
-The client sends the same token. `frontend/src/iii.ts` reads it from `VITE_LINKLY_TOKEN` and uses
-`dev-token` when the variable is not set. The token travels in a query parameter because browsers
-cannot send custom WebSocket headers.
+The client sends the same token. `frontend/src/iii.ts` reads it from `VITE_LINKLY_TOKEN` in
+`frontend/.env.local`, which you create later in this chapter. The token travels in a query
+parameter because browsers cannot send custom WebSocket headers.
 
 Each tab also sends a unique `session` id. The engine allows one function per id in a namespace. If
 two tabs both register `ui::on_click` in `default`, the engine refuses the second registration. So
 each tab connects in its own `browser-<session>` namespace, with the `namespace` option in
 `frontend/src/iii.ts`. The tab sets this namespace itself, and `rbac-proxy` does not check it.
+
+`allowed_trigger_types` limits the trigger types that a tab can bind. The tab can bind only the live
+click feed, `click-streamer::click`.
 
 Restart Compose so it starts the proxy and the `auth` worker:
 
@@ -179,15 +186,17 @@ The `link` worker reloads when you save `link/src/index.ts`. You do not need to 
 
 ### Initialize a Vite project
 
-Create a Vite + React + TypeScript app under `linkly/frontend/`:
+From the project root (the folder with `worker-compose.yaml`), create a Vite + React + TypeScript
+app. `create-vite` creates the `frontend/` folder for you:
 
 ```bash
-npm create vite@latest frontend -- --template react-ts
+npm create vite@latest frontend -- --template react-ts --no-interactive
 ```
 
 <Note>
-  If npm asks "Ok to proceed?", answer yes. `create-vite` asks "Which linter to use?". Pick ESLint.
-  Then it asks "Install with npm and start now?". Answer no. You install `iii-browser-sdk` first.
+  `--no-interactive` makes `create-vite` skip its questions. It scaffolds `frontend/` with its
+  default linter, and it does not install or start anything. You install `iii-browser-sdk` first.
+  npm can first ask "Ok to proceed?" to download `create-vite`. Answer yes.
 </Note>
 
 Now install the dependencies:
@@ -198,22 +207,40 @@ npm install
 npm install iii-browser-sdk
 ```
 
+`iii-browser-sdk` installs at 0.24.x while the backend workers pin `iii-sdk` 0.23.0. The two work
+together: each one connects to the engine, never to the other.
+
+Then tell the app where the proxy is and which token to send. Create `frontend/.env.local`; Vite
+reads it at startup. `VITE_LINKLY_TOKEN` must equal `LINKLY_BROWSER_TOKEN` in the project's `.env`,
+and `VITE_LINKLY_PROXY_URL` uses the rbac-proxy `port`:
+
+```bash frontend/.env.local
+VITE_LINKLY_TOKEN=dev-token
+VITE_LINKLY_PROXY_URL=ws://localhost:3110
+```
+
 ### Setup a client-side worker
 
-Connect the SDK in `frontend/src/iii.ts`. The URL points at port `3110`, the `rbac-proxy` port that
-you set up above. It carries the token and the session id as query parameters.
+Connect the SDK in `frontend/src/iii.ts`. The URL comes from `VITE_LINKLY_PROXY_URL` and points at
+port `3110`, the `rbac-proxy` port that you set up above. It carries the token and the session id as
+query parameters.
 
 ```typescript src/iii.ts
 import { registerWorker } from "iii-browser-sdk";
 
-const TOKEN = import.meta.env.VITE_LINKLY_TOKEN ?? "dev-token";
+// Both come from frontend/.env.local.
+const TOKEN = import.meta.env.VITE_LINKLY_TOKEN;
+const PROXY_URL = import.meta.env.VITE_LINKLY_PROXY_URL;
+if (!TOKEN || !PROXY_URL) {
+  throw new Error("Set VITE_LINKLY_TOKEN and VITE_LINKLY_PROXY_URL in frontend/.env.local");
+}
 
 // A per-tab id. The tab registers its functions in `browser-<SESSION>`, so two
 // open tabs never collide on `ui::on_click` or `user::confirm_destructive_op`.
 export const SESSION = crypto.randomUUID();
 
 export const worker = registerWorker(
-  `ws://localhost:3110?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
+  `${PROXY_URL}?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
   { namespace: `browser-${SESSION}` },
 );
 ```
@@ -226,17 +253,15 @@ The state block opens the `App` function. Put the next blocks inside `App`. The 
 
 #### Add imports
 
-First the imports and types: `Click` is one row from the `clicks` table, and `StreamEvent` is the
-wrapper `iii-stream` delivers to subscribers.
+First the imports and types: `Click` is the notification `click-streamer::click` delivers, and
+`Summary` is what `link::click_summary` returns.
 
 ```tsx src/App.tsx
 import { useEffect, useState } from "react";
 import { worker, SESSION } from "./iii.js";
 
-type Click = { code: string; clicked_at: string };
-type StreamEvent = {
-  event: { type: "create" | "update" | "delete"; data: Click };
-};
+type Click = { id: number; code: string; clicked_at: string };
+type Summary = { total: number; last_id: number };
 ```
 
 #### Add client-side state
@@ -253,27 +278,67 @@ export default function App() {
   const [latest, setLatest] = useState<Click | null>(null);
 ```
 
-#### Subscribe to `clicks`
+#### Count clicks live
 
-Subscribe to the `clicks` stream that you set up in Chapter 5. The `useEffect` registers a `stream`
-trigger that routes every new row to `ui::on_click`, a function that the browser exposes. The
-cleanup unregisters both on unmount:
+Bind to the `click-streamer::click` trigger type from Chapter 5. The tab is a worker like any other,
+so it listens the same way `watch.ts` did: it registers a function (`ui::on_click`) and a trigger
+that routes every click to it, then reads the starting total with `link::click_summary`.
+
+Two details keep the counter correct:
+
+- **Bind first, then read.** A click that lands between the two is still delivered. Clicks that
+  arrive before the read returns wait in `early`, and the click id tells the tab whether the total
+  already includes them, so nothing is counted twice.
+- **Read again after a reconnect.** Clicks sent while the tab was disconnected are not replayed, but
+  the stored total is always current.
+
+The cleanup unregisters everything on unmount:
 
 ```tsx src/App.tsx
 useEffect(() => {
-  const fn = worker.registerFunction("ui::on_click", async (event: StreamEvent) => {
+  let lastId = 0; // highest click id already counted
+  let ready = false; // false until the read lands
+  const early: Click[] = [];
+
+  function apply(click: Click) {
+    if (click.id <= lastId) return; // a duplicate, or already in the total
+    lastId = click.id;
     setClicks((n) => n + 1);
-    setLatest(event.event.data);
+    setLatest(click);
+  }
+
+  async function sync() {
+    ready = false;
+    const summary = await worker.trigger<Record<string, never>, Summary>({
+      function_id: "link::click_summary",
+      // This tab is in its own namespace; link::click_summary lives in `default`.
+      namespace: "default",
+      payload: {},
+    });
+    lastId = summary.last_id;
+    setClicks(summary.total);
+    ready = true;
+    early.splice(0).forEach(apply);
+  }
+
+  const fn = worker.registerFunction("ui::on_click", async (click: Click) => {
+    if (ready) apply(click);
+    else early.push(click);
     return null;
   });
   const trig = worker.registerTrigger({
-    type: "stream",
+    type: "click-streamer::click",
     function_id: "ui::on_click",
-    config: { stream_name: "clicks", group_id: "all" },
+    config: {},
     // ui::on_click lives in this tab's namespace, so the trigger resolves it
     // there. registerTrigger fills that in from the worker's namespace.
   });
+  sync();
+  const stopListening = worker.addConnectionStateListener((state) => {
+    if (state === "connected") sync();
+  });
   return () => {
+    stopListening();
     trig.unregister();
     fn.unregister();
   };
@@ -315,7 +380,7 @@ async function onSubmit(e: React.FormEvent) {
   e.preventDefault();
   const link = await worker.trigger<{ url: string; code?: string }, { code: string; url: string }>({
     function_id: "link::create",
-    // This tab is in its own namespace; link::create lives in the project's.
+    // This tab is in its own namespace; link::create lives in `default`.
     namespace: "default",
     payload: { url, code: code || undefined },
   });
@@ -327,7 +392,7 @@ async function onSubmit(e: React.FormEvent) {
 
 #### Create the UI
 
-Finally, the UI: a link shortener form, the last-created link, and the live streaming click counter.
+Finally, the UI: a link shortener form, the last-created link, and the live click counter.
 
 ```tsx src/App.tsx
   return (
@@ -371,10 +436,11 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173), the URL that `npm run dev` prints.
 
-### Shorten a link, then see the visits streamed in real time
+### Shorten a link, then watch the clicks arrive in real time
 
 Shorten a link from the form. Then visit `http://localhost:3111/s/<code>` a few times. The "Live
-clicks" counter goes up in real time.
+clicks" counter goes up in real time. When you reload the tab, the counter starts from the stored
+total.
 
 ### Request user confirmation directly from the backend
 
@@ -395,6 +461,6 @@ The client is a worker that is exactly the same as every other worker. We connec
 RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the browser isn't
 trusted like our other workers.
 
-Once everything is set up our client calls server functions directly, subscribes to streams for live
+Once everything is set up our client calls server functions directly, binds a trigger type for live
 updates, and registers functions the server calls back, all on the same iii bus as the rest of
 Linkly.

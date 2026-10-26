@@ -1,12 +1,19 @@
 pub mod builtin_triggers;
 pub mod channels;
+pub mod context;
+mod dispatch;
 pub mod engine;
 pub mod error;
 pub mod helpers;
 pub mod iii;
+pub mod observable;
+pub mod observe;
+mod process_marker;
 pub mod protocol;
+mod reporter;
 pub mod stream_provider;
 pub mod structs;
+mod transport;
 pub mod triggers;
 pub mod types;
 
@@ -45,11 +52,24 @@ pub mod errors {
 // types into the SDK, which the `compile_fail` doctests below deliberately
 // forbid. Hence the `internal` grouping is a no-op for Rust.
 
+pub use context::{InvocationCtx, current_invocation, scope};
 pub use error::{Error, InvocationError};
 pub use iii::TelemetryOptions;
-pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType, WorkerIdentityMode};
+pub use iii::{
+    IIIClient, ObserveSupportListener, RegisterFunction, RegisterTriggerType, WorkerIdentityMode,
+};
+pub use iii_filter::{Doc, Filter};
 pub use iii_helpers::queue::EnqueueResult;
-pub use protocol::{Message, TriggerAction};
+pub use observable::{Observe, ObserveHandler, ObserveRejection, Observer};
+pub use observe::{
+    Observed, ObservedError, ObserverHandle, ObserverOptions, ObserverReason, ObserverStatus,
+    Source, StateListener, Target,
+};
+pub use protocol::{
+    Activation, Caller, Capture, Deliver, Delivery, Dispatch, InvocationStatus, LegacyTrigger,
+    Message, ObserverState, On, ParentCaller, TriggerAction,
+};
+#[allow(deprecated)]
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
 pub use types::{StreamRequest, StreamResponse};
@@ -67,7 +87,9 @@ pub struct InitOptions {
     /// Custom worker metadata. Auto-detected if `None`. In managed identity
     /// mode, process-wide identity variables override matching fields.
     pub metadata: Option<iii::WorkerMetadata>,
-    /// Custom HTTP headers sent during the WebSocket handshake.
+    /// Custom HTTP headers sent during the WebSocket handshake, on the main
+    /// connection and on channels from `create_channel`. `Authorization: Bearer
+    /// $III_TOKEN` is added unless you set `Authorization` here.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<iii_helpers::observability::OtelConfig>,
@@ -343,6 +365,7 @@ fn _ensure_stream_trigger_configs_not_top_level() {}
 fn _ensure_stream_io_types_not_top_level() {}
 
 /// ```rust,no_run
+/// # #![allow(deprecated)]
 /// use iii_helpers::stream::{StreamChangeEvent, StreamJoinLeaveEvent};
 /// fn _takes(_a: StreamChangeEvent, _b: StreamJoinLeaveEvent) {}
 /// ```
@@ -418,3 +441,19 @@ fn _ensure_protocol_types_not_top_level() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_enqueue_result_at_root() {}
+
+// ---------------------------------------------------------------------------
+// observe (0.25): the observer and owner APIs are reachable at the crate root.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::{
+///     Caller, Capture, Deliver, Delivery, Dispatch, Doc, Filter, InvocationCtx, Observe,
+///     ObserveHandler, ObserveRejection, Observed, Observer, ObserverHandle, ObserverOptions,
+///     ObserverState, On, Source, Target, current_invocation, scope,
+/// };
+/// use iii_sdk::protocol::observe_codes::UNSUPPORTED;
+/// let _ = (Source::function("a::b"), ObserverOptions::default(), Target::function("c::d"));
+/// ```
+#[allow(dead_code)]
+fn _ensure_observe_root_paths() {}

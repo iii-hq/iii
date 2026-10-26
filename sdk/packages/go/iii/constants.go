@@ -35,8 +35,28 @@ const (
 
 // Engine trigger types. Mirrors EngineTriggers in iii-constants.ts.
 const (
+	// TriggerFunctionsAvailable is the trigger type fired when the function set
+	// changes.
+	//
+	// Deprecated: observe the engine-hosted function [FnOnFunctionsChanged] with
+	// [Client.Observe] instead. Migration guide:
+	// https://iii.dev/docs/upgrading/from-0-24-x
 	TriggerFunctionsAvailable = "engine::functions-available"
-	TriggerLog                = "log"
+	// TriggerLog is the trigger type fired for each engine log record.
+	//
+	// Deprecated: observe [FnOnLog] with [Client.Observe] (filter on input.level)
+	// instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
+	TriggerLog = "log"
+)
+
+// Engine-hosted source functions (auto delivery): observe them with [Client.Observe]
+// and filters, in place of the engine trigger types.
+const (
+	FnOnFunctionsChanged    = "engine::on-functions-changed"
+	FnOnWorkersChanged      = "engine::on-workers-changed"
+	FnOnLog                 = "observability::on-log"
+	FnOnSpan                = "observability::on-span"
+	FnOnConfigurationUpdate = "configuration::on-updated"
 )
 
 // Log function paths. Mirrors LogFunctions in iii-constants.ts. Invoke these with

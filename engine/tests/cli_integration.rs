@@ -40,13 +40,26 @@ fn short_version_flag_prints_version() {
 }
 
 #[test]
-fn help_flag_shows_all_subcommands() {
+fn help_flag_shows_public_subcommands() {
     let output = iii_bin().arg("--help").output().expect("failed to execute");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // All subcommands should appear in help
+    // Public subcommands should appear in help
     assert!(stdout.contains("trigger"), "help should list trigger");
-    assert!(stdout.contains("console"), "help should list console");
+    for subcommand in ["compose", "cloud", "ps", "kill"] {
+        assert!(
+            stdout
+                .lines()
+                .any(|line| { line.split_whitespace().next() == Some(subcommand) }),
+            "help should list {subcommand}"
+        );
+    }
+    assert!(
+        !stdout
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("console")),
+        "help must not advertise the removed console command"
+    );
     assert!(!stdout.contains("  worker"), "help must not list worker");
     assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");

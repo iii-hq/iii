@@ -22,6 +22,10 @@ import (
 // the engine asks the worker to start or stop it. Mirrors TriggerConfig<TConfig> in
 // triggers.ts.
 //
+// Deprecated: trigger instances are observers: an owner receives an [Observer] (its
+// Args, Filters and Target) in [ObserveHooks.OnObserverAdded]. Migration guide:
+// https://iii.dev/docs/upgrading/from-0-24-x
+//
 // Config is left as raw JSON: the trigger type's owner knows its own config schema and
 // unmarshals into a concrete type, the same way RegisterTriggerTypeMessage advertises
 // that schema on the wire. This matches the rest of the protocol layer, which keeps
@@ -49,6 +53,10 @@ type TriggerConfig struct {
 //
 // The context is cancelled when the Client shuts down, so a handler that starts
 // background work (a ticker, an HTTP listener) should tie that work's lifetime to it.
+//
+// Deprecated: register a function with [ObserveHooks] (OnObserverAdded /
+// OnObserverRemoved) instead of a trigger type. Migration guide:
+// https://iii.dev/docs/upgrading/from-0-24-x
 type TriggerHandler interface {
 	// RegisterTrigger is called when a trigger instance is registered. The handler
 	// should begin delivering invocations for cfg.FunctionID per cfg.Config.

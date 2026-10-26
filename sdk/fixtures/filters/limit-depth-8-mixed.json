@@ -1,0 +1,9 @@
+{
+  "description": "depth 8 through $or, $not and $any; $and does not add a level",
+  "filters": {"$or": [{"$and": [{"$not": {"input.l": {"$any": {"@.m": {"$any": {"$and": [{"$or": [{"$not": {"@.k": {"$any": {"$eq": 1}}}}]}]}}}}}}]}]},
+  "cases": [
+    { "doc": {"input": {"l": [{"m": [{"k": [2]}]}]}}, "expect": false, "note": "$not around @.k having a 1 is true, so the $or holds, then the outer $not fails" },
+    { "doc": {"input": {"l": [{"m": [{"k": [1]}]}]}}, "expect": true },
+    { "doc": {"input": {"l": []}}, "expect": true }
+  ]
+}

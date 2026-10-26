@@ -1,0 +1,10 @@
+{
+  "description": "$not takes a filter object",
+  "cases": [
+    { "filters": {"$not": []}, "code": "INVALID_FILTER", "note": "array" },
+    { "filters": {"$not": [{"input.a": {"$eq": 1}}]}, "code": "INVALID_FILTER", "note": "array of filters" },
+    { "filters": {"$not": "x"}, "code": "INVALID_FILTER", "note": "string" },
+    { "filters": {"$not": null}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"$not": true}, "code": "INVALID_FILTER", "note": "boolean" }
+  ]
+}

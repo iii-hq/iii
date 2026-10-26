@@ -54,6 +54,8 @@ export interface OtelConfig {
   serviceInstanceId?: string
   /** III Engine WebSocket URL. Defaults to III_URL or "ws://localhost:49134". */
   engineWsUrl?: string
+  /** HTTP headers sent on the telemetry WebSocket handshake (e.g. `Authorization`). */
+  engineWsHeaders?: Record<string, string>
   /** OpenTelemetry instrumentations to register (e.g., PrismaInstrumentation). */
   instrumentations?: Instrumentation[]
   /** Whether OpenTelemetry metrics export is enabled. Defaults to true. Set to false or OTEL_METRICS_ENABLED=false/0/no/off to disable. */

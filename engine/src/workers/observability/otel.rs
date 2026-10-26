@@ -33,8 +33,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -412,6 +412,26 @@ pub struct StoredSpan {
     /// By convention `end_time_unix_nano == 0` while pending.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// The observe depth of what produced the span (the engine invocation it
+    /// records, from its `iii.observe_depth` attribute; or, for a worker's
+    /// span, the deepest invocation its connection was running when the
+    /// span arrived): `observability::on-span` events take the deepest of
+    /// their window, so a span loop stops at `observers.max_observe_depth`.
+    /// Not part of the span.
+    #[serde(skip)]
+    pub observe_depth: u32,
+}
+
+/// The `iii.observe_depth` attribute the engine records on an invocation's
+/// span at depth > 0.
+pub const OBSERVE_DEPTH_ATTRIBUTE: &str = "iii.observe_depth";
+
+fn observe_depth_of(span: &SpanData) -> u32 {
+    span.attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == OBSERVE_DEPTH_ATTRIBUTE)
+        .and_then(|kv| kv.value.to_string().parse().ok())
+        .unwrap_or(0)
 }
 
 impl StoredSpan {
@@ -512,6 +532,7 @@ impl StoredSpan {
                 if ts.is_empty() { None } else { Some(ts) }
             },
             pending: false,
+            observe_depth: observe_depth_of(span),
         }
     }
 
@@ -693,6 +714,10 @@ fn sanitize_span(span: &mut StoredSpan, max_attribute_bytes: usize) {
 struct Slot {
     bytes: u64,
     span: StoredSpan,
+    archive_rejected: bool,
+    /// A newer final of the same `(trace_id, span_id)` is resident: losing
+    /// this record loses nothing, the archive keeps the newest version.
+    superseded: bool,
 }
 
 /// The hot cache proper: a bounded FIFO of spans keyed by a monotonic sequence
@@ -714,6 +739,15 @@ struct HotCache {
     pending: HashMap<(String, String), u64>,
     /// Finalized spans the archive writer has not acknowledged yet, oldest first.
     dirty: BTreeSet<u64>,
+    /// Dirty seqs claimed by the archive writer's current batch. Eviction does
+    /// not count these as dropped: the writer settles each one exactly once
+    /// (durable, dropped or deferred) through `finish_archive_batch`.
+    in_flight: HashSet<u64>,
+    /// In-flight seqs the cache evicted before the writer settled them.
+    evicted_in_flight: HashSet<u64>,
+    /// Newest resident final per `trace_id` -> `span_id`, to mark the older
+    /// final it supersedes in O(1).
+    finals: HashMap<String, HashMap<String, u64>>,
     hot_bytes: u64,
 }
 
@@ -730,10 +764,33 @@ impl HotCache {
                 .insert((span.trace_id.clone(), span.span_id.clone()), seq);
         } else {
             self.dirty.insert(seq);
+            self.record_final(&span.trace_id, &span.span_id, seq);
         }
         self.hot_bytes = self.hot_bytes.saturating_add(bytes);
-        self.slots.insert(seq, Slot { bytes, span });
+        self.slots.insert(
+            seq,
+            Slot {
+                bytes,
+                span,
+                archive_rejected: false,
+                superseded: false,
+            },
+        );
         seq
+    }
+
+    /// `seq` is now the newest final of its span: mark the previous one.
+    fn record_final(&mut self, trace_id: &str, span_id: &str, seq: u64) {
+        let previous = self
+            .finals
+            .entry(trace_id.to_string())
+            .or_default()
+            .insert(span_id.to_string(), seq);
+        if let Some(previous) = previous.filter(|previous| *previous != seq)
+            && let Some(slot) = self.slots.get_mut(&previous)
+        {
+            slot.superseded = true;
+        }
     }
 
     /// A final span replacing its live snapshot overwrites in place: same seq,
@@ -757,7 +814,9 @@ impl HotCache {
             .saturating_add(bytes);
         slot.bytes = bytes;
         slot.span = span;
+        slot.archive_rejected = false;
         self.dirty.insert(seq);
+        self.record_final(&key.0, &key.1, seq);
         Ok(())
     }
 
@@ -790,8 +849,22 @@ impl HotCache {
             if self.pending.get(&key) == Some(&seq) {
                 self.pending.remove(&key);
             }
+        } else if let Some(spans) = self.finals.get_mut(&slot.span.trace_id) {
+            if spans.get(&slot.span.span_id) == Some(&seq) {
+                spans.remove(&slot.span.span_id);
+            }
+            if spans.is_empty() {
+                self.finals.remove(&slot.span.trace_id);
+            }
         }
-        self.dirty.remove(&seq)
+        let was_dirty = self.dirty.remove(&seq);
+        if was_dirty && self.in_flight.remove(&seq) {
+            // The writer holds a copy and settles it later: counted once
+            // then, as durable (not lost) or as dropped.
+            self.evicted_in_flight.insert(seq);
+            return false;
+        }
+        was_dirty
     }
 
     /// Evict oldest-first until both limits hold with `incoming_spans` /
@@ -821,7 +894,13 @@ impl HotCache {
             let Some((seq, slot)) = self.slots.pop_first() else {
                 break;
             };
-            if self.detach(seq, slot) {
+            // A newer final of the same span carries it to the archive:
+            // evicting this one loses nothing.
+            let superseded = slot.superseded;
+            let lost = self.detach(seq, slot);
+            if superseded {
+                self.evicted_in_flight.remove(&seq);
+            } else if lost {
                 dropped += 1;
             }
         }
@@ -1153,6 +1232,9 @@ impl InMemorySpanStorage {
         cache.by_trace.clear();
         cache.pending.clear();
         cache.dirty.clear();
+        cache.in_flight.clear();
+        cache.evicted_in_flight.clear();
+        cache.finals.clear();
         cache.hot_bytes = 0;
     }
 
@@ -1184,13 +1266,32 @@ impl InMemorySpanStorage {
     /// SQLite transaction; a span evicted in between is simply not there
     /// anymore and its sequence acknowledges nothing.
     pub fn dirty_spans(&self, limit: usize, max_bytes: u64) -> Vec<(u64, StoredSpan)> {
-        let cache = self.read();
+        Self::select_dirty(&self.read(), limit, max_bytes, u64::MAX, &HashSet::new())
+    }
+
+    /// Oldest dirty spans below `below_seq` that are not already claimed and
+    /// not in `skip_traces`. The first eligible span is always returned, even
+    /// when it alone exceeds `max_bytes`, so one large span cannot stall the
+    /// queue.
+    fn select_dirty(
+        cache: &HotCache,
+        limit: usize,
+        max_bytes: u64,
+        below_seq: u64,
+        skip_traces: &HashSet<String>,
+    ) -> Vec<(u64, StoredSpan)> {
         let mut bytes = 0u64;
         let mut result = Vec::new();
-        for seq in &cache.dirty {
+        for seq in cache.dirty.range(..below_seq) {
+            if cache.in_flight.contains(seq) {
+                continue;
+            }
             let Some(slot) = cache.slots.get(seq) else {
                 continue;
             };
+            if skip_traces.contains(&slot.span.trace_id) {
+                continue;
+            }
             if !result.is_empty()
                 && (result.len() >= limit || bytes.saturating_add(slot.bytes) > max_bytes)
             {
@@ -1202,11 +1303,143 @@ impl InMemorySpanStorage {
         result
     }
 
+    /// Whether any span of `trace_id` is resident (stored spans were sampled in).
+    pub(crate) fn has_trace(&self, trace_id: &str) -> bool {
+        self.read().by_trace.contains_key(trace_id)
+    }
+
+    /// Whether the live snapshot `(trace_id, span_id)` is resident and was
+    /// stored at or after sequence `since` (see `archive_watermark`).
+    pub(crate) fn pending_since(&self, trace_id: &str, span_id: &str, since: u64) -> bool {
+        self.read()
+            .pending
+            .get(&(trace_id.to_string(), span_id.to_string()))
+            .is_some_and(|seq| *seq >= since)
+    }
+
+    /// Whether an unclaimed dirty span below `below_seq` outside `skip_traces`
+    /// remains, without cloning any span.
+    pub(crate) fn has_archive_backlog(
+        &self,
+        below_seq: u64,
+        skip_traces: &HashSet<String>,
+    ) -> bool {
+        let cache = self.read();
+        cache.dirty.range(..below_seq).any(|seq| {
+            !cache.in_flight.contains(seq)
+                && cache
+                    .slots
+                    .get(seq)
+                    .is_some_and(|slot| !skip_traces.contains(&slot.span.trace_id))
+        })
+    }
+
+    /// Sequence number the next ingested span will get: every resident span
+    /// has a lower one. `flush` uses it as its durability boundary.
+    pub(crate) fn archive_watermark(&self) -> u64 {
+        self.read().next_seq
+    }
+
+    /// Claim the oldest eligible dirty spans for one archive attempt. The
+    /// spans are cloned under the read guard; the short write guard only
+    /// marks the still-dirty seqs in flight. Every returned seq must be
+    /// settled exactly once with `finish_archive_batch`.
+    pub(crate) fn begin_archive_batch(
+        &self,
+        limit: usize,
+        max_bytes: u64,
+        below_seq: u64,
+        skip_traces: &HashSet<String>,
+    ) -> Vec<(u64, StoredSpan)> {
+        let mut batch = Self::select_dirty(&self.read(), limit, max_bytes, below_seq, skip_traces);
+        if batch.is_empty() {
+            return batch;
+        }
+        let mut cache = self.write();
+        batch.retain(|(seq, _)| cache.dirty.contains(seq) && cache.in_flight.insert(*seq));
+        batch
+    }
+
+    /// Settle a claimed batch; returns how many spans were lost, each counted
+    /// exactly once:
+    /// - `durable`: committed to SQLite, never lost (even if evicted meanwhile);
+    /// - `dropped`: irrecoverable for the archive, lost if still dirty or
+    ///   evicted while in flight; resident slots become archive-rejected so a
+    ///   storage swap does not requeue them;
+    /// - `deferred`: stays dirty for a later attempt, lost only if the cache
+    ///   evicted it while in flight.
+    ///
+    /// Seqs that are no longer in flight (for example after `clear`) settle
+    /// nothing.
+    pub(crate) fn finish_archive_batch(
+        &self,
+        durable: &[u64],
+        dropped: &[u64],
+        deferred: &[u64],
+    ) -> u64 {
+        let mut cache = self.write();
+        let mut lost = 0u64;
+        for seq in durable {
+            if cache.in_flight.remove(seq) {
+                cache.dirty.remove(seq);
+            }
+            cache.evicted_in_flight.remove(seq);
+        }
+        for seq in dropped {
+            let claimed = cache.in_flight.remove(seq);
+            let evicted = cache.evicted_in_flight.remove(seq);
+            if claimed && cache.slots.get(seq).is_some_and(|slot| slot.superseded) {
+                // A newer record of the same span replaces this one in the
+                // archive: superseded, not lost.
+                cache.dirty.remove(seq);
+            } else if evicted || (claimed && cache.dirty.remove(seq)) {
+                lost += 1;
+            }
+            if claimed && let Some(slot) = cache.slots.get_mut(seq) {
+                slot.archive_rejected = true;
+            }
+        }
+        for seq in deferred {
+            cache.in_flight.remove(seq);
+            if cache.evicted_in_flight.remove(seq) {
+                lost += 1;
+            }
+        }
+        lost
+    }
+
     pub fn mark_durable(&self, seqs: &[u64]) {
         let mut cache = self.write();
         for seq in seqs {
             cache.dirty.remove(seq);
+            cache.in_flight.remove(seq);
+            cache.evicted_in_flight.remove(seq);
         }
+    }
+
+    /// Remove one live snapshot whose final will never be stored (sampled out
+    /// after a sampler swap). The removed snapshot is re-broadcast as an
+    /// invalidation: subscribers only derive "trace changed" ticks from the
+    /// broadcast and consumers re-read the trace, so the in-progress row
+    /// disappears instead of rendering as running until a reload.
+    pub(crate) fn discard_pending(&self, trace_id: &str, span_id: &str) -> bool {
+        let removed = {
+            let mut cache = self.write();
+            let key = (trace_id.to_string(), span_id.to_string());
+            let Some(seq) = cache.pending.get(&key).copied() else {
+                return false;
+            };
+            let Some(slot) = cache.slots.remove(&seq) else {
+                return false;
+            };
+            let span = slot.span.clone();
+            cache.detach(seq, slot);
+            span
+        };
+        if self.tx.receiver_count() > 0 {
+            let _ = self.tx.send(removed);
+        }
+        true
     }
 
     /// Re-mark every resident finalized span as dirty. A trace-storage swap
@@ -1220,7 +1453,7 @@ impl InMemorySpanStorage {
         let finals: Vec<u64> = cache
             .slots
             .iter()
-            .filter(|(_, slot)| !slot.span.pending)
+            .filter(|(_, slot)| !slot.span.pending && !slot.archive_rejected)
             .map(|(seq, _)| *seq)
             .collect();
         cache.dirty.extend(finals);
@@ -2332,12 +2565,20 @@ impl SpanExporter for TeeSpanExporter {
 #[derive(Clone, Debug)]
 pub struct DynamicSampler {
     inner: Arc<RwLock<Sampler>>,
+    /// Per-trace verdicts for ingested worker spans; reset on every swap so
+    /// a new policy applies to traces first seen after the change.
+    ingest_decisions: Arc<Mutex<IngestDecisions>>,
+    /// Worker spans waiting for their trace's root; kept across swaps and
+    /// decided by the policy in force when released.
+    held_spans: Arc<Mutex<HeldSpans>>,
 }
 
 impl DynamicSampler {
     pub fn new(initial: Sampler) -> Self {
         Self {
             inner: Arc::new(RwLock::new(initial)),
+            ingest_decisions: Arc::new(Mutex::new(IngestDecisions::default())),
+            held_spans: Arc::new(Mutex::new(HeldSpans::default())),
         }
     }
 
@@ -2346,6 +2587,58 @@ impl DynamicSampler {
             .inner
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = new;
+        // Live snapshots stored before this point were admitted by the
+        // previous policy: their roots are decided again.
+        let watermark = get_span_storage().map_or(u64::MAX, |storage| storage.archive_watermark());
+        let mut decisions = self
+            .ingest_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        decisions.clear();
+        decisions.admitted_since = watermark;
+    }
+}
+
+/// Upper bound on remembered worker-trace sampling verdicts (~1 MiB).
+const INGEST_DECISION_CAPACITY: usize = 16_384;
+
+/// The first sampling verdict reached for each ingested worker trace, so a
+/// start snapshot, its final and every child span share one decision and a
+/// rate-limit token is spent at most once per trace. FIFO-bounded: when full,
+/// the oldest trace is forgotten; a late child of it then follows the hot
+/// cache, a late root final its live snapshot (`admitted_since`), anything
+/// else is decided again.
+#[derive(Debug, Default)]
+pub(crate) struct IngestDecisions {
+    sampled: HashMap<String, bool>,
+    order: VecDeque<String>,
+    /// Hot-cache sequence at the last sampler swap: live snapshots stored
+    /// before it were admitted by an earlier policy.
+    admitted_since: u64,
+}
+
+impl IngestDecisions {
+    fn get(&self, trace_id: &str) -> Option<bool> {
+        self.sampled.get(trace_id).copied()
+    }
+
+    fn insert(&mut self, trace_id: &str, sampled: bool) {
+        if self.sampled.contains_key(trace_id) {
+            return;
+        }
+        while self.order.len() >= INGEST_DECISION_CAPACITY {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.sampled.remove(&oldest);
+        }
+        self.order.push_back(trace_id.to_string());
+        self.sampled.insert(trace_id.to_string(), sampled);
+    }
+
+    fn clear(&mut self) {
+        self.sampled.clear();
+        self.order.clear();
     }
 }
 
@@ -2465,21 +2758,467 @@ fn get_or_build_forwarder(
     }
 }
 
-/// Whether the engine sampler keeps a forwarded worker span. The trace-id ratio
-/// is deterministic per trace, so an entire trace is kept or dropped
-/// consistently regardless of which service produced a given span.
-fn forward_span_is_sampled<S: opentelemetry_sdk::trace::ShouldSample>(
+/// OTLP span flags bits 8 and 9: the SDK knows whether the parent is remote,
+/// and it is. Only then is the parent's W3C sampled bit a decision made
+/// elsewhere (as with an incoming `traceparent`).
+const OTLP_REMOTE_PARENT: u32 = 0x300;
+/// How long a worker span may wait for its trace's root (see `HeldSpans`).
+const ROOT_WAIT: Duration = Duration::from_secs(2);
+/// Upper bound on held worker spans across all traces.
+const MAX_HELD_SPANS: usize = 4_096;
+/// Upper bound on the estimated raw OTLP bytes of held worker spans. Held
+/// spans are not yet truncated to the stored attribute limit, so a count
+/// alone does not bound their memory.
+const MAX_HELD_BYTES: usize = 32 * 1024 * 1024;
+/// Bytes counted per span, attribute, event and link beside its strings.
+const OTLP_ITEM_OVERHEAD: usize = 64;
+
+fn otlp_value_bytes(value: &OtlpAnyValue) -> usize {
+    let strings = value.string_value.as_ref().map_or(0, String::len);
+    let list = value
+        .kvlist_value
+        .as_ref()
+        .map_or(0, |list| otlp_attributes_bytes(&list.values));
+    let array = value.array_value.as_ref().map_or(0, |array| {
+        array
+            .values
+            .iter()
+            .map(otlp_value_bytes)
+            .fold(0, usize::saturating_add)
+    });
+    strings
+        .saturating_add(list)
+        .saturating_add(array)
+        .saturating_add(std::mem::size_of::<OtlpAnyValue>())
+}
+
+fn otlp_attributes_bytes(attributes: &[OtlpKeyValue]) -> usize {
+    attributes
+        .iter()
+        .map(|attribute| {
+            attribute
+                .key
+                .len()
+                .saturating_add(attribute.value.as_ref().map_or(0, otlp_value_bytes))
+                .saturating_add(OTLP_ITEM_OVERHEAD)
+        })
+        .fold(0, usize::saturating_add)
+}
+
+/// Estimated memory of one decoded OTLP span: its strings, attributes,
+/// events and links.
+fn otlp_span_bytes(span: &OtlpSpan) -> usize {
+    let events = span
+        .events
+        .iter()
+        .map(|event| {
+            event
+                .name
+                .len()
+                .saturating_add(otlp_attributes_bytes(&event.attributes))
+                .saturating_add(OTLP_ITEM_OVERHEAD)
+        })
+        .fold(0, usize::saturating_add);
+    let links = span
+        .links
+        .iter()
+        .map(|link| {
+            (link.trace_id.len() + link.span_id.len())
+                .saturating_add(link.trace_state.as_ref().map_or(0, String::len))
+                .saturating_add(otlp_attributes_bytes(&link.attributes))
+                .saturating_add(OTLP_ITEM_OVERHEAD)
+        })
+        .fold(0, usize::saturating_add);
+    let status = span
+        .status
+        .as_ref()
+        .and_then(|status| status.message.as_ref())
+        .map_or(0, String::len);
+    (span.trace_id.len() + span.span_id.len() + span.name.len())
+        .saturating_add(span.parent_span_id.as_ref().map_or(0, String::len))
+        .saturating_add(status)
+        .saturating_add(otlp_attributes_bytes(&span.attributes))
+        .saturating_add(events)
+        .saturating_add(links)
+        .saturating_add(std::mem::size_of::<OtlpSpan>())
+}
+
+fn otlp_fragment_bytes(fragment: &OtlpResourceSpans) -> usize {
+    let resource = fragment
+        .resource
+        .as_ref()
+        .map_or(0, |resource| otlp_attributes_bytes(&resource.attributes));
+    fragment
+        .scope_spans
+        .iter()
+        .flat_map(|scope| &scope.spans)
+        .map(otlp_span_bytes)
+        .fold(resource, usize::saturating_add)
+}
+
+fn valid_span_id(id: &str) -> Option<opentelemetry::trace::SpanId> {
+    use opentelemetry::trace::SpanId;
+    SpanId::from_hex(id)
+        .ok()
+        .filter(|id| *id != SpanId::INVALID)
+}
+
+fn remote_parent_flags(span: &OtlpSpan) -> Option<u32> {
+    span.flags
+        .filter(|flags| flags & OTLP_REMOTE_PARENT == OTLP_REMOTE_PARENT)
+}
+
+/// Where this service decides a trace: a span without a valid parent, or one
+/// whose parent is remote.
+fn is_local_root(span: &OtlpSpan) -> bool {
+    span.parent_span_id
+        .as_deref()
+        .and_then(valid_span_id)
+        .is_none()
+        || remote_parent_flags(span).is_some()
+}
+
+/// Per-operation rules are evaluated on a trace's root (the engine samples
+/// children by their parent), so a worker child that arrives before its root
+/// must wait for it.
+fn sampling_waits_for_root() -> bool {
+    get_otel_config().is_some_and(|config| {
+        config
+            .sampling
+            .as_ref()
+            .is_some_and(|sampling| sampling.rules.iter().any(|rule| rule.operation.is_some()))
+    })
+}
+
+/// Worker spans that arrived before their trace's root while per-operation
+/// rules are active. They are neither stored nor forwarded until the root
+/// arrives (the trace is then decided by the root) or `ROOT_WAIT` passes;
+/// a full buffer releases its oldest traces early. A trace released without
+/// its root is decided by its first held span, as without waiting. Bounded
+/// by `MAX_HELD_SPANS` spans, by `MAX_HELD_BYTES` estimated raw bytes and,
+/// for the bookkeeping queue, by the rate of held traces over `ROOT_WAIT`.
+/// The budgets are checked on every ingest and release pass, so one request
+/// can exceed them until the next pass; the decoding of the request itself
+/// is not counted.
+#[derive(Debug, Default)]
+pub(crate) struct HeldSpans {
+    traces: HashMap<String, HeldTrace>,
+    /// Held traces, oldest first; entries of released traces are skipped.
+    order: VecDeque<String>,
+    spans: usize,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct HeldTrace {
+    since: Instant,
+    fragments: Vec<OtlpResourceSpans>,
+    spans: usize,
+    bytes: usize,
+}
+
+impl HeldSpans {
+    /// Returns whether the trace was not held before.
+    fn hold(
+        &mut self,
+        trace_id: String,
+        fragment: OtlpResourceSpans,
+        spans: usize,
+        now: Instant,
+    ) -> bool {
+        let bytes = otlp_fragment_bytes(&fragment);
+        self.spans = self.spans.saturating_add(spans);
+        self.bytes = self.bytes.saturating_add(bytes);
+        let new_trace = !self.traces.contains_key(&trace_id);
+        if new_trace {
+            self.order.push_back(trace_id.clone());
+        }
+        let held = self.traces.entry(trace_id).or_insert_with(|| HeldTrace {
+            since: now,
+            fragments: Vec::new(),
+            spans: 0,
+            bytes: 0,
+        });
+        held.fragments.push(fragment);
+        held.spans = held.spans.saturating_add(spans);
+        held.bytes = held.bytes.saturating_add(bytes);
+        if self.order.len() > 4 * MAX_HELD_SPANS {
+            let traces = &self.traces;
+            self.order.retain(|trace_id| traces.contains_key(trace_id));
+        }
+        new_trace
+    }
+
+    fn take(&mut self, trace_id: &str) -> Option<HeldTrace> {
+        let held = self.traces.remove(trace_id)?;
+        self.spans = self.spans.saturating_sub(held.spans);
+        self.bytes = self.bytes.saturating_sub(held.bytes);
+        Some(held)
+    }
+
+    /// Traces whose wait is over, and the oldest ones while over capacity.
+    fn take_due(&mut self, now: Instant) -> Vec<(String, HeldTrace)> {
+        let mut due = Vec::new();
+        while let Some(trace_id) = self.order.front().cloned() {
+            let Some(held) = self.traces.get(&trace_id) else {
+                self.order.pop_front();
+                continue;
+            };
+            if now.duration_since(held.since) < ROOT_WAIT
+                && self.spans <= MAX_HELD_SPANS
+                && self.bytes <= MAX_HELD_BYTES
+            {
+                break;
+            }
+            self.order.pop_front();
+            if let Some(held) = self.take(&trace_id) {
+                due.push((trace_id, held));
+            }
+        }
+        due
+    }
+
+    fn is_empty(&self) -> bool {
+        self.traces.is_empty()
+    }
+}
+
+/// At most one task releases held spans whose wait is over.
+static HELD_RELEASE_SCHEDULED: AtomicBool = AtomicBool::new(false);
+
+fn held_spans_pending() -> bool {
+    get_dynamic_sampler().is_some_and(|sampler| {
+        !sampler
+            .held_spans
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    })
+}
+
+fn schedule_held_release() {
+    if HELD_RELEASE_SCHEDULED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        HELD_RELEASE_SCHEDULED.store(false, Ordering::Release);
+        return;
+    };
+    runtime.spawn(async {
+        loop {
+            tokio::time::sleep(ROOT_WAIT / 4).await;
+            let _ = Box::pin(ingest_otlp_request(OtlpExportTraceServiceRequest::default())).await;
+            if !held_spans_pending() {
+                HELD_RELEASE_SCHEDULED.store(false, Ordering::Release);
+                // A span held after the check keeps the task alive.
+                if !held_spans_pending() || HELD_RELEASE_SCHEDULED.swap(true, Ordering::AcqRel) {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Apply the engine's ingest sampling policy once, BEFORE the local archive
+/// and collector paths diverge. Worker SDKs export at 100%; filtering only
+/// the collector silently bypasses sampling for memory/SQLite.
+///
+/// The verdict is per trace, like the engine's own tracer, and is made where
+/// the trace is rooted in this service:
+/// 1. A local root (no parent, or a parent the SDK flags as remote, OTLP flags
+///    `0x300`) decides first, even if a child precedes it in the request. With
+///    a remote parent its W3C sampled bit (set or not) is presented to the
+///    sampler as a remote parent context, exactly as an incoming
+///    `traceparent` is: parent-based samplers (`parent_based: true`, and
+///    rules/rate limits, which always run parent-based) follow it, a plain
+///    ratio keeps deciding by trace id. A local root otherwise gets the
+///    configured root policy (rules, rate-limit token, default) — the sampled
+///    bit the Node SDK sets on every span (`0x101`) is never a bypass. A
+///    root whose verdict the bounded cache forgot keeps it while its live
+///    snapshot, stored since the last sampler swap, is resident.
+/// 2. Every other span follows its trace: the remembered verdict, else a
+///    trace already in the hot cache (sampled in), else, when per-operation
+///    rules need the root, it waits in `held` for the root (bounded); without
+///    such rules the first span seen decides.
+///
+/// Returns whether a new trace started waiting (the caller schedules its
+/// release).
+fn sample_sdk_spans<S: opentelemetry_sdk::trace::ShouldSample>(
+    request: &mut OtlpExportTraceServiceRequest,
     sampler: &S,
-    sd: &SpanData,
+    decisions: &Mutex<IngestDecisions>,
+    held: &Mutex<HeldSpans>,
+    hold_new: bool,
 ) -> bool {
+    use opentelemetry::TraceId;
+
+    let storage = get_span_storage();
+    let in_hot = |trace_id: &str| storage.as_ref().is_some_and(|hot| hot.has_trace(trace_id));
+    let mut discarded_snapshots = Vec::new();
+    let mut new_wait = false;
+    {
+        let mut decisions = decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 1. Roots first.
+        for resource in &request.resource_spans {
+            for scope in &resource.scope_spans {
+                for span in &scope.spans {
+                    if !is_local_root(span) || decisions.get(&span.trace_id).is_some() {
+                        continue;
+                    }
+                    // Only this root's own live snapshot proves an earlier
+                    // admission: engine spans of the trace may follow a
+                    // worker `traceparent` instead of this policy.
+                    let since = decisions.admitted_since;
+                    let admitted = storage
+                        .as_ref()
+                        .is_some_and(|hot| hot.pending_since(&span.trace_id, &span.span_id, since));
+                    let sampled = admitted
+                        || TraceId::from_hex(&span.trace_id).is_ok_and(|trace_id| {
+                            ingest_sampling_decision(sampler, span, trace_id)
+                        });
+                    decisions.insert(&span.trace_id, sampled);
+                }
+            }
+        }
+        // Held spans rejoin the request once their trace is decided or their
+        // wait is over.
+        let mut held = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut released = Vec::new();
+        for resource in &request.resource_spans {
+            for scope in &resource.scope_spans {
+                for span in &scope.spans {
+                    if decisions.get(&span.trace_id).is_some()
+                        && let Some(trace) = held.take(&span.trace_id)
+                    {
+                        released.push(trace);
+                    }
+                }
+            }
+        }
+        for (trace_id, trace) in held.take_due(Instant::now()) {
+            if decisions.get(&trace_id).is_none() {
+                let first = trace
+                    .fragments
+                    .first()
+                    .and_then(|fragment| fragment.scope_spans.first())
+                    .and_then(|scope| scope.spans.first());
+                let sampled = first.is_some_and(|span| {
+                    TraceId::from_hex(&trace_id)
+                        .is_ok_and(|id| ingest_sampling_decision(sampler, span, id))
+                });
+                decisions.insert(&trace_id, sampled);
+            }
+            released.push(trace);
+        }
+        request
+            .resource_spans
+            .extend(released.into_iter().flat_map(|trace| trace.fragments));
+
+        // 2. Every span follows its trace.
+        let mut waiting = Vec::new();
+        for resource in &mut request.resource_spans {
+            for scope in &mut resource.scope_spans {
+                let mut wait_here: HashMap<String, Vec<OtlpSpan>> = HashMap::new();
+                for span in std::mem::take(&mut scope.spans) {
+                    let Ok(trace_id) = TraceId::from_hex(&span.trace_id) else {
+                        continue;
+                    };
+                    let sampled = match decisions.get(&span.trace_id) {
+                        Some(sampled) => sampled,
+                        None if in_hot(&span.trace_id) => {
+                            decisions.insert(&span.trace_id, true);
+                            true
+                        }
+                        None if hold_new => {
+                            wait_here
+                                .entry(span.trace_id.clone())
+                                .or_default()
+                                .push(span);
+                            continue;
+                        }
+                        None => {
+                            let sampled = ingest_sampling_decision(sampler, &span, trace_id);
+                            decisions.insert(&span.trace_id, sampled);
+                            sampled
+                        }
+                    };
+                    if sampled {
+                        scope.spans.push(span);
+                    } else if span.end_time_unix_nano.0 != 0 {
+                        discarded_snapshots.push((span.trace_id.clone(), span.span_id.clone()));
+                    }
+                }
+                for (trace_id, spans) in wait_here {
+                    let count = spans.len();
+                    let fragment = OtlpResourceSpans {
+                        resource: resource.resource.clone(),
+                        scope_spans: vec![OtlpScopeSpans {
+                            scope: scope.scope.clone(),
+                            spans,
+                        }],
+                    };
+                    waiting.push((trace_id, fragment, count));
+                }
+            }
+        }
+        let now = Instant::now();
+        for (trace_id, fragment, count) in waiting {
+            new_wait |= held.hold(trace_id, fragment, count, now);
+        }
+    }
+    // A live snapshot stored before its trace was sampled out (after a
+    // sampler swap reset the verdicts) must not stay pending forever.
+    if !discarded_snapshots.is_empty()
+        && let Some(storage) = storage
+    {
+        for (trace_id, span_id) in discarded_snapshots {
+            storage.discard_pending(&trace_id, &span_id);
+        }
+    }
+    new_wait
+}
+
+fn ingest_sampling_decision<S: opentelemetry_sdk::trace::ShouldSample>(
+    sampler: &S,
+    span: &OtlpSpan,
+    trace_id: opentelemetry::TraceId,
+) -> bool {
+    use opentelemetry::trace::{SpanContext, SpanKind, TraceFlags, TraceState};
     use opentelemetry_sdk::trace::SamplingDecision;
+
+    let kind = match span.kind {
+        Some(2) => SpanKind::Server,
+        Some(3) => SpanKind::Client,
+        Some(4) => SpanKind::Producer,
+        Some(5) => SpanKind::Consumer,
+        _ => SpanKind::Internal,
+    };
+    let attributes: Vec<_> = span
+        .attributes
+        .iter()
+        .filter_map(otlp_kv_to_key_value)
+        .collect();
+    // Only a real parent the SDK marks remote carries a decision: never the
+    // span's own id, never a local parent.
+    let remote_parent = remote_parent_flags(span).and_then(|flags| {
+        let parent_id = span.parent_span_id.as_deref().and_then(valid_span_id)?;
+        Some(Context::new().with_remote_span_context(SpanContext::new(
+            trace_id,
+            parent_id,
+            TraceFlags::new((flags & 0xff) as u8),
+            true,
+            TraceState::default(),
+        )))
+    });
     let result = sampler.should_sample(
-        None,
-        sd.span_context.trace_id(),
-        sd.name.as_ref(),
-        &sd.span_kind,
-        &sd.attributes,
-        &sd.links.links,
+        remote_parent.as_ref(),
+        trace_id,
+        &span.name,
+        &kind,
+        &attributes,
+        &[],
     );
     matches!(result.decision, SamplingDecision::RecordAndSample)
 }
@@ -2800,7 +3539,7 @@ pub fn shutdown_otel() {
 
 /// Extract trace and span IDs from the active span context.
 /// Returns `None` if there is no active span or tracing is not initialized.
-fn current_span_context_ids() -> Option<(String, String)> {
+pub(crate) fn current_span_context_ids() -> Option<(String, String)> {
     let ctx = Context::current();
     let span_ref = ctx.span();
     let span_ctx = span_ref.span_context();
@@ -2969,14 +3708,14 @@ pub fn baggage_with_function_id(baggage: Option<&str>, function_id: &str) -> Opt
 // =============================================================================
 
 /// OTLP ExportTraceServiceRequest structure for JSON deserialization
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpExportTraceServiceRequest {
     #[serde(default)]
     resource_spans: Vec<OtlpResourceSpans>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpResourceSpans {
     #[serde(default)]
@@ -2985,14 +3724,14 @@ struct OtlpResourceSpans {
     scope_spans: Vec<OtlpScopeSpans>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpResource {
     #[serde(default)]
     attributes: Vec<OtlpKeyValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpScopeSpans {
     #[serde(default)]
@@ -3001,7 +3740,7 @@ struct OtlpScopeSpans {
     spans: Vec<OtlpSpan>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpSpan {
     trace_id: String,
@@ -3029,7 +3768,7 @@ struct OtlpSpan {
     flags: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpSpanEvent {
     #[serde(default)]
@@ -3040,7 +3779,7 @@ struct OtlpSpanEvent {
     attributes: Vec<OtlpKeyValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpSpanLink {
     #[serde(default)]
@@ -3054,7 +3793,7 @@ struct OtlpSpanLink {
 }
 
 /// Wrapper type that can deserialize either a number or a string to u64
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct OtlpNumericString(u64);
 
 impl<'de> Deserialize<'de> for OtlpNumericString {
@@ -3162,7 +3901,7 @@ impl<'de> Deserialize<'de> for OtlpIntString {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpStatus {
     #[serde(default)]
@@ -3171,7 +3910,7 @@ struct OtlpStatus {
     message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpKeyValue {
     key: String,
@@ -3179,14 +3918,14 @@ struct OtlpKeyValue {
     value: Option<OtlpAnyValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpKeyValueList {
     #[serde(default)]
     values: Vec<OtlpKeyValue>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpArrayValue {
     #[serde(default)]
@@ -3292,7 +4031,7 @@ where
     deserializer.deserialize_any(Int64Visitor)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OtlpAnyValue {
     string_value: Option<String>,
@@ -3656,6 +4395,23 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     // Parse the OTLP JSON
     let request: OtlpExportTraceServiceRequest = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP JSON: {}", e))?;
+    ingest_otlp_request(request).await
+}
+
+/// Sample, store and forward one parsed request. Also used, with an empty
+/// request, to release held spans whose wait for their root is over.
+async fn ingest_otlp_request(mut request: OtlpExportTraceServiceRequest) -> anyhow::Result<()> {
+    if let Some(sampler) = get_dynamic_sampler()
+        && sample_sdk_spans(
+            &mut request,
+            sampler,
+            &sampler.ingest_decisions,
+            &sampler.held_spans,
+            sampling_waits_for_root(),
+        )
+    {
+        schedule_held_release();
+    }
 
     // Store in memory if available (for API access)
     if let Some(storage) = get_span_storage() {
@@ -3778,6 +4534,7 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                         // OTLP-ingested spans don't currently carry tracestate.
                         trace_state: None,
                         pending: is_start_snapshot,
+                        observe_depth: crate::observer::InvocationCtx::current_depth(),
                     };
 
                     if is_start_snapshot {
@@ -3812,12 +4569,10 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     // engine sampler so forwarded volume matches `sampling_ratio` (worker SDKs
     // export to the engine at 100%).
     if SDK_FORWARDER_ENDPOINT.get().is_some() {
-        let sampler = get_dynamic_sampler();
         for resource_span in &request.resource_spans {
-            let mut span_data = convert_resource_span_to_span_data(resource_span);
-            if let Some(sampler) = sampler {
-                span_data.retain(|sd| forward_span_is_sampled(sampler, sd));
-            }
+            // Already sampled above, including when both destinations are
+            // active. Sampling again would consume rate-limit tokens twice.
+            let span_data = convert_resource_span_to_span_data(resource_span);
             if span_data.is_empty() {
                 continue;
             }
@@ -3878,7 +4633,7 @@ struct OtlpScopeMetrics {
     metrics: Vec<OtlpMetric>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct OtlpScope {
@@ -4229,6 +4984,13 @@ pub struct StoredLog {
     /// Instrumentation scope version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instrumentation_scope_version: Option<String>,
+    /// The observe depth of what produced the record (the invocation it was
+    /// logged from, or the activation its worker was running when it
+    /// arrived): `observability::on-log` events take it, so a target that
+    /// logs on every activation stops at `observers.max_observe_depth`. Not
+    /// part of the record.
+    #[serde(skip)]
+    pub observe_depth: u32,
 }
 
 /// In-memory log storage with circular buffer and broadcast channel.
@@ -4732,6 +5494,7 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
                     service_name: service_name.clone(),
                     instrumentation_scope_name: scope_name.clone(),
                     instrumentation_scope_version: scope_version.clone(),
+                    observe_depth: crate::observer::InvocationCtx::current_depth(),
                 };
 
                 // Emit to console if enabled
@@ -4843,9 +5606,16 @@ impl OtlpLogsExporter {
         tokio::spawn(async move {
             let mut batch: Vec<StoredLog> = Vec::with_capacity(self.batch_size);
             let mut interval = tokio::time::interval(self.flush_interval);
+            let mut lag = super::lag::LagReport::default();
 
             loop {
+                let lag_due = lag.deadline();
                 tokio::select! {
+                    _ = super::lag::sleep_until(lag_due), if lag_due.is_some() => {
+                        if let Some(n) = lag.due() {
+                            tracing::warn!(dropped = n, "Log exporter lagged, some logs were dropped");
+                        }
+                    }
                     // Receive logs from broadcast channel
                     result = rx.recv() => {
                         match result {
@@ -4859,7 +5629,10 @@ impl OtlpLogsExporter {
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(dropped = n, "Log exporter lagged, some logs were dropped");
+                                // Rate-limited: this warning is a log too (see `lag`).
+                                if let Some(n) = lag.lagged(n) {
+                                    tracing::warn!(dropped = n, "Log exporter lagged, some logs were dropped");
+                                }
                             }
                             Err(broadcast::error::RecvError::Closed) => {
                                 tracing::info!("Log broadcast channel closed, stopping exporter");
@@ -4879,6 +5652,9 @@ impl OtlpLogsExporter {
                 }
             }
 
+            if let Some(n) = lag.rest() {
+                tracing::warn!(dropped = n, "Log exporter lagged, some logs were dropped");
+            }
             // Flush remaining logs on shutdown
             if !batch.is_empty()
                 && let Err(e) = self.export_batch(&batch).await
@@ -4897,13 +5673,20 @@ impl OtlpLogsExporter {
         tokio::spawn(async move {
             let mut batch: Vec<StoredLog> = Vec::with_capacity(self.batch_size);
             let mut interval = tokio::time::interval(self.flush_interval);
+            let mut lag = super::lag::LagReport::default();
 
             loop {
+                let lag_due = lag.deadline();
                 tokio::select! {
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
                             tracing::debug!("[OtlpLogsExporter] Shutting down");
                             break;
+                        }
+                    }
+                    _ = super::lag::sleep_until(lag_due), if lag_due.is_some() => {
+                        if let Some(n) = lag.due() {
+                            tracing::warn!(skipped = n, "OTLP logs exporter lagged behind");
                         }
                     }
                     result = rx.recv() => {
@@ -4918,7 +5701,10 @@ impl OtlpLogsExporter {
                                 }
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(skipped = n, "OTLP logs exporter lagged behind");
+                                // Rate-limited: this warning is a log too (see `lag`).
+                                if let Some(n) = lag.lagged(n) {
+                                    tracing::warn!(skipped = n, "OTLP logs exporter lagged behind");
+                                }
                             }
                             Err(broadcast::error::RecvError::Closed) => {
                                 tracing::debug!("[OtlpLogsExporter] Channel closed");
@@ -4937,6 +5723,9 @@ impl OtlpLogsExporter {
                 }
             }
 
+            if let Some(n) = lag.rest() {
+                tracing::warn!(skipped = n, "OTLP logs exporter lagged behind");
+            }
             // Flush remaining logs on shutdown
             if !batch.is_empty()
                 && let Err(e) = self.export_batch(&batch).await
@@ -5382,6 +6171,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
         assert_eq!(storage.len(), 5);
@@ -5467,6 +6257,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
         assert_eq!(storage.len(), 3, "retuned cap must bound the live store");
@@ -6099,6 +6890,7 @@ mod tests {
                 service_name: "test".to_string(),
                 instrumentation_scope_name: None,
                 instrumentation_scope_version: None,
+                observe_depth: 0,
             });
         }
 
@@ -6124,6 +6916,7 @@ mod tests {
             service_name: "test".to_string(),
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
+            observe_depth: 0,
         }
     }
 
@@ -6350,6 +7143,7 @@ mod tests {
             flags: None,
             trace_state: None,
             pending: false,
+            observe_depth: 0,
         }
     }
 
@@ -7819,19 +8613,24 @@ mod tests {
                 }]
             }]
         }"#;
-        let request: OtlpExportTraceServiceRequest =
+        let mut request: OtlpExportTraceServiceRequest =
             serde_json::from_str(json_str).expect("parse JSON");
-        let span_data = convert_otlp_to_span_data(&request);
-        let sd = &span_data[0];
-
-        assert!(
-            forward_span_is_sampled(&Sampler::AlwaysOn, sd),
-            "AlwaysOn must keep forwarded spans"
+        sample_sdk_spans(
+            &mut request,
+            &Sampler::AlwaysOn,
+            &Mutex::new(IngestDecisions::default()),
+            &Mutex::new(HeldSpans::default()),
+            false,
         );
-        assert!(
-            !forward_span_is_sampled(&Sampler::AlwaysOff, sd),
-            "AlwaysOff must drop forwarded spans"
+        assert_eq!(convert_otlp_to_span_data(&request).len(), 1);
+        sample_sdk_spans(
+            &mut request,
+            &Sampler::AlwaysOff,
+            &Mutex::new(IngestDecisions::default()),
+            &Mutex::new(HeldSpans::default()),
+            false,
         );
+        assert!(convert_otlp_to_span_data(&request).is_empty());
     }
 
     #[test]
@@ -8167,6 +8966,49 @@ mod tests {
         assert_eq!(spans[0].status, "ok");
         assert_eq!(spans[0].attributes.len(), 1);
         assert_eq!(spans[0].attributes[0].0, "key");
+    }
+
+    /// An engine invocation's span records its observe depth at depth > 0;
+    /// the stored span carries it for `observability::on-span`.
+    #[test]
+    fn stored_span_from_span_data_carries_the_observe_depth() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let span = |attributes: Vec<opentelemetry::KeyValue>| SpanData {
+            span_context: SpanContext::new(
+                TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+                SpanId::from_hex("b7ad6b7169203331").unwrap(),
+                TraceFlags::SAMPLED,
+                true,
+                TraceState::NONE,
+            ),
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Server,
+            name: Cow::Borrowed("call orders::create"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1000),
+            end_time: UNIX_EPOCH + Duration::from_secs(1001),
+            attributes,
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Ok,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+        let deep = StoredSpan::from_span_data(
+            &span(vec![opentelemetry::KeyValue::new(
+                OBSERVE_DEPTH_ATTRIBUTE,
+                2i64,
+            )]),
+            "engine",
+        );
+        assert_eq!(deep.observe_depth, 2);
+        let plain = StoredSpan::from_span_data(&span(Vec::new()), "engine");
+        assert_eq!(plain.observe_depth, 0);
     }
 
     #[test]
@@ -9152,6 +9994,7 @@ mod tests {
             service_name: "test-service".to_string(),
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
+            observe_depth: 0,
         }
     }
 
@@ -9350,5 +10193,516 @@ mod tests {
         assert!(!span_ref.span_context().is_valid());
         drop(span_ref);
         assert!(inject_traceparent_from_context(&cx).is_none());
+    }
+
+    fn archive_test_span(trace_id: &str, span_id: &str) -> StoredSpan {
+        StoredSpan {
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: None,
+            name: "archive-settlement".to_string(),
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            status: "ok".to_string(),
+            status_description: None,
+            attributes: Vec::new(),
+            service_name: "test".to_string(),
+            events: Vec::new(),
+            links: Vec::new(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+            trace_state: None,
+            pending: false,
+            observe_depth: 0,
+        }
+    }
+
+    fn claim_all(storage: &InMemorySpanStorage) -> Vec<u64> {
+        storage
+            .begin_archive_batch(1_000, u64::MAX, u64::MAX, &HashSet::new())
+            .into_iter()
+            .map(|(seq, _)| seq)
+            .collect()
+    }
+
+    /// Review P1-4: a span the cache evicts while the writer holds it is
+    /// counted once, by the writer's settlement, and never when it was
+    /// committed.
+    #[test]
+    fn archive_settlement_counts_each_lost_span_exactly_once() {
+        let storage = InMemorySpanStorage::new_with_limits(16, 1_000_000);
+        storage.add_spans(vec![
+            archive_test_span("t1", "a"),
+            archive_test_span("t2", "b"),
+            archive_test_span("t3", "c"),
+        ]);
+        let seqs = claim_all(&storage);
+        assert_eq!(seqs.len(), 3);
+        assert!(
+            claim_all(&storage).is_empty(),
+            "in-flight spans are not claimed twice"
+        );
+        // Evict everything while the writer holds the batch.
+        let evicted_now = storage.write().evict_for(0, 0, 0, 0, 0.75);
+        assert_eq!(evicted_now, 0, "in-flight evictions are left to the writer");
+        let lost = storage.finish_archive_batch(&seqs[..1], &seqs[1..2], &seqs[2..]);
+        assert_eq!(lost, 2, "durable is not lost; dropped and deferred are");
+        assert_eq!(
+            storage.finish_archive_batch(&seqs[..1], &seqs[1..2], &seqs[2..]),
+            0,
+            "settling again counts nothing"
+        );
+
+        // Resident spans: dropped is lost once, deferred stays dirty.
+        storage.add_spans(vec![
+            archive_test_span("t4", "d"),
+            archive_test_span("t5", "e"),
+        ]);
+        let seqs = claim_all(&storage);
+        assert_eq!(storage.finish_archive_batch(&[], &seqs[..1], &seqs[1..]), 1);
+        assert_eq!(storage.dirty_len(), 1, "the deferred span remains dirty");
+        let evicted = storage.write().evict_for(0, 0, 0, 0, 0.75);
+        assert_eq!(
+            evicted, 1,
+            "a dirty span outside any batch is counted by eviction"
+        );
+    }
+
+    /// Review P2-5 (r2, OPUS2B_N5B): evicting an older dirty record whose
+    /// newer version is still dirty loses nothing, whether or not the writer
+    /// holds it in flight.
+    #[test]
+    fn evicting_a_superseded_span_version_counts_nothing() {
+        let storage = InMemorySpanStorage::new_with_limits(16, 1_000_000);
+        storage.add_spans(vec![archive_test_span("t", "same")]);
+        storage.add_spans(vec![archive_test_span("t", "same")]);
+        assert_eq!(storage.write().evict_for(0, 0, 1, 0, 0.75), 0);
+        assert_eq!(storage.dirty_len(), 1, "the newer version is still queued");
+
+        let storage = InMemorySpanStorage::new_with_limits(16, 1_000_000);
+        storage.add_spans(vec![archive_test_span("u", "same")]);
+        let claimed = storage.begin_archive_batch(1, u64::MAX, u64::MAX, &HashSet::new());
+        storage.add_spans(vec![archive_test_span("u", "same")]);
+        let evicted = storage.write().evict_for(0, 0, 1, 0, 0.75);
+        let lost = storage.finish_archive_batch(&[], &[], &[claimed[0].0]);
+        assert_eq!(
+            (evicted, lost),
+            (0, 0),
+            "in flight and superseded: not lost"
+        );
+
+        // Without a newer version, eviction still counts the lost span.
+        let storage = InMemorySpanStorage::new_with_limits(16, 1_000_000);
+        storage.add_spans(vec![archive_test_span("v", "only")]);
+        assert_eq!(storage.write().evict_for(0, 0, 0, 0, 0.75), 1);
+    }
+
+    /// Review P2-5: an older dirty record replaced by a newer version of the
+    /// same span is superseded, not lost, when the writer drops it.
+    #[test]
+    fn dropping_a_superseded_span_version_counts_nothing() {
+        let storage = InMemorySpanStorage::new_with_limits(16, 1_000_000);
+        storage.add_spans(vec![archive_test_span("t", "same")]);
+        storage.add_spans(vec![archive_test_span("t", "same")]);
+        let old = storage.begin_archive_batch(1, u64::MAX, u64::MAX, &HashSet::new());
+        assert_eq!(old.len(), 1);
+        assert_eq!(storage.finish_archive_batch(&[], &[old[0].0], &[]), 0);
+        assert_eq!(storage.dirty_len(), 1, "the newer version is still queued");
+    }
+
+    fn sampling_request(spans: serde_json::Value) -> OtlpExportTraceServiceRequest {
+        serde_json::from_value(serde_json::json!({
+            "resourceSpans": [{"scopeSpans": [{"spans": spans}]}]
+        }))
+        .expect("valid OTLP request")
+    }
+
+    fn sampling_span(
+        trace_id: &str,
+        span_id: &str,
+        parent: Option<&str>,
+        end: &str,
+        flags: Option<u32>,
+    ) -> serde_json::Value {
+        let mut span = serde_json::json!({
+            "traceId": trace_id, "spanId": span_id, "name": "op", "kind": 1,
+            "startTimeUnixNano": "1", "endTimeUnixNano": end
+        });
+        if let Some(parent) = parent {
+            span["parentSpanId"] = serde_json::json!(parent);
+        }
+        if let Some(flags) = flags {
+            span["flags"] = serde_json::json!(flags);
+        }
+        span
+    }
+
+    fn kept(request: &OtlpExportTraceServiceRequest) -> usize {
+        request.resource_spans[0].scope_spans[0].spans.len()
+    }
+
+    fn sample(
+        request: &mut OtlpExportTraceServiceRequest,
+        sampler: &Sampler,
+        decisions: &Mutex<IngestDecisions>,
+        held: &Mutex<HeldSpans>,
+        hold_new: bool,
+    ) -> usize {
+        sample_sdk_spans(request, sampler, decisions, held, hold_new);
+        kept(request)
+    }
+
+    fn rate_limited(max_traces_per_second: u32) -> Sampler {
+        Sampler::ParentBased(Box::new(
+            AdvancedSampler::new(
+                1.0,
+                Vec::new(),
+                Some(crate::workers::observability::config::RateLimitConfig {
+                    max_traces_per_second,
+                }),
+                None,
+            )
+            .expect("advanced sampler"),
+        ))
+    }
+
+    fn rules(operation: &str, default: f64) -> Sampler {
+        Sampler::ParentBased(Box::new(
+            AdvancedSampler::new(
+                default,
+                vec![crate::workers::observability::config::SamplingRule {
+                    operation: Some(operation.to_string()),
+                    service: None,
+                    rate: 1.0,
+                }],
+                None,
+                None,
+            )
+            .expect("advanced sampler"),
+        ))
+    }
+
+    fn roots(prefix: &str, count: u64, flags: Option<u32>) -> OtlpExportTraceServiceRequest {
+        sampling_request(serde_json::Value::Array(
+            (0..count)
+                .map(|index| {
+                    sampling_span(
+                        &format!("{prefix}{index:030x}"),
+                        "00000000000000a1",
+                        None,
+                        "3",
+                        flags,
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    /// Review P2-6: rules and rate limits decide once per trace; a start
+    /// snapshot does not spend a second token and children follow the root.
+    #[test]
+    fn ingest_sampling_decides_once_per_trace_and_spends_one_token() {
+        let sampler = rate_limited(1);
+        let decisions = Mutex::new(IngestDecisions::default());
+        let held = Mutex::new(HeldSpans::default());
+        let first = "0af7651916cd43dd8448eb211c80319c";
+        let mut request = sampling_request(serde_json::json!([
+            sampling_span(
+                first,
+                "00000000000000a2",
+                Some("00000000000000a1"),
+                "2",
+                None
+            ),
+            sampling_span(first, "00000000000000a1", None, "0", None),
+            sampling_span(first, "00000000000000a1", None, "3", None),
+        ]));
+        assert_eq!(
+            sample(&mut request, &sampler, &decisions, &held, false),
+            3,
+            "child (sent first), snapshot and final share the root's token"
+        );
+
+        let second = "1bf7651916cd43dd8448eb211c80319c";
+        let mut request = sampling_request(serde_json::json!([
+            sampling_span(second, "00000000000000b1", None, "3", None),
+            sampling_span(
+                second,
+                "00000000000000b2",
+                Some("00000000000000b1"),
+                "2",
+                None
+            ),
+        ]));
+        assert_eq!(
+            sample(&mut request, &sampler, &decisions, &held, false),
+            0,
+            "the rate-limited trace is dropped whole"
+        );
+
+        // A real remote parent (OTLP flags 0x300 plus a parent id) carries the
+        // caller's decision: followed without spending a token.
+        let third = "2cf7651916cd43dd8448eb211c80319c";
+        let mut request = sampling_request(serde_json::json!([
+            sampling_span(
+                third,
+                "00000000000000c1",
+                Some("00000000000000c0"),
+                "3",
+                Some(0x301)
+            ),
+            sampling_span(
+                third,
+                "00000000000000c2",
+                Some("00000000000000c1"),
+                "2",
+                Some(0x101)
+            ),
+        ]));
+        assert_eq!(sample(&mut request, &sampler, &decisions, &held, false), 2);
+    }
+
+    /// Review B2: the Node SDK sets the sampled bit on every span (`0x101`);
+    /// a local root with it gets exactly the configured policy, like a root
+    /// without flags.
+    #[test]
+    fn node_sampled_flag_on_local_roots_is_not_a_policy_bypass() {
+        let cases: [(&str, Sampler, usize); 3] = [
+            ("rate_limit=1/s", rate_limited(1), 1),
+            ("rules default 0", rules("keep-op", 0.0), 0),
+            (
+                "parent_based default 0",
+                Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(0.0))),
+                0,
+            ),
+        ];
+        for (name, sampler, expected) in cases {
+            for (prefix, flags) in [("11", Some(0x101)), ("12", None)] {
+                // One sampler per run so each starts with a fresh token.
+                let sampler = match name {
+                    "rate_limit=1/s" => rate_limited(1),
+                    _ => sampler.clone(),
+                };
+                let mut request = roots(prefix, 50, flags);
+                let kept = sample(
+                    &mut request,
+                    &sampler,
+                    &Mutex::new(IngestDecisions::default()),
+                    &Mutex::new(HeldSpans::default()),
+                    false,
+                );
+                assert_eq!(kept, expected, "{name} with flags {flags:?}");
+            }
+        }
+    }
+
+    /// A remote parent's sampled bit decides, set or not; a span is never its
+    /// own parent, and a local parent never carries a decision.
+    #[test]
+    fn only_a_real_remote_parent_carries_a_sampling_decision() {
+        let parent_based_off = Sampler::ParentBased(Box::new(Sampler::AlwaysOff));
+        let parent_based_on = Sampler::ParentBased(Box::new(Sampler::AlwaysOn));
+        let trace = "3df7651916cd43dd8448eb211c80319c";
+        let one = |parent: Option<&str>, flags: Option<u32>, sampler: &Sampler| {
+            let mut request = sampling_request(serde_json::json!([sampling_span(
+                trace,
+                "00000000000000d1",
+                parent,
+                "3",
+                flags
+            )]));
+            sample(
+                &mut request,
+                sampler,
+                &Mutex::new(IngestDecisions::default()),
+                &Mutex::new(HeldSpans::default()),
+                false,
+            )
+        };
+        assert_eq!(
+            one(Some("00000000000000d0"), Some(0x301), &parent_based_off),
+            1
+        );
+        assert_eq!(
+            one(Some("00000000000000d0"), Some(0x300), &parent_based_on),
+            0,
+            "an unsampled remote parent is followed too"
+        );
+        assert_eq!(
+            one(None, Some(0x301), &parent_based_off),
+            0,
+            "no parent id: never the span's own id"
+        );
+        assert_eq!(
+            one(Some("00000000000000d0"), Some(0x101), &parent_based_off),
+            0,
+            "a local parent carries no decision"
+        );
+        assert_eq!(
+            one(Some("00000000000000d0"), Some(0x301), &Sampler::AlwaysOff),
+            0,
+            "a plain ratio sampler ignores parents"
+        );
+    }
+
+    /// Review N7: with per-operation rules a child that arrives before its
+    /// root waits for it, then follows the root's verdict.
+    #[test]
+    fn child_before_root_waits_and_follows_the_root_rule() {
+        let sampler = rules("root-op", 0.0);
+        let decisions = Mutex::new(IngestDecisions::default());
+        let held = Mutex::new(HeldSpans::default());
+        let trace = "4af7651916cd43dd8448eb211c80319c";
+        let mut child = sampling_request(serde_json::json!([sampling_span(
+            trace,
+            "00000000000000e2",
+            Some("00000000000000e1"),
+            "2",
+            None
+        )]));
+        child.resource_spans[0].scope_spans[0].spans[0].name = "child-op".to_string();
+        assert!(sample_sdk_spans(
+            &mut child, &sampler, &decisions, &held, true
+        ));
+        assert_eq!(kept(&child), 0, "held, not decided by the child's name");
+        let mut root = sampling_request(serde_json::json!([sampling_span(
+            trace,
+            "00000000000000e1",
+            None,
+            "3",
+            None
+        )]));
+        root.resource_spans[0].scope_spans[0].spans[0].name = "root-op".to_string();
+        sample_sdk_spans(&mut root, &sampler, &decisions, &held, true);
+        let names: Vec<&str> = root
+            .resource_spans
+            .iter()
+            .flat_map(|resource| &resource.scope_spans)
+            .flat_map(|scope| &scope.spans)
+            .map(|span| span.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["root-op", "child-op"],
+            "root keeps; held child released"
+        );
+        assert!(held.lock().unwrap().is_empty());
+    }
+
+    /// The wait is bounded: past `ROOT_WAIT`, or over `MAX_HELD_SPANS`, a
+    /// held trace is released and decided by its first held span.
+    #[test]
+    fn held_spans_are_released_after_the_wait_or_when_full() {
+        let sampler = rules("root-op", 1.0);
+        let decisions = Mutex::new(IngestDecisions::default());
+        let held = Mutex::new(HeldSpans::default());
+        let late = Instant::now() - ROOT_WAIT - Duration::from_millis(1);
+        let fragment = |trace: &str| {
+            sampling_request(serde_json::json!([sampling_span(
+                trace,
+                "00000000000000f2",
+                Some("00000000000000f1"),
+                "2",
+                None
+            )]))
+            .resource_spans
+            .remove(0)
+        };
+        let expired = "5af7651916cd43dd8448eb211c80319c";
+        held.lock()
+            .unwrap()
+            .hold(expired.to_string(), fragment(expired), 1, late);
+        let mut empty = OtlpExportTraceServiceRequest::default();
+        sample_sdk_spans(&mut empty, &sampler, &decisions, &held, true);
+        assert_eq!(
+            kept(&empty),
+            1,
+            "expired trace released, decided by its span"
+        );
+        assert!(held.lock().unwrap().is_empty());
+
+        let now = Instant::now();
+        {
+            let mut held = held.lock().unwrap();
+            for index in 0..=MAX_HELD_SPANS {
+                let trace = format!("{index:032x}");
+                held.hold(trace.clone(), fragment(&trace), 1, now);
+            }
+            assert_eq!(held.take_due(now).len(), 1, "oldest released when full");
+            assert_eq!(held.spans, MAX_HELD_SPANS);
+        }
+    }
+
+    /// Review N14: held spans are bounded by their raw bytes too, so large
+    /// untruncated children cannot pile up to `MAX_HELD_SPANS` copies.
+    #[test]
+    fn held_spans_are_bounded_by_bytes() {
+        let big = |trace: &str| {
+            let mut span = sampling_span(
+                trace,
+                "00000000000000f2",
+                Some("00000000000000f1"),
+                "2",
+                None,
+            );
+            span["attributes"] = serde_json::json!([{
+                "key": "iii.payload.json",
+                "value": {"stringValue": "x".repeat(MAX_HELD_BYTES / 2)}
+            }]);
+            sampling_request(serde_json::json!([span]))
+                .resource_spans
+                .remove(0)
+        };
+        let first = "6af7651916cd43dd8448eb211c80319c";
+        let second = "7af7651916cd43dd8448eb211c80319c";
+        let now = Instant::now();
+        let mut held = HeldSpans::default();
+        held.hold(first.to_string(), big(first), 1, now);
+        assert!(held.take_due(now).is_empty(), "one fits the byte budget");
+        held.hold(second.to_string(), big(second), 1, now);
+        let due: Vec<String> = held
+            .take_due(now)
+            .into_iter()
+            .map(|(trace, _)| trace)
+            .collect();
+        assert_eq!(due, vec![first.to_string()], "oldest released over budget");
+        assert_eq!(held.spans, 1);
+        assert!(held.bytes > MAX_HELD_BYTES / 2 && held.bytes <= MAX_HELD_BYTES);
+    }
+
+    #[test]
+    fn ingest_decisions_are_bounded() {
+        let mut decisions = IngestDecisions::default();
+        for index in 0..INGEST_DECISION_CAPACITY + 100 {
+            decisions.insert(&format!("{index:032x}"), true);
+        }
+        assert_eq!(decisions.sampled.len(), INGEST_DECISION_CAPACITY);
+        assert_eq!(decisions.order.len(), INGEST_DECISION_CAPACITY);
+        assert_eq!(decisions.get(&format!("{:032x}", 0)), None);
+        assert_eq!(
+            decisions.get(&format!("{:032x}", INGEST_DECISION_CAPACITY + 99)),
+            Some(true)
+        );
+        decisions.clear();
+        assert!(decisions.sampled.is_empty() && decisions.order.is_empty());
+    }
+
+    /// Review P3-13: removing a live snapshot whose final was sampled out
+    /// notifies subscribers, so a live view re-reads the trace.
+    #[test]
+    fn discarding_a_pending_snapshot_notifies_subscribers() {
+        let storage = InMemorySpanStorage::new(16);
+        let mut rx = storage.subscribe();
+        let mut snapshot = archive_test_span("trace-live", "span-live");
+        snapshot.pending = true;
+        snapshot.end_time_unix_nano = 0;
+        storage.add_pending_span(snapshot);
+        assert!(rx.try_recv().expect("snapshot broadcast").pending);
+        assert!(storage.discard_pending("trace-live", "span-live"));
+        let invalidation = rx.try_recv().expect("removal broadcast");
+        assert_eq!(invalidation.trace_id, "trace-live");
+        assert!(storage.is_empty());
+        assert!(!storage.discard_pending("trace-live", "span-live"));
     }
 }

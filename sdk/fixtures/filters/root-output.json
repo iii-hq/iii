@@ -1,0 +1,10 @@
+{
+  "description": "output root (success path)",
+  "filters": {"output.total": {"$gte": 100}},
+  "cases": [
+    { "doc": {"input": {}, "output": {"total": 150}}, "expect": true },
+    { "doc": {"input": {}, "output": {"total": 50}}, "expect": false },
+    { "doc": {"input": {}, "error": {"code": "X", "message": "m"}}, "expect": false, "note": "no output on failure" },
+    { "doc": {"output": null}, "expect": false }
+  ]
+}

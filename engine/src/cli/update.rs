@@ -111,7 +111,7 @@ pub fn print_targets() {
     println!("{}", "Examples:".bold());
     println!("  iii update              # update everything");
     println!("  iii update self         # update only iii");
-    println!("  iii update console      # update only console");
+    println!("  iii update worker       # update only iii-worker");
 }
 
 /// Get the CLI command name for a binary name.
@@ -300,7 +300,8 @@ pub async fn update_binary(
                 spec.name,
                 &from_version_str,
                 &latest_version.to_string(),
-            );
+            )
+            .await;
             Ok(UpdateResult::Updated {
                 binary: spec.name.to_string(),
                 from: previous_version,
@@ -308,7 +309,7 @@ pub async fn update_binary(
             })
         }
         Err(e) => {
-            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string());
+            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string()).await;
             Err(UpdateError::Download(e))
         }
     }
@@ -411,7 +412,8 @@ pub async fn self_update(
                 spec.name,
                 &from_version_str,
                 &latest_version.to_string(),
-            );
+            )
+            .await;
             Ok(UpdateResult::Updated {
                 binary: spec.name.to_string(),
                 from: previous_version,
@@ -419,7 +421,7 @@ pub async fn self_update(
             })
         }
         Err(e) => {
-            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string());
+            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string()).await;
             Err(UpdateError::Download(e))
         }
     }
@@ -650,8 +652,14 @@ mod tests {
     // ── cli_command_for_binary tests ────────────────────────────────
 
     #[test]
-    fn cli_command_for_binary_resolves_console() {
-        assert_eq!(cli_command_for_binary("iii-console"), Some("console"));
+    fn cli_command_for_binary_resolves_worker() {
+        assert_eq!(cli_command_for_binary("iii-worker"), Some("worker"));
+    }
+
+    #[test]
+    fn cli_command_for_binary_no_longer_knows_console() {
+        // The legacy iii-console was removed from the registry (MOT-3619).
+        assert!(cli_command_for_binary("iii-console").is_none());
     }
 
     #[test]
@@ -669,7 +677,7 @@ mod tests {
     #[test]
     fn print_update_notifications_with_updates_does_not_panic() {
         let updates = vec![UpdateInfo {
-            binary_name: "iii-console".to_string(),
+            binary_name: "iii-worker".to_string(),
             current_version: Version::new(0, 8, 0),
             latest_version: Version::new(0, 9, 0),
         }];

@@ -35,16 +35,19 @@ register_worker(address: &str, options: InitOptions) -> IIIClient
 
   <Expandable title="`InitOptions` fields">
     <ParamField body="metadata" type="Option<iii::WorkerMetadata>">
-      Custom worker metadata. Auto-detected if `None`.
+      Custom worker metadata. Auto-detected if `None`. In managed identity mode, process-wide identity variables override matching fields.
     </ParamField>
     <ParamField body="headers" type="Option<HashMap<String, String>>">
-      Custom HTTP headers sent during the WebSocket handshake.
+      Custom HTTP headers sent during the WebSocket handshake, on the main connection and on channels from `create_channel`. `Authorization: Bearer $III_TOKEN` is added unless you set `Authorization` here.
     </ParamField>
     <ParamField body="otel" type="Option<iii_helpers::observability::OtelConfig>">
       OpenTelemetry configuration.
     </ParamField>
     <ParamField body="namespace" type="Option<String>">
-      Namespace this worker belongs to. Resolution order: `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its default namespace). Mirrors the `III_WORKER_NAME` precedence. It scopes more than the registration. The worker and its functions register here, and everything the worker does afterwards follows it: a `IIIClient::trigger` resolves its target here and a `IIIClient::register_trigger` binds here, unless the call names another namespace.
+      Namespace this worker belongs to. In managed mode, resolution order is `namespace` > env `III_NAMESPACE` > `None`. In explicit mode, the environment is not used. It scopes more than the registration. The worker and its functions register here, and everything the worker does afterwards follows it: a `IIIClient::trigger` resolves its target here and a `IIIClient::register_trigger` binds here, unless the call names another namespace.
+    </ParamField>
+    <ParamField body="identity" type="WorkerIdentityMode" required>
+      Selects whether process-wide managed identity variables can override this connection's metadata. Auxiliary connections should use `WorkerIdentityMode::Explicit`.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -54,7 +57,17 @@ register_worker(address: &str, options: InitOptions) -> IIIClient
 
 ### register_trigger
 
+<Warning>
+  **Deprecated since 0.25.0.** Use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x
+</Warning>
+
 Bind a trigger configuration to a registered function.
+
+
+It keeps working in 0.25 and logs one warning per process. The http,
+cron, queue, state, stream, pubsub and database workers still publish
+trigger types, so keep using it for them until they ship source
+functions; observe any other function with `observe`.
 
 **Signature**
 
@@ -140,6 +153,9 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
     <ParamField body="http" type="fn(config: HttpInvocationConfig) -> Self" required>
       Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs.
     </ParamField>
+    <ParamField body="local_dispatch" type="fn(enabled: bool) -> Self" required>
+      Whether calls to this function from this same worker may run in-process once the engine allows it. Default `true`.
+    </ParamField>
     <ParamField body="metadata" type="fn(meta: Value) -> Self" required>
       Set function metadata.
     </ParamField>
@@ -148,6 +164,9 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
     </ParamField>
     <ParamField body="new_async" type="fn(f: F) -> Self" required>
       Create a registration for an **async** typed function.
+    </ParamField>
+    <ParamField body="observe" type="fn(observe: Observe) -> Self" required>
+      How observers of this function are delivered, and the hooks that run when one is added or removed (`Observe::owner` / `Observe::auto`). Every function is observable without it, as `auto` without hooks.
     </ParamField>
     <ParamField body="request_format" type="fn(schema: Value) -> Self" required>
       Set the request format schema. Overrides any auto-extracted schema.
@@ -191,13 +210,24 @@ worker.register_function(
 
 ### trigger
 
-Invoke a remote function.
+Invoke a function.
 
 
 The routing behavior depends on the `action` field of the request:
 - No action: synchronous, waits for the function to return.
 - `TriggerAction::Enqueue`: async via named queue.
 - `TriggerAction::Void`: fire-and-forget.
+
+A function this worker registered itself runs in-process once the
+engine allowed it ("local dispatch", see `Dispatch`): same result,
+error shape and timeout, and nothing on the wire unless an observer's
+filters match the call. A sync handler then runs inline on the
+caller's task, where the timeout cannot interrupt it: a sync handler
+that can block should be async, or registered with
+`RegisterFunction::local_dispatch(false)`.
+`TriggerRequest::dispatch` with `Dispatch::Remote`
+forces the engine path. Calls made from inside a handler carry that
+handler as their `caller`.
 
 **Signature**
 
@@ -211,6 +241,9 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
 <ParamField body="request" type="impl Into<TriggerRequestWithMetadata>" required>
 
   <Expandable title="`TriggerRequestWithMetadata` fields" defaultOpen>
+    <ParamField body="dispatch" type="fn(dispatch: Dispatch) -> Self" required>
+      Choose the path this call takes; see `Dispatch`.
+    </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> Self" required>
       Attach per-invocation metadata.
     </ParamField>
@@ -231,6 +264,9 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
     </ParamField>
     <ParamField body="timeout_ms" type="Option<u64>">
       Override the default invocation timeout, in milliseconds.
+    </ParamField>
+    <ParamField body="dispatch" type="fn(dispatch: Dispatch) -> TriggerRequestWithMetadata" required>
+      Choose the path this call takes: `Dispatch::Auto` (the default) runs a function this worker hosts in-process when the engine allows it; `Dispatch::Remote` always goes through the engine.
     </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> TriggerRequestWithMetadata" required>
       Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals.
@@ -291,10 +327,20 @@ worker.trigger(
 
 ### register_trigger_type
 
+<Warning>
+  **Deprecated since 0.25.0.** Register a function with RegisterFunction::observe(Observe::owner()..) instead; see https://iii.dev/docs/upgrading/from-0-24-x
+</Warning>
+
 Register a custom trigger type with the engine.
 
 Returns a `TriggerTypeRef` handle that can register triggers and
 functions with compile-time validated types.
+
+It keeps working in 0.25 and logs one warning per process. A new
+provider registers a function with an observe descriptor instead
+(`RegisterFunction::new(..).observe(Observe::owner().args_format::<Config>().handler(..))`):
+`ObserveHandler` replaces `TriggerHandler`,
+and observers' args replace trigger configs.
 
 **Signature**
 
@@ -345,7 +391,13 @@ my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
 
 ### unregister_trigger_type
 
+<Warning>
+  **Deprecated since 0.25.0.** Unregister the function registered with RegisterFunction::observe instead; see https://iii.dev/docs/upgrading/from-0-24-x
+</Warning>
+
 Unregister a previously registered trigger type.
+
+**Deprecated since 0.25.0** with `register_trigger_type`.
 
 **Signature**
 
@@ -421,6 +473,146 @@ namespace() -> Option<String>
 
 ---
 
+### observe
+
+Observes `source` and invokes `target` once per matching event.
+
+Returns at once, before the engine answered: the handle starts
+`pending`; `ObserverHandle::ready` resolves on `active` and fails on
+`error` (`INVALID_ARGS`, `INVALID_FILTER`, `FORBIDDEN`, an owner
+rejection, `UNSUPPORTED` against an engine without observe). There is
+no inline handler: `target` is a registered function, and the observer
+stays `pending` until it is registered.
+
+**Signature**
+
+```rust
+observe(source: Source, target: impl Into<Target>) -> ObserverHandle
+```
+
+#### Parameters
+
+<ParamField body="source" type="Source" required>
+
+  <Expandable title="`Source` fields">
+    <ParamField body="args" type="fn(args: Value) -> Self" required>
+      Args for the function's owner (owner-delivered functions only): what to set up for this observer, validated against its `args_format`.
+    </ParamField>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+      What travels to the target. Default `[input, output, caller]`.
+    </ParamField>
+    <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
+      What the target receives: the `Observed` envelope (default), or the observed input or output alone.
+    </ParamField>
+    <ParamField body="filters" type="fn(filters: Value) -> Self" required>
+      Which events reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every event.
+    </ParamField>
+    <ParamField body="function" type="fn(function_id: impl Into<String>) -> Self" required>
+      Observe `function_id`. Every function is observable.
+    </ParamField>
+    <ParamField body="function_id" type="fn() -> &str" required>
+      The observed function id.
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
+      The namespace the function is in. Unset, it resolves like a `trigger`: this worker's namespace (`default` for `engine::*`).
+    </ParamField>
+    <ParamField body="on" type="fn(on: On) -> Self" required>
+      Which outcomes activate the observer (auto functions only). Default `On::Success`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="target" type="impl Into<Target>" required>
+
+  <Expandable title="`Target` fields">
+    <ParamField body="function" type="fn(function_id: impl Into<String>) -> Self" required>
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
+      The target's namespace. Unset, it resolves like a `trigger`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
+### observe_with
+
+`observe` with the observer's id, policy and metadata.
+
+**Signature**
+
+```rust
+observe_with(source: Source, target: impl Into<Target>, options: ObserverOptions) -> ObserverHandle
+```
+
+#### Parameters
+
+<ParamField body="source" type="Source" required>
+
+  <Expandable title="`Source` fields">
+    <ParamField body="args" type="fn(args: Value) -> Self" required>
+      Args for the function's owner (owner-delivered functions only): what to set up for this observer, validated against its `args_format`.
+    </ParamField>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+      What travels to the target. Default `[input, output, caller]`.
+    </ParamField>
+    <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
+      What the target receives: the `Observed` envelope (default), or the observed input or output alone.
+    </ParamField>
+    <ParamField body="filters" type="fn(filters: Value) -> Self" required>
+      Which events reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every event.
+    </ParamField>
+    <ParamField body="function" type="fn(function_id: impl Into<String>) -> Self" required>
+      Observe `function_id`. Every function is observable.
+    </ParamField>
+    <ParamField body="function_id" type="fn() -> &str" required>
+      The observed function id.
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
+      The namespace the function is in. Unset, it resolves like a `trigger`: this worker's namespace (`default` for `engine::*`).
+    </ParamField>
+    <ParamField body="on" type="fn(on: On) -> Self" required>
+      Which outcomes activate the observer (auto functions only). Default `On::Success`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="target" type="impl Into<Target>" required>
+
+  <Expandable title="`Target` fields">
+    <ParamField body="function" type="fn(function_id: impl Into<String>) -> Self" required>
+    </ParamField>
+    <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
+      The target's namespace. Unset, it resolves like a `trigger`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="options" type="ObserverOptions" required>
+
+  <Expandable title="`ObserverOptions` fields">
+    <ParamField body="expires_in" type="fn(expires_in: Duration) -> Self" required>
+      Dispose of the observer after this long.
+    </ParamField>
+    <ParamField body="id" type="fn(id: impl Into<String>) -> Self" required>
+      The observer's id. Default: a random UUID v4, kept across replays.
+    </ParamField>
+    <ParamField body="max_fires" type="fn(max_fires: u64) -> Self" required>
+      Dispose of the observer after this many activations.
+    </ParamField>
+    <ParamField body="max_in_flight" type="fn(max_in_flight: u32) -> Self" required>
+      At most this many activations running at once; more queue in the engine (or fail an owner's `call` with `OVERFLOW`).
+    </ParamField>
+    <ParamField body="metadata" type="fn(metadata: Value) -> Self" required>
+      Delivered as the metadata sidecar of every activation. The function's owner never sees it.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
 ### set_namespace
 
 Override the worker's target namespace (call before connect). Applied by
@@ -491,6 +683,93 @@ worker.shutdown_async().await;
 ```
 
 
+---
+
+### wait_until_registered
+
+Wait until the engine accepts this worker's initial registration.
+
+Returns `Error::RegistrationRejected` for a fatal identity conflict,
+`Error::Timeout` when the deadline expires, and
+`Error::NotConnected` when called before the client starts or after it
+stops.
+
+**Signature**
+
+```rust
+async wait_until_registered(timeout: Duration) -> Result<(), Error>
+```
+
+#### Parameters
+
+<ParamField body="timeout" type="Duration" required>
+</ParamField>
+
+
+## Functions
+
+### current_invocation
+
+The invocation the calling task is running for, or `None` outside any
+handler (and in a task spawned from a handler without `scope`).
+
+**Signature**
+
+```rust
+current_invocation() -> Option<InvocationCtx>
+```
+
+---
+
+### scope
+
+Runs `fut` with `ctx` as its current invocation. Use it to keep the
+handler's context in a task it spawns; `None` runs `fut` outside any
+invocation. The local-call nesting of the calling task is carried too, so
+recursing through spawned tasks stays bounded.
+
+**Signature**
+
+```rust
+scope(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="impl Into<Option<InvocationCtx>>" required>
+
+  <Expandable title="`InvocationCtx` fields">
+    <ParamField body="function_id" type="String" required>
+      The function being invoked.
+    </ParamField>
+    <ParamField body="invocation_id" type="String" required>
+      This invocation's id (generated by the SDK for a local call).
+    </ParamField>
+    <ParamField body="caller" type="Option<Caller>">
+      Who made the call: the engine-stamped caller of a remote invocation, or this worker (with the calling handler) for a local one. `None` when the engine did not say (an engine older than 0.25).
+    </ParamField>
+    <ParamField body="activation" type="Option<Activation>">
+      Set when this invocation is an observer activation.
+    </ParamField>
+    <ParamField body="observe_depth" type="u32" required>
+      Depth of the causal chain in observe hops; 0 outside observers.
+    </ParamField>
+    <ParamField body="metadata" type="Option<Value>">
+      The invocation's metadata sidecar.
+    </ParamField>
+    <ParamField body="traceparent" type="Option<String>">
+      W3C trace context of the invocation's `execute` span, when tracing is on: events emitted from it join its trace.
+    </ParamField>
+    <ParamField body="baggage" type="Option<String>">
+      W3C baggage of the invocation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="fut" type="F" required>
+</ParamField>
+
+
 ## Types
 
 ### iii_sdk
@@ -513,10 +792,11 @@ Configuration options passed to `register_worker`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `metadata` | Option&lt;iii::[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. |
-| `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake. |
+| `metadata` | Option&lt;iii::[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. In managed identity<br />mode, process-wide identity variables override matching fields. |
+| `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake, on the main<br />connection and on channels from `create_channel`. `Authorization: Bearer<br />$III_TOKEN` is added unless you set `Authorization` here. |
 | `otel` | `Option<iii_helpers::observability::OtelConfig>` | No | OpenTelemetry configuration. |
-| `namespace` | `Option<String>` | No | Namespace this worker belongs to. Resolution order:<br />`namespace` > env `III_NAMESPACE` > `None` (the engine then applies its<br />default namespace). Mirrors the `III_WORKER_NAME` precedence.<br /><br />It scopes more than the registration. The worker and its functions<br />register here, and everything the worker does afterwards follows it: a<br />`IIIClient::trigger` resolves its target here and a<br />`IIIClient::register_trigger` binds here, unless the call names<br />another namespace. |
+| `namespace` | `Option<String>` | No | Namespace this worker belongs to. In managed mode, resolution order is<br />`namespace` > env `III_NAMESPACE` > `None`. In explicit mode, the<br />environment is not used.<br /><br />It scopes more than the registration. The worker and its functions<br />register here, and everything the worker does afterwards follows it: a<br />`IIIClient::trigger` resolves its target here and a<br />`IIIClient::register_trigger` binds here, unless the call names<br />another namespace. |
+| `identity` | [`WorkerIdentityMode`](#workeridentitymode) | Yes | Selects whether process-wide managed identity variables can override<br />this connection's metadata. Auxiliary connections should use<br />`WorkerIdentityMode::Explicit`. |
 
 ---
 
@@ -542,14 +822,19 @@ Builder methods (all consume `self`):
 - `metadata`
 - `request_format`: overrides any auto-extracted schema.
 - `response_format`: overrides any auto-extracted schema.
+- `observe`: how observers of the function are delivered,
+  and the hooks that run when one is added or removed.
+- `local_dispatch`: opt out of in-process calls.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | `fn(desc: impl Into<String>) -> Self` | Yes | Set the function description. |
 | `http` | `fn(config: HttpInvocationConfig) -> Self` | Yes | Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs. |
+| `local_dispatch` | `fn(enabled: bool) -> Self` | Yes | Whether calls to this function from this same worker may run in-process once the engine allows it. Default `true`. |
 | `metadata` | `fn(meta: Value) -> Self` | Yes | Set function metadata. |
 | `new` | `fn(f: F) -> Self` | Yes | Create a registration for a **sync** typed function. |
 | `new_async` | `fn(f: F) -> Self` | Yes | Create a registration for an **async** typed function. |
+| `observe` | fn(observe: [`Observe`](#observe)) -&gt; Self | Yes | How observers of this function are delivered, and the hooks that run when one is added or removed (`Observe::owner` / `Observe::auto`). Every function is observable without it, as `auto` without hooks. |
 | `request_format` | `fn(schema: Value) -> Self` | Yes | Set the request format schema. Overrides any auto-extracted schema. |
 | `response_format` | `fn(schema: Value) -> Self` | Yes | Set the response format schema. Overrides any auto-extracted schema. |
 
@@ -558,6 +843,11 @@ Builder methods (all consume `self`):
 #### RegisterTriggerType
 
 Builder for registering a custom trigger type with optional format schemas.
+
+**Deprecated since 0.25.0** together with
+`IIIClient::register_trigger_type`: register a function with an observe
+descriptor (`RegisterFunction::observe`) instead. Migration guide:
+[https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x).
 
 Type parameters:
 - `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
@@ -761,7 +1051,7 @@ WebSocket-backed reader for streaming binary data and text messages.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
-| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | - |
+| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | Authenticates with `III_TOKEN` as a bearer token when it is set. |
 | `next_binary` | async fn() -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, [`Error`](#error)&gt; | Yes | Read the next binary chunk from the channel. Text messages are dispatched to registered callbacks. Returns `None` when the stream is closed. |
 | `on_message` | `async fn(callback: F)` | Yes | Register a callback for text messages received on this channel. |
 | `read_all` | async fn() -&gt; Result&lt;Vec&lt;u8&gt;, [`Error`](#error)&gt; | Yes | Read the entire stream into a single `Vec<u8>`. |
@@ -775,7 +1065,7 @@ WebSocket-backed writer for streaming binary data and text messages.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
-| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | - |
+| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | Authenticates with `III_TOKEN` as a bearer token when it is set. |
 | `send_message` | async fn(msg: &str) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
 | `write` | async fn(data: &[u8]) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
 
@@ -808,6 +1098,25 @@ WebSocket-backed writer for streaming binary data and text messages.
 | --- | --- | --- | --- |
 | `Text` | `(String)` | Yes | - |
 | `Binary` | `(Vec<u8>)` | Yes | - |
+
+### iii_sdk::context
+
+[`InvocationCtx`](#invocationctx)
+
+#### InvocationCtx
+
+The invocation a handler is running for.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | The function being invoked. |
+| `invocation_id` | `String` | Yes | This invocation's id (generated by the SDK for a local call). |
+| `caller` | Option&lt;[`Caller`](#caller)&gt; | No | Who made the call: the engine-stamped caller of a remote invocation,<br />or this worker (with the calling handler) for a local one. `None` when<br />the engine did not say (an engine older than 0.25). |
+| `activation` | Option&lt;[`Activation`](#activation)&gt; | No | Set when this invocation is an observer activation. |
+| `observe_depth` | `u32` | Yes | Depth of the causal chain in observe hops; 0 outside observers. |
+| `metadata` | `Option<Value>` | No | The invocation's metadata sidecar. |
+| `traceparent` | `Option<String>` | No | W3C trace context of the invocation's `execute` span, when tracing is<br />on: events emitted from it join its trace. |
+| `baggage` | `Option<String>` | No | W3C baggage of the invocation. |
 
 ### iii_sdk::engine
 
@@ -860,9 +1169,355 @@ does not carry it.
 | `function_id` | `Option<String>` | No | - |
 | `stacktrace` | `Option<String>` | No | - |
 
+### iii_sdk::observable
+
+[`Observe`](#observe) · [`ObserveHandler`](#observehandler) · [`Observer`](#observer) · [`ObserveRejection`](#observerejection)
+
+#### Observe
+
+The observe descriptor of a function, for
+`RegisterFunction::observe`.
+
+- `Observe::auto`: the function's invocations are the events; every
+  observer is offered every invocation and the SDK reports the matching
+  ones. It takes no args.
+- `Observe::owner`: the function's owner reads each observer's args, sets
+  up what they ask for and hands each event to the observers it belongs to
+  with `Observer::emit` or `Observer::call`.
+
+A function registered without one is still observable, as `auto` without
+hooks.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allow` | `fn(allow: bool) -> Self` | Yes | `false` refuses every observer (`NOT_OBSERVABLE`). Default `true`. |
+| `args_format` | `fn() -> Self` | Yes | The JSON Schema of the observers' args, generated from `T`. The engine validates every `observe` against it (`INVALID_ARGS`) before `ObserveHandler::on_observer_added` runs. `#[serde(deny_unknown_fields)]` on `T` rejects argument typos. |
+| `args_format_value` | `fn(schema: Value) -> Self` | Yes | `args_format` from a JSON Schema value. |
+| `auto` | `fn() -> Self` | Yes | Auto delivery (the default): every invocation is an event. |
+| `handler` | `fn(handler: H) -> Self` | Yes | The callbacks that run when an observer is added to or removed from this function. |
+| `legacy_trigger_type` | `fn(trigger_type: impl Into<String>) -> Self` | Yes | Accept the old `register_trigger({ trigger_type })` for this trigger type: when no live provider of it exists, the engine turns such a trigger into an observer of this function, with `Observer::legacy` set. |
+| `owner` | `fn() -> Self` | Yes | Owner delivery: this worker routes events to observers by their args. |
+
+---
+
+#### ObserveHandler
+
+Callbacks of an observable function, run once per observer added or
+removed, one at a time per function and in the engine's order.
+
+`on_observer_added` runs before the SDK acknowledges the observer, so what
+it puts in the owner's index is in place before the engine marks the
+observer `active`. Returning an error rejects the observer: an
+`ObserveRejection` sets the code, a plain error is `OBSERVE_REJECTED`,
+and a callback still running after 30 s is `OWNER_TIMEOUT`.
+
+A callback past the timeout is cancelled (its future is dropped at its
+next `.await`) so the function's next callback can run; anything it
+spawned keeps running and may overlap that next callback. Callbacks run on
+the connection's runtime: do not block in them.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `on_observer_added` | fn(obs: &'life1 [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | No | An observer was attached to the function. Index it by its args here. |
+| `on_observer_removed` | fn(obs: &'life1 [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | No | An observer was detached (unobserve, disposal, its worker left for good, a reconnect that no longer lists it). Cannot fail. |
+
+---
+
+#### Observer
+
+One observer of a function this worker hosts, as its owner sees it: its
+id, args, filters, target, capture and `on`. Never its metadata, policy or
+observing worker.
+
+Cheap to clone (an `Arc`), so owners keep it in their own index. Two
+`Observer`s are equal when their ids are.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args` | fn() -&gt; Result&lt;T, [`ObserveRejection`](#observerejection)&gt; | Yes | The observer's args as `T`. The engine validated them against the function's `args_format`; a mismatch with `T` is `INVALID_ARGS`. |
+| `args_value` | `fn() -> &Value` | Yes | The observer's args as JSON (`{}` when it has none). |
+| `call` | async fn(payload: impl Serialize) -&gt; Result&lt;R, [`Error`](#error)&gt; | Yes | Calls the observer's target with `payload` through the engine and returns its result: the HTTP response, the queue ack. Owner functions only. Fails with `FILTERS_NOT_MATCHED`, sending nothing, when the observer's filters reject `{ input: payload, caller, metadata }`; with `OBSERVER_NOT_ACTIVE` once it was removed; with the engine's code (`LOOP_GUARD`, `OVERFLOW`, ...) or the target's error otherwise. |
+| `call_with_timeout` | async fn(payload: impl Serialize, timeout: Duration) -&gt; Result&lt;R, [`Error`](#error)&gt; | Yes | `call` with its own timeout. |
+| `capture` | fn() -&gt; &[[`Capture`](#capture)] | Yes | What activations ship to the target. |
+| `emit` | fn(event: &T) -&gt; Result&lt;bool, [`Error`](#error)&gt; | Yes | Hands `event` to this observer, fire-and-forget. Owner functions only (`NOT_OWNER_DELIVERED` otherwise). |
+| `filters` | `fn() -> &Value` | Yes | The observer's filters in normal form (`{}` matches every event). Applied by the SDK on every `emit` and `call`; the owner never changes them. |
+| `function_id` | `fn() -> &str` | Yes | The observed function: the one this worker registered. |
+| `id` | `fn() -> &str` | Yes | The observer's id (client-generated, stable across replays). |
+| `is_active` | `fn() -> bool` | Yes | Whether it is still delivered to: acked, and neither removed nor rejected since. |
+| `legacy` | fn() -&gt; Option&lt;&[`LegacyTrigger`](#legacytrigger)&gt; | Yes | The old trigger this observer stands for, when the engine's legacy shim created it from a `register_trigger`. Read `config` as its args. |
+| `matches` | `fn(doc: &Doc<'_>) -> bool` | Yes | Evaluates the observer's filters against `doc`, exactly as given. Lets an owner answer before calling (the HTTP router's 422). |
+| `namespace` | `fn() -> &str` | Yes | The observed function's namespace. |
+| `on` | fn() -&gt; &[`On`](#on) | Yes | Which outcomes activate it (auto functions only). |
+| `reject` | `fn(code: impl Into<String>, message: impl Into<String>)` | Yes | Rejects this observer after it was accepted (a config reload removed what it needs). It stops receiving events now; the engine moves it to `error` with this code and then removes it, which runs `ObserveHandler::on_observer_removed`. The rejection holds across a reconnect: the SDK sends it again whenever the engine lists the observer, until a fresh `observeradded` brings it back. |
+| `target` | `fn() -> &str` | Yes | The function each activation invokes. |
+
+---
+
+#### ObserveRejection
+
+An owner's refusal of an observer, with the code its `ready()` fails with.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `String` | Yes | - |
+| `message` | `String` | Yes | - |
+
+### iii_sdk::observe
+
+[`Observed`](#observed) · [`ObservedError`](#observederror) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverReason`](#observerreason) · [`ObserverStatus`](#observerstatus) · [`Source`](#source) · [`StateListener`](#statelistener) · [`Target`](#target)
+
+#### Observed
+
+What an observer's target receives with the default `deliver: envelope`:
+the observed invocation (auto) or emitted event (owner `emit`), per the
+observer's `capture`.
+
+```rust,no_run
+iii.register_function(
+    "alerts::payment-failed",
+    RegisterFunction::new(|event: Observed<Value>| {
+        println!("{} failed: {:?}", event.function_id, event.error);
+        Ok::<_, Error>(())
+    }),
+);
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `observer_id` | `String` | Yes | - |
+| `activation_id` | `String` | Yes | - |
+| `function_id` | `String` | Yes | - |
+| `namespace` | `Option<String>` | No | - |
+| `invocation_id` | `String` | Yes | - |
+| `status` | [`InvocationStatus`](#invocationstatus) | Yes | - |
+| `input` | `Option<I>` | No | - |
+| `output` | `Option<O>` | No | - |
+| `error` | Option&lt;[`ObservedError`](#observederror)&gt; | No | - |
+| `caller` | Option&lt;[`Caller`](#caller)&gt; | No | - |
+| `metadata` | `Option<Value>` | No | - |
+| `started_at_ms` | `u64` | Yes | - |
+| `duration_ms` | `f64` | Yes | - |
+
+---
+
+#### ObservedError
+
+`Observed::error`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `String` | Yes | - |
+| `message` | `String` | Yes | - |
+
+---
+
+#### ObserverHandle
+
+Handle to an observer created by `IIIClient::observe`. Cheap to clone.
+
+The observer exists until `dispose` (or its policy runs
+out); dropping the handle does not remove it. It works before the
+connection is up and is replayed with the same id after a reconnect.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dispose` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Removes the observer. Once it resolves (the engine confirmed it, or after 5 s without an answer), no new activation starts and the owner's `call` for it fails with `OBSERVER_NOT_ACTIVE`. |
+| `fires` | `fn() -> u64` | Yes | Activations so far, as last reported by the engine. |
+| `id` | `fn() -> &str` | Yes | The observer's id. |
+| `on_state_change` | fn(listener: F) -&gt; [`StateListener`](#statelistener) | Yes | Calls `listener` on every state change. Listeners run on one process-wide thread, one call at a time and in the order the changes happened, never on the connection's read loop: a listener may call the client. A listener that blocks delays every client's listeners in the process; hand slow work to a task of its own. |
+| `ready` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Resolves once the observer is `active`. Fails with the reason's code (`Error::Remote`) when it ends in `error` or `disposed`; waits through `pending` and `suspended`. |
+| `reason` | fn() -&gt; Option&lt;[`ObserverReason`](#observerreason)&gt; | Yes | Why it is in `error` (or `suspended`, `disposed`): an engine code such as `INVALID_ARGS`, `FORBIDDEN`, `UNSUPPORTED`, or the owner's own rejection code. |
+| `state` | fn() -&gt; [`ObserverState`](#observerstate) | Yes | The current state. |
+| `warnings` | `fn() -> Vec<String>` | Yes | The engine's warnings about the filters (paths it could not verify against an open schema). |
+
+---
+
+#### ObserverOptions
+
+The observer itself: its id, policy and metadata sidecar.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expires_in` | `fn(expires_in: Duration) -> Self` | Yes | Dispose of the observer after this long. |
+| `id` | `fn(id: impl Into<String>) -> Self` | Yes | The observer's id. Default: a random UUID v4, kept across replays. |
+| `max_fires` | `fn(max_fires: u64) -> Self` | Yes | Dispose of the observer after this many activations. |
+| `max_in_flight` | `fn(max_in_flight: u32) -> Self` | Yes | At most this many activations running at once; more queue in the engine (or fail an owner's `call` with `OVERFLOW`). |
+| `metadata` | `fn(metadata: Value) -> Self` | Yes | Delivered as the metadata sidecar of every activation. The function's owner never sees it. |
+
+---
+
+#### ObserverReason
+
+Why an observer is in its state: `{ code, message }`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `String` | Yes | - |
+| `message` | `String` | Yes | - |
+
+---
+
+#### ObserverStatus
+
+An observer's state, why, and how often it fired.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | [`ObserverState`](#observerstate) | Yes | - |
+| `reason` | Option&lt;[`ObserverReason`](#observerreason)&gt; | No | - |
+| `fires` | `u64` | Yes | - |
+
+---
+
+#### Source
+
+The left side of an observer: what is observed.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args` | `fn(args: Value) -> Self` | Yes | Args for the function's owner (owner-delivered functions only): what to set up for this observer, validated against its `args_format`. |
+| `capture` | `fn(capture: impl IntoIterator) -> Self` | Yes | What travels to the target. Default `[input, output, caller]`. |
+| `deliver` | fn(deliver: [`Deliver`](#deliver)) -&gt; Self | Yes | What the target receives: the `Observed` envelope (default), or the observed input or output alone. |
+| `filters` | `fn(filters: Value) -> Self` | Yes | Which events reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every event. |
+| `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
+| `function_id` | `fn() -> &str` | Yes | The observed function id. |
+| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `trigger`: this worker's namespace (`default` for `engine::*`). |
+| `on` | fn(on: [`On`](#on)) -&gt; Self | Yes | Which outcomes activate the observer (auto functions only). Default `On::Success`. |
+
+---
+
+#### StateListener
+
+A listener added with `ObserverHandle::on_state_change`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `unsubscribe` | `fn()` | Yes | Stops calling the listener. |
+
+---
+
+#### Target
+
+The right side of an observer: a registered function.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
+| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The target's namespace. Unset, it resolves like a `trigger`. |
+
 ### iii_sdk::protocol
 
-[`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`Message`](#message) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest) · [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage)
+[`Activation`](#activation) · [`Caller`](#caller) · [`Capture`](#capture) · [`Deliver`](#deliver) · [`Delivery`](#delivery) · [`Dispatch`](#dispatch) · [`DroppedReportStats`](#droppedreportstats) · [`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`InvocationStatus`](#invocationstatus) · [`LegacyTrigger`](#legacytrigger) · [`LocalFunctionStats`](#localfunctionstats) · [`Message`](#message) · [`ObserveDescriptor`](#observedescriptor) · [`ObservedItem`](#observeditem) · [`ObserverState`](#observerstate) · [`ObserverView`](#observerview) · [`ObserveSource`](#observesource) · [`ObserveTarget`](#observetarget) · [`On`](#on) · [`ParentCaller`](#parentcaller) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest) · [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage)
+
+#### Activation
+
+`invokefunction.activation`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `observer_id` | `String` | Yes | - |
+| `activation_id` | `Option<String>` | No | Engine → worker: unique per activation. Absent on an owner's `call`. |
+
+---
+
+#### Caller
+
+Who made an invocation. `worker_id` / `worker_name` are stamped by the
+engine from the calling connection; `function_id`, `invocation_id` and
+`parent` are asserted by the calling SDK.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `worker_id` | `Option<String>` | No | - |
+| `worker_name` | `Option<String>` | No | - |
+| `function_id` | `Option<String>` | No | The handler the call was made from; absent for a top-level call. |
+| `invocation_id` | `Option<String>` | No | - |
+| `parent` | Option&lt;[`ParentCaller`](#parentcaller)&gt; | No | The caller of that handler, one level only. |
+| `strip` | fn() -&gt; [`ParentCaller`](#parentcaller) | Yes | This caller without its own `parent`, as the `parent` of a call made from the handler it invoked. |
+
+---
+
+#### Capture
+
+What an activation ships to the target. A filter may read any root,
+whatever is captured.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Input` | `unit` | Yes | - |
+| `Output` | `unit` | Yes | - |
+| `Error` | `unit` | Yes | - |
+| `Caller` | `unit` | Yes | - |
+| `Metadata` | `unit` | Yes | - |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### Deliver
+
+What the target's first argument is.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Envelope` | `unit` | Yes | The `Observed` envelope. |
+| `Input` | `unit` | Yes | The observed invocation's input alone. |
+| `Output` | `unit` | Yes | The observed invocation's output alone. |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### Delivery
+
+How a function's observers are delivered.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Auto` | `unit` | Yes | The function's invocations are the events; every observer is<br />offered every invocation. |
+| `Owner` | `unit` | Yes | The owner routes events to observers by their args<br />(`Observer::emit` / `Observer::call`). |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### Dispatch
+
+Which path `IIIClient::trigger` takes.
+
+A call to a function registered by this same worker runs in-process
+("local dispatch") when all of these hold:
+
+1. the function has a handler here (not `RegisterFunction::http`)
+   and was not registered with `RegisterFunction::local_dispatch(false)`;
+2. the engine confirmed it with `functionregistered { local_dispatch: true }`;
+3. the call resolves to the namespace the function is registered in;
+4. the action is not `TriggerAction::Enqueue` (a `Void` call runs
+   locally, fire-and-forget);
+5. the dispatch is not `Dispatch::Remote`.
+
+Otherwise the call goes through the engine as before. A local call returns
+the same result, error shape and timeout as a remote one, and is reported
+to the engine only when an observer's filters match it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Auto` | `unit` | Yes | Run in-process when the five conditions above hold, else remote. |
+| `Remote` | `unit` | Yes | Always route through the engine (engine-side effects, tests). |
+
+---
+
+#### DroppedReportStats
+
+SDK-side report drops in `localinvocationstats`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `reason` | `String` | Yes | `observe_codes::BUFFER_FULL`, `observe_codes::TOO_LARGE` or<br />`observe_codes::INACTIVE`. |
+| `count` | `u64` | Yes | - |
+
+---
 
 #### ErrorBody
 
@@ -886,6 +1541,44 @@ does not carry it.
 
 ---
 
+#### InvocationStatus
+
+Outcome of an observed invocation. An emitted event is always `success`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Success` | `unit` | Yes | - |
+| `Error` | `unit` | Yes | - |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### LegacyTrigger
+
+The old `registerTrigger` an observer was created from by the engine's
+legacy shim. The owner reads `config` as the observer's args.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type` | `String` | Yes | - |
+| `config` | `Value` | Yes | - |
+
+---
+
+#### LocalFunctionStats
+
+Per-function counts in `localinvocationstats`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `count` | `u64` | Yes | - |
+| `errors` | `u64` | Yes | - |
+| `duration_ms_sum` | `f64` | Yes | - |
+
+---
+
 #### Message
 
 | Name | Type | Required | Description |
@@ -894,16 +1587,156 @@ does not carry it.
 | `RegisterTrigger` | `{ id: String, trigger_type: String, function_id: String, config: Value, metadata: Option<Value>, namespace: Option<String>, trigger_namespace: Option<String> }` | Yes | - |
 | `TriggerRegistrationResult` | \{ id: String, trigger_type: String, function_id: String, error: Option&lt;[`ErrorBody`](#errorbody)&gt; \} | Yes | - |
 | `UnregisterTrigger` | `{ id: String, trigger_type: String }` | Yes | - |
-| `UnregisterTriggerType` | `{ id: String }` | Yes | - |
-| `RegisterFunction` | `{ id: String, description: Option<String>, request_format: Option<Value>, response_format: Option<Value>, metadata: Option<Value>, invocation: Option<iii_helpers::http::HttpInvocationConfig> }` | Yes | - |
+| `UnregisterTriggerType` | `{ id: String, namespace: Option<String> }` | Yes | - |
+| `RegisterFunction` | \{ id: String, description: Option&lt;String&gt;, request_format: Option&lt;Value&gt;, response_format: Option&lt;Value&gt;, metadata: Option&lt;Value&gt;, invocation: Option&lt;iii_helpers::http::HttpInvocationConfig&gt;, observe: Option&lt;Box&lt;[`ObserveDescriptor`](#observedescriptor)&gt;&gt; \} | Yes | - |
 | `UnregisterFunction` | `{ id: String }` | Yes | - |
-| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt;, namespace: Option&lt;String&gt; \} | Yes | - |
+| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt;, namespace: Option&lt;String&gt;, caller: Option&lt;Box&lt;[`Caller`](#caller)&gt;&gt;, observe_depth: Option&lt;u32&gt;, activation: Option&lt;[`Activation`](#activation)&gt; \} | Yes | - |
 | `InvocationResult` | \{ invocation_id: uuid::Uuid, function_id: String, result: Option&lt;Value&gt;, error: Option&lt;[`ErrorBody`](#errorbody)&gt;, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt; \} | Yes | - |
 | `Ping` | `unit` | Yes | - |
 | `Pong` | `unit` | Yes | - |
 | `Reattach` | `{ previous_worker_id: String, reattach_token: Option<String> }` | Yes | Sent to the engine as the first message of a reconnect, before the<br />registration replay: `previous_worker_id` and `reattach_token` are<br />the values the engine assigned via `WorkerRegistered` on the previous<br />connection. The engine retires that connection so the replay lands on<br />a clean slate; the token is required because worker ids alone are<br />publicly discoverable. |
-| `WorkerRegistered` | `{ worker_id: String, reattach_token: Option<String> }` | Yes | - |
+| `WorkerRegistered` | `{ worker_id: String, reattach_token: Option<String>, features: Vec<String> }` | Yes | - |
 | `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Pushed by the engine when a registration collides with a live worker in<br />the same namespace. The `code` distinguishes the two cases:<br />`WORKER_NAMESPACE_CONFLICT` is fatal (the engine closes the connection;<br />the SDK stops and does not reconnect), while `FUNCTION_NAMESPACE_CONFLICT`<br />refuses a single function id and keeps the connection open. |
+| `Observe` | \{ id: String, source: Box&lt;[`ObserveSource`](#observesource)&gt;, target: [`ObserveTarget`](#observetarget), metadata: Option&lt;Value&gt;, max_fires: Option&lt;u64&gt;, expires_in_ms: Option&lt;u64&gt;, max_in_flight: Option&lt;u32&gt; \} | Yes | Observing worker → engine: create, or idempotently replay, an observer<br />owned by this connection. |
+| `Unobserve` | `{ id: String }` | Yes | Observing worker → engine: dispose an observer this connection owns. |
+| `ObserveResult` | \{ id: String, state: [`ObserverState`](#observerstate), error: Option&lt;[`ErrorBody`](#errorbody)&gt;, warnings: Vec&lt;String&gt; \} | Yes | Engine → observing worker: the reply to `observe` (also on replay). |
+| `ObserverStateChanged` | \{ id: String, state: [`ObserverState`](#observerstate), reason: Option&lt;[`ErrorBody`](#errorbody)&gt;, fires: u64 \} | Yes | Engine → observing worker: every lifecycle transition. |
+| `FunctionRegistered` | \{ id: String, namespace: String, revision: u64, local_dispatch: bool, observers: Vec&lt;[`ObserverView`](#observerview)&gt; \} | Yes | Engine → owner: the `registerfunction` success ack, with the full<br />current observer set. Enables local dispatch for this function. |
+| `ObserverAdded` | \{ function_id: String, namespace: String, revision: u64, observer: [`ObserverView`](#observerview) \} | Yes | Engine → owner: one observer attached to a function this connection<br />hosts. Awaits `observerack`. |
+| `ObserverRemoved` | `{ function_id: String, namespace: String, revision: u64, id: String }` | Yes | Engine → owner: one observer detached. |
+| `ObserverAck` | \{ function_id: String, namespace: Option&lt;String&gt;, id: String, revision: u64, error: Option&lt;[`ErrorBody`](#errorbody)&gt; \} | Yes | Owner → engine: accepts one added observer, or rejects it with `error`<br />(also later, for an active observer: a late rejection). |
+| `InvocationsObserved` | \{ items: Vec&lt;[`ObservedItem`](#observeditem)&gt; \} | Yes | Owner → engine: matched local invocations of auto functions and<br />`obs.emit` events of owner functions, batched. |
+| `LocalInvocationStats` | \{ window_ms: u64, functions: Vec&lt;[`LocalFunctionStats`](#localfunctionstats)&gt;, dropped_reports: Vec&lt;[`DroppedReportStats`](#droppedreportstats)&gt; \} | Yes | Owner → engine: local invocation counts and SDK-side report drops,<br />every 10 s and only when non-zero. |
+| `Unknown` | `unit` | Yes | Any message type this SDK does not know, sent by a newer engine. It is<br />ignored (logged at debug level), never sent. |
+
+---
+
+#### ObserveDescriptor
+
+`registerfunction.observe`: the wire half of a function's observe hooks.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `delivery` | Option&lt;[`Delivery`](#delivery)&gt; | No | Absent means `Delivery::Auto`. |
+| `args_format` | `Option<Value>` | No | JSON Schema the engine validates observers' `args` against. Owner<br />delivery only. |
+| `legacy_trigger_type` | `Option<String>` | No | Old `registerTrigger({ type })` calls bind to this function when no<br />live provider of that trigger type exists. |
+| `allow` | `Option<bool>` | No | Absent means `true`; `false` refuses observers (`NOT_OBSERVABLE`). |
+
+---
+
+#### ObservedItem
+
+One item of `invocationsobserved`: a matched local invocation of an auto
+function, or an emitted event of an owner function.
+
+`input` / `output` / `error` / `metadata` keep `null` apart from absent.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `namespace` | `Option<String>` | No | - |
+| `invocation_id` | `String` | Yes | - |
+| `matched` | `Vec<String>` | Yes | - |
+| `status` | [`InvocationStatus`](#invocationstatus) | Yes | - |
+| `input` | `Option<Value>` | No | - |
+| `output` | `Option<Value>` | No | - |
+| `error` | `Option<Value>` | No | - |
+| `caller` | Option&lt;[`Caller`](#caller)&gt; | No | - |
+| `metadata` | `Option<Value>` | No | - |
+| `started_at_ms` | `u64` | Yes | - |
+| `duration_ms` | `f64` | Yes | - |
+| `observe_depth` | `u32` | Yes | - |
+| `traceparent` | `Option<String>` | No | - |
+| `baggage` | `Option<String>` | No | - |
+
+---
+
+#### ObserverState
+
+Observer lifecycle states.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Pending` | `unit` | Yes | Waiting for its function's owner (and its ack) or its target. |
+| `Active` | `unit` | Yes | Delivering. |
+| `Suspended` | `unit` | Yes | Its observing worker or its target is gone for now. |
+| `Error` | `unit` | Yes | Rejected; see the reason. |
+| `Disposed` | `unit` | Yes | Gone for good. |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### ObserverView
+
+An observer as its function's owner sees it (`functionregistered`,
+`observeradded`): never the observer's metadata, policy or observing
+worker.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `args` | `Value` | Yes | `{}` for an observer without args. |
+| `filters` | `Value` | Yes | The observer's filters in normal form; `{}` matches every event. |
+| `target` | `String` | Yes | Target function id (its namespace is not disclosed). |
+| `capture` | Vec&lt;[`Capture`](#capture)&gt; | Yes | - |
+| `on` | [`On`](#on) | Yes | - |
+| `legacy` | Option&lt;[`LegacyTrigger`](#legacytrigger)&gt; | No | Set when the engine's legacy shim created this observer from an old<br />`registerTrigger`. `null` reads as absent. |
+
+---
+
+#### ObserveSource
+
+The left side of `iii.observe` on the wire. Absent fields stay absent; the
+engine applies the defaults.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `namespace` | `Option<String>` | No | - |
+| `args` | `Option<Value>` | No | - |
+| `filters` | `Option<Value>` | No | - |
+| `capture` | Option&lt;Vec&lt;[`Capture`](#capture)&gt;&gt; | No | - |
+| `on` | Option&lt;[`On`](#on)&gt; | No | - |
+| `deliver` | Option&lt;[`Deliver`](#deliver)&gt; | No | - |
+
+---
+
+#### ObserveTarget
+
+The right side of `iii.observe` on the wire: a registered function.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `namespace` | `Option<String>` | No | - |
+
+---
+
+#### On
+
+Which outcomes of an auto function's invocation activate an observer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Success` | `unit` | Yes | - |
+| `Error` | `unit` | Yes | - |
+| `Complete` | `unit` | Yes | - |
+| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
+| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
+
+---
+
+#### ParentCaller
+
+`Caller::parent`: a caller without a parent of its own.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `worker_id` | `Option<String>` | No | - |
+| `worker_name` | `Option<String>` | No | - |
+| `function_id` | `Option<String>` | No | - |
+| `invocation_id` | `Option<String>` | No | - |
 
 ---
 
@@ -917,6 +1750,7 @@ does not carry it.
 | `response_format` | `Option<Value>` | No | - |
 | `metadata` | `Option<Value>` | No | - |
 | `invocation` | `Option<iii_helpers::http::HttpInvocationConfig>` | No | - |
+| `observe` | Option&lt;[`ObserveDescriptor`](#observedescriptor)&gt; | No | The wire half of the function's observe hooks; see<br />`RegisterFunction::observe`. |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
 
 ---
@@ -926,10 +1760,15 @@ does not carry it.
 Input for `IIIClient::register_trigger`.
 The `id` is auto-generated internally.
 
+**Deprecated since 0.25.0** with `register_trigger`: use
+`IIIClient::observe` with a
+`Source` instead. Migration guide:
+[https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x).
+
 Build it with `RegisterTriggerInput::new`, or with
 `IIITrigger` for a type the engine
 provides. A struct literal has to name every field, so each field added here
-breaks it -- `namespace` did that once and `trigger_namespace` did it again,
+breaks it: `namespace` did that once and `trigger_namespace` did it again,
 which is why the constructors exist.
 
 The two are different questions. `namespace` is where the target function
@@ -1028,6 +1867,7 @@ TriggerRequest {
 | `payload` | `Value` | Yes | Input data passed to the function. |
 | `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Sets how the trigger is routed. `None` for a synchronous request/response.<br />Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`). |
 | `timeout_ms` | `Option<u64>` | No | Override the default invocation timeout, in milliseconds. |
+| `dispatch` | fn(dispatch: [`Dispatch`](#dispatch)) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Choose the path this call takes: `Dispatch::Auto` (the default) runs a function this worker hosts in-process when the engine allows it; `Dispatch::Remote` always goes through the engine. |
 | `metadata` | fn(metadata: Value) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals. |
 | `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `TriggerRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
 
@@ -1035,10 +1875,12 @@ TriggerRequest {
 
 #### TriggerRequestWithMetadata
 
-Trigger request plus optional per-invocation metadata and target namespace.
+Trigger request plus optional per-invocation metadata, target namespace
+and dispatch.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `dispatch` | fn(dispatch: [`Dispatch`](#dispatch)) -&gt; Self | Yes | Choose the path this call takes; see `Dispatch`. |
 | `metadata` | `fn(metadata: Value) -> Self` | Yes | Attach per-invocation metadata. |
 | `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | Target a specific namespace for this invocation. |
 
@@ -1063,7 +1905,7 @@ Trigger request plus optional per-invocation metadata and target namespace.
 
 ### iii_sdk::runtime
 
-[`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerInfo`](#triggerinfo) · [`TriggerTypeRef`](#triggertyperef) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata)
+[`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerInfo`](#triggerinfo) · [`TriggerTypeRef`](#triggertyperef) · [`WorkerIdentityMode`](#workeridentitymode) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata)
 
 #### FunctionInfo
 
@@ -1085,6 +1927,9 @@ Function information returned by `engine::functions::list`
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `String` | Yes | - |
+| `is_observed` | `fn() -> bool` | Yes | Whether any observer is active on this function, in one atomic load and without allocating. Check it before building an event nobody would receive. |
+| `local_dispatch_active` | `fn() -> bool` | Yes | Whether calls to this function from this worker currently run in-process (the engine confirmed it with `local_dispatch: true`). |
+| `observers` | fn() -&gt; Vec&lt;[`Observer`](#observer)&gt; | Yes | The active observers, as the owner sees them. |
 | `unregister` | `fn()` | Yes | - |
 
 ---
@@ -1122,16 +1967,30 @@ Trigger information returned by `engine::triggers::list`
 
 Typed handle returned by `IIIClient::register_trigger_type`.
 
+**Deprecated since 0.25.0** with it; see
+[https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x).
+
 Type parameters:
 - `C`: trigger registration type for `register_trigger`
 - `R`: call request type for `register_function`
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `register_function` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | Register a sync function whose input type must match the call request format `R`. |
-| `register_function_async` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | Register an async function whose input type must match the call request format `R`. |
-| `register_trigger` | fn(function_id: impl Into&lt;String&gt;, config: C) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | Register a trigger with compile-time validated trigger config. |
-| `register_trigger_with_metadata` | fn(function_id: impl Into&lt;String&gt;, config: C, metadata: Option&lt;Value&gt;) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | Register a trigger with compile-time validated trigger config and optional metadata. |
+| `register_function` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | **Deprecated since 0.25.0.** Use iii.register_function(id, RegisterFunction::new(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x. Register a sync function whose input type must match the call request format `R`. |
+| `register_function_async` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | **Deprecated since 0.25.0.** Use iii.register_function(id, RegisterFunction::new_async(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x. Register an async function whose input type must match the call request format `R`. |
+| `register_trigger` | fn(function_id: impl Into&lt;String&gt;, config: C) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | **Deprecated since 0.25.0.** Use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x. Register a trigger with compile-time validated trigger config. |
+| `register_trigger_with_metadata` | fn(function_id: impl Into&lt;String&gt;, config: C, metadata: Option&lt;Value&gt;) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | **Deprecated since 0.25.0.** Use iii.observe_with(Source::function(..).args(..), target, ObserverOptions::default().metadata(..)) instead; see https://iii.dev/docs/upgrading/from-0-24-x. Register a trigger with compile-time validated trigger config and optional metadata. |
+
+---
+
+#### WorkerIdentityMode
+
+Selects where a worker connection gets its engine identity.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Managed` | `unit` | Yes | Use the supervisor-managed `III_WORKER_NAME` and `III_NAMESPACE` values<br />when present. This is the default for normal worker connections. |
+| `Explicit` | `unit` | Yes | Keep the name from `WorkerMetadata` and the namespace from explicit<br />options or metadata. Process-wide identity environment variables are<br />ignored. Use this for auxiliary connections created by one worker. |
 
 ---
 
@@ -1165,13 +2024,13 @@ Worker metadata for auto-registration
 | --- | --- | --- | --- |
 | `runtime` | `String` | Yes | - |
 | `version` | `String` | Yes | - |
-| `name` | `String` | Yes | - |
+| `name` | `String` | Yes | Worker name reported to the engine. In managed identity mode, a<br />non-empty `III_WORKER_NAME` overrides this value when the client is<br />created. |
 | `os` | `String` | Yes | - |
 | `description` | `Option<String>` | No | One-line, human/LLM-readable summary of what this worker does.<br />Surfaces in `engine::workers::list` / `engine::workers::info`. |
 | `pid` | `Option<u32>` | No | - |
 | `telemetry` | Option&lt;[`TelemetryOptions`](#telemetryoptions)&gt; | No | - |
 | `isolation` | `Option<String>` | No | - |
-| `namespace` | `Option<String>` | No | Namespace this worker belongs to, and therefore the one its calls and<br />its trigger bindings resolve in unless they name another. Absent means<br />the engine applies its default namespace. Resolved from<br />`InitOptions.namespace` / `III_NAMESPACE` (see `resolve_namespace`). |
+| `namespace` | `Option<String>` | No | Namespace this worker belongs to, and therefore the one its calls and<br />its trigger bindings resolve in unless they name another. Absent means<br />the engine applies its default namespace. Managed clients also use<br />`III_NAMESPACE` when no explicit namespace is present. |
 
 ### iii_sdk::stream_provider
 
@@ -1219,6 +2078,9 @@ the target function.
 #### IIITrigger
 
 Enum of all built-in trigger types with typed configuration.
+
+**Deprecated since 0.25.0** with `IIIClient::register_trigger`;
+see the module docs.
 
 Use `.for_function()` to create a `RegisterTriggerInput`:
 ```rust,no_run
@@ -1272,6 +2134,12 @@ registered or unregistered.
 
 Handler trait for custom trigger types. Implement this and pass to
 `IIIClient::register_trigger_type`.
+
+**Deprecated since 0.25.0** with `register_trigger_type`: implement
+`ObserveHandler` on an observable function
+instead (`on_observer_added` / `on_observer_removed`, with the observer's
+args in place of the trigger config). Migration guide:
+[https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |

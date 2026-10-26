@@ -129,8 +129,15 @@ only seeds an empty store. To change a stored setting, use `configuration::set`.
 ## Build the new engine section
 
 Move the configs of the five engine-owned workers from list entries in `config.yaml` to the
-`engine.workers` map: `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`, and
-`iii-sandbox`. For the field reference, see [Engine fields](../using-iii/compose#engine-fields).
+`engine.workers` map: `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`
+(deprecated), and `iii-sandbox`. For the field reference, see
+[Engine fields](../using-iii/compose#engine-fields).
+
+<Warning title="Deprecated">
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is
+  unchanged for now, so move its configuration as shown. Plan the migration with [Migrate from
+  iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 The map value is the worker config itself; do not keep the old nested `config:` key. Multiple
 instances use a `#instance` suffix, such as `iii-worker-manager#rbac`.
@@ -175,9 +182,14 @@ injects them. An entry under `engine.workers` fails with `ENGINE_WORKER_IS_INJEC
 | `iii-cron` or `cron`     | `cron`                            |
 | `iii-queue` or `queue`   | `queue`                           |
 | `iii-state` or `state`   | `state`                           |
-| `iii-pubsub` or `pubsub` | `pubsub`                          |
+| `iii-pubsub` or `pubsub` | `pubsub` (deprecated)             |
 | `iii-bridge`             | `bridge`                          |
 | `iii-exec`               | no package; use Compose `scripts` |
+
+<Warning title="Deprecated">
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged
+  for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 Copy the current settings of each project worker to its `config_override`. On first boot, 0.22 moved
 each `config:` block from `config.yaml` into the configuration worker and left a comment in its

@@ -89,6 +89,8 @@ impl Worker for ConfigurationWorker {
                 None,
             ))
             .await;
+        // The function replacing the trigger type (README §9).
+        crate::observer::events::register_configuration_event_source(&self.engine);
 
         // Start the adapter's external-change watcher (no-op for adapters
         // without an out-of-band edit path).
@@ -178,17 +180,21 @@ impl ConfigurationWorker {
     /// Trigger fan-out for an event already produced by the worker
     /// (register/set) or surfaced by the adapter watcher (file edit).
     pub(crate) async fn fan_out(&self, event: ConfigurationEventData) {
+        // `configuration::on-updated` observers see every event; the event is
+        // built only when one does.
+        self.engine.observers.emit(
+            crate::protocol::DEFAULT_NAMESPACE,
+            crate::observer::events::CONFIGURATION_ON_UPDATED,
+            || event_value(&event),
+        );
         let triggers = self.triggers.matching(&event.id).await;
         if triggers.is_empty() {
             return;
         }
 
-        let event_value = match serde_json::to_value(&event) {
-            Ok(v) => v,
-            Err(err) => {
-                tracing::error!(error = %err, "Failed to serialise configuration event");
-                return;
-            }
+        let Some(event_value) = event_value(&event) else {
+            tracing::error!("Failed to serialise configuration event");
+            return;
         };
         let engine = self.engine.clone();
         let event_type_wire = match event.event_type {
@@ -370,6 +376,14 @@ impl ConfigurationWorker {
             Err(err) => Err(err.into()),
         }
     }
+}
+
+/// The event as triggers and `configuration::on-updated` observers get it.
+fn event_value(event: &ConfigurationEventData) -> Option<Value> {
+    // Counted (tests) where it is built, whoever builds it: unobserved and
+    // with no trigger, nothing should.
+    crate::observer::events::payload_built();
+    serde_json::to_value(event).ok()
 }
 
 /// Build a `ConfigurationEventData` from an entry + event semantics.
@@ -733,6 +747,48 @@ mod tests {
             initial_value: initial,
             metadata: None,
         }
+    }
+
+    /// `configuration::on-updated` observers get the `configuration` trigger's
+    /// event, filtered on the configuration id.
+    #[tokio::test]
+    async fn configuration_on_updated_observers_get_the_trigger_event() {
+        use crate::observer::events::{
+            CONFIGURATION_ON_UPDATED, register_configuration_event_source, test_support,
+        };
+        let (engine, worker, _dir) = setup().await;
+        register_configuration_event_source(&engine);
+        let before = crate::observer::events::payloads_built();
+        let _ = worker
+            .register_fn(register_input("iii-early", Some(json!({ "port": 1 }))))
+            .await;
+        assert_eq!(
+            crate::observer::events::payloads_built(),
+            before,
+            "unobserved: zero cost"
+        );
+        let mut sink = test_support::capture(&engine, "test::config-sink");
+        let _socket = test_support::observe(
+            &engine,
+            "obs-config",
+            CONFIGURATION_ON_UPDATED,
+            "test::config-sink",
+            Some(json!({ "input.id": { "$eq": "iii-stream" } })),
+        )
+        .await;
+
+        let _ = worker
+            .register_fn(register_input("iii-other", Some(json!({ "port": 1 }))))
+            .await;
+        let _ = worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 3112 }))))
+            .await;
+        let event = test_support::next(&mut sink).await;
+        assert_eq!(event["type"], "configuration");
+        assert_eq!(event["id"], "iii-stream", "the filter skipped iii-other");
+        assert_eq!(event["event_type"], "configuration:registered");
+        assert_eq!(event["new_value"], json!({ "port": 3112 }));
+        assert!(sink.try_recv().is_err());
     }
 
     #[tokio::test]

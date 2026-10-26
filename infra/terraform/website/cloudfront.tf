@@ -141,7 +141,8 @@ resource "aws_cloudfront_distribution" "site" {
   }
 
   # domain_name is docs.iii.dev so origin TLS SNI matches iii-dev-tls-docs at
-  # ingress-nginx; the /docs* behaviors forward Host: iii.dev via AllViewer.
+  # ingress-nginx; the /docs* and /registry* behaviors forward Host: iii.dev via
+  # AllViewer, which reaches the iii-edge-proxy nginx server block for iii.dev.
   # Coupled to docs.iii.dev staying on the k8s NLB (see NEXT-STEPS.md item 13).
   origin {
     origin_id   = "docs-nlb"
@@ -236,6 +237,35 @@ resource "aws_cloudfront_distribution" "site" {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.redirects.arn
     }
+  }
+
+  # Workers registry: iii-edge-proxy strips /registry and proxies to
+  # workers.iii.dev (iii-hq/iii-argocd-values, apps/site/manifests/iii-dev.yaml).
+  # Same pair of patterns and the same reasons for no function and no response
+  # headers policy as /docs. The full method set is needed because the
+  # registry's Next.js server actions POST to the page URL.
+  ordered_cache_behavior {
+    path_pattern           = "/registry"
+    target_origin_id       = "docs-nlb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = local.cache_policy_disabled_id
+    origin_request_policy_id = local.origin_request_all_viewer_id
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/registry/*"
+    target_origin_id       = "docs-nlb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = local.cache_policy_disabled_id
+    origin_request_policy_id = local.origin_request_all_viewer_id
   }
 
   viewer_certificate {

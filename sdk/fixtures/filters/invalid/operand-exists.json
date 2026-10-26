@@ -1,0 +1,10 @@
+{
+  "description": "$exists takes a boolean",
+  "cases": [
+    { "filters": {"input.a": {"$exists": 1}}, "code": "INVALID_FILTER", "note": "number" },
+    { "filters": {"input.a": {"$exists": "true"}}, "code": "INVALID_FILTER", "note": "string" },
+    { "filters": {"input.a": {"$exists": null}}, "code": "INVALID_FILTER", "note": "null" },
+    { "filters": {"input.a": {"$exists": []}}, "code": "INVALID_FILTER", "note": "array" },
+    { "filters": {"input.a": {"$exists": {}}}, "code": "INVALID_FILTER", "note": "object" }
+  ]
+}

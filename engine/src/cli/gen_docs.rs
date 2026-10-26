@@ -14,19 +14,13 @@ use std::path::Path;
 
 use iii_clap_docs::{Delegated, PageMeta};
 
-/// The `console` and `cloud` subcommands are passthrough stubs
-/// here (a bare `Vec<String>`); their real command trees live in the
-/// dispatched binaries. Link to those binaries' own sections of the
-/// combined page instead of rendering an empty `[ARGS]...` section.
+/// The `cloud` subcommand is a passthrough stub here (a bare `Vec<String>`);
+/// its real command tree lives in the dispatched binary, which this page does
+/// not document. List it in the subcommands table without a link instead of
+/// rendering an empty `[ARGS]...` section. (The removed `console` command is
+/// a hidden notice-only stub, so it is not rendered at all.)
 fn delegated() -> BTreeMap<String, Delegated> {
     let mut map = BTreeMap::new();
-    map.insert(
-        "console".to_string(),
-        Delegated {
-            link: Some("#iii-console".to_string()),
-            note: "Launch the iii web console.".to_string(),
-        },
-    );
     map.insert(
         "cloud".to_string(),
         Delegated {
@@ -70,13 +64,12 @@ fn mdx_only_notes() -> BTreeMap<String, String> {
 pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
     let meta = PageMeta {
         title: "CLI reference".to_string(),
-        description: "Every flag, argument, and subcommand of the iii CLI, including iii \
-                      console, generated from the CLI definitions in source."
+        description: "Every flag, argument, and subcommand of the iii CLI, generated from \
+                      the CLI definitions in source."
             .to_string(),
         owner: "devrel".to_string(),
-        intro: "Reference for the `iii` binary and the `iii console` runtime it dispatches \
-                to. Running `iii` with no subcommand starts the \
-                engine. The same information is available from the binaries themselves via \
+        intro: "Reference for the `iii` binary. Running `iii` with no subcommand starts the \
+                engine. The same information is available from the binary itself via \
                 `iii --help` and `iii <subcommand> --help`. For a guided overview, see \
                 [CLI](../using-iii/cli)."
             .to_string(),

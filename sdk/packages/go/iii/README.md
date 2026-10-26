@@ -89,8 +89,12 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
-| Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
-| Register trigger type | `client.RegisterTriggerType(id, description, handler, opts...) error` | Implement a custom trigger type with optional configuration and event schemas. |
+| Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)` | Invoke `target` on every matching invocation (or owner event) of a function. |
+| Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
+| Owner hooks | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}` | React when the function is observed; hand events to observers with `obs.Emit` / `obs.Call`. |
+| Observed? | `client.IsObserved(id)`, `client.Observers(id)` | The active observers of a function this worker registered. |
+| Register trigger (deprecated) | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. Use `Observe`. |
+| Register trigger type (deprecated) | `client.RegisterTriggerType(id, description, handler, opts...) error` | Implement a custom trigger type. Use `ObserveHooks`. |
 | Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
 | Invoke (enqueue) | `client.Trigger(ctx, TriggerRequest{Action: iii.EnqueueAction("queue")})` | Route the invocation through a named queue. |
@@ -245,6 +249,93 @@ Errors are typed: `errors.Is(err, iii.ErrTimeout)` for a missed deadline,
 `errors.Is(err, iii.ErrNotConnected)` for a call cancelled by shutdown, and
 `errors.As(err, &ie)` for an `*iii.InvocationError` (carrying the remote `Code`,
 `Message`, and `Stacktrace`).
+
+A call to a function this worker registered itself runs in-process once the engine
+confirmed it (no frames on the wire unless someone observes it). The handler gets its
+own copy of the payload, and errors and timeouts look as on the remote path. Pass
+`Dispatch: iii.DispatchRemote` to go through the engine anyway, or register the
+function with `LocalDispatch: &off` (`off := false`).
+
+Inside a handler, pass the handler's `ctx` to `Trigger`: the call then carries the
+handler as its caller (observers can filter on `caller.*`) and the observe depth the
+engine's loop guard reads.
+
+### Observing functions
+
+Every function is observable. The target is a registered function; it receives the
+`iii.Observed` envelope (`input`, `output` or `error`, `caller`, ...).
+
+```go
+client.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
+	var ev iii.Observed
+	_ = json.Unmarshal(data, &ev)
+	return nil, notify(ev.Input, ev.Output)
+})
+
+observer, err := client.Observe(iii.Source{
+	FunctionID: "orders::create",
+	Filters:    iii.Filters{"input.body.total": iii.Op{"$gte": 500}},
+}, "alerts::big-order")
+if err == nil {
+	err = observer.Ready(ctx) // an *iii.ObserveRejectionError carries the engine's code
+}
+// later
+_ = observer.Dispose(ctx)
+```
+
+Engine-hosted sources are observed the same way, e.g. worker changes:
+
+```go
+client.Observe(iii.Source{FunctionID: iii.FnOnWorkersChanged, Deliver: iii.DeliverInput}, "ops::on-workers")
+```
+
+A function of your own can hand its events to the observers they belong to (owner
+delivery), and react when one is added or removed. Here a worker's own scheduler
+function routes each tick to the observers of its expression:
+
+```go
+var mu sync.Mutex
+schedules := map[string][]*iii.Observer{} // expression -> observers
+
+client.RegisterFunction("reports::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
+	var tick struct{ Expression string `json:"expression"` }
+	_ = json.Unmarshal(data, &tick)
+	mu.Lock()
+	observers := append([]*iii.Observer(nil), schedules[tick.Expression]...)
+	mu.Unlock()
+	for _, obs := range observers {
+		obs.Emit(ctx, data) // false when the observer's filters reject the tick
+	}
+	return nil, nil
+}, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
+	Delivery:   iii.DeliveryOwner,
+	ArgsFormat: json.RawMessage(`{"type":"object","required":["expression"],"properties":{"expression":{"type":"string"}}}`),
+	OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
+		expr, _ := obs.Args["expression"].(string)
+		mu.Lock()
+		schedules[expr] = append(schedules[expr], obs)
+		mu.Unlock()
+		return nil // or iii.ObserveRejection("INVALID_EXPRESSION", "...")
+	},
+	OnObserverRemoved: func(ctx context.Context, obs *iii.Observer) {
+		// remove obs from schedules
+	},
+}})
+```
+
+`obs.Call(ctx, payload)` invokes the observer's target through the engine and returns
+its result (an HTTP router answers with it). The filter evaluator is the `filter`
+subpackage (`github.com/iii-hq/iii/sdk/packages/go/iii/filter`), the same language
+the engine runs.
+
+### Trigger APIs (deprecated)
+
+`RegisterTrigger` and `RegisterTriggerType` keep working in 0.25 but are deprecated:
+they log a warning once per process. Use `client.Observe(source, target)` and
+`RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: ...})` instead.
+Built-in trigger providers (HTTP, cron, queue, ...) keep `RegisterTrigger` until they
+ship their source functions. See the
+[migration guide](https://iii.dev/docs/upgrading/from-0-24-x).
 
 ## Connection behavior
 

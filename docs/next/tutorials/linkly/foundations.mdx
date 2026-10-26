@@ -30,8 +30,7 @@ cd linkly
 The project ships with a complete `worker-compose.yaml`. You do not edit it in this chapter.
 Chapters 3 to 7 each have a commented block in this file. Each of those chapters tells you to
 uncomment its block and restart the project with `iii trigger compose::restart`. Chapter 2 adds the
-console with `iii trigger compose::add worker=console`, which writes the entry into the file for
-you.
+console with `iii trigger compose::add worker=ade`, which writes the entry into the file for you.
 
 Later in this chapter you'll serve the `link` worker over HTTP (provided by `http`) and stash
 short-code → URL mappings in a key-value store (provided by `state`). `worker-compose.yaml` declares
@@ -42,8 +41,6 @@ namespace: default
 startup_timeout: 360s
 engine:
   url: ws://127.0.0.1:49134
-  workers:
-    iii-stream: {}
 containers:
   http:
     worker: package://http
@@ -66,9 +63,6 @@ containers:
 
 The `engine:` section configures the engine that `iii compose --up` starts for this project. `url`
 is the address where workers connect to the engine.
-
-The `engine.workers` entry turns on `iii-stream`, which Chapter 5 uses. Declare entries under
-`engine.workers` before the engine starts.
 
 `containers` holds one entry for each worker. A worker comes from a remote package or from a local
 path. For example, `http` comes from a remote package, and `link` comes from the `link` directory in
@@ -184,7 +178,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   let code = payload.code;
   if (code) {
     // A requested code must be free; creating never overwrites an existing link.
-    if (await taken(code)) throw new Error(`code "${code}" is taken`);
+    if (await taken(code)) throw new Error(`code \`${code}\` is already taken`);
   } else {
     // A generated code retries until it finds a free one.
     do {
@@ -229,6 +223,12 @@ with the engine. `--up` is a `iii compose` flag that starts the engine along wit
 ```bash
 iii compose --up
 ```
+
+<Note>
+  `iii compose --up` stays in the foreground. Press Ctrl+C in that terminal to stop the engine and
+  every worker. From another terminal, `iii kill --compose <project folder>` stops the same project:
+  its Compose daemon, its engine and its workers.
+</Note>
 
 ## Check the engine log
 
@@ -304,9 +304,20 @@ trigger turns a function into an HTTP endpoint.
 
 ### Create a function to handle new links
 
-Add `http::create` to `link/src/index.ts`. It validates the request body, calls `link::create`
-through the engine with `worker.trigger`, and returns the new link, or `409` when the requested code
-is already taken:
+Add `http::create` to `link/src/index.ts`. It answers `400` when the request body has no `url`,
+calls `link::create` through the engine with `worker.trigger`, and returns the new link with `201`,
+or `409` when the requested code is already taken.
+
+An error thrown by `link::create` reaches `http::create` as an `InvocationError` from `iii-sdk`. Its
+`code` is `invocation_failed`, and its `message` is that code, a colon, and the message
+`link::create` threw. The handler cuts the prefix off, so the response carries `link::create`'s
+exact words. Add `InvocationError` to the `iii-sdk` import at the top of the file:
+
+```typescript {1} src/index.ts
+import { InvocationError, registerWorker } from "iii-sdk";
+```
+
+Then append `http::create`:
 
 ```typescript src/index.ts
 worker.registerFunction("http::create", async (req) => {
@@ -332,15 +343,32 @@ worker.registerFunction("http::create", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   } catch (err) {
-    // link::create throws when a requested code is already taken.
+    // The SDK hands link::create's error back as an InvocationError whose
+    // message is `<err.code>: <what link::create threw>`; drop that prefix.
+    const error =
+      err instanceof InvocationError ? err.message.slice(err.code.length + 2) : String(err);
+    // Only link::create's own "is already taken" message means the code is in
+    // use (409). Anything else failed on the server's side (500).
+    if (error.endsWith("is already taken")) {
+      return {
+        status_code: 409,
+        body: { error },
+        headers: { "Content-Type": "application/json" },
+      };
+    }
+    logger.error("link create failed", { error });
     return {
-      status_code: 409,
-      body: { error: err instanceof Error ? err.message : "conflict" },
+      status_code: 500,
+      body: { error: "could not create the link" },
       headers: { "Content-Type": "application/json" },
     };
   }
 });
 ```
+
+`link::create` always ends its error message for a taken code with `is already taken`. Only that
+message gives `409`. The handler logs any other failure, such as a worker that does not answer, and
+answers `500`.
 
 ### Add a Trigger for your create function
 
@@ -385,6 +413,19 @@ content-type: application/json
 
 {"code":"demo","url":"https://example.com"}
 ```
+
+Send the same request again. `demo` is taken now, so `link::create` refuses it and the route answers
+`409` with its message:
+
+```http
+HTTP/1.1 409 Conflict
+content-type: application/json
+
+{"error":"code `demo` is already taken"}
+```
+
+A body without `url` never reaches `link::create`: the route answers `400` with
+`{"error":"missing \"url\""}`.
 
 The link sits in `state` now, but `GET /s/demo` has nowhere to go yet. There's no handler; add one
 next.

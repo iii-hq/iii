@@ -1,11 +1,21 @@
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, IIIClient, RegisterTriggerType};
+//! Custom event sources as observable functions.
+//!
+//! A source that needs setup per observer (a schedule, a watched path) is
+//! owner-delivered and takes args; one whose events happen anyway is an auto
+//! function, observed with filters.
+
+use iii_sdk::{
+    Error, IIIClient, Observe, ObserveHandler, ObserveRejection, Observed, Observer,
+    RegisterFunction, Source,
+};
 use serde_json::json;
 
-// ── Example 1: Typed trigger with full config ───────────────────────────
+// ── Example 1: an owner-delivered source with typed args ────────────────
 
+/// What an observer of `example::on-schedule` asks for.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct ScheduleTriggerConfig {
+#[serde(deny_unknown_fields)]
+pub struct ScheduleArgs {
     /// ISO 8601 datetime for when to fire (e.g. "2099-01-01T10:00:00Z")
     pub at: String,
     /// Optional timezone (defaults to UTC)
@@ -14,9 +24,10 @@ pub struct ScheduleTriggerConfig {
     pub repeat_daily: Option<bool>,
 }
 
+/// One firing of a schedule.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct ScheduleCallRequest {
-    /// The scheduled datetime that triggered this
+pub struct ScheduleFired {
+    /// The scheduled datetime that fired
     pub scheduled_at: String,
     /// Actual firing time
     pub fired_at: String,
@@ -24,23 +35,28 @@ pub struct ScheduleCallRequest {
     pub fire_count: u64,
 }
 
-struct ScheduleHandler;
+struct Scheduler;
 
 #[async_trait::async_trait]
-impl TriggerHandler for ScheduleHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        println!("[schedule] Registered: {}", config.config);
-        Ok(())
-    }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
+impl ObserveHandler for Scheduler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let args: ScheduleArgs = obs.args()?;
+        if !args.at.ends_with('Z') {
+            return Err(ObserveRejection::new(
+                "INVALID_SCHEDULE",
+                format!("`at` must be a UTC timestamp, got {}", args.at),
+            ));
+        }
+        println!("[schedule] {} scheduled at {}", obs.target(), args.at);
         Ok(())
     }
 }
 
-// ── Example 2: Typed trigger with minimal config ────────────────────────
+// ── Example 2: an owner-delivered source with an enum in its args ───────
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct FileWatchConfig {
+#[serde(deny_unknown_fields)]
+pub struct FileWatchArgs {
     /// Glob pattern to watch (e.g. "/data/*.csv")
     pub pattern: String,
     /// Watch for these events
@@ -58,35 +74,19 @@ pub enum FileEvent {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct FileWatchCallRequest {
+pub struct FileChanged {
     pub event: String,
     pub path: String,
     pub size_bytes: Option<u64>,
 }
 
-struct FileWatchHandler;
+struct FileWatcher;
 
 #[async_trait::async_trait]
-impl TriggerHandler for FileWatchHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        println!("[file-watch] Watching: {}", config.config);
-        Ok(())
-    }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-// ── Example 3: Untyped trigger (no trigger_request_format) ──────────────
-
-struct NoopHandler;
-
-#[async_trait::async_trait]
-impl TriggerHandler for NoopHandler {
-    async fn register_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
+impl ObserveHandler for FileWatcher {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let args: FileWatchArgs = obs.args()?;
+        println!("[file-watch] Watching: {}", args.pattern);
         Ok(())
     }
 }
@@ -94,77 +94,71 @@ impl TriggerHandler for NoopHandler {
 // ── Setup ───────────────────────────────────────────────────────────────
 
 pub fn setup(iii: &IIIClient) {
-    // ── Example 1: Schedule trigger (fully typed) ───────────────────
-    let schedule = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            "schedule",
-            "One-time or daily scheduled trigger",
-            ScheduleHandler,
-        )
-        .trigger_request_format::<ScheduleTriggerConfig>()
-        .call_request_format::<ScheduleCallRequest>(),
+    // ── Example 1: schedule (owner-delivered, typed args) ───────────
+    iii.register_function(
+        "example::on-schedule",
+        RegisterFunction::new(|_: ScheduleFired| Ok::<_, Error>(()))
+            .description("Fires on a one-time or daily schedule. Observe it with args { at }.")
+            .observe(
+                Observe::owner()
+                    .args_format::<ScheduleArgs>()
+                    .handler(Scheduler),
+            ),
+    );
+    iii.register_function(
+        "example::send_report",
+        RegisterFunction::new(|_: Observed<ScheduleFired>| Ok::<_, Error>(json!({ "sent": true }))),
+    );
+    iii.observe(
+        Source::function("example::on-schedule").args(json!({
+            "at": "2099-01-01T09:00:00Z",
+            "timezone": "America/Sao_Paulo",
+            "repeat_daily": true,
+        })),
+        "example::send_report",
     );
 
-    // register_function on the handle: enforces Fn(ScheduleCallRequest) -> ...
-    schedule.register_function("example::send_report", |_input: ScheduleCallRequest| {
-        Ok::<_, Error>(json!({ "sent": true }))
-    });
-
-    // register_trigger on the handle: enforces ScheduleTriggerConfig
-    schedule
-        .register_trigger(
-            "example::send_report",
-            ScheduleTriggerConfig {
-                at: "2099-01-01T09:00:00Z".into(),
-                timezone: Some("America/Sao_Paulo".into()),
-                repeat_daily: Some(true),
-            },
-        )
-        .expect("failed to register schedule trigger");
-
-    // ── Example 2: File watch trigger (typed with enum) ─────────────
-    let file_watch = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            "file-watch",
-            "Watch filesystem for changes",
-            FileWatchHandler,
-        )
-        .trigger_request_format::<FileWatchConfig>()
-        .call_request_format::<FileWatchCallRequest>(),
+    // ── Example 2: file watch (owner-delivered, enum args) ──────────
+    iii.register_function(
+        "example::on-file-change",
+        RegisterFunction::new(|_: FileChanged| Ok::<_, Error>(()))
+            .description(
+                "Fires when a watched file changes. Observe it with args { pattern, events }.",
+            )
+            .observe(
+                Observe::owner()
+                    .args_format::<FileWatchArgs>()
+                    .handler(FileWatcher),
+            ),
+    );
+    iii.register_function(
+        "example::process_csv",
+        RegisterFunction::new(|event: Observed<FileChanged>| {
+            let path = event.input.map(|input| input.path);
+            Ok::<_, Error>(json!({ "processed": true, "path": path }))
+        }),
+    );
+    iii.observe(
+        Source::function("example::on-file-change")
+            .args(json!({ "pattern": "/data/incoming/*.csv", "events": ["created", "modified"] }))
+            .filters(json!({ "input.size_bytes": { "$gt": 0 } })),
+        "example::process_csv",
     );
 
-    // Compile-time safe: function input must be FileWatchCallRequest
-    file_watch.register_function("example::process_csv", |input: FileWatchCallRequest| {
-        Ok::<_, Error>(json!({ "processed": true, "path": input.path }))
-    });
-
-    // Compile-time safe: config must be FileWatchConfig
-    file_watch
-        .register_trigger(
-            "example::process_csv",
-            FileWatchConfig {
-                pattern: "/data/incoming/*.csv".into(),
-                events: vec![FileEvent::Created, FileEvent::Modified],
-            },
-        )
-        .expect("failed to register file-watch trigger");
-
-    // ── Example 3: Untyped trigger (Value fallback) ─────────────────
-    // When no formats are set, TriggerTypeRef<Value, Value> accepts json!() and Value functions
-    let custom = iii.register_trigger_type(RegisterTriggerType::new(
-        "custom-event",
-        "Generic custom event trigger",
-        NoopHandler,
-    ));
-
-    custom.register_function("example::on_custom_event", |input: serde_json::Value| {
-        Ok::<_, Error>(json!({ "received": input }))
-    });
-
-    custom
-        .register_trigger(
-            "example::on_custom_event",
-            json!({ "channel": "notifications", "priority": "high" }),
-        )
-        .expect("failed to register custom-event trigger");
+    // ── Example 3: an auto function, observed with filters ──────────
+    // Every invocation is an event; no args, no hooks.
+    iii.register_function(
+        "example::custom-event",
+        RegisterFunction::new(|input: serde_json::Value| Ok::<_, Error>(input))
+            .description("Publishes a custom event"),
+    );
+    iii.register_function(
+        "example::on_custom_event",
+        RegisterFunction::new(|event: Observed| Ok::<_, Error>(json!({ "received": event.input }))),
+    );
+    iii.observe(
+        Source::function("example::custom-event")
+            .filters(json!({ "input.channel": { "$eq": "notifications" }, "input.priority": { "$eq": "high" } })),
+        "example::on_custom_event",
+    );
 }

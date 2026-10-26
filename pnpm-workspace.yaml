@@ -5,6 +5,11 @@ packages:
   - sdk/packages/node/observability
   - sdk/packages/node/helpers
   - engine/src/workers/observability/ui
-  - console/packages/*
   - docs
   - website
+
+overrides:
+  # GHSA-68fv-2mgg-jv7q (high, fixed in 1.2.2): reached from the SDK packages'
+  # dev tree (helpers > @vitest/coverage-v8 > magicast) and gated by
+  # scripts/audit-sdk.mjs. Every dependent declares ^1.2.x.
+  source-map-js: ^1.2.2

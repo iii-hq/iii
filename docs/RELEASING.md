@@ -29,7 +29,7 @@ Two generated trees must be regenerated and committed into `docs/next/` first:
 | Generated docs | Command | Output |
 |----------------|---------|--------|
 | CLI reference | `make cli-docs` (or `./scripts/generate-cli-docs.sh`) | `docs/next/cli-reference/index.mdx` |
-| API / SDK reference | `pnpm tsx docs/next/scripts/generate-api-docs.mts` | `docs/next/api-reference/*.mdx` |
+| API / SDK reference | `pnpm tsx docs/next/scripts/generate-api-docs.mts` | `docs/next/reference/*.mdx` |
 
 CI gates drift: the `cli-docs-built` job in `.github/workflows/ci.yml` fails if
 `docs/next/cli-reference/` is stale relative to the CLI definitions.

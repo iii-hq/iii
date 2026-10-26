@@ -1,0 +1,10 @@
+{
+  "description": "$eq [] matches an empty array only",
+  "filters": {"input.a": {"$eq": []}},
+  "cases": [
+    { "doc": {"input": {"a": []}}, "expect": true },
+    { "doc": {"input": {"a": {}}}, "expect": false },
+    { "doc": {"input": {"a": [[]]}}, "expect": false },
+    { "doc": {"input": {"a": null}}, "expect": false }
+  ]
+}

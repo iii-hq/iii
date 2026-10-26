@@ -150,5 +150,110 @@ fn trigger_fanout_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, trigger_fanout_benchmark);
+fn trigger_selection_benchmark(c: &mut Criterion) {
+    ensure_default_meter();
+
+    // A single runtime thread makes the selection cost visible without worker
+    // scheduling noise and keeps this short comparison inexpensive to run.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("create tokio runtime");
+    let mut group = c.benchmark_group("trigger_selection");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(100));
+    group.measurement_time(Duration::from_millis(200));
+    group.nresamples(1_000);
+
+    for (name, total, matching) in [
+        ("empty", 0, 0),
+        ("single", 1, 1),
+        ("matched_8", 8, 8),
+        ("mixed_100", 100, 8),
+        ("mixed_1000", 1_000, 8),
+        ("no_match_1000", 1_000, 0),
+    ] {
+        let (engine, completed, notify) = rt.block_on(build_fanout_engine(matching));
+        rt.block_on(async {
+            engine
+                .register_trigger_type(TriggerType::new(
+                    "bench::unrelated",
+                    "unrelated trigger type",
+                    Box::new(NoopRegistrator),
+                    None,
+                ))
+                .await;
+            for index in matching..total {
+                engine
+                    .trigger_registry
+                    .register_trigger(Trigger {
+                        id: format!("unrelated-{index}"),
+                        trigger_type: "bench::unrelated".to_string(),
+                        function_id: "bench::unused".to_string(),
+                        config: serde_json::Value::Null,
+                        worker_id: None,
+                        metadata: None,
+                        namespace: iii::protocol::default_namespace(),
+                        trigger_namespace: None,
+                        home_namespace: iii::protocol::default_namespace(),
+                        provider_namespace: iii::protocol::default_namespace(),
+                    })
+                    .await
+                    .expect("register unrelated trigger");
+            }
+        });
+
+        group.bench_function(name, |b| {
+            b.to_async(&rt).iter(|| async {
+                completed.store(0, Ordering::SeqCst);
+                engine
+                    .fire_triggers("bench.trigger", serde_json::Value::Null)
+                    .await;
+                if matching > 0 {
+                    wait_for_completion(completed.clone(), notify.clone(), matching).await;
+                }
+            });
+        });
+    }
+
+    // Include the index maintenance cost as a control. This calls the normal
+    // registry/provider path, including the no-op registrator acknowledgments.
+    let (engine, _, _) = rt.block_on(build_fanout_engine(8));
+    let trigger = Trigger {
+        id: "bench-mutation".to_string(),
+        trigger_type: "bench.trigger".to_string(),
+        function_id: "bench::unused".to_string(),
+        config: serde_json::Value::Null,
+        worker_id: None,
+        metadata: None,
+        namespace: iii::protocol::default_namespace(),
+        trigger_namespace: None,
+        home_namespace: iii::protocol::default_namespace(),
+        provider_namespace: iii::protocol::default_namespace(),
+    };
+    group.bench_function("register_unregister", |b| {
+        b.to_async(&rt).iter(|| async {
+            engine
+                .trigger_registry
+                .register_trigger(trigger.clone())
+                .await
+                .expect("register trigger");
+            assert!(
+                engine
+                    .trigger_registry
+                    .unregister_trigger(trigger.id.clone(), None)
+                    .await
+                    .expect("unregister trigger")
+            );
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    trigger_fanout_benchmark,
+    trigger_selection_benchmark
+);
 criterion_main!(benches);

@@ -54,12 +54,18 @@ docker compose up -d
 
 The generated `docker-compose.yml` maps these ports:
 
-| Port  | Listener                                                  |
-| ----- | --------------------------------------------------------- |
-| 49134 | Engine WebSocket for trusted worker connections           |
-| 3111  | `http` worker. The generated container does not start it. |
-| 3112  | `iii-stream` worker, when `config.yaml` declares it       |
-| 9464  | No listener at this release                               |
+| Port  | Listener                                                         |
+| ----- | ---------------------------------------------------------------- |
+| 49134 | Engine WebSocket for trusted worker connections                  |
+| 3111  | `http` worker. The generated container does not start it.        |
+| 3112  | `iii-stream` worker (deprecated), when `config.yaml` declares it |
+| 9464  | No listener at this release                                      |
+
+<Warning title="Deprecated">
+  The dedicated Streams WebSocket on port 3112 is deprecated (iii-stream) and will be removed in an
+  upcoming release. Behavior is unchanged for now. Expose it only for legacy clients. See [Migrate
+  from iii-stream and pubsub](../upgrading/migrate-from-streams).
+</Warning>
 
 To keep the engine port private, change the mapping in `docker-compose.yml` to
 `"127.0.0.1:49134:49134"`. If the `http` worker runs on the same host, remove the `3111:3111`
@@ -114,6 +120,11 @@ to the listener unchanged. Do not add or remove a path prefix.
   [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy) port. Its default is `49200`. See
   [Workers](./workers).
 </Warning>
+
+<Note>
+  The `stream.your-domain.com` host only serves legacy clients of the deprecated Streams WebSocket.
+  Drop it once those clients are migrated.
+</Note>
 
 ### Caddy
 

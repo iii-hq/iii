@@ -1,6 +1,9 @@
 """III SDK implementation for WebSocket communication with the III Engine."""
 
 import asyncio
+import concurrent.futures
+import contextvars
+import copy
 import inspect
 import json
 import logging
@@ -8,9 +11,14 @@ import os
 import platform
 import random
 import threading
+import time
 import traceback
 import uuid
-from dataclasses import dataclass
+import warnings
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
@@ -26,8 +34,10 @@ from iii_helpers.stream import (
 )
 from websockets.asyncio.client import ClientConnection
 
-from .channels import ChannelReader, ChannelWriter
+from . import _wire_json
+from .channels import ChannelReader, ChannelWriter, resolve_headers
 from .errors import InvocationError, RegistrationRejectedError, _wrap_wire_error
+from .filter._value import ABSENT, to_json_value
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_ENGINE_URL,
@@ -39,9 +49,18 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
+    FEATURE_OBSERVE_V1,
+    SDK_FEATURES,
+    ActivationWire,
+    CallerWire,
+    FunctionRegisteredMessage,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
+    ObserverAddedMessage,
+    ObserveResultMessage,
+    ObserverRemovedMessage,
+    ObserverStateChangedMessage,
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
@@ -53,10 +72,39 @@ from .iii_types import (
     TriggerActionEnqueue,
     TriggerActionVoid,
     TriggerRequest,
+    UnobserveMessage,
     UnregisterFunctionMessage,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
+    WorkerRegisteredMessage,
 )
+from .invocation_context import (
+    ActiveInvocation,
+    InvocationContext,
+    current_context,
+    guard_exit,
+    original_error,
+    public_context,
+    reset_context,
+    run_in_thread,
+    set_context,
+)
+from .observable import OBSERVE_HOOK_TIMEOUT_S, FunctionObservers, Observer
+from .observe_types import ObserveHook, ObserveHooks, ObserveReason, ObserverOptions, ObserveSource, Target
+from .observe_wire import (
+    build_observe_message,
+    build_observer_ack,
+    caller_for,
+    decode_activation,
+    decode_caller,
+    decode_error,
+    decode_observe_depth,
+    observe_descriptor,
+    strip_caller,
+)
+from .observer_handle import ObserverHandle, to_observer_state
+from .process_marker import announce_process
+from .reporter import FunctionStatus, Reporter
 from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
@@ -66,11 +114,164 @@ TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
 
-# Outbound JSON is one frame (16 MiB); inbound messages may span frames (64 MiB).
-# Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+# JSON envelopes up to this size are sent as one text frame.
 _MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
-# Main JSON inbound message: 64 MiB (67,108,864 bytes).
+# Outbound and inbound JSON message limit (67,108,864 bytes).
+_MAX_JSON_OUTBOUND_BYTES = 64 * 1024 * 1024
 _MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
+# Python websockets takes strings per fragment, so boundaries are UTF-8 safe.
+_JSON_FRAGMENT_BYTES = 1024 * 1024
+
+
+def _json_fragments(payload: bytes) -> Iterator[str]:
+    """Yield UTF-8 text fragments no larger than the frame payload limit."""
+    offset = 0
+    while offset < len(payload):
+        end = min(offset + _JSON_FRAGMENT_BYTES, len(payload))
+        while end < len(payload) and payload[end] & 0b11000000 == 0b10000000:
+            end -= 1
+        yield payload[offset:end].decode("utf-8")
+        offset = end
+
+_MIGRATION_GUIDE = "https://iii.dev/docs/upgrading/from-0-24-x"
+
+#: CONTRACT §5: one warning per process per deprecated API.
+_DEPRECATIONS = {
+    "register_trigger": (
+        "register_trigger is deprecated and will be removed in a future release. Use "
+        f"iii.observe(source, target) instead. Migration guide: {_MIGRATION_GUIDE}"
+    ),
+    "register_trigger_type": (
+        "register_trigger_type is deprecated and will be removed in a future release. Register a function "
+        "with an observe descriptor (register_function(id, handler, observe=ObserveHooks(...))) instead. "
+        f"Migration guide: {_MIGRATION_GUIDE}"
+    ),
+}
+_deprecations_warned: set[str] = set()
+_deprecations_lock = threading.Lock()
+
+
+def _warn_deprecated(api: str, stacklevel: int) -> None:
+    """The language marker (``DeprecationWarning`` at the caller) on every
+    call, and the SDK log warning once per process per API.
+
+    ``stacklevel`` is relative to the caller of this function, as for
+    ``warnings.warn``.
+    """
+    message = _DEPRECATIONS[api]
+    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel + 1)
+    with _deprecations_lock:
+        if api in _deprecations_warned:
+            return
+        _deprecations_warned.add(api)
+    log.warning(message)
+
+
+#: Frames of the observe family: held while a new connection has not said
+#: whether its engine supports observe, and dropped when it does not.
+_OBSERVE_FAMILY = frozenset(
+    {
+        MessageType.OBSERVE.value,
+        MessageType.UNOBSERVE.value,
+        MessageType.OBSERVER_ACK.value,
+        MessageType.INVOCATIONS_OBSERVED.value,
+        MessageType.LOCAL_INVOCATION_STATS.value,
+    }
+)
+
+_UNSUPPORTED_REASON: ObserveReason = {
+    "code": "UNSUPPORTED",
+    "message": "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
+}
+
+
+def _clone_value(value: Any) -> Any:
+    """Local dispatch hands the handler a copy of the caller's payload and the
+    caller a copy of the result (value semantics, as over the wire, README
+    §11.8): a deep copy, or the JSON form for what cannot be copied."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        # What the remote path would carry: members JSON cannot encode are left out.
+        mapped = to_json_value(value)
+        return None if mapped is ABSENT else mapped
+
+
+def _validate_observe_hooks(function_id: str, hooks: ObserveHooks | None) -> None:
+    """``args_format`` needs ``delivery="owner"``: an auto function's events are
+    its invocations, offered to every observer."""
+    if hooks is None:
+        return
+    delivery = hooks.delivery
+    if delivery is not None and delivery not in ("auto", "owner"):
+        raise InvocationError(
+            code="INVALID_OBSERVE_DESCRIPTOR",
+            message=f"observe.delivery must be 'auto' or 'owner', got {delivery!r}",
+            function_id=function_id,
+        )
+    if hooks.args_format is not None and delivery != "owner":
+        raise InvocationError(
+            code="INVALID_OBSERVE_DESCRIPTOR",
+            message="observe.args_format requires delivery='owner' (an auto function takes no args)",
+            function_id=function_id,
+        )
+
+
+def _handler_error_body(error: BaseException) -> dict[str, Any]:
+    """The error a handler's failure becomes, the same on the local and the remote path."""
+    return {
+        "code": "invocation_failed",
+        "message": str(error),
+        "stacktrace": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+    }
+
+
+def _is_async_callable(fn: Callable[..., Any]) -> bool:
+    return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+
+
+@dataclass
+class _SpanOutcome:
+    result: Any = None
+    traceparent: str | None = None
+
+
+#: sdk.md §3: a local call nested deeper than this goes through the engine.
+_MAX_LOCAL_DEPTH = 64
+
+
+@dataclass
+class _Call:
+    """One ``trigger`` request, normalized, with the path it takes."""
+
+    function_id: str
+    payload: Any
+    action: Any
+    metadata: Any
+    namespace: str | None
+    timeout_ms: int
+    #: The local function when the call runs in-process.
+    local: RemoteFunctionData | None = None
+    state: FunctionObservers | None = None
+
+
+@dataclass
+class _LocalInvocation:
+    """What a local call works on: its context and the copies of the payload."""
+
+    ctx: ActiveInvocation
+    state: FunctionObservers
+    compiled: tuple[Observer, ...]
+    input: Any = None
+    metadata: Any = None
+    observed_input: Any = None
+    observed_metadata: Any = None
+    traceparent: str | None = None
+    baggage: str | None = None
+    started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
+    t0: float = field(default_factory=time.perf_counter)
 
 
 def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
@@ -178,6 +379,92 @@ class _PendingInvocation:
     function_id: str
 
 
+class _ObserveHost:
+    """What the owner side (:class:`FunctionObservers`) and the reporter need
+    from the client. Frames are only sent from the SDK loop."""
+
+    reporter: Reporter
+
+    def __init__(self, client: "III") -> None:
+        self._client = client
+
+    # ── ReporterHost ───────────────────────────────────────────────────────
+
+    def online(self) -> bool:
+        return self._client._observe_online()
+
+    def status(self, function_id: str) -> FunctionStatus:
+        client = self._client
+        fn = client._functions.get(function_id)
+        state = fn.observe if fn is not None else None
+        if not isinstance(state, FunctionObservers) or state.released_epoch == client._connection_epoch:
+            return "gone"
+        return "ready" if state.confirmed_epoch == client._connection_epoch else "wait"
+
+    def send_frame(self, data: str, on_failure: Callable[[BaseException], None] | None = None) -> bool:
+        return self._client._send_frame(data, on_failure)
+
+    def unsent_bytes(self) -> int:
+        return self._client._unsent_bytes()
+
+    def call_soon(self, callback: Callable[[], None]) -> None:
+        try:
+            self._client._loop.call_soon_threadsafe(callback)
+        except RuntimeError:
+            pass  # the loop is closed (shutdown)
+
+    def call_later(self, delay_s: float, callback: Callable[[], None]) -> None:
+        try:
+            self._client._loop.call_soon_threadsafe(self._client._loop.call_later, delay_s, callback)
+        except RuntimeError:
+            pass
+
+    # ── ObserveHost ────────────────────────────────────────────────────────
+
+    def identity(self) -> dict[str, str]:
+        client = self._client
+        identity = {"worker_name": client._worker_name()}
+        if client._worker_id is not None:
+            identity = {"worker_id": client._worker_id, **identity}
+        return identity
+
+    def send_ack(
+        self, function_id: str, namespace: str | None, observer_id: str, revision: int, error: dict[str, str] | None
+    ) -> None:
+        # Sent in order with the report frames (FIFO on the SDK loop); never
+        # queued while disconnected: the next functionregistered re-acks.
+        client = self._client
+        data = client._prepare_json(build_observer_ack(function_id, namespace, observer_id, revision, error))
+        def send() -> None:
+            client._send_frame(data)
+
+        if threading.current_thread() is client._thread:
+            send()
+        else:
+            self.call_soon(send)
+
+    def call_target(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
+        return self._client._run_on_loop(self._client._owner_call(target, observer_id, payload, timeout_ms))
+
+    async def call_target_async(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
+        return await self._client._on_sdk_loop(self._client._owner_call(target, observer_id, payload, timeout_ms))
+
+    async def invoke_hook(self, hook: ObserveHook, obs: Observer) -> None:
+        if _is_async_callable(hook):
+            await cast(Awaitable[None], hook(obs))
+            return
+        # A sync hook runs on a thread of its own, so it may call the sync SDK API.
+        result = await run_in_thread(hook, obs)
+        if inspect.isawaitable(result):
+            await result
+
+    def hook_timeout_s(self) -> float:
+        return self._client._observe_hook_timeout_s
+
+    def trace_headers(self) -> tuple[str | None, str | None]:
+        return self._client._inject_traceparent(), self._client._inject_baggage()
+
+
 class III:
     """WebSocket client for communication with the III Engine.
 
@@ -215,7 +502,7 @@ class III:
         return explicit if explicit is not None else self._worker_namespace()
 
     def _invocation_namespace(
-        self, explicit: str | None, function_id: str
+        self, explicit: str | None, function_id: str, source: str = "TriggerRequest.namespace"
     ) -> str | None:
         """Resolve one invocation namespace.
 
@@ -223,7 +510,7 @@ class III:
         (``engine::*`` and ``configuration::*``) resolve in ``default`` and all
         other calls inherit this worker's namespace.
         """
-        namespace = self._call_namespace(explicit, "TriggerRequest.namespace")
+        namespace = self._call_namespace(explicit, source)
         if explicit is None and function_id.startswith(("engine::", "configuration::")):
             return "default"
         return namespace
@@ -287,10 +574,44 @@ class III:
         self._fatal_error: RegistrationRejectedError | None = None
         self._reattach_token: str | None = None
 
+        # observe (0.25). Observers this worker created, replayed (same id) on
+        # every connection, until disposed.
+        self._observers: dict[str, ObserverHandle] = {}
+        # The engine's features (`WorkerRegistered.features`), kept across a
+        # disconnect until the next `WorkerRegistered` replaces them.
+        self._engine_features: frozenset[str] = frozenset()
+        # `WorkerRegistered` arrived on the current connection.
+        self._registered_on_connection = False
+        # Bumped on every connection: `functionregistered` confirms a function on one.
+        self._connection_epoch = 0
+        # Observe-family frames queued while disconnected, held until the new
+        # connection's `WorkerRegistered` says whether the engine supports them.
+        self._held_observe_frames: list[dict[str, Any]] = []
+        self._hooks_inactive_warned: set[str] = set()
+        self._observe_hook_timeout_s = OBSERVE_HOOK_TIMEOUT_S
+        # Tasks nobody awaits (local `void` calls, report frames): kept alive here.
+        self._background: set[asyncio.Future[Any]] = set()
+        # Bytes of frames handed to the socket and not written yet, and their writes.
+        self._inflight_bytes = 0
+        self._frame_sends: set[asyncio.Future[Any]] = set()
+        # User callbacks that must not run on the event loop (observer state
+        # listeners): one thread, so they run in order.
+        self._callbacks = ThreadPoolExecutor(max_workers=1, thread_name_prefix="iii-callbacks")
+        self._observe_host = _ObserveHost(self)
+        self._reporter = Reporter(self._observe_host)
+        self._observe_host.reporter = self._reporter
+
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=False)
         self._thread.start()
+        self._loop.call_soon_threadsafe(self._reporter.start)
+
+        # Lets `iii ps` find this worker however it was started.
+        self._remove_process_marker = announce_process(
+            address,
+            os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}",
+        )
 
         # Auto-connect (non-blocking, matches Node.js constructor behavior)
         self._connected_event = threading.Event()
@@ -349,6 +670,7 @@ class III:
         self._run_on_loop(self.shutdown_async())
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
+        self._callbacks.shutdown(wait=False)
 
     async def connect_async(self) -> None:
         """Connect to the III Engine via WebSocket.
@@ -362,12 +684,24 @@ class III:
         from iii_helpers.observability.telemetry import attach_event_loop, init_otel
 
         loop = asyncio.get_running_loop()
-        otel_cfg: OtelConfig | None = None
+        otel_cfg = OtelConfig()
         if self._options.otel:
             if isinstance(self._options.otel, OtelConfig):
                 otel_cfg = self._options.otel
             else:
                 otel_cfg = OtelConfig(**self._options.otel)
+        # Telemetry dials the same engine with the same headers, unless the caller set its own.
+        # Headers use `is None`: an explicit `{}` selects no headers and must not inherit the
+        # main connection's (which carry III_TOKEN). A blank URL is not a selection, so it keeps `or`.
+        otel_cfg = replace(
+            otel_cfg,
+            engine_ws_url=otel_cfg.engine_ws_url or self._address,
+            engine_ws_headers=(
+                resolve_headers(self._options.headers)
+                if otel_cfg.engine_ws_headers is None
+                else otel_cfg.engine_ws_headers
+            ),
+        )
         init_otel(config=otel_cfg, loop=loop)
         attach_event_loop(loop)
         self._set_connection_state("connecting")
@@ -387,6 +721,7 @@ class III:
             >>> await worker.shutdown_async()
         """
         self._running = False
+        self._remove_process_marker()
 
         for task in [self._reconnect_task, self._receiver_task]:
             if task:
@@ -395,6 +730,17 @@ class III:
                     await task
                 except asyncio.CancelledError:
                     pass
+
+        # Last chance for buffered reports and counters to reach the engine.
+        try:
+            self._reporter.flush()
+            self._reporter.send_stats()
+        except Exception:
+            log.exception("Failed to flush observed invocations on shutdown")
+        self._reporter.stop()
+        sends = [t for t in self._frame_sends if not t.done()]
+        if sends:
+            await asyncio.wait(sends, timeout=2)
 
         # Reject all pending invocations
         for invocation_id, pending in list(self._pending.items()):
@@ -429,7 +775,7 @@ class III:
             log.debug(f"Connecting to {self._address}")
             ws = await websockets.connect(
                 self._address,
-                additional_headers=self._options.headers,
+                additional_headers=resolve_headers(self._options.headers),
                 max_size=_MAX_JSON_MESSAGE_BYTES,
             )
             self._ws = ws
@@ -497,6 +843,8 @@ class III:
             await self._do_connect()
 
     async def _on_connected(self) -> None:
+        self._connection_epoch += 1
+        self._registered_on_connection = False
         self._set_connection_state("connected")
         # Reconnect: present the previous engine-assigned identity BEFORE the
         # registration replay so the engine retires the old connection and the
@@ -521,12 +869,16 @@ class III:
         # Flush queue (swap to avoid O(n^2) pop(0))
         pending, self._queue = self._queue, []
         for queued_msg in pending:
+            if queued_msg.get("type") in _OBSERVE_FAMILY:
+                # Sent once `WorkerRegistered` says this engine supports observe.
+                self._held_observe_frames.append(queued_msg)
+                continue
             if self._ws:
                 try:
                     # Replay must surface a dead transport to _do_connect;
                     # _send would requeue on a non-OPEN socket and let setup
                     # falsely succeed, resetting the retry budget forever.
-                    await self._ws.send(self._prepare_json(queued_msg))
+                    await self._send_json(self._ws, self._prepare_json(queued_msg))
                 except InvocationError as error:
                     if error.code != "payload_too_large":
                         raise
@@ -577,6 +929,9 @@ class III:
             log.debug("Stale connection closed")
             return
         self._ws = None
+        # Local dispatch and the active observer sets survive; what was sent on
+        # this connection is replayed on the next one.
+        self._registered_on_connection = False
         # INFO with the close code: a proxy-initiated close (e.g. 1001 on a
         # reload) followed by a reconnect should be visible without debug logs.
         log.info(
@@ -610,9 +965,9 @@ class III:
 
     def _prepare_json(self, msg: Any) -> str:
         data = self._to_dict(msg)
-        payload = json.dumps(data)
+        payload = _wire_json.dumps(data)
         size = len(payload.encode("utf-8"))
-        if size <= _MAX_JSON_FRAME_BYTES:
+        if size <= _MAX_JSON_OUTBOUND_BYTES:
             return payload
         invocation_id = data.get("invocation_id")
         function_id = data.get("function_id")
@@ -628,11 +983,12 @@ class III:
             ),
             message=(
                 f"Serialized JSON envelope is {size} bytes; limit is "
-                f"{_MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+                f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use channels for larger payloads: "
+                "https://iii.dev/docs/creating-workers/channels#payload-size"
             ),
         )
         if data.get("type") == MessageType.INVOCATION_RESULT.value:
-            fallback = json.dumps(
+            fallback = _wire_json.dumps(
                 {
                     "type": MessageType.INVOCATION_RESULT.value,
                     "invocation_id": data.get("invocation_id"),
@@ -640,15 +996,50 @@ class III:
                     "error": {"code": error.code, "message": error.message},
                 }
             )
-            if len(fallback.encode("utf-8")) <= _MAX_JSON_FRAME_BYTES:
+            if len(fallback.encode("utf-8")) <= _MAX_JSON_OUTBOUND_BYTES:
                 return fallback
         raise error
+
+    async def _send_json(self, ws: ClientConnection, payload: str) -> None:
+        """Send a JSON message as one frame or a sequence of fragments."""
+        encoded = payload.encode("utf-8")
+        log.debug("Send JSON envelope: %d bytes", len(encoded))
+        if len(encoded) <= _MAX_JSON_FRAME_BYTES:
+            await ws.send(payload)
+        else:
+            started = False
+
+            def fragments() -> Iterator[str]:
+                nonlocal started
+                parts = iter(_json_fragments(encoded))
+                try:
+                    first = next(parts)
+                except StopIteration:
+                    return
+                # websockets consumes the iterable only after waiting for any
+                # previous fragmented send, so this marks this message itself.
+                started = True
+                yield first
+                yield from parts
+
+            try:
+                await ws.send(fragments())
+            except asyncio.CancelledError:
+                protocol = getattr(ws, "protocol", None)
+                incomplete = getattr(protocol, "expect_continuation_frame", False)
+                if started and incomplete:
+                    # Only this message may leave this flag true: another send
+                    # cannot start until websockets completes the current one.
+                    # Abort to avoid leaving an OPEN connection mid-message.
+                    transport = getattr(ws, "transport", None)
+                    if transport is not None:
+                        transport.abort()
+                raise
 
     async def _send(self, msg: Any) -> None:
         payload = self._prepare_json(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            log.debug("Send JSON envelope: %d bytes", len(payload.encode("utf-8")))
-            await self._ws.send(payload)
+            await self._send_json(self._ws, payload)
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
                 log.warning("Message queue full, dropping oldest message")
@@ -698,8 +1089,42 @@ class III:
                     data.get("traceparent"),
                     data.get("baggage"),
                     data.get("metadata"),
+                    caller=decode_caller(data.get("caller")),
+                    observe_depth=decode_observe_depth(data.get("observe_depth")),
+                    activation=decode_activation(data.get("activation")),
                 )
             )
+        elif msg_type == MessageType.FUNCTION_REGISTERED.value:
+            registered = FunctionRegisteredMessage.model_validate(data)
+            state = self._observe_state(registered.id)
+            if state is not None:
+                state.on_function_registered(
+                    registered.namespace,
+                    registered.revision,
+                    registered.local_dispatch,
+                    registered.observers,
+                    self._connection_epoch,
+                )
+            # Reports held for this function across a reconnect can go now.
+            self._reporter.flush()
+        elif msg_type == MessageType.OBSERVER_ADDED.value:
+            added = ObserverAddedMessage.model_validate(data)
+            state = self._observe_state(added.function_id)
+            if state is not None:
+                state.on_observer_added(added.namespace, added.revision, added.observer)
+        elif msg_type == MessageType.OBSERVER_REMOVED.value:
+            removed = ObserverRemovedMessage.model_validate(data)
+            state = self._observe_state(removed.function_id)
+            if state is not None:
+                state.on_observer_removed(removed.revision, removed.id)
+        elif msg_type == MessageType.OBSERVE_RESULT.value:
+            result = ObserveResultMessage.model_validate(data)
+            if result.warnings:
+                log.warning("Observer %s: %s", result.id, "; ".join(result.warnings))
+            self._on_observer_state(result.id, result.state, result.error.model_dump() if result.error else None)
+        elif msg_type == MessageType.OBSERVER_STATE_CHANGED.value:
+            changed = ObserverStateChangedMessage.model_validate(data)
+            self._on_observer_state(changed.id, changed.state, changed.reason.model_dump() if changed.reason else None)
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
             asyncio.create_task(self._handle_trigger_registration(data))
         elif msg_type == MessageType.UNREGISTER_TRIGGER.value:
@@ -707,10 +1132,11 @@ class III:
         elif msg_type == MessageType.TRIGGER_REGISTRATION_RESULT.value:
             self._handle_trigger_registration_result(data)
         elif msg_type == MessageType.WORKER_REGISTERED.value:
-            worker_id = data.get("worker_id", "")
-            self._worker_id = worker_id
-            self._reattach_token = data.get("reattach_token")
-            log.debug(f"Worker registered with ID: {worker_id}")
+            worker = WorkerRegisteredMessage.model_validate(data)
+            self._worker_id = worker.worker_id
+            self._reattach_token = worker.reattach_token
+            log.debug(f"Worker registered with ID: {worker.worker_id}")
+            self._on_engine_features(worker.features or [])
         elif msg_type == MessageType.REGISTRATION_REJECTED.value:
             self._handle_registration_rejected(data)
 
@@ -730,6 +1156,10 @@ class III:
         code = data.get("code", "")
 
         if code == "FUNCTION_NAMESPACE_CONFLICT":
+            # The engine refused it: no local dispatch, no observers for it here.
+            state = self._observe_state(data.get("function_id", ""))
+            if state is not None:
+                state.on_registration_rejected(self._connection_epoch)
             log.warning(
                 "Function registration rejected (%s): namespace=%r "
                 "function_id=%r already owned by worker %r. Skipping that "
@@ -770,6 +1200,185 @@ class III:
         if self._ws:
             asyncio.create_task(self._ws.close())
 
+    # observe: connection and engine state
+
+    def _observe_state(self, function_id: str) -> FunctionObservers | None:
+        fn = self._functions.get(function_id)
+        state = fn.observe if fn is not None else None
+        return state if isinstance(state, FunctionObservers) else None
+
+    def _is_open(self) -> bool:
+        return self._ws is not None and self._ws.state.name == "OPEN"
+
+    def _observe_online(self) -> bool:
+        """Connected to an engine that advertised ``observe.v1``."""
+        return self._is_open() and self._registered_on_connection and FEATURE_OBSERVE_V1 in self._engine_features
+
+    def _on_engine_features(self, features: list[str]) -> None:
+        """``WorkerRegistered`` told this connection what the engine supports.
+
+        With ``observe.v1`` the held observe frames and the observers are
+        sent (after the functions, replayed on connect) and held reports
+        flushed; without it ``observe()`` fails with ``UNSUPPORTED``, observe
+        hooks are inactive, and held observe frames are dropped.
+        """
+        self._engine_features = frozenset(features)
+        self._registered_on_connection = True
+        held, self._held_observe_frames = self._held_observe_frames, []
+        if FEATURE_OBSERVE_V1 in self._engine_features:
+            for frame in held:
+                self._spawn(self._send(frame))
+            for handle in list(self._observers.values()):
+                self._send_observe(handle)
+            self._reporter.flush()
+            return
+        for handle in list(self._observers.values()):
+            handle._set_state("error", _UNSUPPORTED_REASON)
+        for function_id, fn in list(self._functions.items()):
+            if isinstance(fn.observe, FunctionObservers) and fn.observe.needs_observe:
+                self._warn_hooks_inactive(function_id)
+        self._reporter.clear()
+
+    def _warn_hooks_inactive(self, function_id: str) -> None:
+        if function_id in self._hooks_inactive_warned:
+            return
+        self._hooks_inactive_warned.add(function_id)
+        log.warning(
+            "Function %r declares observe hooks or owner delivery, but the engine does not support observe "
+            "(observe.v1): it is registered as a plain function and its observe hooks are inactive.",
+            function_id,
+        )
+
+    def _on_observer_state(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
+        handle = self._observers.get(observer_id)
+        if handle is None:
+            return
+        state = to_observer_state(wire_state)
+        body = decode_error(reason)
+        if state == "disposed":
+            # Forgotten first: it is not replayed once anyone sees it disposed.
+            self._observers.pop(observer_id, None)
+        handle._set_state(state, cast(ObserveReason, body) if body else None)
+
+    def _send_observe(self, handle: ObserverHandle) -> None:
+        """Sends (or replays) an observer on the SDK loop, when the socket is open."""
+        if self._send_frame(self._prepare_json(handle._message)):
+            handle._sent = True
+
+    def _after_observe(self, handle: ObserverHandle) -> None:
+        """SDK loop: a new observer goes out now if this connection is registered."""
+        if self._observers.get(handle.id) is not handle or not self._registered_on_connection or not self._is_open():
+            return
+        if FEATURE_OBSERVE_V1 in self._engine_features:
+            self._send_observe(handle)
+        else:
+            handle._set_state("error", _UNSUPPORTED_REASON)
+
+    def _dispose_observer(self, handle: ObserverHandle) -> None:
+        if self._observers.get(handle.id) is handle:
+            del self._observers[handle.id]
+        if not handle._sent:
+            return
+
+        async def unobserve() -> None:
+            # Queued while disconnected: a reattach would otherwise keep it alive.
+            if not self._is_open() or FEATURE_OBSERVE_V1 in self._engine_features:
+                await self._send(UnobserveMessage(id=handle.id))
+
+        self._schedule_on_loop(unobserve())
+
+    def _send_frame(self, data: str, on_failure: Callable[[BaseException], None] | None = None) -> bool:
+        """SDK loop: sends one prepared JSON frame when the socket is open.
+        Its bytes count as unsent until the socket took them; ``on_failure``
+        runs if the write fails."""
+        ws = self._ws
+        if ws is None or ws.state.name != "OPEN":
+            return False
+        size = len(data.encode("utf-8", "surrogatepass"))
+        self._inflight_bytes += size
+
+        async def send() -> None:
+            try:
+                await self._send_json(ws, data)
+            except Exception as error:
+                if on_failure is not None:
+                    on_failure(error)
+                raise
+            finally:
+                self._inflight_bytes -= size
+
+        task = asyncio.ensure_future(send())
+        self._frame_sends.add(task)
+        task.add_done_callback(self._frame_sends.discard)
+        task.add_done_callback(self._background_done)
+        return True
+
+    def _unsent_bytes(self) -> int:
+        """Frames handed to the socket but not written yet: sends still waiting,
+        and what the transport buffers for a peer that does not read."""
+        unsent = self._inflight_bytes
+        ws = self._ws
+        transport = getattr(ws, "transport", None) if ws is not None else None
+        if transport is not None:
+            try:
+                unsent += transport.get_write_buffer_size()
+            except Exception:
+                pass
+        return unsent
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """SDK loop: runs a coroutine nobody awaits, keeping it alive until it ends."""
+        task = asyncio.ensure_future(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background_done)
+
+    def _background_done(self, task: asyncio.Future[Any]) -> None:
+        self._background.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and not isinstance(error, websockets.ConnectionClosed):
+            if isinstance(error, _TraceContextError) and error.__cause__ is not None:
+                error = error.__cause__
+            log.error("Error in background task: %s", error)
+
+    async def _on_sdk_loop(self, coro: Coroutine[Any, Any, TResult]) -> TResult:
+        """Awaits a coroutine that must run on the SDK loop from any loop; the
+        current context (invocation, OpenTelemetry) travels with it."""
+        if asyncio.get_running_loop() is self._loop:
+            return await coro
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
+
+    def _run_callback(self, callback: Callable[[], None]) -> None:
+        """Runs a user callback on the callback thread, off the event loop."""
+        try:
+            self._callbacks.submit(callback)
+        except RuntimeError:
+            callback()  # shut down: deliver it here
+
+    def _worker_name(self) -> str:
+        # III_WORKER_NAME carries the orchestrator-assigned name (set by
+        # iii-worker for engine-managed workers). The engine matches live
+        # registrations by name, so that identity must win over a name
+        # embedded in worker code.
+        return os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}"
+
+    async def _owner_call(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
+        """``obs.call``: an ``InvokeFunction`` to the observer's target with the
+        activation; no namespace (CONTRACT D13: the engine routes to the
+        observer's stored target)."""
+        return await self._invoke_remote(
+            target, payload, None, None, None, timeout_ms, activation={"observer_id": observer_id}
+        )
+
+    def _outgoing_observe_fields(self) -> tuple[dict[str, Any] | None, int | None]:
+        """``caller`` and ``observe_depth`` an outgoing call carries from the
+        current handler (engines with ``observe.v1`` only)."""
+        cur = current_context()
+        if cur is None or FEATURE_OBSERVE_V1 not in self._engine_features:
+            return None, None
+        return caller_for(cur), (cur.observe_depth or None)
+
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:
         pending = self._pending.pop(invocation_id, None)
         if not pending:
@@ -809,15 +1418,13 @@ class III:
         propagate.inject(carrier, context=otel_context.get_current())
         return carrier.get("baggage")
 
-    async def _invoke_with_otel_context(
-        self,
-        function_id: str,
-        handler: Callable[..., Awaitable[Any]],
-        data: Any,
-        traceparent: str | None,
-        baggage: str | None,
-        metadata: dict[str, Any] | None = None,
-    ) -> tuple[Any, str | None]:
+    @contextmanager
+    def _execute_span(
+        self, function_id: str, data: Any, traceparent: str | None, baggage: str | None
+    ) -> Iterator[_SpanOutcome]:
+        """The ``execute <fn>`` span around a handler, remote or local. The
+        body sets ``outcome.result``; a raised exception is recorded and comes
+        out as :class:`_TraceContextError` (its cause is the handler's error)."""
         from opentelemetry import context as otel_context
         from opentelemetry import propagate, trace
 
@@ -830,7 +1437,6 @@ class III:
             propagate.extract(carrier) if carrier else otel_context.get_current()
         )
         tracer = trace.get_tracer("iii-python-sdk")
-        import os
 
         from iii_helpers.observability import redact_and_truncate, resolve_max_bytes_from_env
 
@@ -860,21 +1466,9 @@ class III:
                         "iii.payload.truncated": input_truncated,
                     },
                 )
+            outcome = _SpanOutcome()
             try:
-                result = await handler(data, metadata)
-                if trace_payloads and span.is_recording():
-                    out_json, out_truncated = redact_and_truncate(result, payload_max_bytes)
-                    span.add_event(
-                        "iii.invocation.output",
-                        attributes={
-                            "iii.payload.json": out_json,
-                            "iii.payload.truncated": out_truncated,
-                            "iii.payload.ok": True,
-                        },
-                    )
-                span.set_status(trace.StatusCode.OK)
-                response_traceparent = self._inject_traceparent()
-                return result, response_traceparent
+                yield outcome
             except Exception as e:
                 if trace_payloads and span.is_recording():
                     err_json, err_truncated = redact_and_truncate(
@@ -892,14 +1486,47 @@ class III:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 response_traceparent = self._inject_traceparent()
                 raise _TraceContextError(response_traceparent) from e
+            if trace_payloads and span.is_recording():
+                out_json, out_truncated = redact_and_truncate(outcome.result, payload_max_bytes)
+                span.add_event(
+                    "iii.invocation.output",
+                    attributes={
+                        "iii.payload.json": out_json,
+                        "iii.payload.truncated": out_truncated,
+                        "iii.payload.ok": True,
+                    },
+                )
+            span.set_status(trace.StatusCode.OK)
+            outcome.traceparent = self._inject_traceparent()
+
+    async def _invoke_with_otel_context(
+        self,
+        function_id: str,
+        handler: Callable[..., Awaitable[Any]],
+        data: Any,
+        traceparent: str | None,
+        baggage: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[Any, str | None]:
+        with self._execute_span(function_id, data, traceparent, baggage) as outcome:
+            try:
+                outcome.result = await handler(data, metadata)
+            except BaseException as error:
+                # SystemExit / KeyboardInterrupt from a handler must not escape
+                # the task and stop the SDK loop: it fails this invocation.
+                guarded = guard_exit(error)
+                if guarded is error:
+                    raise
+                raise guarded from error
+        return outcome.result, outcome.traceparent
 
     def _resolve_channels(self, data: Any) -> Any:
         if is_channel_ref(data):
             ref = StreamChannelRef(**data)
             return (
-                ChannelReader(self._address, ref)
+                ChannelReader(self._address, ref, self._options.headers)
                 if ref.direction == "read"
-                else ChannelWriter(self._address, ref)
+                else ChannelWriter(self._address, ref, self._options.headers)
             )
         if isinstance(data, dict):
             return {k: self._resolve_channels(v) for k, v in data.items()}
@@ -917,6 +1544,39 @@ class III:
         traceparent: str | None = None,
         baggage: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        caller: dict[str, Any] | None = None,
+        observe_depth: int = 0,
+        activation: dict[str, Any] | None = None,
+    ) -> None:
+        # The invocation context every handler sees (`current_invocation()`),
+        # and what the calls it makes carry as their caller. Activations carry
+        # an id and are answered like any call (CONTRACT D16).
+        token = set_context(
+            ActiveInvocation(
+                function_id=path,
+                invocation_id=invocation_id or str(uuid.uuid4()),
+                observe_depth=observe_depth,
+                caller=caller,
+                activation=activation,
+                metadata=metadata,
+                traceparent=traceparent,
+                baggage=baggage,
+            )
+        )
+        try:
+            await self._handle_invoke_in_context(invocation_id, path, data, traceparent, baggage, metadata)
+        finally:
+            reset_context(token)
+
+    async def _handle_invoke_in_context(
+        self,
+        invocation_id: str | None,
+        path: str,
+        data: Any,
+        traceparent: str | None,
+        baggage: str | None,
+        metadata: dict[str, Any] | None,
     ) -> None:
         func = self._functions.get(path)
 
@@ -1183,6 +1843,13 @@ class III:
     ) -> "TriggerTypeRef[Any, Any]":
         """Register a custom trigger type with the engine.
 
+        .. deprecated:: 0.25.0
+            Register a function with an observe descriptor instead:
+            ``register_function(id, handler, observe=ObserveHooks(delivery="owner",
+            on_observer_added=..., on_observer_removed=...))``. Emits a
+            ``DeprecationWarning`` and logs a warning once per process. Migration
+            guide: https://iii.dev/docs/upgrading/from-0-24-x
+
         Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
         and ``register_function`` methods.
 
@@ -1209,6 +1876,7 @@ class III:
             >>> webhook.register_function("handler", handle_webhook)
             >>> webhook.register_trigger("handler", WebhookConfig(url="/hook"))
         """
+        _warn_deprecated("register_trigger_type", stacklevel=2)
         if isinstance(trigger_type, dict):
             trigger_type = RegisterTriggerTypeInput(**trigger_type)
 
@@ -1248,24 +1916,50 @@ class III:
     ) -> None:
         """Unregister a previously registered trigger type.
 
+        .. deprecated:: 0.25.0
+            Trigger types are replaced by functions with an observe descriptor;
+            unregister the function instead. Migration guide:
+            https://iii.dev/docs/upgrading/from-0-24-x
+
         Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id``, an
+                optional ``description``, and (dict only) the ``namespace`` it
+                was registered in.
 
         Examples:
             >>> worker.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
             >>> worker.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
         """
+        warnings.warn(
+            "unregister_trigger_type is deprecated and will be removed in a future release. Trigger types are "
+            f"replaced by functions with an observe descriptor. Migration guide: {_MIGRATION_GUIDE}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # The engine reads `{id, namespace?}` (sdk/fixtures/protocol/observe/unregistertriggertype.json).
+        namespace: str | None = None
         if isinstance(trigger_type, dict):
             type_id = trigger_type["id"]
+            namespace = trigger_type.get("namespace")
         else:
             type_id = trigger_type.id
         self._trigger_types.pop(type_id, None)
-        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id))
+        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id, namespace=namespace))
 
     def register_trigger(
         self, trigger: RegisterTriggerInput | dict[str, Any]
     ) -> Trigger:
         """Bind a trigger configuration to a registered function.
+
+        .. deprecated:: 0.25.0
+            Use ``iii.observe(source, target)`` instead:
+            ``iii.observe({"function_id": ..., "args": ..., "filters": ...}, target,
+            {"metadata": ...})``. Emits a ``DeprecationWarning`` and logs a
+            warning once per process. The http, cron, queue, state, stream,
+            pubsub and database workers still publish trigger types: keep
+            using ``register_trigger`` for them until they ship source
+            functions. Migration guide:
+            https://iii.dev/docs/upgrading/from-0-24-x
 
         <!-- docs:expand-params -->
 
@@ -1290,6 +1984,11 @@ class III:
             ... ))
             >>> trigger.unregister()
         """
+        return self._register_trigger(trigger, stacklevel=2)
+
+    def _register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any], *, stacklevel: int) -> Trigger:
+        """``register_trigger``; ``stacklevel`` points the deprecation warning at the user's call."""
+        _warn_deprecated("register_trigger", stacklevel=stacklevel + 1)
         if isinstance(trigger, dict):
             trigger = RegisterTriggerInput(**trigger)
         trigger_id = str(uuid.uuid4())
@@ -1338,6 +2037,8 @@ class III:
         metadata: dict[str, Any] | None = None,
         request_format: RegisterFunctionFormat | dict[str, Any] | None = None,
         response_format: RegisterFunctionFormat | dict[str, Any] | None = None,
+        observe: ObserveHooks | dict[str, Any] | None = None,
+        local_dispatch: bool = True,
     ) -> FunctionRef:
         """Register a function with the engine.
 
@@ -1378,17 +2079,35 @@ class III:
                 when the handler is typed.
             response_format: Schema describing expected output.  Same
                 auto-extraction semantics as ``request_format``.
+            observe: Makes the function observable on its own terms: owner
+                delivery (``delivery="owner"``, ``args_format``), and
+                callbacks when an observer is added or removed (an
+                :class:`ObserveHooks`, a subclass of it, or a dict of its
+                fields). Without it the function is still observable (auto
+                delivery, no args).
+            local_dispatch: Calls this worker makes to its own function run
+                in-process once the engine confirmed it (default ``True``).
+                Like a remote invocation, each local call to a sync handler
+                runs on a thread of its own (one per call, not pooled), so the
+                caller can stop waiting at its timeout. A sync handler that
+                blocks for long should be async, or set ``False`` so its calls
+                go through the engine (also for a handler that relies on
+                engine-side effects).
 
         Returns:
-            A ``FunctionRef`` with an ``id`` attribute and an
-            ``unregister()`` method.  Call ``unregister()`` to remove
-            the function from the engine.
+            A ``FunctionRef`` with an ``id`` attribute, an ``unregister()``
+            method, and ``is_observed()`` / ``observers()`` (the active
+            observers, as this owner sees them).  Call ``unregister()`` to
+            remove the function from the engine.
 
         Raises:
             TypeError: If ``function_id`` is not a string, or if
                 ``handler_or_invocation`` is not callable or
                 ``HttpInvocationConfig``.
             ValueError: If ``function_id`` is empty or already registered.
+            InvocationError: ``INVALID_OBSERVE_DESCRIPTOR`` when ``observe``
+                declares ``args_format`` without ``delivery="owner"``, or an
+                unknown ``delivery``.
 
         Examples:
             >>> def greet(data):
@@ -1414,6 +2133,12 @@ class III:
         if function_id in self._functions:
             raise ValueError(f"function id '{function_id}' already registered")
 
+        # The hooks stay here; only the descriptor's four fields travel, and
+        # `local_dispatch` is this SDK's alone.
+        hooks = ObserveHooks.from_value(observe)
+        _validate_observe_hooks(function_id, hooks)
+        descriptor = observe_descriptor(hooks, _resolve_format(hooks.args_format) if hooks is not None else None)
+
         handler_for_extraction = (
             handler_or_invocation if callable(handler_or_invocation) else None
         )
@@ -1437,11 +2162,16 @@ class III:
                 metadata=func.metadata,
                 request_format=func.request_format,
                 response_format=func.response_format,
+                observe=descriptor,
             )
             # Isolate retained JSON fields from later caller mutations.
             msg = msg.model_copy(deep=True)
+            observe_state = FunctionObservers(function_id, hooks, local_dispatch, False, self._observe_host)
+            data = RemoteFunctionData(message=msg, observe=observe_state)
+            self._prepare_json(msg)
+            # Stored before it is sent: the engine's `functionregistered` must find it.
+            self._functions[func.id] = data
             self._send_if_connected(msg)
-            self._functions[func.id] = RemoteFunctionData(message=msg)
         else:
             if not callable(handler_or_invocation):
                 actual_type = type(handler_or_invocation).__name__
@@ -1455,10 +2185,11 @@ class III:
                 metadata=func.metadata,
                 request_format=func.request_format,
                 response_format=func.response_format,
+                observe=descriptor,
             )
             # Isolate retained JSON fields from later caller mutations.
             msg = msg.model_copy(deep=True)
-            self._send_if_connected(msg)
+            self._prepare_json(msg)
 
             # Decide once, at registration time, whether this handler accepts
             # per-invocation metadata. 1-arg handlers keep working unchanged.
@@ -1471,7 +2202,8 @@ class III:
                     return handler(input_data, metadata=metadata)
                 return handler(input_data)
 
-            if asyncio.iscoroutinefunction(handler):
+            is_async = _is_async_callable(handler)
+            if is_async:
 
                 async def wrapped(input_data: Any, metadata: dict[str, Any] | None = None) -> Any:
                     return await _call_handler(input_data, metadata)
@@ -1479,29 +2211,43 @@ class III:
             else:
 
                 async def wrapped(input_data: Any, metadata: dict[str, Any] | None = None) -> Any:
-                    loop = asyncio.get_running_loop()
-                    future: asyncio.Future[Any] = loop.create_future()
+                    # A thread of its own, started in a copy of this context:
+                    # the current invocation and the OpenTelemetry context
+                    # (the `execute` span) follow the handler.
+                    return await run_in_thread(_call_handler, input_data, metadata)
 
-                    def _run() -> None:
-                        try:
-                            result = _call_handler(input_data, metadata)
-                            loop.call_soon_threadsafe(future.set_result, result)
-                        except BaseException as exc:
-                            loop.call_soon_threadsafe(future.set_exception, exc)
+            observe_state = FunctionObservers(function_id, hooks, local_dispatch, True, self._observe_host)
+            data = RemoteFunctionData(
+                message=msg,
+                handler=wrapped,
+                observe=observe_state,
+                call_sync=None if is_async else _call_handler,
+            )
+            # Stored before it is sent: the engine's `functionregistered` must find it.
+            self._functions[func.id] = data
+            self._send_if_connected(msg)
 
-                    t = threading.Thread(target=_run, daemon=True)
-                    t.start()
-                    return await future
-
-            self._functions[func.id] = RemoteFunctionData(message=msg, handler=wrapped)
+        if (
+            observe_state.needs_observe
+            and self._registered_on_connection
+            and FEATURE_OBSERVE_V1 not in self._engine_features
+        ):
+            self._warn_hooks_inactive(function_id)
 
         func_id = func.id
 
         def unregister() -> None:
-            self._functions.pop(func_id, None)
+            if self._functions.get(func_id) is data:
+                del self._functions[func_id]
             self._send_if_connected(UnregisterFunctionMessage(id=func_id))
+            observe_state.dispose()
 
-        return FunctionRef(id=func_id, unregister=unregister)
+        return FunctionRef(
+            id=func_id,
+            unregister=unregister,
+            _is_observed=observe_state.is_observed,
+            _observers=observe_state.observers,
+        )
 
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
@@ -1515,9 +2261,23 @@ class III:
           with ``messageReceiptId``.
         - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
+        A function this worker registered with a handler, once the engine
+        confirmed it, runs in-process (local dispatch, sdk.md §3): a sync
+        handler on a thread of its own (the caller waits up to the timeout),
+        an async one on the SDK loop. Its observers are still evaluated, and
+        only matched calls reach the engine. ``dispatch="remote"`` (or
+        ``action=Enqueue``) always goes through the engine. Whatever a local
+        handler raises, ``BaseException``s such as ``KeyboardInterrupt`` and
+        ``SystemExit`` included, reaches the caller as
+        ``InvocationError("invocation_failed")`` with the original as its
+        ``__cause__`` (for a ``Void`` call nothing reaches the caller: the
+        error is logged).
+
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``,
-                ``payload``, and optional ``action`` / ``timeout_ms``.
+                ``payload``, and optional ``action`` / ``timeout_ms`` /
+                ``metadata`` / ``namespace`` / ``dispatch`` (``"auto"``, the
+                default, or ``"remote"``).
 
         Returns:
             The function's return value for synchronous (no-action) calls,
@@ -1533,7 +2293,10 @@ class III:
             >>> result = worker.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
-        return self._run_on_loop(self.trigger_async(request))
+        call = self._prepare_call(request)
+        if call.local is not None:
+            return self._invoke_local_sync(call)
+        return self._run_on_loop(self._invoke_remote_call(call))
 
     async def trigger_async(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
@@ -1545,9 +2308,16 @@ class III:
           with ``messageReceiptId``.
         - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
+        Works from any event loop. A function this worker registered with a
+        handler, once the engine confirmed it, runs in-process on the
+        calling loop (a sync handler on a thread of its own);
+        ``dispatch="remote"`` (or ``action=Enqueue``) always goes through
+        the engine.
+
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
-                and optional ``action`` / ``timeout_ms``.
+                and optional ``action`` / ``timeout_ms`` / ``metadata`` /
+                ``namespace`` / ``dispatch`` (``"auto"`` or ``"remote"``).
 
         Returns:
             The function's return value for synchronous (no-action) calls,
@@ -1563,26 +2333,84 @@ class III:
             >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
+        call = self._prepare_call(request)
+        if call.local is not None:
+            return await self._invoke_local_async(call)
+        return await self._on_sdk_loop(self._invoke_remote_call(call))
+
+    def _prepare_call(self, request: "dict[str, Any] | TriggerRequest") -> "_Call":
+        """Normalizes a trigger request and picks the path (sdk.md §3)."""
         if self._fatal_error is not None:
             raise self._fatal_error
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
-        payload = req.get("payload")
         action = req.get("action")
-        metadata = req.get("metadata")
-        # Engine-owned builtins stay in ``default``. Other implicit calls stay
-        # in this worker's namespace. An explicit request namespace wins.
-        namespace = self._invocation_namespace(req.get("namespace"), function_id)
-
-        timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
-
-        timeout_secs = timeout_ms / 1000.0
-
         if isinstance(action, dict):
             if action.get("type") == "enqueue":
                 action = TriggerActionEnqueue(queue=action["queue"])
             elif action.get("type") == "void":
                 action = TriggerActionVoid()
+        dispatch = req.get("dispatch")
+        if dispatch not in (None, "auto", "remote"):
+            raise ValueError(f"dispatch must be 'auto' or 'remote', got {dispatch!r}")
+        # Engine-owned builtins stay in ``default``. Other implicit calls stay
+        # in this worker's namespace. An explicit request namespace wins.
+        namespace = self._invocation_namespace(req.get("namespace"), function_id)
+        call = _Call(
+            function_id=function_id,
+            payload=req.get("payload"),
+            action=action,
+            metadata=req.get("metadata"),
+            namespace=namespace,
+            timeout_ms=req.get("timeout_ms") or self._options.invocation_timeout_ms,
+        )
+        # Local dispatch: a function this worker hosts, confirmed by the engine
+        # for in-process calls, in the namespace it registered in. `enqueue`
+        # expects a queue receipt, so it always goes to the engine.
+        if dispatch != "remote" and not isinstance(action, TriggerActionEnqueue):
+            fn = self._functions.get(function_id)
+            state = fn.observe if fn is not None else None
+            if (
+                fn is not None
+                and fn.handler is not None
+                and isinstance(state, FunctionObservers)
+                and state.local_dispatch
+                and (namespace is None or namespace == state.namespace)
+            ):
+                parent = current_context()
+                # Re-entrancy guard: a deeper chain of local calls goes through
+                # the engine, so recursive self-calls cannot overflow the stack.
+                if parent is None or parent.local_depth < _MAX_LOCAL_DEPTH:
+                    call.local = fn
+                    call.state = state
+        return call
+
+    async def _invoke_remote_call(self, call: "_Call") -> Any:
+        return await self._invoke_remote(
+            call.function_id, call.payload, call.action, call.metadata, call.namespace, call.timeout_ms
+        )
+
+    async def _invoke_remote(
+        self,
+        function_id: str,
+        payload: Any,
+        action: Any,
+        metadata: Any,
+        namespace: str | None,
+        timeout_ms: int | None,
+        activation: dict[str, Any] | None = None,
+    ) -> Any:
+        """The routed path (SDK loop): an ``InvokeFunction`` through the engine."""
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        timeout_ms = timeout_ms or self._options.invocation_timeout_ms
+        timeout_secs = timeout_ms / 1000.0
+        caller, observe_depth = self._outgoing_observe_fields()
+        observe_fields: dict[str, Any] = {
+            "caller": CallerWire.model_validate(caller) if caller is not None else None,
+            "observe_depth": observe_depth,
+            "activation": ActivationWire.model_validate(activation) if activation is not None else None,
+        }
 
         # Void: fire-and-forget, no response expected
         if isinstance(action, TriggerActionVoid):
@@ -1595,6 +2423,7 @@ class III:
                     baggage=self._inject_baggage(),
                     action=action,
                     namespace=namespace,
+                    **observe_fields,
                 )
             )
             return None
@@ -1622,6 +2451,7 @@ class III:
                     baggage=self._inject_baggage(),
                     action=enqueue_action,
                     namespace=namespace,
+                    **observe_fields,
                 )
             )
 
@@ -1640,6 +2470,289 @@ class III:
             # (e.g. an outer asyncio.wait_for shorter than this timeout), so a
             # late result finds nothing left to settle.
             self._pending.pop(invocation_id, None)
+
+    # observe: the local path (sdk.md §4.3)
+
+    def _local_invocation(self, call: "_Call") -> "_LocalInvocation":
+        """The new invocation context and the copies a local call works on.
+        Raises what copying the payload raises."""
+        state = cast(FunctionObservers, call.state)
+        parent = current_context()
+        caller: dict[str, Any] = dict(self._observe_host.identity())
+        if parent is not None:
+            caller["function_id"] = parent.function_id
+            caller["invocation_id"] = parent.invocation_id
+            grandparent = strip_caller(parent.caller)
+            if grandparent:
+                caller["parent"] = grandparent
+        # The handler's own copy of the metadata sidecar: what it receives, and
+        # what the events it emits see as `metadata`.
+        metadata = _clone_value(call.metadata)
+        ctx = ActiveInvocation(
+            function_id=call.function_id,
+            invocation_id=str(uuid.uuid4()),
+            observe_depth=parent.observe_depth if parent is not None else 0,
+            caller=caller,
+            metadata=metadata,
+            local_depth=(parent.local_depth if parent is not None else 0) + 1,
+        )
+        # Evaluated against the observers active when the call starts; nothing
+        # is copied for reporting when there are none.
+        compiled = state.compiled if state.delivery == "auto" else ()
+        local = _LocalInvocation(ctx=ctx, state=state, compiled=compiled)
+        if compiled:
+            # What observers see is what the caller passed at the start (input
+            # and metadata), not what anyone made of them by the end.
+            local.observed_input = _clone_value(call.payload)
+            local.observed_metadata = _clone_value(call.metadata)
+            local.traceparent, local.baggage = self._inject_traceparent(), self._inject_baggage()
+        local.input = self._resolve_channels(_clone_value(call.payload))
+        local.metadata = metadata
+        return local
+
+    def _finish_local(
+        self, call: "_Call", local: "_LocalInvocation", ok: bool, output: Any, error: BaseException | None
+    ) -> None:
+        """Counts a finished local call and reports it when an observer matches. Never raises."""
+        try:
+            duration_ms = (time.perf_counter() - local.t0) * 1000.0
+            self._reporter.record_local(call.function_id, ok, duration_ms)
+            if local.compiled:
+                local.state.report_local(
+                    local.compiled,
+                    invocation_id=local.ctx.invocation_id,
+                    ok=ok,
+                    input_=local.observed_input,
+                    output=output,
+                    error=_handler_error_body(error) if error is not None else None,
+                    caller=local.ctx.caller,
+                    metadata=local.observed_metadata,
+                    started_at_ms=local.started_at_ms,
+                    duration_ms=duration_ms,
+                    observe_depth=local.ctx.observe_depth,
+                    traceparent=local.traceparent,
+                    baggage=local.baggage,
+                )
+        except Exception:
+            log.exception("Failed to report a local invocation of %s", call.function_id)
+
+    @staticmethod
+    def _local_error(call: "_Call", error: BaseException) -> InvocationError:
+        """The error a failed local call raises: the remote path's shape."""
+        body = _handler_error_body(error)
+        failure = InvocationError(
+            code=body["code"], message=body["message"], function_id=call.function_id, stacktrace=body["stacktrace"]
+        )
+        failure.__cause__ = error
+        return failure
+
+    def _local_timeout(self, call: "_Call", local: "_LocalInvocation") -> InvocationError:
+        return InvocationError(
+            code="TIMEOUT",
+            message=f"invocation timed out after {call.timeout_ms}ms",
+            function_id=call.function_id,
+            invocation_id=local.ctx.invocation_id,
+        )
+
+    async def _invoke_local_async(self, call: "_Call", local: "_LocalInvocation | None" = None) -> Any:
+        """Runs the handler in-process on the calling loop (a sync handler on
+        a thread of its own), with a copy of the payload, in a new invocation
+        context; the same timeout and error shape as the remote path. Puts
+        nothing on the wire when nobody observes the function."""
+        fn = cast(RemoteFunctionData, call.local)
+        handler = cast(Callable[..., Awaitable[Any]], fn.handler)
+        if local is None:
+            local = self._local_invocation(call)
+        started = local
+        void = isinstance(call.action, TriggerActionVoid)
+        token = set_context(local.ctx)
+        try:
+            # The task copies this context: the handler (and the `execute`
+            # span) run in the new invocation.
+            task = asyncio.ensure_future(
+                self._invoke_with_otel_context(call.function_id, handler, local.input, None, None, local.metadata)
+            )
+        finally:
+            reset_context(token)
+
+        def done(t: "asyncio.Future[tuple[Any, str | None]]") -> None:
+            if t.cancelled():
+                return
+            error = t.exception()
+            if error is None:
+                self._finish_local(call, started, True, t.result()[0], None)
+                return
+            original = original_error(error, (_TraceContextError,))
+            self._finish_local(call, started, False, None, original)
+            if void:
+                log.error("Error invoking function %s: %r", call.function_id, original)
+
+        task.add_done_callback(done)
+
+        if void:
+            # Kept alive until it ends; its error is logged above.
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+            return None
+
+        # Raced, not cancelled: like a remote handler, it runs to its end.
+        finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
+        if not finished:
+            self._background.add(task)
+            task.add_done_callback(self._background_done)
+            raise self._local_timeout(call, local)
+        error = task.exception()
+        if error is not None:
+            raise self._local_error(call, original_error(error, (_TraceContextError,)))
+        return _clone_value(task.result()[0])
+
+    def _invoke_local_sync(self, call: "_Call") -> Any:
+        """``trigger()`` on the local path, from a thread: a sync handler runs
+        on a thread of its own (in a copy of the caller's context) while the
+        caller waits with the call's timeout, as the remote path does: on
+        ``TIMEOUT`` the handler still runs to its end. An async handler runs
+        on the SDK loop."""
+        if threading.current_thread() is self._thread:
+            raise RuntimeError(
+                "Cannot call sync SDK methods from the event loop thread. Use async handler methods instead."
+            )
+        fn = cast(RemoteFunctionData, call.local)
+        void = isinstance(call.action, TriggerActionVoid)
+        # The copies and snapshots are taken here, at call start, on the caller's thread.
+        local = self._local_invocation(call)
+        if fn.call_sync is None:
+            if void:
+                # Fire-and-forget: the SDK loop runs it; the context travels along.
+                self._schedule_on_loop(self._invoke_local_async(call, local))
+                return None
+            return self._run_on_loop(self._invoke_local_async(call, local))
+
+        sync_handler = fn.call_sync
+        done: concurrent.futures.Future[Any] = concurrent.futures.Future()
+
+        def run() -> None:
+            set_context(local.ctx)
+            try:
+                with self._execute_span(call.function_id, local.input, None, None) as outcome:
+                    outcome.result = sync_handler(local.input, local.metadata)
+            except _TraceContextError as error:
+                cause = original_error(error, (_TraceContextError,))
+                self._finish_local(call, local, False, None, cause)
+                done.set_exception(cause)
+                if void:
+                    log.error("Error invoking function %s: %s", call.function_id, cause)
+            except BaseException as error:
+                # SystemExit, KeyboardInterrupt, ...: still a failed local invocation
+                self._finish_local(call, local, False, None, error)
+                done.set_exception(error)
+                if void:
+                    log.error("Error invoking function %s: %r", call.function_id, error)
+            else:
+                self._finish_local(call, local, True, outcome.result, None)
+                done.set_result(outcome.result)
+
+        # A copy of the caller's context: what the handler sets stays in it.
+        threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+        if void:
+            return None
+        finished, _ = concurrent.futures.wait([done], timeout=call.timeout_ms / 1000.0)
+        if not finished:
+            raise self._local_timeout(call, local)
+        error = done.exception()
+        if error is not None:
+            raise self._local_error(call, error) from error
+        return _clone_value(done.result())
+
+    # observe: the observing side
+
+    def observe(
+        self,
+        source: "ObserveSource | dict[str, Any]",
+        target: "Target",
+        options: "ObserverOptions | dict[str, Any] | None" = None,
+    ) -> ObserverHandle:
+        """Observes a function: every event of ``source`` (an invocation of an
+        auto function, or what its owner hands over) that passes
+        ``source["filters"]`` invokes ``target``, a registered function.
+
+        Returns synchronously, also before the connection is up; the observer
+        is replayed with the same id on every reconnect. Errors
+        (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``, an owner's
+        rejection, ``UNSUPPORTED`` against an engine without observe) show up
+        as state ``error`` and make ``ready()`` raise :class:`ObserveRejection`.
+
+        Args:
+            source: What is observed: ``function_id``, ``namespace``,
+                ``args`` (owner-delivered functions only), ``filters``, and
+                ``on`` / ``capture`` / ``deliver``.
+            target: The function to invoke: its id, or
+                ``{"function_id": ..., "namespace": ...}``. Register it first;
+                until then the observer stays ``pending``.
+            options: ``id``, ``max_fires``, ``expires_in_ms``,
+                ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
+
+        Raises:
+            ValueError: ``source["function_id"]`` or ``target`` missing, or
+                the id is already in use.
+            TypeError: The source, target or options are not JSON.
+
+        Examples:
+            >>> iii.register_function("alerts::payment-failed", notify)
+            >>> failures = iii.observe(
+            ...     {"function_id": "payments::charge", "on": "error",
+            ...      "filters": {"input.amount": {"$gte": 500}}},
+            ...     "alerts::payment-failed",
+            ...     {"max_in_flight": 4},
+            ... )
+            >>> failures.ready()            # or: await failures.ready_async()
+            >>> failures.dispose()
+        """
+        if not isinstance(source, dict):
+            raise TypeError("observe: source must be a dict")
+        function_id = source.get("function_id")
+        if not isinstance(function_id, str) or not function_id.strip():
+            raise ValueError("observe: source.function_id is required")
+        target_id: Any = target.get("function_id") if isinstance(target, dict) else target
+        if not isinstance(target_id, str) or not target_id.strip():
+            raise ValueError("observe: target is required (the id of a registered function)")
+        opts = cast("dict[str, Any]", options) if options is not None else {}
+        observer_id = opts.get("id") or str(uuid.uuid4())
+        if not isinstance(observer_id, str):
+            raise TypeError("observe: options.id must be a string")
+        if observer_id in self._observers:
+            raise ValueError(f"observe: observer id already in use: {observer_id}")
+        message = build_observe_message(
+            observer_id,
+            cast("dict[str, Any]", source),
+            target,
+            opts,
+            lambda explicit, fid, field: self._invocation_namespace(explicit, fid, field),
+        )
+        self._prepare_json(message)
+        handle = ObserverHandle(
+            observer_id,
+            message,
+            self._dispose_observer,
+            lambda: threading.current_thread() is self._thread,
+            self._run_callback,
+        )
+        self._observers[observer_id] = handle
+        try:
+            self._loop.call_soon_threadsafe(self._after_observe, handle)
+        except RuntimeError:
+            pass  # shut down: it stays pending
+        return handle
+
+    def current_invocation(self) -> InvocationContext | None:
+        """The invocation the calling code runs in (in every handler, remote or
+        local), or ``None`` outside any handler.
+
+        Examples:
+            >>> def create_order(order):
+            ...     inv = iii.current_invocation()  # function_id, invocation_id, caller, observe_depth
+            ...     return {"id": inv.invocation_id if inv else None}
+        """
+        return public_context(current_context())
 
     # Internal: backing methods for items in the `iii.helpers` submodule.
     # These are renamed with a leading underscore so they don't appear on the
@@ -1665,8 +2778,8 @@ class III:
         writer_ref = StreamChannelRef(**result["writer"])
         reader_ref = StreamChannelRef(**result["reader"])
         return Channel(
-            writer=ChannelWriter(self._address, writer_ref),
-            reader=ChannelReader(self._address, reader_ref),
+            writer=ChannelWriter(self._address, writer_ref, self._options.headers),
+            reader=ChannelReader(self._address, reader_ref, self._options.headers),
             writer_ref=writer_ref,
             reader_ref=reader_ref,
         )
@@ -1677,15 +2790,7 @@ class III:
         except Exception:
             sdk_version = "unknown"
 
-        # III_WORKER_NAME carries the orchestrator-assigned name (set by
-        # iii-worker for engine-managed workers). The engine matches live
-        # registrations by name, so that identity must win over a name
-        # embedded in worker code.
-        worker_name = (
-            os.environ.get("III_WORKER_NAME")
-            or self._options.worker_name
-            or f"{platform.node()}:{os.getpid()}"
-        )
+        worker_name = self._worker_name()
 
         # One resolver, so the blank-namespace check cannot be bypassed by the
         # path that builds the metadata: a second copy of the precedence rule
@@ -1717,6 +2822,8 @@ class III:
             "isolation": os.environ.get("III_ISOLATION") or None,
             "namespace": namespace,
             "telemetry": telemetry,
+            # Opts this connection into the observe messages (CONTRACT D2).
+            "features": list(SDK_FEATURES),
         }
         # Optional, like the other SDKs: only send `description` when set so the
         # engine's `#[serde(default)]` field stays absent otherwise.

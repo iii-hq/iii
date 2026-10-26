@@ -96,7 +96,7 @@ engine restart. Memory-backed stores are unaffected.
 | `service_namespace`         | string      | Service namespace (`service.namespace` OTEL attribute). Env: `SERVICE_NAMESPACE`.                                                                                            |
 | `exporter`                  | string      | Trace exporter: `memory`, `otlp`, or `both`. Use `both` when traces should remain queryable in iii while also being exported. Defaults to `otlp`. Env: `OTEL_EXPORTER_TYPE`. |
 | `endpoint`                  | string      | OTLP collector base endpoint. Defaults to `"http://localhost:4317"`. Env: `OTEL_EXPORTER_OTLP_ENDPOINT`.                                                                     |
-| `sampling_ratio`            | number      | Global trace sampling ratio (`0.0`–`1.0`). Defaults to `1.0`. Env: `OTEL_TRACES_SAMPLER_ARG`.                                                                                |
+| `sampling_ratio`            | number      | Global trace sampling ratio (`0.0`–`1.0`), applied to engine spans and worker ingestion before local storage/OTLP export. Defaults to `1.0`. Env: `OTEL_TRACES_SAMPLER_ARG`.                                                                                |
 | `memory_max_spans`          | number      | Max spans to keep in memory. Defaults to `1000`. Env: `OTEL_MEMORY_MAX_SPANS`.                                                                                               |
 | `live_spans`                | boolean     | Mirror spans into the in-memory store at start as pending snapshots (see [Live (pending) spans](#live-pending-spans)). Defaults to `true` for `exporter: memory`, `false` otherwise — set it to opt in with `both` in production. Ignored for `otlp`-only. Restart-tier. Env: `OTEL_LIVE_SPANS`. |
 | `metrics_enabled`           | boolean     | Whether metrics collection is enabled. Defaults to `false`. Env: `OTEL_METRICS_ENABLED`.                                                                                     |
@@ -114,7 +114,7 @@ engine restart. Memory-backed stores are unaffected.
 | `alerts`                    | AlertRule[] | Alert rules evaluated against metrics.                                                                                                                                       |
 | `trace_storage.enabled`     | boolean     | Persist completed spans to SQLite (`traces.sqlite3`). Defaults to `true`.                                                                                                     |
 | `trace_storage.directory`   | string      | Directory for the archive and its WAL sidecars. Defaults to `./data/observability/traces`.                                                                                    |
-| `trace_storage.max_disk_bytes` | number   | Physical cap on the archive directory; oldest traces are evicted at 90% and the file shrunk to 80%. Defaults to `1073741824` (1 GiB), minimum 64 MiB.                         |
+| `trace_storage.max_disk_bytes` | number   | Physical cap on the archive directory; oldest traces are evicted at 90% and the file shrunk toward 80%. No committed SQLite image exceeds the cap plus a tolerance of max(1%, 8 MiB); see [Archive capacity](#archive-capacity) for spans that can never fit, transients and readers. Defaults to `1073741824` (1 GiB), minimum 64 MiB.                         |
 | `trace_storage.retention_seconds` | number | Age limit for archived traces; `0` disables it. Defaults to `2592000` (30 days).                                                                                             |
 | `trace_storage.memory_max_bytes` | number | Hard cap on the in-memory hot cache (an RSS estimate). Oldest spans are evicted first — including finalized spans the archive has not written yet, which are counted in `known_dropped_spans` and turn `completeness` to `partial`. Defaults to `268435456` (256 MiB), minimum 16 MiB. |
 | `trace_storage.memory_low_watermark_ratio` | number | Fraction of `memory_max_bytes` the cache shrinks to under pressure (`0.5`–`0.95`). Defaults to `0.75`.                                                                  |
@@ -181,6 +181,77 @@ traces and `logs_exporter: both` for logs.
 | `enabled`          | boolean     | Whether the alert rule is active. Defaults to `true`.                                                   |
 | `action`           | AlertAction | `{ "type": "log" }`, `{ "type": "webhook", "url": "..." }`, or `{ "type": "function", "path": "..." }`. |
 
+### Archive capacity
+
+- Every commit attributes the pages it used (new plus reused free pages,
+  minus pages freed by replaced versions) to the traces it wrote, in
+  `trace_meta.image_bytes`; a commit of several traces shares them by an
+  estimate of each trace's row cost (payload, attribute rows and their index
+  entries). Capacity decisions use these sizes, never an archive-wide ratio. Archives from before the column gain it on
+  open (0 = not measured; `approx_bytes` is used until the trace is written
+  again).
+- Durable rows are never deleted to make room for their own trace. Before
+  anything is evicted, a trace's new spans are judged against the room it
+  could ever have beside its own rows. With no other trace in the archive
+  that is the room left now, an exact bound. Otherwise the sizes of the
+  others are only attributed (or unknown), so nothing is dropped on them:
+  the bound is the cap plus tolerance minus a lower bound of the trace's own
+  rows and the fixed overhead (schema pages, `-shm`), and the spans are
+  judged again, exactly, once the others are gone. Rows that never fit are
+  dropped and counted in `known_dropped_spans` (`completeness: partial`);
+  the longest prefix that fits is written; rows that fit only once others
+  leave wait. Later spans of
+  the same trace are judged on their own. Of two dirty versions of a span,
+  the newest is archived.
+- Nothing is evicted for spans that would not fit even with every
+  unprotected trace gone (protected = traces in the batch and live traces).
+  When no unprotected trace is left, the bytes in use are remembered as a
+  floor for the protected traces holding them, plus their attributed change
+  since. It holds while they stay protected and keep their rows (retention
+  keeps it; new limits, `clear`, a floor trace losing its protection or rows
+  of one being deleted drop it). A group of the only trace in the floor is
+  judged against it, so spans that can never fit beside their live trace
+  are dropped without evicting anything. Known limitation: without a floor
+  sizes come from attribution, and a protected trace whose share of shared
+  commits is underestimated, whose size is unknown (written by an older
+  version), or the group's own rows (left out until measured) can make the
+  first eviction for a group that still does not fit useless; that
+  unprotected history is lost uncounted, once per set of protected traces,
+  and the eviction measures the floor.
+- Large new spans (lower bound above a quarter of the cap and at most 64 MiB)
+  are measured once in a private scratch database under the system temporary
+  directory (mode 0600, 2 MiB page cache, removed right after, outside the
+  cap; on tmpfs it is memory for one measurement). The measurement is kept
+  for retries of the same rows. If the scratch cannot be used (missing or
+  full TMPDIR) it is skipped for 10 minutes with one warning, and such spans
+  are measured by a trial in the archive itself, with nothing evicted for
+  them; larger spans always are.
+- A trace that fits beside its own rows but not now (for example while a
+  live trace holds the space) stays dirty and is retried with backoff (1 s
+  doubling to 60 s); when nothing fits at all the whole archive backs off (up
+  to 30 s). A storage error (for example EFBIG/ENOSPC writing one large
+  trace) defers only the traces that hit it. `flush` ignores the backoffs;
+  new limits and `clear` reset them; retention retries deferred traces at
+  once, keeping their measurements and the floor. A periodic pass does at most
+  32 batches or 1 s of work before serving control requests; a longer backlog
+  is progress, not degradation.
+- `flush` returns `Ok` once every span ingested before the call is durable or
+  counted as dropped; it returns an error if capacity or storage left some
+  dirty (archive `degraded`) or its 4 s budget ran out (not degraded). The
+  budget is checked between batches, and `flush`, `retain`, `clear` and
+  `shutdown` wait 5 s for the writer: one large batch (a measurement,
+  eviction and trial of a span near 64 MiB) or a kernel I/O stall (slow
+  fsync, journal commit, writeback) can exceed that. The call then returns
+  a timeout error while the writer finishes the work; nothing is lost.
+- The cap counts the pages in use plus the `-shm` index. Freed pages return
+  to the filesystem in checkpointed steps of 1024 pages, so retention or
+  eviction adds about one step of WAL on top of the main file instead of a
+  WAL as large as the space being freed. A reader holding a snapshot pins the
+  WAL: the return pauses until the reader finishes.
+- The full-VACUUM fallback (for files whose pages do not return) runs at most
+  once per 10 minutes. Archive warnings (capacity, drops, scratch and VACUUM
+  failures) are limited to one log line per minute with a suppressed count.
+
 ### Advanced Sampling
 
 ```yaml
@@ -193,6 +264,35 @@ sampling:
   rate_limit:
     max_traces_per_second: 100
 ```
+
+Worker spans received over OTLP are sampled per trace before local storage
+and collector export, where the trace is rooted in the worker:
+
+- A local root (no parent) gets the configured policy: rules, one rate-limit
+  token per trace, default ratio. The W3C sampled bit SDKs set on exported
+  spans (the Node SDK sends flags `0x101` on every span) is not a decision
+  and never bypasses these policies.
+- A span whose parent the SDK marks remote (OTLP flags `0x300` together with
+  a `parentSpanId`) carries the caller's decision: its sampled bit, set or
+  not, is presented to the sampler as an incoming `traceparent` would be, so
+  parent-based samplers (`parent_based: true`, and rules/rate limits, which
+  always run parent-based) follow it and a plain `sampling_ratio` keeps
+  deciding by trace id.
+- Every other span follows its trace. A root anywhere in the same request
+  decides first; a trace already in the hot cache was sampled in. With
+  per-operation rules a child that arrives before its root waits for it, up
+  to 2 s, 4,096 spans and 32 MiB of estimated raw span data in total (held
+  spans are not yet truncated to `max_attribute_bytes`; the decoded request
+  itself is not counted), then is decided by its own span (rules are
+  evaluated on the root, as the engine does). Without such rules the first
+  span seen decides.
+- Verdicts are remembered for the 16,384 most recent traces and reset when
+  sampling changes. A root final whose verdict was forgotten keeps it while
+  the root's live start snapshot, stored since the last sampling change, is
+  in the hot cache; otherwise it is decided again. Engine spans under a worker's traceparent follow the
+  engine's own sampler (`ParentBased`, unchanged): it trusts the worker's
+  sampled flag, so with `parent_based: true` and default 0 a worker-rooted
+  trace keeps its engine spans while the worker's local root is sampled out.
 
 ## Functions
 
@@ -207,7 +307,9 @@ sampling:
 | `engine::log::trace` | Log a trace-level message.    |
 
 All logging functions accept: `message` (string, required), `data` (object), `trace_id` (string),
-`span_id` (string), `service_name` (string).
+`span_id` (string), `service_name` (string). Without `trace_id`, the record takes the trace and span
+the call runs in (the `traceparent` its caller sent), so a log line a handler writes is correlated
+with that handler's trace. Each call stores one record (instrumentation scope `iii`).
 
 ### Logs API
 

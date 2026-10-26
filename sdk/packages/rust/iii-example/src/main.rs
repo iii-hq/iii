@@ -59,13 +59,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
 
-    // Custom webhook trigger type with typed config (compile-time safe)
+    // A worker-owned event source: an observable function routing webhooks to
+    // its observers by their args (was a custom trigger type)
     trigger_type_example::setup(&iii);
 
-    // Built-in trigger types: cron and state (untyped config)
+    // Built-in trigger types: cron, state, http, ... (deprecated register_trigger)
     cron_trigger_example::setup(&iii);
 
-    // More custom triggers: schedule, file-watch (typed), custom-event (untyped fallback)
+    // More sources: schedule, file-watch (owner-delivered, typed args), and an
+    // auto function observed with filters
     custom_trigger_example::setup(&iii);
 
     // List all registered trigger types with their schemas

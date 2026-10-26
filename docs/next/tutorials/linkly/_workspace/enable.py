@@ -20,6 +20,7 @@ SOURCES = [
     "link/src/index.ts",
     "analytics/src/main.py",
     "click-streamer/src/index.ts",
+    "click-streamer/watch.ts",
     "bulk-importer/src/index.ts",
     "auth/src/index.ts",
     "channel-client/import-links.js",

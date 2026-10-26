@@ -1,0 +1,8 @@
+{
+  "description": "\\. is a literal dot inside a key",
+  "filters": {"input.a\\.b": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"a.b": 1}}, "expect": true },
+    { "doc": {"input": {"a": {"b": 1}}}, "expect": false }
+  ]
+}

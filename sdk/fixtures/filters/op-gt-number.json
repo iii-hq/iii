@@ -1,0 +1,18 @@
+{
+  "description": "$gt with a number: numbers only",
+  "filters": {"input.n": {"$gt": 100}},
+  "cases": [
+    { "doc": {"input": {"n": 101}}, "expect": true },
+    { "doc": {"input": {"n": 100}}, "expect": false },
+    { "doc": {"input": {"n": 100.0}}, "expect": false },
+    { "doc": {"input": {"n": 100.5}}, "expect": true },
+    { "doc": {"input": {"n": 99}}, "expect": false },
+    { "doc": {"input": {"n": -1}}, "expect": false },
+    { "doc": {"input": {"n": 1e3}}, "expect": true },
+    { "doc": {"input": {"n": "101"}}, "expect": false, "note": "mixed types are unordered" },
+    { "doc": {"input": {"n": null}}, "expect": false },
+    { "doc": {"input": {"n": true}}, "expect": false },
+    { "doc": {"input": {"n": [101]}}, "expect": false },
+    { "doc": {"input": {}}, "expect": false }
+  ]
+}

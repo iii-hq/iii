@@ -212,6 +212,7 @@ where
             service_name: self.service_name.clone(),
             instrumentation_scope_name: Some("tracing".to_string()),
             instrumentation_scope_version: None,
+            observe_depth: crate::observer::InvocationCtx::current_depth(),
         };
 
         // Store the log
@@ -239,6 +240,29 @@ mod tests {
         tracing::subscriber::with_default(subscriber, f);
         let (_, logs) = storage.get_logs_filtered(None, None, None, None, None, None, None, None);
         (storage, logs)
+    }
+
+    /// An engine log event emitted inside an invocation at depth 2 is stored
+    /// at depth 2.
+    #[test]
+    fn events_inside_an_invocation_carry_its_depth() {
+        let (_, logs) = with_layer(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            runtime.block_on(crate::observer::InvocationCtx::scope(
+                Arc::new(crate::observer::InvocationCtx::engine_internal_at(2)),
+                async { tracing::info!("deep event") },
+            ));
+            tracing::info!("shallow event");
+        });
+        let depth_of = |body: &str| {
+            logs.iter()
+                .find(|log| log.body == body)
+                .map(|log| log.observe_depth)
+        };
+        assert_eq!(depth_of("deep event"), Some(2));
+        assert_eq!(depth_of("shallow event"), Some(0));
     }
 
     #[test]

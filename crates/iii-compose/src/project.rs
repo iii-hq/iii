@@ -731,8 +731,20 @@ impl Project {
     /// other child, which is what `down` walks. Leaving it out was a silent
     /// leak: `stop_one` returns early on a key it does not hold, so teardown
     /// reported success over a process that kept running and kept its name.
+    ///
+    /// Survivors are adopted only from a compose process that is still alive:
+    /// this one, reopening the project in place, or another that is about to
+    /// refuse this one (see [`Project::abandon`]). A survivor of a compose that
+    /// is gone was left behind by a crash, and keeping it would keep whatever
+    /// configuration it started with; it is stopped and started fresh instead.
     async fn reconcile_recovered(&self) {
         let mut inner = self.inner.lock().await;
+        let owner_alive = inner
+            .state
+            .owner
+            .as_ref()
+            .is_some_and(crate::state::Owner::is_alive);
+        let mut left_behind = Vec::new();
         let recorded: Vec<(String, crate::state::ChildRecord)> = inner
             .state
             .containers
@@ -743,6 +755,7 @@ impl Project {
         for (key, record) in recorded {
             match reconcile(&record) {
                 Reconciliation::Adopt => match Supervised::adopt(record.pid, &record.birth) {
+                    Some(child) if !owner_alive => left_behind.push((key.clone(), child)),
                     Some(child) => {
                         daemon_line(
                             &self.project_namespace,
@@ -799,6 +812,27 @@ impl Project {
                     }
                 }
             }
+        }
+
+        if !left_behind.is_empty() {
+            let grace = self.file.read().await.stop_timeout;
+            futures::future::join_all(left_behind.iter().map(|(_, child)| child.stop(grace))).await;
+            for (key, child) in &left_behind {
+                daemon_line(
+                    &self.project_namespace,
+                    &format!(
+                        "{key} (pid {}) outlived the compose that started it; stopped it",
+                        child.pid
+                    ),
+                    Tone::Warn,
+                );
+                if let Some(entry) = inner.state.containers.get_mut(key) {
+                    entry.status = ChildStatus::Stopped;
+                }
+            }
+        }
+        if !owner_alive {
+            inner.state.owner = Some(crate::state::Owner::current());
         }
 
         let state = inner.state.clone();

@@ -1,0 +1,8 @@
+{
+  "description": "the whole filter value nests exactly 120 arrays / objects ($and wrappers count; filter depth stays 1)",
+  "filters": {"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"$and": [{"input.a": {"$eq": 1}}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]}]},
+  "cases": [
+    { "doc": {"input": {"a": 1}}, "expect": true },
+    { "doc": {"input": {"a": 2}}, "expect": false }
+  ]
+}

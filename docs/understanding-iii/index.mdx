@@ -212,6 +212,12 @@ The Quickstart tutorial invokes Functions with Triggers in three different ways:
 One Function can have many Triggers. The same Function could be invoked by a cron schedule, a queue
 message, and a direct CLI call.
 
+Functions can also be **observed**. With `iii.observe(source, target)`, any Worker allowed to invoke
+a Function can have another Function invoked for each of its invocations that passes declarative
+filters, without changing the observed Function. In 0.25 observers replace `registerTrigger` for
+sources that are Functions, while the http, cron, and queue Workers still publish Trigger types. See
+[Observers](../using-iii/observers).
+
 ## Functions
 
 A Function is a named handler inside a Worker. It takes a payload and returns a result. From the iii

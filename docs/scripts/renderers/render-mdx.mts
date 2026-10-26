@@ -23,8 +23,13 @@ function orderMethods(methods: FunctionDoc[]): FunctionDoc[] {
 }
 
 function escapeMdxText(value: string): string {
-  return value.replace(/`[^`]*`|[{}]/g, (match) => {
+  // A double-backtick span (reST/Python docstrings) is a code span too: its
+  // braces are literal, and escaping them would show the backslash.
+  // MDX has no autolinks: a rustdoc `<https://...>` parses as a JSX tag and
+  // breaks the page, so it becomes an ordinary link.
+  return value.replace(/``(?:[^`]|`(?!`))*``|`[^`]*`|<(https?:\/\/[^\s<>]+)>|[{}]/g, (match, url?: string) => {
     if (match.startsWith('`')) return match
+    if (url) return `[${url}](${url})`
     return match === '{' ? '\\{' : '\\}'
   })
 }
@@ -93,12 +98,28 @@ function attrSafe(value: string): string {
   return value.replace(/"/g, "'")
 }
 
+/**
+ * The deprecation callout of a still-documented deprecated method, from the
+ * item's own deprecation text. Mintlify typography turns `--` into an em
+ * dash, so a double hyphen outside a code span is spelled out.
+ */
+function renderDeprecation(deprecated: NonNullable<FunctionDoc['deprecated']>): string[] {
+  const since = deprecated.since ? ` since ${deprecated.since}` : ''
+  const note = deprecated.note.replace(/\s*\n\s*/g, ' ').trim()
+  const sentence = note ? ` ${note.charAt(0).toUpperCase()}${note.slice(1)}` : ''
+  const text = escapeMdxText(`**Deprecated${since}.**${sentence}`).replace(/``(?:[^`]|`(?!`))*``|`[^`]*`|--|\u2014/g, match =>
+    match.startsWith('`') ? match : match === '--' ? "{'--'}" : ',',
+  )
+  return ['<Warning>', `  ${text}`, '</Warning>', '']
+}
+
 function renderMethod(method: FunctionDoc, lang: string, knownTypes?: Set<string>, typesByName?: Map<string, TypeDoc>): string {
   const codeLang = LANG_MAP[lang] ?? lang
   const lines: string[] = []
 
   lines.push(`### ${method.name}`)
   lines.push('')
+  if (method.deprecated) lines.push(...renderDeprecation(method.deprecated))
   lines.push(escapeMdxText(method.description))
   lines.push('')
   lines.push('**Signature**')
@@ -260,6 +281,9 @@ export function renderSdkMdx(doc: SdkDoc): string {
   const codeLang = LANG_MAP[lang] ?? lang
   const knownTypes = new Set(doc.types.map(t => t.name))
   const typesByName = new Map(doc.types.map(t => [t.name, t]))
+  // A deprecated method may also expand deprecated types, which have no
+  // section of their own (so they are expanded, never linked).
+  const deprecatedTypesByName = new Map([...(doc.paramOnlyTypes ?? []).map(t => [t.name, t] as const), ...typesByName])
   const lines: string[] = [...renderFrontmatter(doc)]
 
   lines.push('## Installation')
@@ -283,7 +307,19 @@ export function renderSdkMdx(doc: SdkDoc): string {
         lines.push('---')
         lines.push('')
       }
-      lines.push(renderMethod(method, lang, knownTypes, typesByName))
+      lines.push(renderMethod(method, lang, knownTypes, method.deprecated ? deprecatedTypesByName : typesByName))
+    })
+  }
+
+  if (doc.functions && doc.functions.length > 0) {
+    lines.push('## Functions')
+    lines.push('')
+    doc.functions.forEach((fn, i) => {
+      if (i > 0) {
+        lines.push('---')
+        lines.push('')
+      }
+      lines.push(renderMethod(fn, lang, knownTypes, typesByName))
     })
   }
 

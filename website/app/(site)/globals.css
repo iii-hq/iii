@@ -296,14 +296,16 @@
 }
 
 /*
- * Long-form prose: blog posts, tech specs, the privacy policy. Same reading type as the manifesto: Inter on a 68ch
- * measure in the muted colour, headings in Inter 500 in the foreground (the page title above is the pixel heading),
- * Geist Mono for code with the site's Shiki pair.
+ * Long-form prose: blog posts, tech specs, the privacy policy. Same reading type as the manifesto: Inter on a 70ch
+ * measure in the muted colour with generous leading, headings in Inter 500 in the foreground (the page title above
+ * is the pixel heading), Geist Mono for code with the site's Shiki pair. Every block gets room to breathe: a section
+ * starts after a hairline and a full line of air, paragraphs sit a line and a half apart, figures and tables stand
+ * clear of the text around them.
  */
 .prose {
-  max-width: 68ch;
-  font-size: 17px;
-  line-height: 1.75;
+  max-width: 70ch;
+  font-size: 18px;
+  line-height: 1.78;
   color: var(--muted-foreground);
   text-wrap: pretty;
   /* Long unbroken runs (paths, identifiers) must never widen a phone page. */
@@ -312,8 +314,11 @@
 .prose > :first-child {
   margin-top: 0;
 }
-.prose :is(p, ul, ol, blockquote, pre, table, figure) {
-  margin: 0 0 1.25em;
+.prose :is(p, ul, ol) {
+  margin: 0 0 1.5em;
+}
+.prose :is(blockquote, pre, figure, .table-scroll) {
+  margin: 2.25em 0;
 }
 .prose :is(h2, h3, h4) {
   color: var(--foreground);
@@ -322,19 +327,35 @@
   text-wrap: balance;
   scroll-margin-top: 112px;
 }
+/* A section opens after a hairline and a full line of air, so the outline of the piece is visible while scrolling. */
 .prose h2 {
-  margin: 2.4em 0 0.7em;
-  font-size: 1.5em;
-  line-height: 1.2;
+  margin: 3.5em 0 1em;
+  padding-top: 1.6em;
+  border-top: 1px solid var(--border);
+  font-size: 1.6em;
+  line-height: 1.25;
+}
+.prose h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 .prose h3 {
-  margin: 2em 0 0.6em;
-  font-size: 1.2em;
-  line-height: 1.3;
+  margin: 2.75em 0 0.8em;
+  font-size: 1.25em;
+  line-height: 1.35;
 }
+/* h4 is a label over a block (Key facts, Limitation): small caps, quiet, with the block's text right under it. */
 .prose h4 {
-  margin: 1.6em 0 0.5em;
-  font-size: 1em;
+  margin: 2.25em 0 0.6em;
+  font-size: 0.78em;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.prose :is(h2, h3, h4) + :is(p, ul, ol) {
+  margin-top: 0;
 }
 .prose :is(strong, em) {
   color: var(--foreground);
@@ -347,14 +368,14 @@
   text-decoration: underline;
   text-decoration-color: var(--line-strong);
   text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
+  text-underline-offset: 4px;
   transition: text-decoration-color var(--motion-fast) var(--motion-ease-out);
 }
 .prose a:hover {
   text-decoration-color: var(--foreground);
 }
 .prose :is(ul, ol) {
-  padding-left: 1.4em;
+  padding-left: 1.5em;
 }
 /* Preflight removes list markers; long-form text wants them back. */
 .prose ul {
@@ -364,17 +385,26 @@
   list-style-type: decimal;
 }
 .prose li {
-  margin: 0.35em 0;
+  margin: 0.6em 0;
+  padding-left: 0.25em;
 }
 .prose li::marker {
   color: var(--line-strong);
 }
+/* Quoted or aside text reads as a card: a hairline box, a soft fill, a strong rule on the leading edge. */
 .prose blockquote {
-  padding: 0.1em 0 0.1em 1.2em;
-  border-left: 2px solid var(--line-strong);
+  padding: 1.1em 1.4em;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--foreground);
+  border-radius: 0 12px 12px 0;
+  background: var(--card);
+  font-size: 0.95em;
+}
+.prose blockquote > :last-child {
+  margin-bottom: 0;
 }
 .prose hr {
-  margin: 3em 0;
+  margin: 3.5em 0;
   border: 0;
   border-top: 1px solid var(--border);
 }
@@ -388,6 +418,9 @@
 .prose img {
   height: auto;
 }
+.prose p > img:only-child {
+  margin: 2.25em 0;
+}
 /* Embedded video (the posts' YouTube iframes carry no size of their own): the full measure, 16:9. */
 .prose iframe {
   width: 100%;
@@ -397,19 +430,29 @@
   border: 0;
   background: var(--card);
 }
+.prose figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9em;
+}
+.prose figcaption {
+  font-size: 0.85em;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  opacity: 0.85;
+}
 .prose code {
   font-family: var(--font-mono);
   font-size: 0.86em;
 }
 .prose :not(pre) > code {
-  padding: 0.15em 0.4em;
+  padding: 0.18em 0.45em;
   border-radius: 6px;
   background: var(--secondary);
   color: var(--foreground);
-  overflow-wrap: anywhere;
 }
 .prose pre {
-  padding: 16px 18px;
+  padding: 18px 20px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--card) !important;
@@ -417,14 +460,15 @@
   font-size: 14px;
   line-height: 1.8;
 }
+/* Long-form code stays black and white: the shared theme's hues drop to greys of the same weight. */
 .prose pre code {
   font-size: inherit;
   padding: 0;
   background: none;
+  filter: grayscale(1);
 }
 /* Tables scroll inside their own box on narrow screens (the renderer wraps each one). */
 .prose .table-scroll {
-  margin: 0 0 1.25em;
   overflow-x: auto;
 }
 .prose .table-scroll > table {
@@ -433,11 +477,11 @@
 .prose table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.92em;
-  line-height: 1.5;
+  font-size: 0.9em;
+  line-height: 1.6;
 }
 .prose :is(th, td) {
-  padding: 0.6em 0.8em;
+  padding: 0.85em 1em;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
@@ -446,12 +490,256 @@
   color: var(--foreground);
   font-weight: 500;
 }
-.prose figcaption {
-  margin-top: 0.6em;
-  font-size: 0.85em;
+
+/*
+ * Blocks a post can opt into from its markdown. They are plain HTML in the source so the markdown twin at
+ * /blog/<slug>.md keeps the same text.
+ *
+ * .facts    a list of "label: value" bullets shown as rows in a card (the label in the foreground, the value under it)
+ * .verdict  one .verdict-card per pick (eyebrow .verdict-pick, .verdict-tool, .verdict-reason, .verdict-cta link;
+ *           data-highlight marks the recommended one), stacked as full-width rows
+ * .compare  wraps a GFM table so it reads as a matrix: a card around it, a label column, the last column tinted
+ */
+.prose .facts {
+  margin: 1.25em 0 2.25em;
+}
+.prose .facts ul {
+  margin: 0;
+  padding: 0.25em 1.4em;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  list-style: none;
+}
+.prose .facts li {
+  margin: 0;
+  padding: 0.95em 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.94em;
+  line-height: 1.6;
+}
+.prose .facts li:last-child {
+  border-bottom: 0;
+}
+.prose .facts li > strong:first-child {
+  display: block;
+  margin-bottom: 0.2em;
+  font-size: 0.8em;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.prose .verdict {
+  display: grid;
+  gap: 14px;
+  margin: 2.25em 0 2.75em;
+}
+.prose .verdict-card {
+  display: grid;
+  gap: 10px 32px;
+  padding: 26px 28px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  font-size: 0.95em;
+  line-height: 1.65;
+  transition: border-color var(--motion-fast) var(--motion-ease-out);
+}
+.prose .verdict-card[data-highlight] {
+  border-color: var(--highlight-border);
+  background: color-mix(in oklab, var(--foreground) 3%, var(--card));
+}
+.prose .verdict-card[data-highlight] .verdict-pick {
+  color: var(--foreground);
+}
+.prose .verdict-card p {
+  margin: 0;
+}
+.prose .verdict-pick {
+  font-size: 0.78em;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.prose .verdict-tool {
+  font-size: 1.45em;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--foreground);
+}
+.prose .verdict-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--foreground);
+  text-decoration: none;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease-out),
+    background-color var(--motion-fast) var(--motion-ease-out);
+}
+.prose .verdict-cta::after {
+  content: "→";
+  transition: transform var(--motion-fast) var(--motion-ease-out);
+}
+.prose .verdict-card[data-highlight] .verdict-cta {
+  border-color: var(--foreground);
+  background: var(--foreground);
+  color: var(--background);
+}
+.prose .verdict-cta:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+
+.prose .compare .table-scroll {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+}
+.prose .compare table {
+  min-width: 680px;
+  font-size: 0.88em;
+  line-height: 1.6;
+}
+.prose .compare :is(th, td) {
+  padding: 1em 1.1em;
+  min-width: 10em;
+}
+.prose .compare th {
+  padding-block: 0.9em;
+  background: var(--secondary);
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.prose .compare :is(th, td):not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+.prose .compare tr:last-child td {
+  border-bottom: 0;
+}
+.prose .compare td:first-child {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+/*
+ * Elevating iii. The iii column header and the highlighted verdict card's name show the mark (three columns, a dot
+ * over a bar) in place of the word, never both: the word stays in the markup for screen readers and copy, at
+ * font-size 0, and the mark is a CSS mask so it takes the foreground colour. The iii column reads in the foreground
+ * on a faint lift; the highlighted facts card, figure and verdict card share one neutral-800 frame. Black and white
+ * only, no glow.
+ */
+.prose {
+  --highlight-border: oklch(0.269 0 0); /* neutral-800 */
+}
+.prose .compare th:last-child,
+.prose .verdict-card[data-highlight] .verdict-tool {
+  font-size: 0;
+}
+.prose .compare th:last-child::before,
+.prose .verdict-card[data-highlight] .verdict-tool::before {
+  content: "";
+  display: block;
+  height: 16px;
+  aspect-ratio: 933.61 / 1050.31;
+  background: var(--foreground);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 933.61 1050.31'%3E%3Crect width='233.4' height='233.4'/%3E%3Crect y='350.1' width='233.4' height='700.21'/%3E%3Crect x='350.1' width='233.4' height='233.4'/%3E%3Crect x='350.1' y='350.1' width='233.4' height='700.21'/%3E%3Crect x='700.21' width='233.4' height='233.4'/%3E%3Crect x='700.21' y='350.1' width='233.4' height='700.21'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.prose .verdict-card[data-highlight] .verdict-tool::before {
+  height: 28px;
+}
+.prose .compare th:last-child {
+  /* The other headers' em padding, in px, since this cell's font-size is 0. */
+  padding: 13px 16px;
+  vertical-align: middle;
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--foreground) 6%, var(--secondary));
+}
+.prose .compare :is(th, td):last-child {
+  border-left: 1px solid var(--highlight-border);
+}
+.prose .compare td:last-child {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--foreground) 3%, transparent);
+}
+
+.prose .facts[data-highlight] ul {
+  border-color: var(--highlight-border);
+}
+.prose .facts[data-highlight] li > strong:first-child {
+  color: var(--foreground);
+}
+
+.prose figure[data-highlight] img {
+  outline: 1px solid var(--highlight-border);
+}
+.prose figure[data-highlight] figcaption {
+  color: var(--foreground);
+  opacity: 1;
+}
+
+@media (min-width: 640px) {
+  .prose .verdict-card {
+    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      "pick pick"
+      "tool reason"
+      "cta reason";
+    align-items: start;
+  }
+  .prose .verdict-pick {
+    grid-area: pick;
+  }
+  .prose .verdict-tool {
+    grid-area: tool;
+  }
+  .prose .verdict-reason {
+    grid-area: reason;
+  }
+  .prose .verdict-cta {
+    grid-area: cta;
+    align-self: start;
+    margin-top: 10px;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .prose .verdict-card:hover {
+    border-color: var(--line-strong);
+  }
+  .prose .verdict-cta:hover {
+    border-color: var(--line-strong);
+    background: var(--secondary);
+  }
+  .prose .verdict-card[data-highlight] .verdict-cta:hover {
+    background: var(--foreground);
+    opacity: 0.9;
+  }
+  .prose .verdict-cta:hover::after {
+    transform: translateX(2px);
+  }
 }
 @media (max-width: 640px) {
   .prose {
-    font-size: 16px;
+    font-size: 17px;
+  }
+  .prose h2 {
+    margin-top: 3em;
+  }
+  .prose .verdict-card {
+    padding: 22px;
   }
 }

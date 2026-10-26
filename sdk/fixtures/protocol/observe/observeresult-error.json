@@ -1,0 +1,12 @@
+{
+  "type": "observeresult",
+  "id": "1c3e5a7b-9d1f-4c3e-8a5b-7d9f1c3e5a7b",
+  "state": "error",
+  "error": {
+    "code": "INVALID_FILTER_PATH",
+    "message": "input.tabel is not in request_format"
+  },
+  "warnings": [
+    "output.total: response_format is open; path not verified"
+  ]
+}

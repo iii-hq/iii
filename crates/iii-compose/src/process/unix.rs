@@ -102,6 +102,7 @@ fn spawn_supervised_inner(
             .stderr(std::process::Stdio::piped());
     }
 
+    super::reaper::ensure();
     let mut child = spawn_retrying_text_file_busy(&mut command)?;
     let output = ChildOutput {
         stdout: child.stdout.take(),
@@ -120,11 +121,13 @@ fn spawn_supervised_inner(
         let _ = tx.send(Some(status.unwrap_or_else(|_| exited_unknown())));
     });
 
+    let birth = birth_identity(pid);
+    super::reaper::announce(pid as i32, &birth);
     Ok((
         Supervised {
             pid,
             pgid: pid as i32,
-            birth: birth_identity(pid),
+            birth,
             exit: ExitSource::Reaped(exit),
         },
         output,
@@ -169,6 +172,7 @@ impl Supervised {
         if !is_same_process(pid, recorded) {
             return None;
         }
+        super::reaper::announce(pid as i32, recorded);
         Some(Supervised {
             pid,
             pgid: pid as i32,
@@ -285,6 +289,15 @@ impl Supervised {
         if group_has_members(self.pgid) {
             signal_group(self.pgid, Signal::SIGKILL);
         }
+    }
+}
+
+/// Holding the handle is owning the group: while it lives, the reaper stops the
+/// group if this process dies without doing so itself. Letting go hands it
+/// back, which is what `abandon` relies on for children of another daemon.
+impl Drop for Supervised {
+    fn drop(&mut self) {
+        super::reaper::withdraw(self.pgid);
     }
 }
 

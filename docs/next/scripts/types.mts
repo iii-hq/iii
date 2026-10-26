@@ -69,6 +69,14 @@ export interface FunctionDoc {
    * actually constructs never appears in the parameter type.
    */
   expandTypes?: string[]
+  /**
+   * Set when the method is deprecated but still part of the client surface
+   * (e.g. `registerTrigger` in 0.25, which bindings to unmigrated providers
+   * still need). Built from the item's own deprecation text (TS `@deprecated`,
+   * rustdoc `#[deprecated(since, note)]`, Python `.. deprecated::`) and
+   * rendered as a callout above the method's description.
+   */
+  deprecated?: { since?: string; note: string }
 }
 
 export interface TypeDoc {
@@ -135,7 +143,19 @@ export interface SdkDoc {
     entryPoint: FunctionDoc
   }
   methods: FunctionDoc[]
+  /**
+   * Free functions exported next to the entry point (e.g. Rust's
+   * `iii_sdk::current_invocation`), rendered in a Functions section after the
+   * methods.
+   */
+  functions?: FunctionDoc[]
   types: TypeDoc[]
+  /**
+   * Deprecated types that are not listed in the Types section but still
+   * expand under the parameters of a deprecated method (e.g. the
+   * `RegisterTriggerInput` fields under `registerTrigger`).
+   */
+  paramOnlyTypes?: TypeDoc[]
   /**
    * Per-subpath grouping of the same types in `types`. When present and
    * non-empty, the Types section renders grouped by subpath; `types` stays

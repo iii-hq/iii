@@ -1,0 +1,12 @@
+{
+  "description": "$nin: deep-equal to no element, or absent",
+  "filters": {"input.op": {"$nin": ["delete", null]}},
+  "cases": [
+    { "doc": {"input": {"op": "delete"}}, "expect": false },
+    { "doc": {"input": {"op": null}}, "expect": false },
+    { "doc": {"input": {"op": "insert"}}, "expect": true },
+    { "doc": {"input": {}}, "expect": true, "note": "absent matches $nin" },
+    { "doc": {}, "expect": true },
+    { "doc": {"input": {"op": ["delete"]}}, "expect": true, "note": "no fan-out" }
+  ]
+}

@@ -17,6 +17,10 @@ iii --config config.yaml
 iii compose --namespace dev --engine ws://127.0.0.1:49134
 ```
 
+`iii compose` without a subcommand starts the Compose daemon. `--namespace` selects its namespace,
+and `--engine` connects it to the existing engine. These options are listed in the generated
+[CLI reference](../cli-reference/index#iii-compose).
+
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
@@ -35,6 +39,12 @@ iii trigger -n dev compose::add worker=http
 The http worker exposes an `http` trigger type that binds a function to an HTTP method and path; the
 function then runs on every matching request. Here is the full path from a running engine to a live
 endpoint.
+
+<Note>
+  `registerTrigger` is deprecated in 0.25, but the http worker still publishes the `http` trigger
+  type, so it remains the way to create endpoints. It logs one warning per process. See [Providers
+  not migrated yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
+</Note>
 
 1. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
    not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
@@ -97,6 +107,7 @@ endpoint.
   <Tab title="Rust">
     ```rust
     use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+    use iii_sdk::runtime::WorkerMetadata;
     use iii_sdk::trigger::IIITrigger;
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
     use schemars::JsonSchema;
@@ -117,6 +128,10 @@ endpoint.
     let worker = register_worker(
         &url,
         InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: "my-worker".into(),
+                ..Default::default()
+            }),
             namespace: Some("orders".into()),
             ..Default::default()
         },
@@ -141,6 +156,9 @@ endpoint.
 
   </Tab>
 </Tabs>
+
+The Rust SDK sets the worker name through `InitOptions.metadata.name`; Node uses `workerName`,
+and Python uses `worker_name`. All three examples register the name `my-worker`.
 
 2. Add the worker to Compose, pointing at its directory:
 

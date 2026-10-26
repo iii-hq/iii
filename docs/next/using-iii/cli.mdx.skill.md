@@ -19,9 +19,13 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | `iii compose` | Run the Compose daemon, start a project with `--up`, download registry packages with `build`, or read worker output with `logs`.                                                  |
 | `iii trigger` | Invoke a registered function on a running engine.                                                                                                                                 |
 | `iii project` | Scaffold projects and generate Docker assets.                                                                                                                                     |
-| `iii console` | Launch the iii web console.                                                                                                                                                       |
+| `iii ps`      | List the iii processes that the current user runs. See [Finding and stopping iii processes](./compose#finding-and-stopping-iii-processes).                                        |
+| `iii kill`    | Stop iii processes by engine port, by Compose project, or every orphan worker. See [Finding and stopping iii processes](./compose#finding-and-stopping-iii-processes).            |
 | `iii cloud`   | Manage hosted iii deployments with the separate `iii-cloud` binary. Run `iii cloud --help` to list its commands. See [iii Cloud deployments](./deployment#iii-cloud-deployments). |
 | `iii update`  | Update iii and its managed support binaries.                                                                                                                                      |
+
+`iii console` was removed: it now only prints a notice. The iii console is ADE, a standalone
+application published in the registry as `ade`; see [Console](./console).
 
 `iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
 [Workers](./workers). The `worker::*` function surface was removed with it.

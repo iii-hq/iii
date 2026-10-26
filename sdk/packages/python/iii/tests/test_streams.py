@@ -330,31 +330,34 @@ async def test_stream_custom_operations(iii_client: III):
     stream_name = f"test-stream-custom-py-{int(time.time())}"
     state: dict[str, Any] = {}
 
-    class InMemoryStream(IStream):
-        async def get(self, input: StreamGetInput) -> Any:
-            return state.get(f"{input.group_id}::{input.item_id}")
+    with pytest.warns(FutureWarning, match=r"IStream is deprecated \(iii-stream\)"):
 
-        async def set(self, input: StreamSetInput) -> StreamSetResult:
-            key = f"{input.group_id}::{input.item_id}"
-            old_value = state.get(key)
-            state[key] = input.data
-            return StreamSetResult(old_value=old_value, new_value=input.data)
+        class InMemoryStream(IStream):
+            async def get(self, input: StreamGetInput) -> Any:
+                return state.get(f"{input.group_id}::{input.item_id}")
 
-        async def delete(self, input: StreamDeleteInput) -> StreamDeleteResult:
-            old = state.pop(f"{input.group_id}::{input.item_id}", None)
-            return StreamDeleteResult(old_value=old)
+            async def set(self, input: StreamSetInput) -> StreamSetResult:
+                key = f"{input.group_id}::{input.item_id}"
+                old_value = state.get(key)
+                state[key] = input.data
+                return StreamSetResult(old_value=old_value, new_value=input.data)
 
-        async def list(self, input: StreamListInput) -> list:
-            prefix = f"{input.group_id}::"
-            return [v for k, v in state.items() if k.startswith(prefix)]
+            async def delete(self, input: StreamDeleteInput) -> StreamDeleteResult:
+                old = state.pop(f"{input.group_id}::{input.item_id}", None)
+                return StreamDeleteResult(old_value=old)
 
-        async def list_groups(self, input: StreamListGroupsInput) -> _list[str]:
-            return list(state.keys())
+            async def list(self, input: StreamListInput) -> list:
+                prefix = f"{input.group_id}::"
+                return [v for k, v in state.items() if k.startswith(prefix)]
 
-        async def update(self, input: StreamUpdateInput) -> StreamUpdateResult | None:
-            raise NotImplementedError
+            async def list_groups(self, input: StreamListGroupsInput) -> _list[str]:
+                return list(state.keys())
 
-    create_stream(iii_client, stream_name, InMemoryStream())
+            async def update(self, input: StreamUpdateInput) -> StreamUpdateResult | None:
+                raise NotImplementedError
+
+    with pytest.warns(FutureWarning, match=r"create_stream is deprecated \(iii-stream\)"):
+        create_stream(iii_client, stream_name, InMemoryStream())
     await asyncio.sleep(1.0)
 
     test_data = {"name": "Test", "value": 100}

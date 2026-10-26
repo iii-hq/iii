@@ -1,0 +1,12 @@
+{
+  "description": "2^53 is the largest integer literal; payload integers above it compare as f64",
+  "filters": {"input.n": {"$eq": 9007199254740992}},
+  "cases": [
+    { "doc": {"input": {"n": 9007199254740992}}, "expect": true },
+    { "doc": {"input": {"n": 9007199254740993}}, "expect": true, "note": "2^53+1 is 2^53 as an f64" },
+    { "doc": {"input": {"n": 9007199254740992.0}}, "expect": true },
+    { "doc": {"input": {"n": 9.007199254740992e15}}, "expect": true },
+    { "doc": {"input": {"n": 9007199254740991}}, "expect": false },
+    { "doc": {"input": {"n": 9007199254740994}}, "expect": false }
+  ]
+}

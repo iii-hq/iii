@@ -1,0 +1,8 @@
+{
+  "description": "filters.md §2.1: object elements",
+  "filters": {"input.returning": {"$any": {"@.status": {"$eq": "paid"}, "@.amount": {"$gte": 500}}}},
+  "cases": [
+    { "doc": {"input": {"returning": [{"status": "paid", "amount": 500}]}}, "expect": true },
+    { "doc": {"input": {"returning": [{"status": "paid", "amount": 499}, {"status": "void", "amount": 900}]}}, "expect": false }
+  ]
+}

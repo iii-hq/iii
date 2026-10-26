@@ -6,7 +6,7 @@ use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
 
-// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
+// Inbound invocation payload exceeds one frame and remains within 64 MiB.
 const JSON_FRAME_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 #[tokio::test]

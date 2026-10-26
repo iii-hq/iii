@@ -26,6 +26,12 @@ pub struct TriggerConfig {
 
 /// Handler trait for custom trigger types. Implement this and pass to
 /// [`IIIClient::register_trigger_type`](crate::IIIClient::register_trigger_type).
+///
+/// **Deprecated since 0.25.0** with `register_trigger_type`: implement
+/// [`ObserveHandler`](crate::ObserveHandler) on an observable function
+/// instead (`on_observer_added` / `on_observer_removed`, with the observer's
+/// args in place of the trigger config). Migration guide:
+/// <https://iii.dev/docs/upgrading/from-0-24-x>.
 // async_trait injects #[must_use] on boxed Future-returning trait methods.
 // Rust 1.99 Clippy now recognizes that Future is already must_use. Keep this
 // compatibility exception on the affected trait, not the crate or its impls.

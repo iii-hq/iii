@@ -1,0 +1,12 @@
+{
+  "description": "identical clauses collapse",
+  "cases": [
+    { "filters": {"$and": [{"input.a": {"$eq": 1}}, {"input.a": {"$eq": 1}}]},
+      "normalized": {"$and": [{"input.a": {"$eq": 1}}]} },
+    { "filters": {"$and": [{"$not": {"input.a": {"$eq": 1}}}, {"$not": {"input.a": {"$eq": 1}}}]},
+      "normalized": {"$and": [{"$not": {"$and": [{"input.a": {"$eq": 1}}]}}]} },
+    { "filters": {"$or": [{"input.a": {"$eq": 1}}, {"input.a": {"$eq": 1}}]},
+      "normalized": {"$and": [{"$or": [{"$and": [{"input.a": {"$eq": 1}}]}, {"$and": [{"input.a": {"$eq": 1}}]}]}]},
+      "note": "$or branches are kept as written" }
+  ]
+}

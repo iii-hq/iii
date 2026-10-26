@@ -1,7 +1,10 @@
 use super::types::{ConnectionState, ReconnectionConfig};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue, Request};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
@@ -24,12 +27,14 @@ pub struct SharedEngineConnection {
 impl SharedEngineConnection {
     /// Create a new shared connection and spawn the connection task
     pub fn new(ws_url: String, config: ReconnectionConfig) -> Self {
-        Self::with_channel_capacity(ws_url, config, 10_000)
+        Self::with_channel_capacity(ws_url, None, config, 10_000)
     }
 
-    /// Create a new shared connection with a custom channel capacity
+    /// Create a new shared connection with handshake `headers` and a custom
+    /// channel capacity. The headers are sent on every (re)connect.
     pub fn with_channel_capacity(
         ws_url: String,
+        headers: Option<HashMap<String, String>>,
         config: ReconnectionConfig,
         channel_capacity: usize,
     ) -> Self {
@@ -48,6 +53,7 @@ impl SharedEngineConnection {
         // Spawn the connection management task
         tokio::spawn(connection_loop(
             ws_url,
+            headers,
             config,
             state,
             rx,
@@ -118,8 +124,27 @@ fn collect_pending(
     }
 }
 
+/// A client handshake request for `url` carrying `headers`. A header whose name
+/// or value is not valid HTTP is skipped.
+fn handshake_request(
+    url: &str,
+    headers: Option<&HashMap<String, String>>,
+) -> Result<Request<()>, tokio_tungstenite::tungstenite::Error> {
+    let mut request = url.into_client_request()?;
+    for (name, value) in headers.into_iter().flatten() {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            request.headers_mut().insert(name, value);
+        }
+    }
+    Ok(request)
+}
+
 async fn connection_loop(
     ws_url: String,
+    headers: Option<HashMap<String, String>>,
     config: ReconnectionConfig,
     state: Arc<RwLock<ConnectionState>>,
     mut rx: mpsc::Receiver<OtelMessage>,
@@ -156,7 +181,7 @@ async fn connection_loop(
 
         // Try to connect, racing against shutdown signal
         let ws_result = tokio::select! {
-            result = connect_async(&ws_url) => result,
+            result = async { connect_async(handshake_request(&ws_url, headers.as_ref())?).await } => result,
             _ = shutdown_rx.recv() => {
                 info!("Shutting down OTEL connection during connect");
                 *state.write().await = ConnectionState::Disconnected;
@@ -300,4 +325,57 @@ where
 
     write.send(Message::Binary(frame.into())).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_hdr_async;
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        Request as ServerRequest, Response as ServerResponse,
+    };
+
+    // tungstenite's handshake callback is forced to return its large error type.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn handshake_carries_the_headers_on_connect_and_on_every_reconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let seen_tx = seen_tx.clone();
+                // Record the handshake's Authorization, then drop the socket to force a reconnect.
+                let record = move |req: &ServerRequest, resp: ServerResponse| {
+                    let _ = seen_tx.send(req.headers().get("authorization").cloned());
+                    Ok(resp)
+                };
+                let _ = accept_hdr_async(socket, record).await;
+            }
+        });
+
+        let headers = HashMap::from([("Authorization".to_string(), "Bearer secret".to_string())]);
+        let reconnection = ReconnectionConfig {
+            initial_delay_ms: 1,
+            jitter_factor: 0.0,
+            ..Default::default()
+        };
+        let connection = SharedEngineConnection::with_channel_capacity(
+            format!("ws://{addr}/otel"),
+            Some(headers),
+            reconnection,
+            8,
+        );
+
+        for _ in 0..2 {
+            let seen = tokio::time::timeout(Duration::from_secs(5), seen_rx.recv())
+                .await
+                .expect("no handshake within 5s")
+                .expect("recorder stopped");
+            assert_eq!(seen.unwrap(), "Bearer secret");
+        }
+        connection.shutdown().await;
+    }
 }

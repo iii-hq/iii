@@ -43,7 +43,7 @@ registerWorker(address: string, options?: InitOptions) => ISdk
       Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`.
     </ParamField>
     <ParamField body="namespace" type="string">
-      Namespace this worker registers under. When omitted the engine applies its `default` namespace. Scopes worker and function registrations so identically-named entries can coexist across namespaces. The browser has no `process.env`, so there is no environment-variable fallback -- pass the option explicitly.
+      Namespace this worker registers under. When omitted the engine applies its `default` namespace. Scopes worker and function registrations so identically-named entries can coexist across namespaces. The browser has no `process.env`, so there is no environment-variable fallback: pass the option explicitly.
     </ParamField>
     <ParamField body="reconnectionConfig" type="Partial<IIIReconnectionConfig>">
       WebSocket reconnection behavior.
@@ -71,6 +71,10 @@ const worker = registerWorker('ws://localhost:49135')
 ## Methods
 
 ### registerTrigger
+
+<Warning>
+  **Deprecated.** Use ISdk.observe instead: `iii.observe({ function_id, args, filters }, target, { metadata })`. Logs a warning once per page. The http, cron, queue, state, stream, pubsub and database workers still publish trigger types: keep using `registerTrigger` for them until they ship source functions. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
+</Warning>
 
 Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
 
@@ -152,7 +156,13 @@ registerFunction(functionId: string, handler: RemoteFunctionHandler, options?: R
     <ParamField body="description" type="string">
       The description of the function
     </ParamField>
+    <ParamField body="localDispatch" type="boolean">
+      Calls this worker makes to its own function run in-process once the engine confirmed it (default `true`). Set `false` for a handler that must always run through the engine.
+    </ParamField>
     <ParamField body="metadata" type="Record<string, unknown>">
+    </ParamField>
+    <ParamField body="observe" type="ObserveHooks">
+      Makes the function observable on its own terms: owner delivery (`delivery: 'owner'`, `args_format`), and callbacks when an observer is added or removed. Without it the function is still observable (auto delivery, no args).
     </ParamField>
     <ParamField body="request_format" type="RegisterFunctionFormat">
       The request format of the function
@@ -205,8 +215,17 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
     <ParamField body="action" type="TriggerAction">
       Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`).
     </ParamField>
+    <ParamField body="baggage" type="string">
+      W3C `baggage` to send along with `traceparent`; defaults the same way.
+    </ParamField>
+    <ParamField body="dispatch" type="'auto' | 'remote'">
+      `auto` (default) runs a function this worker hosts in-process when the engine confirmed it for local dispatch; `remote` always goes through the engine. Tests use it, and so do callers that rely on engine-side effects.
+    </ParamField>
     <ParamField body="function_id" type="string" required>
       ID of the function to invoke.
+    </ParamField>
+    <ParamField body="metadata" type="unknown">
+      Per-invocation metadata (any JSON). Travels beside the payload: the handler receives it as its second argument, and observer filters read it as `metadata.*`.
     </ParamField>
     <ParamField body="namespace" type="string">
       Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker.
@@ -216,6 +235,9 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
     </ParamField>
     <ParamField body="timeoutMs" type="number">
       Override the default invocation timeout, in milliseconds.
+    </ParamField>
+    <ParamField body="traceparent" type="string">
+      W3C `traceparent` to continue. The browser SDK has no OpenTelemetry, so it never makes one up: when omitted, a call made inside a handler forwards the `traceparent` that handler was invoked with (see ISdk.currentInvocation); a top-level call sends none and the engine starts the trace.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -256,6 +278,10 @@ const receipt = await worker.trigger({
 ---
 
 ### registerTriggerType
+
+<Warning>
+  **Deprecated.** Register a function with an observe descriptor instead: `registerFunction(id, handler, { observe: { delivery: 'owner', onObserverAdded, onObserverRemoved } })`. Logs a warning once per page. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
+</Warning>
 
 Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
 
@@ -323,6 +349,10 @@ worker.registerTriggerType<CronConfig>(
 ---
 
 ### unregisterTriggerType
+
+<Warning>
+  **Deprecated.** Trigger types are replaced by functions with an observe descriptor.
+</Warning>
 
 Unregisters a trigger type.
 
@@ -400,6 +430,55 @@ unsub()
 
 ---
 
+### currentInvocation
+
+The invocation the calling code runs in (remote or local handler), or
+`undefined` outside any handler.
+
+Browsers have no `AsyncLocalStorage`: the SDK knows the invocation while
+the handler runs synchronously, up to its first `await`; after it this
+returns `undefined`. Read it before awaiting, and re-enter it with
+ISdk.withInvocation for calls made after.
+
+Code after an `await`, outside ISdk.withInvocation, runs outside any
+invocation, but its calls are not treated as new chains: they carry the
+`observe_depth` of the deepest invocation running on this page, so the
+engine's loop guard (`max_observe_depth`) still stops an observer cycle
+whose target awaits before calling back. With several invocations
+running this over-counts, and a legitimate chain may stop early. They
+carry a `caller` and `traceparent` only when that is unambiguous (one
+invocation is running, and it is an observe activation); otherwise none.
+They never get an invocation's metadata: `obs.emit` / `obs.call` filters
+on `metadata.*` see it only inside a real scope. An invocation that never
+settles stops counting as running after 10 minutes (a local call: at its
+timeout). Local calls nest the same way: a self-recursion that awaits
+before each call goes through the engine past 64 levels, while calls
+started together count as one level. A limitation: local calls started in
+separate ticks while earlier ones still run also look nested, so a long,
+wide fan-out may send some through the engine (same results). While the
+socket is closed none is: a function this worker hosts then runs here up
+to 256 local calls deep, and past that the call fails at once with
+`LOCAL_DEPTH_EXCEEDED` (a runaway recursion must not freeze the page).
+
+**Signature**
+
+```typescript
+currentInvocation() => InvocationContext | undefined
+```
+
+#### Example
+
+```typescript
+worker.registerFunction('ui::checkout', async (cart) => {
+  const inv = worker.currentInvocation() // { function_id, invocation_id, caller, observe_depth, ... }
+  const quote = await fetchQuote(cart)
+  return worker.withInvocation(inv, () => worker.trigger({ function_id: 'orders::create', payload: quote }))
+})
+```
+
+
+---
+
 ### getFatalError
 
 The fatal registration rejection that terminated this connection, if any
@@ -411,6 +490,97 @@ Node/Python/Rust SDKs.
 ```typescript
 getFatalError() => RegistrationRejectedError | undefined
 ```
+
+---
+
+### observe
+
+Observes a function: every event of `source` that passes its `filters`
+invokes `target`, a registered function. Returns synchronously (also
+before the connection is up); the observer is replayed with the same id
+on reconnect. Errors show up as state `error` and reject `ready()`;
+against an engine without observe that is `UNSUPPORTED`.
+
+**Signature**
+
+```typescript
+observe(source: ObserveSource, target: Target, options?: ObserverOptions) => ObserverHandle
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="source" type="ObserveSource" required>
+  What is observed: `function_id`, `args` (owner-delivered functions only), `filters`, `on`, `capture`, `deliver`.
+
+  <Expandable title="`ObserveSource` fields">
+    <ParamField body="args" type="Record<string, unknown>">
+      Owner-delivered functions only: for the owner; validated against its `args_format`.
+    </ParamField>
+    <ParamField body="capture" type="Capture[]">
+      Auto and `obs.emit`; default `['input', 'output', 'caller']`.
+    </ParamField>
+    <ParamField body="deliver" type="'input' | 'output' | 'envelope'">
+      Auto and `obs.emit`; default `'envelope'`.
+    </ParamField>
+    <ParamField body="filters" type="Filter">
+      Which events reach the target; `{}` (or absent) = every event.
+    </ParamField>
+    <ParamField body="function_id" type="string" required>
+      The observed function.
+    </ParamField>
+    <ParamField body="namespace" type="string">
+      Defaults to this worker's namespace (`engine::*` resolves to `default`).
+    </ParamField>
+    <ParamField body="on" type="'error' | 'success' | 'complete'">
+      Auto only; default `'success'`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="target" type="Target" required>
+  The function to invoke.
+</ParamField>
+
+<ParamField body="options" type="ObserverOptions">
+  `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
+
+  <Expandable title="`ObserverOptions` fields">
+    <ParamField body="expires_in_ms" type="number">
+      The observer is disposed this many milliseconds after it is created (`EXPIRED`). Default: never.
+    </ParamField>
+    <ParamField body="id" type="string">
+      Default: a random UUID, stable across replays.
+    </ParamField>
+    <ParamField body="max_fires" type="number">
+      The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited.
+    </ParamField>
+    <ParamField body="max_in_flight" type="number">
+      Activations running at once; further ones queue, then drop as `OVERFLOW`. Default: the engine's `observers.default_max_in_flight` (64).
+    </ParamField>
+    <ParamField body="metadata" type="Record<string, unknown>">
+      Delivered as the metadata sidecar of every activation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+worker.registerFunction('ui::order-shipped', async ({ input }: Observed) => toast(input))
+
+const shipped = worker.observe(
+  { function_id: 'orders::ship', filters: { 'input.customer_id': { $eq: customerId } } },
+  'ui::order-shipped',
+)
+await shipped.ready()
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -431,13 +601,80 @@ await worker.shutdown()
 ```
 
 
+---
+
+### withInvocation
+
+Runs `fn` inside `invocation` (what ISdk.currentInvocation
+returned), and returns what `fn` returns. Calls `fn` makes before its own
+first `await` (`trigger`, `obs.emit`, `obs.call`, `currentInvocation`)
+belong to that invocation: they carry its caller, `observe_depth` and
+`traceparent`. When `fn` returns a promise, the invocation counts as
+running until it settles, so `fn`'s code after an `await` gets the
+fallback below. `undefined` runs `fn` outside any invocation.
+
+Code after an `await`, outside `withInvocation`, runs outside any
+invocation, but its calls are not treated as new chains: they carry the
+`observe_depth` of the deepest invocation running on this page, so the
+engine's loop guard (`max_observe_depth`) still stops an observer cycle
+whose target awaits before calling back. With several invocations
+running this over-counts, and a legitimate chain may stop early. They
+carry a `caller` and `traceparent` only when that is unambiguous (one
+invocation is running, and it is an observe activation); otherwise none.
+They never get an invocation's metadata: `obs.emit` / `obs.call` filters
+on `metadata.*` see it only inside a real scope. An invocation that never
+settles stops counting as running after 10 minutes (a local call: at its
+timeout). Local calls nest the same way: a self-recursion that awaits
+before each call goes through the engine past 64 levels, while calls
+started together count as one level. A limitation: local calls started in
+separate ticks while earlier ones still run also look nested, so a long,
+wide fan-out may send some through the engine (same results). While the
+socket is closed none is: a function this worker hosts then runs here up
+to 256 local calls deep, and past that the call fails at once with
+`LOCAL_DEPTH_EXCEEDED` (a runaway recursion must not freeze the page).
+
+**Signature**
+
+```typescript
+withInvocation(invocation: InvocationContext | undefined, fn: () => T) => T
+```
+
+#### Parameters
+
+<ParamField body="invocation" type="InvocationContext | undefined">
+
+  <Expandable title="`InvocationContext` fields">
+    <ParamField body="activation" type="{ activation_id?: string; observer_id: string }">
+      Set when this invocation is the activation of an observer's target.
+    </ParamField>
+    <ParamField body="baggage" type="string">
+      The W3C `baggage` that came with `traceparent`.
+    </ParamField>
+    <ParamField body="caller" type="CallerInfo">
+    </ParamField>
+    <ParamField body="function_id" type="string" required>
+    </ParamField>
+    <ParamField body="invocation_id" type="string" required>
+    </ParamField>
+    <ParamField body="observe_depth" type="number" required>
+    </ParamField>
+    <ParamField body="traceparent" type="string">
+      The W3C `traceparent` the invocation arrived with (or was triggered with, for a local call). Calls made inside the handler forward it. Browser SDK only: there is no OpenTelemetry context to carry it.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="fn" type="() => T" required>
+</ParamField>
+
+
 ## Subpath Exports
 
 The `iii-browser-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `MessageType`, `MiddlewareFunctionInput`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult`, `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerAction`, `TriggerConfig`, `TriggerHandler`, `TriggerRequest`, `TriggerTypeRef`, `registerWorker` |
+| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Caller`, `CallerInfo`, `Capture`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, `Filter`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `InvocationContext`, `InvocationError`, `InvocationErrorInit`, `MessageType`, `MiddlewareFunctionInput`, `ObserveDescriptorWire`, `ObserveDoc`, `ObserveHooks`, `ObserveReason`, `ObserveRejection`, `ObserveSource`, `Observed`, `Observer`, `ObserverHandle`, `ObserverOptions`, `ObserverState`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult`, `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`, `OpenEnum`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `RemoteFunctionHandler`, `StreamChannelRef`, `Target`, `TriggerAction`, `TriggerRequest`, `registerWorker` |
 | `iii-browser-sdk/state` | `DeleteResult`, `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
 | `iii-browser-sdk/stream` | `DeleteResult`, `IStream`, `MergePath`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamContext`, `StreamDeleteInput`, `StreamGetInput`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamListGroupsInput`, `StreamListInput`, `StreamSetInput`, `StreamSetResult`, `StreamTriggerConfig`, `StreamUpdateInput`, `StreamUpdateResult`, `UpdateAppend`, `UpdateDecrement`, `UpdateIncrement`, `UpdateMerge`, `UpdateOp`, `UpdateOpError`, `UpdateRemove`, `UpdateSet` |
 
@@ -445,7 +682,7 @@ The `iii-browser-sdk` package provides additional entry points:
 
 ### iii-browser-sdk
 
-[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers) · [`EnqueueResult`](#enqueueresult) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerAction`](#triggeraction) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef)
+[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Caller`](#caller) · [`CallerInfo`](#callerinfo) · [`Capture`](#capture) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers) · [`EnqueueResult`](#enqueueresult) · [`Filter`](#filter) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`InvocationContext`](#invocationcontext) · [`InvocationError`](#invocationerror) · [`InvocationErrorInit`](#invocationerrorinit) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`ObserveDescriptorWire`](#observedescriptorwire) · [`ObserveDoc`](#observedoc) · [`ObserveHooks`](#observehooks) · [`Observer`](#observer) · [`ObserveReason`](#observereason) · [`ObserveRejection`](#observerejection) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverState`](#observerstate) · [`ObserveSource`](#observesource) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`OpenEnum`](#openenum) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Target`](#target) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest)
 
 #### ApiRequest
 
@@ -503,6 +740,42 @@ middleware.
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
 | `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit to scope nothing: the session declares any<br />namespace, and only `allowed_functions` and `expose_functions` apply. |
+
+---
+
+#### Caller
+
+Who started an invocation: the worker (`worker_id` / `worker_name`, stamped
+by the engine), and the function and invocation the call was made from.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `string` | No | The handler the call was made from; absent for top-level calls. |
+| `invocation_id` | `string` | No | - |
+| `parent` | Omit&lt;[`Caller`](#caller), "parent"&gt; | No | The caller of that handler, one level only. |
+| `worker_id` | `string` | No | Absent on activations, whose caller is the engine (`worker_name: 'iii-engine'`). |
+| `worker_name` | `string` | No | - |
+
+---
+
+#### CallerInfo
+
+A caller as the SDK knows it: every field may be missing (a top-level call
+has no function; a call made before `WorkerRegistered` has no worker id).
+
+```typescript
+type CallerInfo = Partial<Omit<Caller, "parent">> & { parent?: Partial<Omit<Caller, "parent">> }
+```
+
+---
+
+#### Capture
+
+What an observer ships to its target. Default `['input', 'output', 'caller']`.
+
+```typescript
+type Capture = "input" | "output" | "error" | "caller" | "metadata"
+```
 
 ---
 
@@ -576,6 +849,18 @@ Result returned when a function is invoked with `TriggerAction.Enqueue`.
 
 ---
 
+#### Filter
+
+A declarative filter over `input`, `output`, `error`, `caller` and
+`metadata`, with explicit operators only:
+`{ 'input.amount': { $gte: 500 } }`. See the filter language reference.
+
+```typescript
+type Filter = Record<string, unknown>
+```
+
+---
+
 #### FunctionRef
 
 Handle returned by ISdk.registerFunction. Contains the function's
@@ -584,6 +869,8 @@ Handle returned by ISdk.registerFunction. Contains the function's
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `string` | Yes | The unique function identifier. |
+| `isObserved` | `() => boolean` | Yes | Whether any observer is active on this function (one load, for the emit<br />fast path: skip building an event nobody receives). |
+| `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers, as this owner sees them. |
 | `unregister` | `() => void` | Yes | Removes this function from the engine. |
 
 ---
@@ -620,9 +907,63 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `headers` | `Record<string, string>` | No | Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. |
-| `namespace` | `string` | No | Namespace this worker registers under. When omitted the engine applies its<br />`default` namespace. Scopes worker and function registrations so<br />identically-named entries can coexist across namespaces. The browser has no<br />`process.env`, so there is no environment-variable fallback -- pass the<br />option explicitly. |
+| `namespace` | `string` | No | Namespace this worker registers under. When omitted the engine applies its<br />`default` namespace. Scopes worker and function registrations so<br />identically-named entries can coexist across namespaces. The browser has no<br />`process.env`, so there is no environment-variable fallback: pass the<br />option explicitly. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 | `workerName` | `string` | No | Name this worker announces to the engine. Defaults to a unique<br />`browser:<random>` per client: a browser has no pid to disambiguate by, and<br />the engine allows only one live worker per name in a namespace, so two tabs<br />sharing a fixed name would evict each other. |
+
+---
+
+#### InvocationContext
+
+The invocation the current code runs in, in every handler, remote or
+local (`iii.currentInvocation()`).
+
+Browsers have no `AsyncLocalStorage`, so the SDK knows it only while the
+handler runs synchronously: up to its first `await`. To keep it across an
+`await`, read it first and re-enter it with `iii.withInvocation(inv, fn)`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `activation` | `{ activation_id?: string; observer_id: string }` | No | Set when this invocation is the activation of an observer's target. |
+| `baggage` | `string` | No | The W3C `baggage` that came with `traceparent`. |
+| `caller` | [`CallerInfo`](#callerinfo) | No | - |
+| `function_id` | `string` | Yes | - |
+| `invocation_id` | `string` | Yes | - |
+| `observe_depth` | `number` | Yes | - |
+| `traceparent` | `string` | No | The W3C `traceparent` the invocation arrived with (or was triggered with,<br />for a local call). Calls made inside the handler forward it. Browser SDK<br />only: there is no OpenTelemetry context to carry it. |
+
+---
+
+#### InvocationError
+
+An error the SDK raises itself for an invocation, with a machine-readable
+`code`: observe delivery errors (`NOT_OWNER_DELIVERED`,
+`OBSERVER_NOT_ACTIVE`, `FILTERS_NOT_MATCHED`) and an invalid observe
+descriptor (`INVALID_OBSERVE_DESCRIPTOR`). Mirrors the Node SDK.
+
+A call the engine answers with an error still rejects with the engine's
+error body (`{ code, message, stacktrace? }`), as in earlier releases, and
+so does a locally dispatched call whose handler throws: both paths reject
+with the same value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `stacktrace` | `string` | No | - |
+
+---
+
+#### InvocationErrorInit
+
+Fields used to construct an InvocationError.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `message` | `string` | Yes | - |
+| `stacktrace` | `string` | No | - |
 
 ---
 
@@ -630,14 +971,24 @@ Configuration options passed to registerWorker.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `FunctionRegistered` | `"functionregistered"` | Yes | Engine → owner: the `registerfunction` ack, with the function's full observer set. |
 | `InvocationResult` | `"invocationresult"` | Yes | - |
+| `InvocationsObserved` | `"invocationsobserved"` | Yes | Owner → engine: matched local invocations and `obs.emit` events, batched. |
 | `InvokeFunction` | `"invokefunction"` | Yes | - |
+| `LocalInvocationStats` | `"localinvocationstats"` | Yes | Owner → engine: periodic counts of local invocations and report drops. |
+| `Observe` | `"observe"` | Yes | Observing worker → engine: create (or idempotently replay) an observer. |
+| `ObserverAck` | `"observerack"` | Yes | Owner → engine: accept (or reject) an added observer. |
+| `ObserverAdded` | `"observeradded"` | Yes | Engine → owner: one observer attached to a function this connection hosts. |
+| `ObserveResult` | `"observeresult"` | Yes | Engine → observing worker: the reply to `observe` (also on replay). |
+| `ObserverRemoved` | `"observerremoved"` | Yes | Engine → owner: one observer detached. |
+| `ObserverStateChanged` | `"observerstatechanged"` | Yes | Engine → observing worker: an observer's lifecycle transition. |
 | `Reattach` | `"reattach"` | Yes | - |
 | `RegisterFunction` | `"registerfunction"` | Yes | - |
 | `RegisterTrigger` | `"registertrigger"` | Yes | - |
 | `RegisterTriggerType` | `"registertriggertype"` | Yes | - |
 | `RegistrationRejected` | `"registrationrejected"` | Yes | - |
 | `TriggerRegistrationResult` | `"triggerregistrationresult"` | Yes | - |
+| `Unobserve` | `"unobserve"` | Yes | Observing worker → engine: dispose an observer this connection owns. |
 | `UnregisterFunction` | `"unregisterfunction"` | Yes | - |
 | `UnregisterTrigger` | `"unregistertrigger"` | Yes | - |
 | `UnregisterTriggerType` | `"unregistertriggertype"` | Yes | - |
@@ -658,6 +1009,184 @@ call before it reaches the target function.
 | `function_id` | `string` | Yes | ID of the function being invoked. |
 | `namespace` | `string` | No | Target namespace the invoke addressed; forward the call here to stay in the<br />caller's namespace. Absent → the engine's default namespace. |
 | `payload` | `Record<string, unknown>` | Yes | Payload sent by the caller. |
+
+---
+
+#### Observed
+
+What the target of an auto observer (or of `obs.emit`) receives with
+`deliver: 'envelope'` (the default). Fields not in the observer's
+`capture` are absent.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `activation_id` | `string` | Yes | - |
+| `caller` | [`Caller`](#caller) | No | - |
+| `duration_ms` | `number` | Yes | - |
+| `error` | `{ code: string; message: string }` | No | - |
+| `function_id` | `string` | Yes | - |
+| `input` | `I` | No | - |
+| `invocation_id` | `string` | Yes | - |
+| `metadata` | `Record<string, unknown>` | No | - |
+| `namespace` | `string` | Yes | - |
+| `observer_id` | `string` | Yes | - |
+| `output` | `O` | No | - |
+| `started_at_ms` | `number` | Yes | - |
+| `status` | `"error" \| "success"` | Yes | - |
+
+---
+
+#### ObserveDescriptorWire
+
+`RegisterFunction.observe`: the part of the observe hooks that travels. Callbacks never do.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allow` | `boolean` | No | Default `true`; `false` makes every `observe` on it fail with `NOT_OBSERVABLE`. |
+| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Owner only: validates the observers' `args` in the engine (`INVALID_ARGS`). |
+| `delivery` | [`OpenEnum`](#openenum)&lt;"auto" \| "owner"&gt; | No | `auto` (default) or `owner`. |
+| `legacy_trigger_type` | `string` | No | Phase 5 shim: accept old `registertrigger { trigger_type }` for this type. |
+
+---
+
+#### ObserveDoc
+
+The document an observer's filters read (filters.md §1).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `caller` | [`CallerInfo`](#callerinfo) | No | - |
+| `error` | `unknown` | No | - |
+| `input` | `unknown` | No | - |
+| `metadata` | `unknown` | No | - |
+| `output` | `unknown` | No | - |
+
+---
+
+#### ObserveHooks
+
+The `observe` option of `registerFunction`: how the function's observers
+are delivered, and the callbacks that run when one is added or removed.
+
+The callbacks of one function run one at a time, in revision order, with
+one exception: a callback still running after 30 s is treated as failed
+(`OWNER_TIMEOUT`) and the next one starts, so a hung callback cannot stall
+its function forever. It may then overlap with the callbacks after it, and
+if a timed-out `onObserverAdded` completes later, `onObserverRemoved` runs
+for that observer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allow` | `boolean` | No | Default `true`; `false` refuses every observer (`NOT_OBSERVABLE`). |
+| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Owner only: JSON Schema of the observers' `args` (the engine answers `INVALID_ARGS`). |
+| `delivery` | `"auto" \| "owner"` | No | `auto` (default): every invocation is offered to every observer.<br />`owner`: the handler hands each event to the observers it belongs to,<br />with `obs.emit` / `obs.call`. |
+| `legacy_trigger_type` | `string` | No | Accept old `registerTrigger({ type })` calls for this trigger type. |
+| `onObserverAdded` | (obs: [`Observer`](#observer)) =&gt; void \| Promise&lt;void&gt; | No | Runs once per added observer, before the SDK acks it. Throw to reject it<br />(an ObserveRejection sets the code, anything else is<br />`OBSERVE_REJECTED`); after 30 s it is rejected with `OWNER_TIMEOUT`. |
+| `onObserverRemoved` | (obs: [`Observer`](#observer)) =&gt; void \| Promise&lt;void&gt; | No | Runs once per removed observer. Cannot fail: errors are logged. |
+
+---
+
+#### Observer
+
+An observer as the function's owner sees it (`onObserverAdded`,
+`FunctionRef.observers()`): its args, filters, target, capture and `on`.
+Never its metadata, policy or the observing worker.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args` | `Record<string, unknown>` | Yes | The observer's args, validated against `args_format` by the engine. |
+| `capture` | [`Capture`](#capture)[] | Yes | - |
+| `filters` | [`Filter`](#filter) | Yes | The observer's filters, normalized; the SDK applies them in `emit` / `call`. |
+| `function_id` | `string` | Yes | The observed function (the one this worker hosts). |
+| `id` | `string` | Yes | - |
+| `legacy` | `{ config: unknown; trigger_type: string }` | No | Set when the engine's legacy shim created the observer from an old `registerTrigger`. |
+| `on` | `"error" \| "success" \| "complete"` | Yes | Auto only. |
+| `target` | `string` | Yes | The target function id. |
+| `call` | `(payload: unknown, opts?: { metadata?: undefined; timeoutMs?: number }) => Promise<R>` | Yes | Owner delivery, request/response: invokes the target with `payload` and<br />resolves with its result. Rejects with `FILTERS_NOT_MATCHED` (nothing is<br />sent) when the filters reject the payload, and with `OBSERVER_NOT_ACTIVE`<br />when the observer is no longer active. |
+| `emit` | `(event: unknown) => boolean` | Yes | Owner delivery, fire-and-forget: hands `event` to this observer. Returns<br />`false` and sends nothing when its filters reject the event or the<br />observer is no longer active (removed or rejected meanwhile). Throws<br />`NOT_OWNER_DELIVERED` on an auto function. |
+| `matches` | (doc: [`ObserveDoc`](#observedoc)) =&gt; boolean | Yes | Evaluates the observer's filters on a document. |
+| `reject` | `(code: string, message: string) => void` | Yes | Late rejection of an active observer (e.g. after a config reload). It<br />stops receiving events at once, and stays rejected across reconnects<br />until the engine adds it again. |
+
+---
+
+#### ObserveReason
+
+A state reason or an error: a machine-readable code and a message.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `message` | `string` | Yes | - |
+
+---
+
+#### ObserveRejection
+
+Thrown by an `onObserverAdded` hook to reject an observer with a code of
+its own (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...); any other
+error rejects it with `OBSERVE_REJECTED`. Also the error `ObserverHandle.ready()`
+rejects with when the observer turns `error` or `disposed`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+
+---
+
+#### ObserverHandle
+
+What `iii.observe` returns, synchronously.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | Yes | - |
+| `reason` | [`ObserveReason`](#observereason) | No | Why the observer is in its state (`error`, `suspended`, `disposed`). |
+| `state` | [`ObserverState`](#observerstate) | Yes | - |
+| `dispose` | `() => Promise<void>` | Yes | Removes the observer (`unobserve`). It is not replayed on reconnect. |
+| `onStateChange` | (listener: (state: [`ObserverState`](#observerstate), reason?: [`ObserveReason`](#observereason)) =&gt; void) =&gt; () =&gt; void | Yes | Calls `listener` on every state change, in order; returns the<br />unsubscribe function. Listeners are called asynchronously (never on the<br />connection's read path), so they may call the client. |
+| `ready` | `() => Promise<void>` | Yes | Resolves when the observer is `active`; rejects with an<br />ObserveRejection carrying the code when it turns `error` or<br />`disposed` first. |
+
+---
+
+#### ObserverOptions
+
+The observer itself: its id, policy and metadata.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expires_in_ms` | `number` | No | The observer is disposed this many milliseconds after it is created (`EXPIRED`). Default: never. |
+| `id` | `string` | No | Default: a random UUID, stable across replays. |
+| `max_fires` | `number` | No | The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited. |
+| `max_in_flight` | `number` | No | Activations running at once; further ones queue, then drop as `OVERFLOW`.<br />Default: the engine's `observers.default_max_in_flight` (64). |
+| `metadata` | `Record<string, unknown>` | No | Delivered as the metadata sidecar of every activation. |
+
+---
+
+#### ObserverState
+
+An observer's lifecycle: `pending` (no owner yet, waiting for the owner's
+ack, or no target yet) → `active` or `error`; `suspended` while its worker
+or target is away; `disposed` at the end.
+
+```typescript
+type ObserverState = "pending" | "active" | "suspended" | "error" | "disposed"
+```
+
+---
+
+#### ObserveSource
+
+The left side of `iii.observe`: what is observed.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args` | `Record<string, unknown>` | No | Owner-delivered functions only: for the owner; validated against its `args_format`. |
+| `capture` | [`Capture`](#capture)[] | No | Auto and `obs.emit`; default `['input', 'output', 'caller']`. |
+| `deliver` | `"input" \| "output" \| "envelope"` | No | Auto and `obs.emit`; default `'envelope'`. |
+| `filters` | [`Filter`](#filter) | No | Which events reach the target; `{}` (or absent) = every event. |
+| `function_id` | `string` | Yes | The observed function. |
+| `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` resolves to `default`). |
+| `on` | `"error" \| "success" \| "complete"` | No | Auto only; default `'success'`. |
 
 ---
 
@@ -753,6 +1282,17 @@ registration request.
 
 ---
 
+#### OpenEnum
+
+A wire enum that a newer peer may extend: decoders keep a value they do not
+know instead of failing the frame.
+
+```typescript
+type OpenEnum = T | string & object
+```
+
+---
+
 #### RegisterFunctionFormat
 
 | Name | Type | Required | Description |
@@ -778,6 +1318,7 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 | `description` | `string` | No | The description of the function |
 | `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
 | `metadata` | `Record<string, unknown>` | No | - |
+| `observe` | [`ObserveDescriptorWire`](#observedescriptorwire) | No | The observe descriptor: how observers of this function are delivered.<br />Only these four fields travel; the hooks stay in the SDK. |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
 
@@ -791,6 +1332,7 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 | `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
 | `message_type` | [`MessageType`](#messagetype).RegisterFunction | Yes | - |
 | `metadata` | `Record<string, unknown>` | No | - |
+| `observe` | [`ObserveDescriptorWire`](#observedescriptorwire) | No | The observe descriptor: how observers of this function are delivered.<br />Only these four fields travel; the hooks stay in the SDK. |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
 
@@ -798,67 +1340,21 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 #### RegisterFunctionOptions
 
+Options of ISdk.registerFunction: description, request/response
+formats, metadata, and the observe hooks.
+
 ```typescript
-type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id">
+type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id" | "observe"> & { localDispatch?: boolean; observe?: ObserveHooks }
 ```
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `description` | `string` | No | The description of the function |
+| `localDispatch` | `boolean` | No | Calls this worker makes to its own function run in-process once the<br />engine confirmed it (default `true`). Set `false` for a handler that must<br />always run through the engine. |
 | `metadata` | `Record<string, unknown>` | No | - |
+| `observe` | [`ObserveHooks`](#observehooks) | No | Makes the function observable on its own terms: owner delivery<br />(`delivery: 'owner'`, `args_format`), and callbacks when an observer is<br />added or removed. Without it the function is still observable (auto<br />delivery, no args). |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
-
----
-
-#### RegisterTriggerInput
-
-```typescript
-type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
-```
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `unknown` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
-| `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
-| `namespace` | `string` | No | Namespace the trigger's target function resolves in.<br /><br />Omitting it does not bind in the engine's default: `registerTrigger` fills<br />it from this worker's namespace, because the function a trigger names is<br />one this worker registered, and that landed in the worker's namespace. Name<br />another namespace, `default` included, to bind elsewhere. |
-| `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
-
----
-
-#### RegisterTriggerMessage
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `unknown` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
-| `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
-| `id` | `string` | Yes | Unique trigger identifier, generated by the SDK during registration. |
-| `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | Wire discriminator; always `MessageType.RegisterTrigger`. |
-| `namespace` | `string` | No | Namespace the trigger's target function resolves in.<br /><br />Omitting it does not bind in the engine's default: `registerTrigger` fills<br />it from this worker's namespace, because the function a trigger names is<br />one this worker registered, and that landed in the worker's namespace. Name<br />another namespace, `default` included, to bind elsewhere. |
-| `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
-
----
-
-#### RegisterTriggerTypeInput
-
-```typescript
-type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
-```
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | Yes | Human-readable description of what this trigger type does. |
-| `id` | `string` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
-
----
-
-#### RegisterTriggerTypeMessage
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | Yes | Human-readable description of what this trigger type does. |
-| `id` | `string` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
-| `message_type` | [`MessageType`](#messagetype).RegisterTriggerType | Yes | - |
 
 ---
 
@@ -893,10 +1389,11 @@ invocation and exposed via `getFatalError()` when a worker-name collision
 #### RemoteFunctionHandler
 
 Async function handler for a registered function. Receives the invocation
-payload and returns the result.
+payload and its metadata (`TriggerRequest.metadata` of the call, or an
+observer's metadata sidecar on an activation) and returns the result.
 
 ```typescript
-type RemoteFunctionHandler = (data: TInput) => Promise<TOutput>
+type RemoteFunctionHandler = (data: TInput, metadata?: unknown) => Promise<TOutput>
 ```
 
 ---
@@ -914,14 +1411,13 @@ in invocation payloads to pass channel endpoints between workers.
 
 ---
 
-#### Trigger
+#### Target
 
-Handle returned by ISdk.registerTrigger. Use `unregister()` to
-remove the trigger from the engine.
+The right side of `iii.observe`: a registered function.
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `unregister` | `() => void` | Yes | Removes this trigger from the engine. |
+```typescript
+type Target = string | { function_id: string; namespace?: string }
+```
 
 ---
 
@@ -936,32 +1432,6 @@ Factory object that constructs routing actions for ISdk.trigger.
 
 ---
 
-#### TriggerConfig
-
-Configuration passed to a trigger handler when a trigger instance is
-registered or unregistered.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `TConfig` | Yes | Trigger-specific configuration. |
-| `function_id` | `string` | Yes | Function to invoke when the trigger fires. |
-| `id` | `string` | Yes | Trigger instance ID. |
-| `namespace` | `string` | No | Namespace the trigger's target `function_id` resolves in. A provider that<br />stores this config and later fires the target must pass this namespace, or<br />it fires in `default`.<br /><br />Omitted, it is filled in with the registering worker's namespace. A trigger<br />names a function, and a worker's functions land in the worker's namespace,<br />so defaulting anywhere else registers a trigger that resolves nothing. Name<br />another namespace, `default` included, to target one. |
-
----
-
-#### TriggerHandler
-
-Handler interface for custom trigger types. Passed to
-`ISdk.registerTriggerType`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `registerTrigger` | (config: [`TriggerConfig`](#triggerconfig)&lt;TConfig&gt;) =&gt; Promise&lt;void&gt; | Yes | Called when a trigger instance is registered. |
-| `unregisterTrigger` | (config: [`TriggerConfig`](#triggerconfig)&lt;TConfig&gt;) =&gt; Promise&lt;void&gt; | Yes | Called when a trigger instance is unregistered. |
-
----
-
 #### TriggerRequest
 
 Request object passed to ISdk.trigger.
@@ -969,26 +1439,14 @@ Request object passed to ISdk.trigger.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `action` | [`TriggerAction`](#triggeraction) | No | Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`). |
+| `baggage` | `string` | No | W3C `baggage` to send along with `traceparent`; defaults the same way. |
+| `dispatch` | `"auto" \| "remote"` | No | `auto` (default) runs a function this worker hosts in-process when the<br />engine confirmed it for local dispatch; `remote` always goes through the<br />engine. Tests use it, and so do callers that rely on engine-side effects. |
 | `function_id` | `string` | Yes | ID of the function to invoke. |
+| `metadata` | `unknown` | No | Per-invocation metadata (any JSON). Travels beside the payload: the<br />handler receives it as its second argument, and observer filters read it<br />as `metadata.*`. |
 | `namespace` | `string` | No | Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. |
 | `payload` | `TInput` | Yes | Input data passed to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout, in milliseconds. |
-
----
-
-#### TriggerTypeRef
-
-Typed handle returned by ISdk.registerTriggerType.
-
-Provides convenience methods to register triggers and functions scoped
-to this trigger type, so callers don't need to repeat the `type` field.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | `string` | Yes | The trigger type identifier. |
-| `registerFunction` | (functionId: string, handler: [`RemoteFunctionHandler`](#remotefunctionhandler), config: TConfig) =&gt; [`FunctionRef`](#functionref) | Yes | Register a function and immediately bind it to this trigger type. |
-| `registerTrigger` | (functionId: string, config: TConfig) =&gt; [`Trigger`](#trigger) | Yes | Register a trigger bound to this trigger type. |
-| `unregister` | `() => void` | Yes | Unregister this trigger type from the engine. |
+| `traceparent` | `string` | No | W3C `traceparent` to continue. The browser SDK has no OpenTelemetry, so it<br />never makes one up: when omitted, a call made inside a handler forwards<br />the `traceparent` that handler was invoked with (see<br />ISdk.currentInvocation); a top-level call sends none and the engine<br />starts the trace. |
 
 ### iii-browser-sdk/state
 

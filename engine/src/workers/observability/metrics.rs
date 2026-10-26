@@ -260,6 +260,21 @@ pub struct EngineMetrics {
     pub worker_cpu_percent: Gauge<f64>,
     pub worker_event_loop_lag_ms: Gauge<f64>,
     pub worker_uptime_seconds: Gauge<i64>,
+    // Observers (protocol.md §3.6). Per function, not per observer, to bound
+    // cardinality.
+    /// Activations started, by observed `function_id` and `delivery`.
+    pub observer_activations_total: Counter<u64>,
+    /// Events not delivered to an observer, by observed `function_id` and
+    /// drop `reason`.
+    pub observer_dropped_total: Counter<u64>,
+    /// Live observers by `state`.
+    pub observers: Gauge<i64>,
+    /// `invocationsobserved` items accepted, by observed `function_id`.
+    pub observer_reports_total: Counter<u64>,
+    /// Activations that started and did not complete, by observed
+    /// `function_id` and `reason` (`TIMEOUT`, `TARGET_UNAVAILABLE`,
+    /// `TARGET_ERROR`).
+    pub observer_activation_failures_total: Counter<u64>,
 }
 
 impl EngineMetrics {
@@ -331,6 +346,35 @@ impl EngineMetrics {
                 .i64_gauge("iii.worker.uptime.seconds")
                 .with_description("Worker uptime in seconds")
                 .with_unit("s")
+                .build(),
+            observer_activations_total: meter
+                .u64_counter("iii.observer.activations.total")
+                .with_description("Observer activations started, by observed function and delivery")
+                .with_unit("activations")
+                .build(),
+            observer_dropped_total: meter
+                .u64_counter("iii.observer.dropped.total")
+                .with_description(
+                    "Events not delivered to an observer, by observed function and reason",
+                )
+                .with_unit("events")
+                .build(),
+            observers: meter
+                .i64_gauge("iii.observers")
+                .with_description("Live observers by state")
+                .with_unit("observers")
+                .build(),
+            observer_reports_total: meter
+                .u64_counter("iii.observer.reports.total")
+                .with_description("Reported invocations and emits accepted, by observed function")
+                .with_unit("reports")
+                .build(),
+            observer_activation_failures_total: meter
+                .u64_counter("iii.observer.activation.failures.total")
+                .with_description(
+                    "Activations that did not complete, by observed function and reason",
+                )
+                .with_unit("activations")
                 .build(),
         }
     }
@@ -408,10 +452,22 @@ impl MetricsAccumulator {
 
     /// Increment invocation count for a specific function
     pub fn increment_function(&self, function_id: &str) {
+        self.add_function_invocations(function_id, 1);
+    }
+
+    /// Adds `count` invocations of `function_id` at once (local invocations
+    /// an SDK reports in `localinvocationstats`).
+    pub fn add_function_invocations(&self, function_id: &str, count: u64) {
+        if let Some(mut total) = self.invocations_by_function.get_mut(function_id) {
+            *total = total.saturating_add(count);
+            return;
+        }
+
+        // Another invocation may insert the function after the lookup misses.
         self.invocations_by_function
             .entry(function_id.to_string())
-            .and_modify(|count| *count += 1)
-            .or_insert(1);
+            .and_modify(|total| *total = total.saturating_add(count))
+            .or_insert(count);
     }
 }
 
@@ -1104,8 +1160,13 @@ impl TimeIndexedMetricStorage {
     }
 
     pub fn clear(&self) {
-        self.metrics_by_time.write().unwrap().clear();
-        self.metrics_by_name.write().unwrap().clear();
+        // Keep the same time-before-name ordering as every operation that
+        // needs both indexes, and hold both guards while clearing so readers
+        // cannot observe indexes from different generations.
+        let mut by_time = self.metrics_by_time.write().unwrap();
+        let mut by_name = self.metrics_by_name.write().unwrap();
+        by_time.clear();
+        by_name.clear();
         self.total_metrics
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -2025,6 +2086,129 @@ mod tests {
     }
 
     #[test]
+    fn metric_index_operations_hold_time_while_waiting_for_name() {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+        // Hold the second lock to observe acquisition of the first without
+        // relying on a lucky thread interleaving. Pre-#2296 readers block on
+        // name without holding time; the old clear releases time too early.
+        for operation in 0..3 {
+            let storage = Arc::new(InMemoryMetricStorage::new(10, DEFAULT_RETENTION_NS));
+            let name = storage.metrics_by_name.write().unwrap();
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker_storage = storage.clone();
+            let worker = std::thread::spawn(move || {
+                match operation {
+                    0 => {
+                        worker_storage.get_metrics_by_name("requests");
+                    }
+                    1 => {
+                        worker_storage.get_metrics_by_name_in_range("requests", 0, u64::MAX);
+                    }
+                    _ => worker_storage.clear(),
+                }
+                done_tx.send(()).unwrap();
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let holds_time = loop {
+                if storage.metrics_by_time.try_write().is_err() {
+                    break true;
+                }
+                if Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::yield_now();
+            };
+            // Exclude a transient time guard (the old clear only held it
+            // for one statement, then waited for name without it).
+            std::thread::sleep(Duration::from_millis(20));
+            let holds_time = holds_time && storage.metrics_by_time.try_write().is_err();
+            drop(name);
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("index operation completed");
+            worker.join().unwrap();
+            assert!(
+                holds_time,
+                "operation {operation} must hold time while waiting for name"
+            );
+        }
+    }
+
+    #[test]
+    fn metric_storage_concurrent_writes_retention_and_range_reads_complete() {
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        const WRITERS: usize = 2;
+        const READERS: usize = 4;
+        const ITERATIONS: u64 = 20_000;
+
+        let storage = Arc::new(InMemoryMetricStorage::new(64, DEFAULT_RETENTION_NS));
+        let barrier = Arc::new(Barrier::new(WRITERS + READERS + 1));
+        let (done_tx, done_rx) = mpsc::channel();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos() as u64;
+
+        for writer in 0..WRITERS {
+            let storage = storage.clone();
+            let barrier = barrier.clone();
+            let done_tx = done_tx.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..ITERATIONS {
+                    let timestamp = now + i * 1_000_000 + writer as u64;
+                    storage.add_metrics(vec![make_number_metric(
+                        "requests",
+                        "stress-test",
+                        StoredMetricType::Gauge,
+                        &[(i as f64, timestamp)],
+                        vec![],
+                    )]);
+                    if i % 4 == 0 {
+                        storage.apply_retention();
+                    }
+                }
+                let _ = done_tx.send(());
+            });
+        }
+
+        for _ in 0..READERS {
+            let storage = storage.clone();
+            let barrier = barrier.clone();
+            let done_tx = done_tx.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..ITERATIONS {
+                    let _ = storage.get_metrics_by_name_in_range(
+                        "requests",
+                        now,
+                        now + ITERATIONS * 1_000_000,
+                    );
+                }
+                let _ = done_tx.send(());
+            });
+        }
+        drop(done_tx);
+        barrier.wait();
+
+        for completed in 0..WRITERS + READERS {
+            assert!(
+                done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+                "metric storage worker {completed} deadlocked or exceeded the 10s watchdog"
+            );
+        }
+        assert!(
+            storage.len() <= 64,
+            "capacity remains enforced under contention"
+        );
+    }
+
+    #[test]
     fn set_limits_retention_overflow_is_safe() {
         let storage = InMemoryMetricStorage::new(5, DEFAULT_RETENTION_NS);
         // A retention whose ms->ns conversion overflows must not panic; the
@@ -2466,6 +2650,34 @@ mod tests {
         acc.increment_function("myFunc");
 
         assert_eq!(acc.get_function_count("myFunc"), Some(3));
+    }
+
+    #[test]
+    fn test_accumulator_concurrent_first_and_repeated_increments() {
+        const THREADS: usize = 4;
+        const FUNCTIONS: usize = 32;
+        const INCREMENTS: u64 = 64;
+        let acc = MetricsAccumulator::default();
+        let barrier = std::sync::Barrier::new(THREADS);
+
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    for index in 0..FUNCTIONS {
+                        let function_id = format!("concurrent::{index}");
+                        barrier.wait();
+                        for _ in 0..INCREMENTS {
+                            acc.increment_function(&function_id);
+                        }
+                    }
+                });
+            }
+        });
+
+        let expected: std::collections::HashMap<_, _> = (0..FUNCTIONS)
+            .map(|index| (format!("concurrent::{index}"), THREADS as u64 * INCREMENTS))
+            .collect();
+        assert_eq!(acc.get_by_function(), expected);
     }
 
     #[test]

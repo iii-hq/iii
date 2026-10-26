@@ -96,3 +96,28 @@ def _wrap_wire_error(
         function_id=function_id,
         invocation_id=invocation_id,
     )
+
+
+class ObserveRejection(Exception):
+    """Rejects an observer with a code of its own.
+
+    Raise it from an ``on_observer_added`` hook (``HTTP_ROUTE_CONFLICT``,
+    ``INVALID_CRON_EXPRESSION``, ...); any other exception rejects the
+    observer with ``OBSERVE_REJECTED``. Also what ``ObserverHandle.ready()``
+    raises when the observer turns ``error`` or ``disposed``, with the
+    engine's code (``INVALID_ARGS``, ``FORBIDDEN``, ``UNSUPPORTED``, ...).
+
+    Examples:
+        >>> def on_observer_added(obs):
+        ...     if not is_valid_cron(obs.args["expression"]):
+        ...         raise ObserveRejection("INVALID_CRON_EXPRESSION", "invalid day-of-week field")
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        # Both in `args`, so the error pickles (and unpickles) whole.
+        super().__init__(code, message)
+        self.code = code
+        self.message = message
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"

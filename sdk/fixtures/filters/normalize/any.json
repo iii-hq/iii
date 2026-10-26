@@ -1,0 +1,17 @@
+{
+  "description": "$any operands: operator objects keep their form, filters over @ are normalized",
+  "cases": [
+    { "filters": {"input.l": {"$any": {"$lt": 5, "$gt": 1}}},
+      "normalized": {"$and": [{"input.l": {"$any": {"$gt": 1, "$lt": 5}}}]} },
+    { "filters": {"input.l": {"$any": {"@.b": {"$eq": 1}, "@.a": {"$eq": 2}}}},
+      "normalized": {"$and": [{"input.l": {"$any": {"$and": [{"@.a": {"$eq": 2}}, {"@.b": {"$eq": 1}}]}}}]} },
+    { "filters": {"input.l": {"$any": {}}},
+      "normalized": {"$and": [{"input.l": {"$any": {}}}]} },
+    { "filters": {"input.l": {"$any": {"$and": [{}]}}},
+      "normalized": {"$and": [{"input.l": {"$any": {}}}]} },
+    { "filters": {"input.l": {"$any": {"@.m": {"$any": {"@.z": {"$eq": 1}, "@": {"$exists": true}}}}}},
+      "normalized": {"$and": [{"input.l": {"$any": {"$and": [{"@.m": {"$any": {"$and": [{"@": {"$exists": true}}, {"@.z": {"$eq": 1}}]}}}]}}}]} },
+    { "filters": {"input.l": {"$any": {"$any": {"$eq": 0}}}},
+      "normalized": {"$and": [{"input.l": {"$any": {"$any": {"$eq": 0}}}}]} }
+  ]
+}

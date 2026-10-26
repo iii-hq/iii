@@ -4,16 +4,20 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import matter from 'gray-matter'
 import { cache } from 'react'
-import { readingTime } from './markdown'
+import { readingTime, wordCount } from './markdown'
 
 // Posts are markdown files in content/blog (the filename is the URL slug).
 // Images referenced as `../../assets/blog/<slug>/file` are served from
 // `public/blog/<slug>/file`.
 const POSTS_DIR = resolve(process.cwd(), 'content/blog')
 
+export type Faq = { q: string; a: string }
+
 export type Post = {
   slug: string
   title: string
+  /** the `<title>` and share-card title, when it should differ from the heading on the page */
+  seoTitle?: string
   description: string
   /** ISO date */
   date: string
@@ -25,6 +29,10 @@ export type Post = {
   image?: string
   /** minutes */
   readingTime: number
+  /** words in the body, for the article's structured data */
+  wordCount: number
+  /** questions the post answers, emitted as FAQPage structured data */
+  faq: Faq[]
   /** markdown body, frontmatter stripped */
   body: string
 }
@@ -40,6 +48,16 @@ export function publicImage(src: string) {
   return m ? `/blog/${m[1]}` : src
 }
 
+/** The `faq` frontmatter list: each entry needs a non-empty `q` and `a`; anything else is dropped. */
+function readFaq(value: unknown): Faq[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const q = typeof item?.q === 'string' ? item.q.trim() : ''
+    const a = typeof item?.a === 'string' ? item.a.trim() : ''
+    return q && a ? [{ q, a }] : []
+  })
+}
+
 function readPost(file: string): Post | null {
   const raw = readFileSync(join(POSTS_DIR, file), 'utf8')
   const { data, content } = matter(raw)
@@ -48,6 +66,7 @@ function readPost(file: string): Post | null {
   return {
     slug,
     title: String(data.title ?? slug),
+    seoTitle: data.seoTitle ? String(data.seoTitle) : undefined,
     description: smartDashes(String(data.description ?? '')),
     date: toIso(data.pubDate),
     updated: data.updatedDate ? toIso(data.updatedDate) : undefined,
@@ -55,6 +74,8 @@ function readPost(file: string): Post | null {
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     image: data.ogImage ? publicImage(String(data.ogImage)) : undefined,
     readingTime: readingTime(content),
+    wordCount: wordCount(content),
+    faq: readFaq(data.faq),
     body: content,
   }
 }

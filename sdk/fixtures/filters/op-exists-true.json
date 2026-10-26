@@ -1,0 +1,14 @@
+{
+  "description": "$exists true: present, null included",
+  "filters": {"input.a": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"a": 1}}, "expect": true },
+    { "doc": {"input": {"a": null}}, "expect": true, "note": "null is present" },
+    { "doc": {"input": {"a": false}}, "expect": true },
+    { "doc": {"input": {"a": {}}}, "expect": true },
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {}, "expect": false },
+    { "doc": {"input": null}, "expect": false, "note": "stepping into null is absent" },
+    { "doc": {"input": [1]}, "expect": false, "note": "a key on an array is absent" }
+  ]
+}

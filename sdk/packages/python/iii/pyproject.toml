@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-sdk"
-version = "0.24.5"
+version = "0.25.0"
 description = "III SDK for Python"
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
@@ -20,10 +20,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "websockets>=12.0",
+    "websockets>=14.0",
     "pydantic>=2.0",
     "opentelemetry-api>=1.25",
-    "iii-helpers==0.24.5",
+    "iii-helpers==0.25.0",
 ]
 
 [project.urls]

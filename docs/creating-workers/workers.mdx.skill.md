@@ -375,6 +375,14 @@ as they happen. This is particularly useful for continuing work when a Worker co
 | `engine::workers-available`   | A Worker connects or disconnects.         |
 | `engine::functions-available` | A Function is registered or unregistered. |
 
+<Note>
+  From 0.25, observe the engine-hosted sources `engine::on-workers-changed` and
+  `engine::on-functions-changed` instead; the trigger types keep firing. With `deliver: "input"` the
+  target receives the same payload:
+  `worker.observe({ function_id: "engine::on-workers-changed", deliver: "input" }, "discovery::on-workers")`.
+  See [Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
+</Note>
+
 <Accordion title="Example: subscribe to discovery events">
   <Tabs>
     <Tab title="Node / TypeScript">
@@ -456,12 +464,11 @@ as they happen. This is particularly useful for continuing work when a Worker co
               Ok::<_, iii_sdk::Error>(())
           }),
       );
-      worker.register_trigger(RegisterTriggerInput {
-          trigger_type: "engine::workers-available".into(),
-          function_id: "discovery::on-workers".into(),
-          config: json!({}),
-          metadata: None,
-      })?;
+      worker.register_trigger(RegisterTriggerInput::new(
+          "engine::workers-available",
+          "discovery::on-workers",
+          json!({}),
+      ))?;
 
       worker.register_function(
           "discovery::on-functions",
@@ -471,12 +478,11 @@ as they happen. This is particularly useful for continuing work when a Worker co
               Ok::<_, iii_sdk::Error>(())
           }),
       );
-      worker.register_trigger(RegisterTriggerInput {
-          trigger_type: "engine::functions-available".into(),
-          function_id: "discovery::on-functions".into(),
-          config: json!({}),
-          metadata: None,
-      })?;
+      worker.register_trigger(RegisterTriggerInput::new(
+          "engine::functions-available",
+          "discovery::on-functions",
+          json!({}),
+      ))?;
       ```
     </Tab>
 

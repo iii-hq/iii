@@ -24,6 +24,30 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 | `function_not_invokable` | SDK local dispatch | Registration exists but cannot be invoked as a normal local function | Inspect registration/invocation type |
 | `invocation_failed` | SDK worker handler wrappers | Local worker handler, HTTP-invoked function wrapper, or SDK-side handler path failed | Inspect handler logs, stacktrace, and payload validation |
 | `TIMEOUT` | Node/Python SDK caller timeout | Client waited longer than `trigger()` timeout | Increase timeout only if the workload is expected to run long; otherwise optimize or enqueue |
+| `payload_too_large` | SDK | An outgoing message exceeds 16 MiB | Use a channel; a call to a function in the same worker runs in-process (no limit) unless sent with `dispatch: 'remote'` |
+
+## Observer Errors (0.25)
+
+`iii.observe()` never throws for engine-side problems: the handle turns `error` and `ready()`
+rejects with an `ObserveRejection` (Go `*iii.ObserveRejectionError`) carrying the code.
+
+| Code | Meaning | Typical handling |
+| --- | --- | --- |
+| `UNSUPPORTED` | The engine is older than 0.25, or `on` / `capture` / `deliver` has an unknown value | Upgrade the engine or fix the source |
+| `INVALID_ARGS` | `args` fail the function's `args_format`, or args were sent to an auto function | Fix the args; check the source's `observe.args_format` |
+| `INVALID_FILTER` / `INVALID_FILTER_PATH` | The filter is malformed, over a limit, uses literal shorthand, or names a path the function's schema does not have | Use explicit operators (`{ "$eq": v }`); check the path against `request_format` |
+| `NOT_OBSERVABLE` | The function registered `observe.allow: false` | Do not retry |
+| `FORBIDDEN` | RBAC denies the observed function or the target, or the registration hook denied | Fix the policy, not the call |
+| `SELF_TARGET` | The target is the observed function | Use another target |
+| `LIMIT_EXCEEDED` | `observers.max_per_connection` / `max_per_function` reached | Dispose unused observers or raise the limit |
+| `OBSERVER_ID_CONFLICT` | An `id` reused with a different spec | Use a new id |
+| `OWNER_TIMEOUT` / `OBSERVE_REJECTED` / owner codes | The owner's `onObserverAdded` timed out, threw, or rejected with its own code | Read `reason.message`; fix the args |
+
+`obs.call` (owner delivery) fails with `FILTERS_NOT_MATCHED` (nothing sent), `OBSERVER_NOT_ACTIVE`,
+`NOT_OWNER_DELIVERED`, `LOOP_GUARD`, `OVERFLOW`, `TIMEOUT`, or the target's own error. Auto
+activations are fire-and-forget: their failures and drops show up in
+`iii.observer.dropped.total` / `iii.observer.activation.failures.total` and in
+`engine::observers::get`, never in the observed call. See `iii-observe`.
 
 ## Handler vs Engine Errors
 
@@ -93,6 +117,7 @@ Browser trigger calls reject with JavaScript errors. Preserve the engine-provide
 ## Pattern Boundaries
 
 - For invocation modes and enqueue decisions, prefer `iii-core-primitives`.
+- For observer states, filters, and owner hooks, prefer `iii-observe`.
 - For SDK-specific exception classes and syntax, prefer `iii-sdk-reference`.
 - For workflow-level retry and DLQ design, prefer `iii-architecture-patterns`.
 - For RBAC policy design see the [rbac-proxy worker](https://workers.iii.dev/workers/rbac-proxy); for logs and traces around worker failures, use the matching worker page on https://workers.iii.dev/.

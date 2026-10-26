@@ -1,0 +1,17 @@
+{
+  "description": "clauses sort by key (byte order), then by the compact JSON of their operand",
+  "cases": [
+    { "filters": {"input.aa": {"$eq": 1}, "input.a_b": {"$eq": 1}, "input.a.b": {"$eq": 1}, "input.a": {"$eq": 1}},
+      "normalized": {"$and": [{"input.a": {"$eq": 1}}, {"input.a.b": {"$eq": 1}}, {"input.a_b": {"$eq": 1}}, {"input.aa": {"$eq": 1}}]} },
+    { "filters": {"output.x": {"$eq": 1}, "input.x": {"$eq": 1}, "caller.x": {"$eq": 1}, "error": {"$exists": true}, "metadata.x": {"$eq": 1}},
+      "normalized": {"$and": [{"caller.x": {"$eq": 1}}, {"error": {"$exists": true}}, {"input.x": {"$eq": 1}}, {"metadata.x": {"$eq": 1}}, {"output.x": {"$eq": 1}}]} },
+    { "filters": {"input.B": {"$eq": 1}, "input.a": {"$eq": 1}, "input.é": {"$eq": 1}, "input.z": {"$eq": 1}},
+      "normalized": {"$and": [{"input.B": {"$eq": 1}}, {"input.a": {"$eq": 1}}, {"input.z": {"$eq": 1}}, {"input.é": {"$eq": 1}}]} },
+    { "filters": {"input.a": {"$eq": 1}, "$or": [{"input.b": {"$eq": 1}}], "$not": {"input.c": {"$eq": 1}}},
+      "normalized": {"$and": [{"$not": {"$and": [{"input.c": {"$eq": 1}}]}}, {"$or": [{"$and": [{"input.b": {"$eq": 1}}]}]}, {"input.a": {"$eq": 1}}]},
+      "note": "$not and $or sort before paths ('$' < letters)" },
+    { "filters": {"$and": [{"input.a": {"$eq": "b"}}, {"input.a": {"$eq": "a"}}, {"input.a": {"$eq": 10}}, {"input.a": {"$eq": 9}}]},
+      "normalized": {"$and": [{"input.a": {"$eq": "a"}}, {"input.a": {"$eq": "b"}}, {"input.a": {"$eq": 10}}, {"input.a": {"$eq": 9}}]},
+      "note": "ties broken by operand JSON text: {\"$eq\":\"a\"} < {\"$eq\":\"b\"} < {\"$eq\":10} < {\"$eq\":9}" }
+  ]
+}

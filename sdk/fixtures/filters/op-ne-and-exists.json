@@ -1,0 +1,9 @@
+{
+  "description": "$ne null with $exists true: present and not null",
+  "filters": {"input.v": {"$ne": null, "$exists": true}},
+  "cases": [
+    { "doc": {"input": {}}, "expect": false },
+    { "doc": {"input": {"v": null}}, "expect": false },
+    { "doc": {"input": {"v": 0}}, "expect": true }
+  ]
+}

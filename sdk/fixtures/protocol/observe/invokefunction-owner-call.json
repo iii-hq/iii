@@ -1,0 +1,25 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "e7c9a1b3-d5f7-4a9b-8d1f-3b5d7f9a1c3e",
+  "function_id": "users::get",
+  "data": {
+    "method": "GET",
+    "route": "/users/:id",
+    "path": "/users/42",
+    "path_params": {
+      "id": "42"
+    },
+    "query_params": {},
+    "headers": {
+      "x-tenant": "acme"
+    }
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "caller": {
+    "function_id": "http::on-request",
+    "invocation_id": "9b1d3f5a-7c9e-4b1d-8f3a-5c7e9b1d3f5a"
+  },
+  "activation": {
+    "observer_id": "4f2a9b1c-7d3e-4f6a-8b5c-2e1d0f9a8b7c"
+  }
+}

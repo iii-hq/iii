@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/helpers",
-  "version": "0.24.5",
+  "version": "0.25.0",
   "private": false,
   "publishConfig": { "access": "public" },
   "type": "module",
@@ -58,10 +58,10 @@
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "tsdown": "^0.21.4",
     "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

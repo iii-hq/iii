@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       bin_name:
-        description: 'Binary name (e.g., iii, iii-console)'
+        description: 'Binary name (e.g., iii, iii-worker)'
         required: true
         type: string
       formula_class:
-        description: 'Ruby class name for the formula (e.g., Iii, IiiConsole)'
+        description: 'Ruby class name for the formula (e.g., Iii, IiiWorker)'
         required: true
         type: string
       formula_path:

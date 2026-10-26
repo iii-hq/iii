@@ -1,0 +1,14 @@
+{
+  "description": "$any with an operator object over scalar elements",
+  "filters": {"input.tags": {"$any": {"$eq": "vip"}}},
+  "cases": [
+    { "doc": {"input": {"tags": ["a", "vip"]}}, "expect": true },
+    { "doc": {"input": {"tags": ["a"]}}, "expect": false },
+    { "doc": {"input": {"tags": []}}, "expect": false },
+    { "doc": {"input": {"tags": "vip"}}, "expect": false, "note": "not an array" },
+    { "doc": {"input": {}}, "expect": false, "note": "absent" },
+    { "doc": {"input": {"tags": null}}, "expect": false },
+    { "doc": {"input": {"tags": [["vip"]]}}, "expect": false, "note": "no recursion into nested arrays" },
+    { "doc": {"input": {"tags": {"0": "vip"}}}, "expect": false, "note": "an object is not an array" }
+  ]
+}

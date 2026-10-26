@@ -11,7 +11,7 @@ cargo build --release            # Rust workspace
 
 # Build
 pnpm build                       # all JS/TS packages (Turborepo)
-cargo build --release             # engine + Rust SDK + console
+cargo build --release             # engine + Rust SDK
 
 # Test
 pnpm test                        # all JS/TS tests
@@ -29,7 +29,6 @@ cargo clippy --workspace          # lint Rust
 
 # Run
 cargo run --release               # start engine (reads engine/config.yaml)
-pnpm dev:console                  # console frontend dev server
 pnpm dev:docs                     # docs dev server (Mintlify)
 pnpm dev:website                  # website dev server
 
@@ -48,8 +47,7 @@ sdk/packages/node/iii/           TypeScript SDK (npm: iii-sdk)
 sdk/packages/node/iii-browser/   Browser SDK (npm: iii-browser-sdk)
 sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
 sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
-console/                         Developer console (React + Rust)
-skills/                          26 agent skills (auto-discovered by SkillKit)
+skills/                          8 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website
 website/presentations/           Tech-spec presentations site (iii.dev/tech-specs/) — SOP in its README
@@ -109,12 +107,16 @@ scripts/                         Build and CI scripts
 
 ## Code Style
 
+`registerTrigger` / `register_trigger` and `registerTriggerType` are deprecated since 0.25 (they
+still work, and remain the way to bind the http, cron, queue, state, stream, pubsub, and database
+workers); observe functions and engine events with `iii.observe(source, target)`.
+
 **Rust (engine + SDK):**
 ```rust
 // Function IDs use :: separator
 iii.register_function(
-    RegisterFunction::new("orders::validate", validate_order)
-        .description("Validate an incoming order"),
+    "orders::validate",
+    RegisterFunction::new(validate_order).description("Validate an incoming order"),
 );
 
 // HTTP triggers use leading slash
@@ -127,6 +129,12 @@ iii.register_trigger(
 iii.register_trigger(
     IIITrigger::Cron(CronTriggerConfig::new("0 0 9 * * * *"))
         .for_function("reports::daily-summary"),
+);
+
+// Observe a function: filters use explicit operators; the target is a registered function
+iii.observe(
+    Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
+    "alerts::big-order",
 );
 ```
 
@@ -164,6 +172,13 @@ iii.registerTrigger({
   config: { expression: '0 0 9 * * * *' },
   metadata: { owner: 'billing-team', priority: 'high' },
 });
+
+// Observe a function (or an engine event such as engine::on-functions-changed)
+iii.observe(
+  { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
+  'alerts::big-order',
+  { metadata: { owner: 'billing-team' } },
+);
 ```
 
 **Python (SDK):**
@@ -174,11 +189,17 @@ iii.register_trigger({
     "function_id": "orders::validate",
     "config": {"api_path": "/orders/validate", "http_method": "POST"},
 })
+
+# Observe a function
+iii.observe(
+    {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
+    "alerts::big-order",
+)
 ```
 
 ## Skills
 
-The `skills/` directory contains 26 agent skills (iii-prefixed) auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`. Reference implementations live in `skills/references/` with TypeScript, Python, and Rust variants.
+The `skills/` directory contains 8 agent skills auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`: 7 iii-prefixed knowledge skills (catalog in `skills/SKILLS.md`) and the `presentation` tool skill. Code examples live in each `SKILL.md`, in TypeScript, Python, Rust, and Go where the concept is language-specific.
 
 ## Blog (agent knowledge base)
 

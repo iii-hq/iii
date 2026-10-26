@@ -4,18 +4,19 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    extract::ws::{Message as WsMessage, WebSocket},
+    extract::ws::WebSocket,
     http::{HeaderMap, Uri},
 };
 use chrono::Utc;
 use dashmap::DashMap;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
@@ -38,7 +39,13 @@ use crate::{
     workers::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsWorker,
-        worker::{WorkerManagerConfig, channels::ChannelManager, rbac_session},
+        worker::{
+            WorkerManagerConfig,
+            channels::ChannelManager,
+            inbound::{Inbound, Oversized},
+            rbac_session,
+            worker_socket::{WorkerSocket, send_json},
+        },
     },
 };
 
@@ -147,6 +154,12 @@ fn blank_namespace_message(field: &str) -> String {
 /// keeps an earlier-arrived `RegisterFunction` visible when the trigger's RBAC
 /// gate resolves its target: draining in order means the function this trigger
 /// exposes is already in the registry by the time the gate inspects it.
+///
+/// `UnregisterTriggerType` resolves its provider key from the connection's
+/// namespace, and must not overtake the `RegisterTriggerType` it retires.
+/// `Observe` / `Unobserve` are buffered for the same ordering reason as
+/// `RegisterTrigger` / `UnregisterTrigger`: an observer's target is often a
+/// function the same connection registered just before.
 fn is_namespaced_registration(msg: &Message) -> bool {
     matches!(
         msg,
@@ -156,6 +169,9 @@ fn is_namespaced_registration(msg: &Message) -> bool {
             | Message::RegisterTrigger { .. }
             | Message::UnregisterTrigger { .. }
             | Message::RegisterTriggerType { .. }
+            | Message::UnregisterTriggerType { .. }
+            | Message::Observe { .. }
+            | Message::Unobserve { .. }
     )
 }
 
@@ -390,6 +406,8 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
+    /// Observers (`iii.observe`): registry, routed hook and activations.
+    pub observers: Arc<crate::observer::ObserverRegistry>,
     /// Records the current owning WS worker for each registered function,
     /// keyed by `(namespace, function_id)` to match `FunctionsRegistry`.
     /// Populated when a worker sends `Message::RegisterFunction`; used by
@@ -469,15 +487,37 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let active_scope = Arc::new(std::sync::Mutex::new(None));
+        let worker_registry = Arc::new(WorkerConnectionRegistry::new());
+        let functions = Arc::new(FunctionsRegistry::with_scope(active_scope.clone()));
+        let invocations = Arc::new(InvocationHandler::new());
+        let observers = Arc::new(crate::observer::ObserverRegistry::new());
+        let function_owners = Arc::new(DashMap::new());
+        observers.attach(
+            functions.clone(),
+            worker_registry.clone(),
+            Arc::downgrade(&invocations),
+            Arc::clone(&function_owners),
+        );
+        invocations.set_observers(observers.clone());
+        // Weak: the registry is owned by this engine through `observers`.
+        let listener = Arc::downgrade(&observers);
+        functions.set_observer_listener(Arc::new(
+            move |change: crate::function::FunctionChange, namespace: &str, function_id: &str| {
+                if let Some(observers) = listener.upgrade() {
+                    observers.on_function_change(change, namespace, function_id);
+                }
+            },
+        ));
         Self {
-            worker_registry: Arc::new(WorkerConnectionRegistry::new()),
+            worker_registry,
             runtime_workers: Arc::new(DashMap::new()),
-            functions: Arc::new(FunctionsRegistry::with_scope(active_scope.clone())),
+            functions,
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
-            invocations: Arc::new(InvocationHandler::new()),
+            invocations,
             channel_manager: Arc::new(ChannelManager::new()),
-            function_owners: Arc::new(DashMap::new()),
+            observers,
+            function_owners,
             worker_name_owners: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
             namespace_grace_tasks: Arc::new(DashMap::new()),
@@ -635,6 +675,79 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
+    async fn guard_outbound(
+        &self,
+        worker: &WorkerConnection,
+        msg: Message,
+        serialized: String,
+    ) -> Option<(Message, String)> {
+        let size = serialized.len();
+        let limit = worker
+            .receive_message_limit
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .min(crate::workers::worker::MAX_JSON_MESSAGE_BYTES);
+        if size <= limit {
+            return Some((msg, serialized));
+        }
+
+        let upgrade = worker
+            .receive_limit_requires_upgrade
+            .load(std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            worker_id = %worker.id,
+            version = ?worker.receive_sdk_version.read().unwrap_or_else(|error| error.into_inner()).as_ref(),
+            size_bytes = size,
+            limit_bytes = limit,
+            message_type = protocol_message_type(&msg),
+            "Outbound JSON envelope exceeds target worker receive limit"
+        );
+        match msg {
+            Message::InvokeFunction {
+                invocation_id: Some(invocation_id),
+                ..
+            } => {
+                if let Some(invocation) = self.invocations.remove(&invocation_id) {
+                    if let Some(caller_id) = invocation.worker_id
+                        && let Some(caller) = self.worker_registry.get_worker(&caller_id)
+                    {
+                        caller.remove_invocation(&invocation_id).await;
+                    }
+                    // An observer activation's observer counts a `TOO_LARGE`
+                    // drop rather than the target's error.
+                    self.observers.refused_send(invocation_id, size, limit);
+                    let _ = invocation
+                        .sender
+                        .send(Err(payload_too_large_error(size, limit, upgrade)));
+                }
+                worker.remove_invocation(&invocation_id).await;
+                None
+            }
+            Message::InvocationResult {
+                invocation_id,
+                function_id,
+                traceparent,
+                baggage,
+                ..
+            } => {
+                let fallback = Message::InvocationResult {
+                    invocation_id,
+                    function_id,
+                    result: None,
+                    error: Some(payload_too_large_error(size, limit, upgrade)),
+                    traceparent,
+                    baggage,
+                };
+                let fallback_payload = serde_json::to_string(&fallback).ok()?;
+                (fallback_payload.len() <= limit).then_some((fallback, fallback_payload))
+            }
+            Message::InvokeFunction {
+                invocation_id: None,
+                ..
+            } => None,
+            _ => None,
+        }
+    }
+
     fn remove_function(&self, namespace: &str, function_id: &str) {
         self.functions.remove(namespace, function_id);
     }
@@ -673,15 +786,23 @@ impl Engine {
         self.resolve_function_with(requested_ns, function_id, FunctionsRegistry::get)
     }
 
-    fn resolve_function_handler(
+    /// The handler and the namespace it was found in: the requested one, or
+    /// `default` for the one compatibility fallback in
+    /// [`Self::resolve_function_with`].
+    fn resolve_function_handler<'a>(
         &self,
-        requested_ns: Option<&str>,
+        requested_ns: Option<&'a str>,
         function_id: &str,
-    ) -> Result<Arc<crate::function::HandlerFn>, ErrorBody> {
+    ) -> Result<(&'a str, Arc<crate::function::HandlerFn>), ErrorBody> {
+        let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
+        if let Some(handler) = self.functions.get_handler(namespace, function_id) {
+            return Ok((namespace, handler));
+        }
         self.resolve_function_with(requested_ns, function_id, FunctionsRegistry::get_handler)
+            .map(|handler| (DEFAULT_NAMESPACE, handler))
     }
 
-    fn is_function_allowed(
+    pub(crate) fn is_function_allowed(
         &self,
         session: &crate::workers::worker::rbac_session::Session,
         requested_ns: Option<&str>,
@@ -761,6 +882,8 @@ impl Engine {
         traceparent: Option<String>,
         baggage: Option<String>,
         metadata: Option<Value>,
+        caller: Option<Box<crate::protocol::Caller>>,
+        observe_depth: Option<u32>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
@@ -773,24 +896,43 @@ impl Engine {
         );
 
         match self.resolve_function_handler(namespace, function_id) {
-            Ok(function) => {
+            // `resolved_namespace` is where the function was found: the
+            // observer hook keys on it.
+            Ok((resolved_namespace, function)) => {
                 if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
                     crate::workers::telemetry::collector::mark_user_function_invoked();
                 }
 
                 let session = worker.session.clone();
 
+                // `worker_*` is stamped from this connection (D9); the rest of
+                // the caller is what its SDK asserted. A connection without
+                // `observe.v1` never sends a depth: the loop guard takes the
+                // deepest one it is running (a heuristic, see
+                // `WorkerConnection::legacy_depth`).
+                let observe_depth = match observe_depth {
+                    None if !worker.features.observe_v1() => worker.inflight_depth(),
+                    depth => depth,
+                };
+                let ctx = crate::observer::InvocationCtx::from_connection(
+                    worker.id,
+                    self.worker_registry.clone(),
+                    caller,
+                    observe_depth,
+                );
                 self.invocations
                     .handle_invocation_with_handler(
                         invocation_id,
                         Some(worker),
                         function_id.to_string(),
+                        resolved_namespace,
                         body,
                         function,
                         traceparent,
                         baggage,
                         session,
                         metadata,
+                        ctx,
                     )
                     .await
             }
@@ -817,13 +959,15 @@ impl Engine {
     fn spawn_invoke_function(
         &self,
         worker: &WorkerConnection,
-        function_id: &str,
-        namespace: Option<&str>,
-        data: &Value,
-        traceparent: &Option<String>,
-        baggage: &Option<String>,
+        function_id: String,
+        namespace: Option<String>,
+        mut data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
         invocation_id: Option<Uuid>,
         metadata: Option<Value>,
+        caller: Option<Box<crate::protocol::Caller>>,
+        observe_depth: Option<u32>,
     ) {
         // The canonical engine span for an invocation is the `call <fn>` span
         // opened in `InvocationHandler::handle_invocation`. We intentionally do
@@ -836,27 +980,20 @@ impl Engine {
 
         let engine = self.clone();
         let worker = worker.clone();
-        let function_id = function_id.to_string();
-        let namespace = namespace.map(str::to_string);
-
         // Add caller's worker_id to invocation data as standard metadata
-        let data = {
-            let mut data = data.clone();
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert(
-                    "_caller_worker_id".to_string(),
-                    serde_json::json!(worker.id.to_string()),
-                );
-            }
-            data
-        };
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert(
+                "_caller_worker_id".to_string(),
+                serde_json::json!(worker.id.to_string()),
+            );
+        }
         let incoming_traceparent = traceparent.clone();
         let incoming_baggage = baggage.clone();
         // Pass the incoming caller context straight through so the downstream
         // `call <fn>` span nests directly under the caller's span instead of an
         // intermediate engine wrapper.
-        let downstream_traceparent = traceparent.clone();
-        let downstream_baggage = baggage.clone();
+        let downstream_traceparent = traceparent;
+        let downstream_baggage = baggage;
 
         tokio::spawn(
             async move {
@@ -870,6 +1007,8 @@ impl Engine {
                         downstream_traceparent,
                         downstream_baggage,
                         metadata,
+                        caller,
+                        observe_depth,
                     )
                     .await;
 
@@ -1164,6 +1303,46 @@ impl Engine {
         }
     }
 
+    /// Routes one frame read from a worker's socket. A report is taken by
+    /// value: its payloads move into the activations instead of being copied.
+    async fn route_frame(
+        &self,
+        worker: &WorkerConnection,
+        msg: Message,
+        hold: &mut crate::observer::ReportHold,
+    ) -> anyhow::Result<()> {
+        match msg {
+            Message::InvocationsObserved { items } => {
+                let full =
+                    self.observers
+                        .report(worker.id, &self.connection_namespace(worker), items);
+                // Backpressure: nothing more is read from this worker until
+                // the queues its report overflowed have room again, and at
+                // most four fifths of the time (`hold`).
+                if !full.is_empty() {
+                    self.observers.wait_for_room(hold, &full).await;
+                }
+                Ok(())
+            }
+            // A (un)registration made while the worker handles an activation
+            // is part of that chain: `engine::on-functions-changed` takes its
+            // depth (see `WorkerConnection::inflight_depth`).
+            msg @ (Message::RegisterFunction { .. } | Message::UnregisterFunction { .. }) => {
+                match worker.inflight_depth() {
+                    Some(depth) => {
+                        crate::observer::InvocationCtx::scope(
+                            Arc::new(crate::observer::InvocationCtx::engine_internal_at(depth)),
+                            self.router_msg_owned(worker, msg),
+                        )
+                        .await
+                    }
+                    None => self.router_msg_owned(worker, msg).await,
+                }
+            }
+            msg => self.router_msg_owned(worker, msg).await,
+        }
+    }
+
     #[doc(hidden)]
     pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         if self.buffer_until_namespace_known(worker, msg) {
@@ -1176,10 +1355,35 @@ impl Engine {
         self.dispatch_msg(worker, msg).await
     }
 
+    // WebSocket decoding already owns the message. Preserve that ownership so
+    // dispatch can forward request and response JSON without copying it.
+    async fn router_msg_owned(
+        &self,
+        worker: &WorkerConnection,
+        msg: Message,
+    ) -> anyhow::Result<()> {
+        if self.buffer_until_namespace_known(worker, &msg) {
+            tracing::debug!(
+                worker_id = %worker.id,
+                "Buffering registration until the connection namespace is known"
+            );
+            return Ok(());
+        }
+        self.dispatch_msg_inner(worker, Cow::Owned(msg)).await
+    }
+
     /// Applies `msg` unconditionally. The drain calls this directly to bypass
     /// the buffer check that `router_msg` performs.
     async fn dispatch_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
-        match msg {
+        self.dispatch_msg_inner(worker, Cow::Borrowed(msg)).await
+    }
+
+    async fn dispatch_msg_inner(
+        &self,
+        worker: &WorkerConnection,
+        msg: Cow<'_, Message>,
+    ) -> anyhow::Result<()> {
+        match msg.as_ref() {
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
@@ -1306,7 +1510,7 @@ impl Engine {
                     trigger_type_id = %id,
                     namespace = %provider_namespace,
                     description = %description,
-                    "RegisterTriggerType"
+                    "RegisterTriggerType (deprecated: a provider becomes an observable function)"
                 );
 
                 let mut reg_id = id.clone();
@@ -1386,6 +1590,9 @@ impl Engine {
                     );
                 }
 
+                worker
+                    .filed_trigger_types
+                    .insert((provider_namespace.clone(), id.clone()), reg_id.clone());
                 let mut trigger_type = TriggerType::new_ns(
                     provider_namespace,
                     reg_id,
@@ -1430,11 +1637,12 @@ impl Engine {
                 trigger_namespace,
             } => {
                 tracing::debug!(
+                    worker_id = %worker.id,
                     trigger_id = %id,
                     trigger_type = %trigger_type,
                     function_id = %function_id,
                     config = ?config,
-                    "RegisterTrigger"
+                    "RegisterTrigger (deprecated: observe the function that replaces the trigger type)"
                 );
 
                 // Either namespace named and left empty is refused. They are
@@ -1588,28 +1796,81 @@ impl Engine {
                     return Ok(());
                 }
 
-                match self
+                let trigger = Trigger {
+                    id: reg_trigger_id.clone(),
+                    trigger_type: reg_trigger_type.clone(),
+                    function_id: reg_function_id.clone(),
+                    config: reg_config,
+                    worker_id: Some(worker.id),
+                    metadata: metadata.clone(),
+                    namespace: target_namespace,
+                    trigger_namespace: trigger_namespace.clone(),
+                    home_namespace,
+                    // Written by the registry once it resolves; this is
+                    // only the value it starts from.
+                    provider_namespace: crate::protocol::default_namespace(),
+                };
+
+                // The legacy shim (protocol.md §6): with no live provider of
+                // the type, a function standing in for it takes the binding
+                // as an observer. A live provider always wins. RBAC is at
+                // parity with old triggers (decision): the registration was
+                // gated above by its trigger type, the registration hook and
+                // the target; the stand-in function, which the registrant did
+                // not name, is not checked against its session.
+                if self
                     .trigger_registry
-                    .register_trigger(Trigger {
-                        id: reg_trigger_id.clone(),
-                        trigger_type: reg_trigger_type.clone(),
-                        function_id: reg_function_id.clone(),
-                        config: reg_config,
-                        worker_id: Some(worker.id),
-                        metadata: metadata.clone(),
-                        namespace: target_namespace,
-                        trigger_namespace: trigger_namespace.clone(),
-                        home_namespace,
-                        // Written by the registry once it resolves; this is
-                        // only the value it starts from.
-                        provider_namespace: crate::protocol::default_namespace(),
-                    })
-                    .await
+                    .resolve_provider_key(&trigger)
+                    .is_none()
+                    && let Some(function) = self.observers.legacy_function(
+                        &trigger.trigger_type,
+                        trigger.trigger_namespace.as_deref(),
+                        &trigger.home_namespace,
+                    )
                 {
+                    let registration = crate::observer::LegacyRegistration {
+                        id: trigger.id.clone(),
+                        trigger_type: trigger.trigger_type.clone(),
+                        target: (trigger.namespace.clone(), trigger.function_id.clone()),
+                        config: trigger.config.clone(),
+                        metadata: trigger.metadata.clone(),
+                    };
+                    match self
+                        .observers
+                        .register_legacy(worker, function, registration)
+                    {
+                        Ok(()) => {
+                            // Accepted: an old-style binding with the same id
+                            // (parked, or left by a provider that went away)
+                            // is replaced.
+                            let _ = self
+                                .trigger_registry
+                                .unregister_trigger(trigger.id.clone(), None)
+                                .await;
+                            crate::workers::telemetry::collector::track_trigger_registered();
+                        }
+                        Err(error) => {
+                            let result_msg = Message::TriggerRegistrationResult {
+                                id: reg_trigger_id,
+                                trigger_type: reg_trigger_type,
+                                function_id: reg_function_id,
+                                error: Some(error),
+                            };
+                            let _ = self.send_msg(worker, result_msg).await;
+                        }
+                    }
+                    return Ok(());
+                }
+
+                let id = trigger.id.clone();
+                match self.trigger_registry.register_trigger(trigger).await {
                     // A Deferred outcome is not an error: the intent is
                     // parked engine-side and activates when the trigger type
                     // registers, so no failure ack goes to the worker.
                     Ok(_) => {
+                        // Accepted (or parked, which also replaces a live
+                        // binding): one the shim made under this id goes.
+                        self.observers.unregister_legacy(&id);
                         crate::workers::telemetry::collector::track_trigger_registered();
                     }
                     Err(err) => {
@@ -1635,6 +1896,8 @@ impl Engine {
                     trigger_type = %trigger_type.as_deref().unwrap_or("<missing>"),
                     "UnregisterTrigger"
                 );
+                // A trigger the legacy shim made into an observer.
+                self.observers.unregister_legacy(id);
 
                 let _ = self
                     .trigger_registry
@@ -1653,7 +1916,62 @@ impl Engine {
                 action,
                 metadata,
                 namespace,
+                caller,
+                observe_depth,
+                activation,
             } => {
+                // Owner delivery (`obs.call`, protocol.md §3.5): validated
+                // against the observer and routed to its stored target. It
+                // runs like an activation, with no session: creation-time RBAC
+                // on the observed function and the target is the gate, and
+                // the request's namespace is ignored (D13).
+                if let Some(activation) = activation {
+                    let engine = self.clone();
+                    let worker = worker.clone();
+                    let mut data = data.clone();
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert(
+                            "_caller_worker_id".to_string(),
+                            serde_json::json!(worker.id.to_string()),
+                        );
+                    }
+                    let call = crate::observer::OwnerCall {
+                        invocation_id: *invocation_id,
+                        function_id: function_id.clone(),
+                        data,
+                        caller: caller.clone(),
+                        observe_depth: *observe_depth,
+                        activation: activation.clone(),
+                        traceparent: traceparent.clone(),
+                        baggage: baggage.clone(),
+                    };
+                    let answer = !matches!(action, Some(crate::protocol::TriggerAction::Void));
+                    let (invocation_id, function_id) = (*invocation_id, function_id.clone());
+                    tokio::spawn(async move {
+                        let outcome = engine.observers.owner_call(&worker, call).await;
+                        if let (true, Some(invocation_id)) = (answer, invocation_id) {
+                            let (result, error) = match outcome {
+                                Ok(result) => (result, None),
+                                Err(error) => (None, Some(error)),
+                            };
+                            engine
+                                .send_msg(
+                                    &worker,
+                                    Message::InvocationResult {
+                                        invocation_id,
+                                        function_id,
+                                        result,
+                                        error,
+                                        traceparent: None,
+                                        baggage: None,
+                                    },
+                                )
+                                .await;
+                            worker.remove_invocation(&invocation_id).await;
+                        }
+                    });
+                    return Ok(());
+                }
                 tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = %crate::logging::display_option(invocation_id),
@@ -2035,33 +2353,38 @@ impl Engine {
                         Ok(())
                     }
 
-                    Some(crate::protocol::TriggerAction::Void) => {
-                        // Fire-and-forget: invoke function but never send
-                        // InvocationResult back to the caller.
-                        self.spawn_invoke_function(
-                            worker,
+                    Some(crate::protocol::TriggerAction::Void) | None => {
+                        // Void never sends a result, even if the caller supplied an ID.
+                        let invocation_id = if action.is_none() {
+                            *invocation_id
+                        } else {
+                            None
+                        };
+                        let Message::InvokeFunction {
                             function_id,
-                            namespace.as_deref(),
+                            namespace,
                             data,
                             traceparent,
                             baggage,
-                            None, // force invocation_id to None — no result sent
-                            metadata.clone(),
-                        );
-                        Ok(())
-                    }
-
-                    None => {
-                        // Default behavior: invoke and (optionally) return result.
+                            metadata,
+                            caller,
+                            observe_depth,
+                            ..
+                        } = msg.into_owned()
+                        else {
+                            unreachable!("matched InvokeFunction above");
+                        };
                         self.spawn_invoke_function(
                             worker,
                             function_id,
-                            namespace.as_deref(),
+                            namespace,
                             data,
                             traceparent,
                             baggage,
-                            *invocation_id,
-                            metadata.clone(),
+                            invocation_id,
+                            metadata,
+                            caller,
+                            observe_depth,
                         );
                         Ok(())
                     }
@@ -2086,10 +2409,13 @@ impl Engine {
                 worker.remove_invocation(invocation_id).await;
 
                 if let Some(invocation) = self.invocations.remove(invocation_id) {
+                    let Message::InvocationResult { result, error, .. } = msg.into_owned() else {
+                        unreachable!("matched InvocationResult above");
+                    };
                     if let Some(err) = error {
-                        let _ = invocation.sender.send(Err(err.clone()));
+                        let _ = invocation.sender.send(Err(err));
                     } else {
-                        let _ = invocation.sender.send(Ok(result.clone()));
+                        let _ = invocation.sender.send(Ok(result));
                     };
                     return Ok(());
                 } else {
@@ -2121,15 +2447,19 @@ impl Engine {
                 if worker.has_external_function_id(&resolved_id).await {
                     worker.remove_external_function_id(&resolved_id).await;
                     // Only tear down the engine-global registration if this
-                    // worker is still the recorded owner. Without the gate,
-                    // an Unregister from a worker whose id was already
-                    // hijacked by a fresher worker would wipe the live
-                    // worker's http_module + service_registry entries — the
-                    // same bug shape `cleanup_worker` guards against.
-                    if !self.release_external_function_if_owner(
+                    // worker is still the recorded owner, checked and removed
+                    // under the owner entry's lock, then released: a fresher
+                    // worker that took the id over keeps its http_module and
+                    // service_registry entries and its observe descriptor —
+                    // the same bug shape `cleanup_worker` guards against.
+                    let http_module = self
+                        .service_registry
+                        .get_service::<HttpFunctionsWorker>("http_functions");
+                    if !self.remove_external_function_if_owner(
                         &worker.id,
                         &namespace,
                         &resolved_id,
+                        http_module.as_deref(),
                     ) {
                         tracing::debug!(
                             worker_id = %worker.id,
@@ -2138,35 +2468,16 @@ impl Engine {
                         );
                         return Ok(());
                     }
-                    if let Some(http_module) = self
-                        .service_registry
-                        .get_service::<HttpFunctionsWorker>("http_functions")
-                    {
-                        match http_module
-                            .unregister_http_function(&namespace, &resolved_id)
-                            .await
-                        {
-                            Ok(()) => {
-                                tracing::debug!(
-                                    worker_id = %worker.id,
-                                    function_id = %id,
-                                    "Unregistered external function"
-                                );
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    worker_id = %worker.id,
-                                    function_id = %id,
-                                    error = ?err,
-                                    "Failed to unregister external function"
-                                );
-                            }
-                        }
+                    if http_module.is_some() {
                         self.service_registry
                             .remove_function_from_services(&namespace, &resolved_id);
-                    } else {
-                        self.remove_function_from_engine(&namespace, &resolved_id);
                     }
+                    self.release_external_function_if_owner(&worker.id, &namespace, &resolved_id);
+                    tracing::debug!(
+                        worker_id = %worker.id,
+                        function_id = %id,
+                        "Unregistered external function"
+                    );
                 } else {
                     worker.remove_function_id(&resolved_id).await;
                     // Same ownership gate as the external branch above.
@@ -2188,6 +2499,7 @@ impl Engine {
                 response_format: res,
                 metadata,
                 invocation,
+                observe,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -2302,6 +2614,32 @@ impl Engine {
                     return Ok(());
                 }
 
+                // A descriptor the engine cannot honour refuses this one
+                // registration, before anything is claimed.
+                if let Some(descriptor) = observe
+                    && let Err(reason) = crate::observer::validate_descriptor(descriptor)
+                {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        function_id = %reg_id,
+                        reason = %reason,
+                        "refusing a registration with an invalid observe descriptor"
+                    );
+                    self.send_msg(
+                        worker,
+                        Message::RegistrationRejected {
+                            code: crate::protocol::observe_codes::INVALID_OBSERVE_DESCRIPTOR
+                                .to_string(),
+                            namespace: namespace.clone(),
+                            worker_name: None,
+                            function_id: Some(reg_id.clone()),
+                            owner_worker_id: String::new(),
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+
                 // Claim ownership BEFORE mutating any engine-global state. An
                 // old worker's `cleanup_worker` running on another task can
                 // see the pre-claim `function_owners` entry, match its own
@@ -2337,6 +2675,11 @@ impl Engine {
                 self.service_registry
                     .register_service_from_function_id(&namespace, &reg_id);
 
+                // Before the function lands in the registry: the observers
+                // that registration activates must see this descriptor.
+                self.observers
+                    .set_descriptor(&namespace, &reg_id, observe.as_deref().cloned());
+
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
                         .service_registry
@@ -2348,6 +2691,8 @@ impl Engine {
                             "HTTP functions module not loaded"
                         );
                         self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
+                        // Nothing was registered: neither is its descriptor.
+                        self.observers.set_descriptor(&namespace, &reg_id, None);
                         return Ok(());
                     };
 
@@ -2374,6 +2719,7 @@ impl Engine {
                             "Failed to register HTTP invocation function"
                         );
                         self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
+                        self.observers.set_descriptor(&namespace, &reg_id, None);
                         return Ok(());
                     }
 
@@ -2396,6 +2742,10 @@ impl Engine {
                 );
 
                 worker.include_function_id(&reg_id).await;
+                // The success ack an `observe.v1` owner gets, with the
+                // function's observers (protocol.md §2.3).
+                self.observers
+                    .function_registered(self, worker, &namespace, &reg_id);
                 Ok(())
             }
             Message::RegisterService {
@@ -2453,6 +2803,11 @@ impl Engine {
                     return Ok(());
                 }
                 let Some(old) = self.worker_registry.get_worker(&prev) else {
+                    // The previous connection is already torn down; its
+                    // observers may still be in their grace period, and the
+                    // registry checks the token it kept for them.
+                    self.observers
+                        .reattach(prev, reattach_token.as_deref(), worker);
                     return Ok(());
                 };
                 // Worker ids are public (engine::workers::list, the
@@ -2497,6 +2852,11 @@ impl Engine {
                     // clobbering the replay that follows.
                     self.cleanup_worker(&old).await;
                 }
+                // The teardown suspended the previous connection's observers;
+                // they move to this one, counters intact, before its replayed
+                // `observe`s arrive.
+                self.observers
+                    .reattach(prev, reattach_token.as_deref(), worker);
                 Ok(())
             }
             Message::Ping => {
@@ -2514,6 +2874,163 @@ impl Engine {
                 // If we receive it here, just ignore it
                 Ok(())
             }
+            Message::UnregisterTriggerType { id, namespace } => {
+                if crate::protocol::is_blank_namespace(namespace) {
+                    tracing::error!(
+                        worker_id = %worker.id,
+                        trigger_type_id = %id,
+                        "{}",
+                        blank_namespace_message("namespace")
+                    );
+                    return Ok(());
+                }
+                // Same key `RegisterTriggerType` filed the provider under,
+                // including an id its registration hook renamed.
+                let provider_namespace = namespace
+                    .clone()
+                    .unwrap_or_else(|| self.connection_namespace(worker));
+                let filed_id = worker
+                    .filed_trigger_types
+                    .remove(&(provider_namespace.clone(), id.clone()))
+                    .map(|(_, filed)| filed)
+                    .unwrap_or_else(|| id.clone());
+                let key = crate::trigger::type_key(&provider_namespace, &filed_id);
+                // Only the provider may retire its type. Anyone else (another
+                // worker, or a provider that was already replaced by its own
+                // restart) is ignored: removing it would orphan bindings a live
+                // provider still serves.
+                if let Some(orphans) = self
+                    .trigger_registry
+                    .take_trigger_type_if_provider(&key, &worker.id)
+                {
+                    // The bindings it served move off the read loop: their
+                    // new provider may be slow, and this connection's other
+                    // frames (its invocation results) must keep flowing. They
+                    // were claimed above, synchronously: the same connection
+                    // registering the type again right away (a hot reload)
+                    // does not replay them too.
+                    // Bindings left with no provider at all may be taken by
+                    // a function standing in for the type (protocol.md §6).
+                    let engine = self.clone();
+                    tokio::spawn(async move {
+                        engine.trigger_registry.fail_over_orphans(orphans).await;
+                        engine.observers.convert_pending_triggers(&engine);
+                    });
+                    tracing::info!(
+                        worker_id = %worker.id,
+                        trigger_type_id = %id,
+                        namespace = %provider_namespace,
+                        "Trigger type unregistered by its provider"
+                    );
+                } else {
+                    tracing::debug!(
+                        worker_id = %worker.id,
+                        trigger_type_id = %id,
+                        namespace = %provider_namespace,
+                        "UnregisterTriggerType from a connection that does not provide the type; ignoring"
+                    );
+                }
+                Ok(())
+            }
+            // Observe messages from workers (protocol.md §2.2).
+            Message::Observe {
+                id,
+                source,
+                target,
+                metadata,
+                max_fires,
+                expires_in_ms,
+                max_in_flight,
+            } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    observer_id = %id,
+                    function_id = %source.function_id,
+                    target = %target.function_id,
+                    "Observe"
+                );
+                self.observers
+                    .observe(
+                        self,
+                        worker,
+                        crate::observer::ObserveRequest {
+                            id: id.clone(),
+                            source: (**source).clone(),
+                            target: target.clone(),
+                            metadata: metadata.clone(),
+                            max_fires: *max_fires,
+                            expires_in_ms: *expires_in_ms,
+                            max_in_flight: *max_in_flight,
+                        },
+                    )
+                    .await;
+                Ok(())
+            }
+            Message::Unobserve { id } => {
+                tracing::debug!(worker_id = %worker.id, observer_id = %id, "Unobserve");
+                self.observers.unobserve(worker.id, id);
+                Ok(())
+            }
+            Message::ObserverAck {
+                function_id,
+                namespace,
+                id,
+                revision,
+                error,
+            } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    function_id = %function_id,
+                    observer_id = %id,
+                    revision,
+                    rejected = error.is_some(),
+                    "ObserverAck"
+                );
+                self.observers.observer_ack(
+                    worker.id,
+                    &self.connection_namespace(worker),
+                    function_id,
+                    namespace.as_deref(),
+                    id,
+                    *revision,
+                    error.clone(),
+                );
+                Ok(())
+            }
+            Message::InvocationsObserved { items } => {
+                let full = self.observers.report(
+                    worker.id,
+                    &self.connection_namespace(worker),
+                    items.clone(),
+                );
+                // Not read from a socket: one hold at most.
+                if !full.is_empty() {
+                    self.observers
+                        .wait_for_room(&mut crate::observer::ReportHold::default(), &full)
+                        .await;
+                }
+                Ok(())
+            }
+            Message::LocalInvocationStats {
+                functions,
+                dropped_reports,
+                ..
+            } => {
+                self.observers.local_stats(
+                    worker.id,
+                    &self.connection_namespace(worker),
+                    functions,
+                    dropped_reports,
+                );
+                Ok(())
+            }
+            // Engine → worker messages. A worker sending one is ignored, like
+            // `WorkerRegistered` above.
+            Message::ObserveResult { .. }
+            | Message::ObserverStateChanged { .. }
+            | Message::FunctionRegistered { .. }
+            | Message::ObserverAdded { .. }
+            | Message::ObserverRemoved { .. } => Ok(()),
         }
     }
 
@@ -2525,39 +3042,25 @@ impl Engine {
         input: Value,
         metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody> {
-        let function_opt = self.functions.get_handler(namespace, function_id);
+        let function = self.internal_function_handler(namespace, function_id)?;
+        self.call_handler_with_metadata(
+            namespace,
+            function_id.to_owned(),
+            function,
+            input,
+            metadata,
+        )
+        .await
+    }
 
-        if let Some(function) = function_opt {
-            // Use the current tracing context to preserve parent-child links.
-            let ctx = tracing::Span::current().context();
-            let traceparent = inject_traceparent_from_context(&ctx);
-            let baggage = inject_baggage_from_context(&ctx);
-
-            let result = self
-                .invocations
-                .handle_invocation_with_handler(
-                    None,
-                    None,
-                    function_id.to_string(),
-                    input,
-                    function,
-                    traceparent,
-                    baggage,
-                    None,
-                    metadata,
-                )
-                .await;
-
-            match result {
-                Ok(result) => result,
-                Err(err) => Err(ErrorBody {
-                    code: "invocation_error".into(),
-                    message: err.to_string(),
-                    stacktrace: None,
-                }),
-            }
-        } else {
-            Err(ErrorBody {
+    fn internal_function_handler(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Result<Arc<crate::function::HandlerFn>, ErrorBody> {
+        self.functions
+            .get_handler(namespace, function_id)
+            .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
                 message: format!(
                     "Function {} not found in namespace {}",
@@ -2565,29 +3068,81 @@ impl Engine {
                 ),
                 stacktrace: None,
             })
-        }
+    }
+
+    pub(crate) async fn call_trigger(
+        &self,
+        trigger: Arc<Trigger>,
+        input: Value,
+    ) -> Result<Option<Value>, ErrorBody> {
+        let function = self.internal_function_handler(&trigger.namespace, &trigger.function_id)?;
+        let function_id = trigger.function_id.clone();
+        let namespace = trigger.namespace.clone();
+        let metadata = trigger.metadata.clone();
+        // Pending invocations must not retain a removed trigger's config and metadata.
+        drop(trigger);
+        self.call_handler_with_metadata(&namespace, function_id, function, input, metadata)
+            .await
+    }
+
+    fn call_handler_with_metadata<'a>(
+        &'a self,
+        namespace: &'a str,
+        function_id: String,
+        function: Arc<crate::function::HandlerFn>,
+        input: Value,
+        metadata: Option<Value>,
+    ) -> impl Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a {
+        // Use the current tracing context to preserve parent-child links.
+        let ctx = tracing::Span::current().context();
+        let traceparent = inject_traceparent_from_context(&ctx);
+        let baggage = inject_baggage_from_context(&ctx);
+        // An engine-internal call made inside an observed chain keeps the
+        // chain's depth.
+        let invocation_ctx = crate::observer::InvocationCtx::engine_internal_at(
+            crate::observer::InvocationCtx::current_depth(),
+        );
+
+        let invocation = self.invocations.handle_invocation_with_handler(
+            None,
+            None,
+            function_id,
+            namespace,
+            input,
+            function,
+            traceparent,
+            baggage,
+            None,
+            metadata,
+            invocation_ctx,
+        );
+        // Adapt the existing future without an extra async frame for its arguments.
+        invocation.map(|result| match result {
+            Ok(result) => result,
+            Err(err) => Err(ErrorBody {
+                code: "invocation_error".into(),
+                message: err.to_string(),
+                stacktrace: None,
+            }),
+        })
     }
 
     pub async fn fire_triggers(&self, trigger_type: &str, mut data: Value) {
-        let triggers: Vec<_> = self
+        let triggers = self
             .trigger_registry
             .triggers
-            .iter()
-            .filter(|entry| entry.value().trigger_type == trigger_type)
-            .map(|entry| {
-                let trigger = entry.value();
-                (
-                    trigger.function_id.clone(),
-                    trigger.namespace.clone(),
-                    trigger.metadata.clone(),
-                )
-            })
-            .collect();
+            .targets_for_type(trigger_type);
+        if triggers.is_empty() {
+            return;
+        }
 
         let current_span = tracing::Span::current();
+        // Fired from inside an observed chain (a state write made by an
+        // activation's handler): the fan-out keeps the chain's depth.
+        let depth = crate::observer::InvocationCtx::current_depth();
 
         let trigger_count = triggers.len();
-        for (index, (function_id, namespace, metadata)) in triggers.into_iter().enumerate() {
+        for (index, trigger) in triggers.into_iter().enumerate() {
             let engine = self.clone();
             // Only additional destinations need a copy; the last takes the original.
             let data = if index + 1 == trigger_count {
@@ -2595,26 +3150,38 @@ impl Engine {
             } else {
                 data.clone()
             };
-            let parent = current_span.clone();
-            let span_function_id = function_id.clone();
+            let span = tracing::info_span!(
+                parent: &current_span,
+                "trigger",
+                otel.name = %format!("trigger {}", trigger.function_id),
+                function_id = %trigger.function_id,
+                otel.status_code = tracing::field::Empty,
+            );
             tokio::spawn(
                 async move {
-                    match engine
-                        .call_value_with_metadata_ns(&namespace, &function_id, data, metadata)
-                        .await
+                    let call = engine.call_trigger(trigger, data);
+                    match crate::observer::InvocationCtx::scope(
+                        Arc::new(crate::observer::InvocationCtx::engine_internal_at(depth)),
+                        call,
+                    )
+                    .await
                     {
-                        Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
-                        Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
+                        Ok(_) => {
+                            tracing::Span::current().record("otel.status_code", "OK");
+                        }
+                        Err(_) => {
+                            tracing::Span::current().record("otel.status_code", "ERROR");
+                        }
                     }
                 }
-                .instrument(tracing::info_span!(parent: parent, "trigger", otel.name = %format!("trigger {}", span_function_id), function_id = %span_function_id, otel.status_code = tracing::field::Empty))
+                .instrument(span),
             );
         }
     }
 
-    pub async fn handle_worker(
+    pub(crate) async fn handle_worker(
         &self,
-        socket: WebSocket,
+        socket: WorkerSocket,
         peer: SocketAddr,
         uri: Uri,
         headers: HeaderMap,
@@ -2622,7 +3189,10 @@ impl Engine {
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
-        let (mut ws_tx, mut ws_rx) = socket.split();
+        let WorkerSocket {
+            reader: mut ws_rx,
+            writer: mut ws_tx,
+        } = socket;
 
         let session =
             match rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers)
@@ -2643,17 +3213,29 @@ impl Engine {
             };
 
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
+        let worker = WorkerConnection::with_session(tx.clone(), session);
+        let writer_worker = worker.clone();
+        let writer_engine = self.clone();
 
         let writer = tokio::spawn(async move {
             while let Some(outbound) = rx.recv().await {
                 let send_result = match outbound {
-                    Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
-                        Ok(payload) => ws_tx.send(WsMessage::Text(payload.into())).await,
-                        Err(err) => {
-                            tracing::error!(peer = %peer, error = ?err, "serialize error");
+                    Outbound::Protocol(msg) => {
+                        let serialized = match serde_json::to_string(&msg) {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                tracing::error!(peer = %peer, error = ?err, "serialize error");
+                                continue;
+                            }
+                        };
+                        let Some((_msg, payload)) = writer_engine
+                            .guard_outbound(&writer_worker, msg, serialized)
+                            .await
+                        else {
                             continue;
-                        }
-                    },
+                        };
+                        send_json(&mut ws_tx, payload).await
+                    }
                     Outbound::Raw(frame) => ws_tx.send(frame).await,
                 };
 
@@ -2663,7 +3245,6 @@ impl Engine {
             }
         });
 
-        let worker = WorkerConnection::with_session(tx.clone(), session);
         // Mark before registering: from the moment this connection is
         // discoverable, a Reattach targeting it can rely on this read loop
         // to exit on eviction and run the cleanup.
@@ -2685,6 +3266,9 @@ impl Engine {
             Message::WorkerRegistered {
                 worker_id: worker.id.to_string(),
                 reattach_token: Some(worker.reattach_token.to_string()),
+                // Older SDKs ignore the field; new ones enable `observe()` and
+                // local dispatch only when it lists the feature.
+                features: crate::protocol::engine_features(),
             },
         )
         .await;
@@ -2693,9 +3277,16 @@ impl Engine {
             "event": "worker_connected",
             "worker_id": worker.id.to_string(),
         });
+        self.observers.emit(
+            DEFAULT_NAMESPACE,
+            crate::observer::events::ON_WORKERS_CHANGED,
+            || Some(workers_data.clone()),
+        );
         self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
             .await;
 
+        let mut oversized_warnings = OversizedWarnings::default();
+        let mut report_hold = crate::observer::ReportHold::default();
         loop {
             tokio::select! {
                 // `biased` + eviction first: once a reattaching successor
@@ -2713,24 +3304,55 @@ impl Engine {
                     break;
                 }
                 frame = ws_rx.next() => {
+                    let frame = match frame {
+                        Some(Ok(Inbound::Message(message))) => Some(Ok(message)),
+                        Some(Ok(Inbound::Oversized(message))) => {
+                            self.answer_oversized(&worker, peer, message, &mut oversized_warnings)
+                                .await;
+                            continue;
+                        }
+                        Some(Err(error)) => Some(Err(error)),
+                        None => None,
+                    };
                     match frame {
                         Some(Ok(WsMessage::Text(text))) => {
                             if text.trim().is_empty() {
                                 continue;
                             }
                             match serde_json::from_str::<Message>(&text) {
-                                Ok(msg) => self.router_msg(&worker, &msg).await?,
-                                Err(err) => tracing::warn!(peer = %peer, error = ?err, "json decode error"),
+                                Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
+                                Err(err) => {
+                                    tracing::warn!(peer = %peer, error = ?err, "json decode error");
+                                    self.answer_undecodable(&worker, text.as_bytes(), &err).await;
+                                }
                             }
                         }
                         Some(Ok(WsMessage::Binary(bytes))) => {
-                            // Check for OTEL telemetry frames (OTLP, MTRC, LOGS prefixes)
-                            if !handle_telemetry_frame(&bytes, &peer).await {
+                            // Check for OTEL telemetry frames (OTLP, MTRC, LOGS prefixes).
+                            // Records ingested while the worker handles an
+                            // activation carry its depth, for the loop guard of
+                            // `observability::on-log`.
+                            let handled = match worker.inflight_depth() {
+                                Some(depth) => {
+                                    crate::observer::InvocationCtx::scope(
+                                        Arc::new(
+                                            crate::observer::InvocationCtx::engine_internal_at(
+                                                depth,
+                                            ),
+                                        ),
+                                        handle_telemetry_frame(&bytes, &peer),
+                                    )
+                                    .await
+                                }
+                                None => handle_telemetry_frame(&bytes, &peer).await,
+                            };
+                            if !handled {
                                 // Not a telemetry frame, try to decode as regular protocol message
                                 match serde_json::from_slice::<Message>(&bytes) {
-                                    Ok(msg) => self.router_msg(&worker, &msg).await?,
+                                    Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
                                     Err(err) => {
-                                        tracing::warn!(peer = %peer, error = ?err, "binary decode error")
+                                        tracing::warn!(peer = %peer, error = ?err, "binary decode error");
+                                        self.answer_undecodable(&worker, &bytes, &err).await;
                                     }
                                 }
                             }
@@ -2743,13 +3365,13 @@ impl Engine {
                             let _ = tx.send(Outbound::Raw(WsMessage::Pong(payload))).await;
                         }
                         Some(Ok(WsMessage::Pong(_))) => {}
+                        // Reads always yield whole messages, never raw frames.
+                        Some(Ok(WsMessage::Frame(_))) => {}
                         Some(Err(error)) => {
                             tracing::warn!(
                                 worker_id = %worker.id,
                                 peer = %peer,
                                 error = %error,
-                                frame_limit_bytes = crate::workers::worker::MAX_JSON_FRAME_BYTES,
-                                message_limit_bytes = crate::workers::worker::MAX_JSON_MESSAGE_BYTES,
                                 "Worker WebSocket read failed"
                             );
                             break;
@@ -2764,6 +3386,136 @@ impl Engine {
         self.cleanup_worker(&worker).await;
         tracing::debug!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
+    }
+
+    /// Answers a message the worker sent over the inbound limit, which the
+    /// reader dropped without buffering it: the sender of an `invokefunction`
+    /// gets a `payload_too_large` result, and the caller waiting on an
+    /// `invocationresult` gets `payload_too_large` in place of the result, as
+    /// if the target had returned it. Anything else is only logged. The
+    /// connection stays open either way.
+    async fn answer_oversized(
+        &self,
+        worker: &WorkerConnection,
+        peer: SocketAddr,
+        message: Oversized,
+        warnings: &mut OversizedWarnings,
+    ) {
+        let limit = crate::workers::worker::MAX_JSON_MESSAGE_BYTES;
+        let envelope = message.envelope();
+        let function_id = envelope.function_id.clone().unwrap_or_default();
+        let error = inbound_payload_too_large_error(message.size, limit);
+        let outcome = match (envelope.message_type.as_deref(), envelope.invocation_id) {
+            (Some("invokefunction"), Some(invocation_id)) => {
+                self.send_msg(
+                    worker,
+                    Message::InvocationResult {
+                        invocation_id,
+                        function_id,
+                        result: None,
+                        error: Some(error),
+                        traceparent: None,
+                        baggage: None,
+                    },
+                )
+                .await;
+                "answered the caller"
+            }
+            (Some("invocationresult"), Some(invocation_id)) => {
+                let result = Message::InvocationResult {
+                    invocation_id,
+                    function_id,
+                    result: None,
+                    error: Some(error),
+                    traceparent: None,
+                    baggage: None,
+                };
+                // A result never waits on report backpressure, so it takes a
+                // hold of its own.
+                let mut hold = crate::observer::ReportHold::default();
+                if let Err(error) = self.route_frame(worker, result, &mut hold).await {
+                    tracing::warn!(worker_id = %worker.id, error = ?error, "Failed to complete an invocation whose result was too large");
+                }
+                "completed the invocation"
+            }
+            _ => "dropped",
+        };
+        if let Some(suppressed) = warnings.admit() {
+            tracing::warn!(
+                worker_id = %worker.id,
+                peer = %peer,
+                size_bytes = message.size,
+                limit_bytes = limit,
+                message_type = log_excerpt(envelope.message_type.as_deref().unwrap_or("unknown")),
+                invocation_id = %crate::logging::display_option(&envelope.invocation_id),
+                function_id = log_excerpt(envelope.function_id.as_deref().unwrap_or("")),
+                outcome,
+                suppressed,
+                "Worker message exceeds the inbound limit"
+            );
+        }
+    }
+
+    /// Answers a frame that is JSON but not a valid `Message`, when it is a
+    /// request whose sender is waiting: an `observe` with an `id` gets an
+    /// `observeresult` error, an `invokefunction` with an `invocation_id` an
+    /// `InvocationResult` error. Anything else stays a logged drop, as before.
+    async fn answer_undecodable(
+        &self,
+        worker: &WorkerConnection,
+        frame: &[u8],
+        error: &serde_json::Error,
+    ) {
+        let Ok(Value::Object(frame)) = serde_json::from_slice::<Value>(frame) else {
+            return;
+        };
+        match frame.get("type").and_then(Value::as_str) {
+            Some("observe") => {
+                if let Some(id) = frame.get("id").and_then(Value::as_str) {
+                    self.observers.notify(
+                        worker.id,
+                        Message::ObserveResult {
+                            id: id.to_string(),
+                            state: crate::protocol::ObserverState::Error,
+                            error: Some(ErrorBody::new(
+                                crate::protocol::observe_codes::INVALID_ARGS,
+                                format!("the observe message does not decode: {error}"),
+                            )),
+                            warnings: Vec::new(),
+                        },
+                    );
+                }
+            }
+            Some("invokefunction") => {
+                if let Some(invocation_id) = frame
+                    .get("invocation_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                {
+                    let function_id = frame
+                        .get("function_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    self.send_msg(
+                        worker,
+                        Message::InvocationResult {
+                            invocation_id,
+                            function_id,
+                            result: None,
+                            error: Some(ErrorBody::new(
+                                "deserialization_error",
+                                format!("the invokefunction message does not decode: {error}"),
+                            )),
+                            traceparent: None,
+                            baggage: None,
+                        },
+                    )
+                    .await;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Handles OTEL-only WebSocket connections.
@@ -2785,6 +3537,9 @@ impl Engine {
         config: Arc<WorkerManagerConfig>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
+        // `/otel` keeps axum's socket; only worker connections need raw frames.
+        use axum::extract::ws::Message as WsMessage;
+
         tracing::debug!(peer = %peer, "OTEL connection opened");
         let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -2867,6 +3622,12 @@ impl Engine {
         // worker. Aborting stops the drain at its next message.
         self.abort_namespace_resolution(worker);
 
+        // Observers this connection created wait (suspended) for a Reattach;
+        // observers on or targeting its functions follow the function removals
+        // below.
+        self.observers
+            .connection_closed(worker.id, worker.reattach_token);
+
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
 
@@ -2892,18 +3653,19 @@ impl Engine {
             let namespace = self.connection_namespace(worker);
             for function_id in external_functions.iter() {
                 let owner_key = (namespace.clone(), function_id.clone());
-                // Snapshot ownership without releasing — releasing first would
-                // open a window where a racing `RegisterFunction` can claim
-                // ownership mid-teardown, and the remaining teardown steps
-                // (service_registry + http_module) would then wipe the new
-                // owner's fresh state. Keep ownership through teardown and
-                // CAS-release at the end so a racing claim reliably aborts
-                // us at the next ownership check.
-                if self
-                    .function_owners
-                    .get(&owner_key)
-                    .is_none_or(|r| r.0 != worker.id)
-                {
+                // The ownership check and the removal happen under the owner
+                // entry's lock (as `release_function_if_owner`): a racing
+                // `RegisterFunction` claim waits for it, so the new owner's
+                // registration — and its observe descriptor — is never what
+                // goes. Ownership itself is kept through the rest of the
+                // teardown and CAS-released at the end, so a claim landing
+                // after this aborts the remaining steps.
+                if !self.remove_external_function_if_owner(
+                    &worker.id,
+                    &namespace,
+                    function_id,
+                    http_module.as_deref(),
+                ) {
                     tracing::debug!(
                         worker_id = %worker.id,
                         function_id = %function_id,
@@ -2911,35 +3673,13 @@ impl Engine {
                     );
                     continue;
                 }
-                match &http_module {
-                    Some(module) => {
-                        if let Err(err) = module
-                            .unregister_http_function(&namespace, function_id)
-                            .await
-                        {
-                            tracing::error!(
-                                worker_id = %worker.id,
-                                function_id = %function_id,
-                                error = ?err,
-                                "Failed to unregister external function during worker cleanup"
-                            );
-                            self.remove_function(&namespace, function_id);
-                        }
-                        // Re-check before wiping service_registry: the
-                        // `.await` above is a yield point a racing claim can
-                        // slip through, and service_registry is shared with
-                        // the claimant's setup path (router_msg populates it
-                        // before claim completes).
-                        if self
-                            .function_owners
-                            .get(&owner_key)
-                            .is_some_and(|r| r.0 == worker.id)
-                        {
-                            self.service_registry
-                                .remove_function_from_services(&namespace, function_id);
-                        }
-                    }
-                    None => self.remove_function_from_engine(&namespace, function_id),
+                if self
+                    .function_owners
+                    .get(&owner_key)
+                    .is_some_and(|r| r.0 == worker.id)
+                {
+                    self.service_registry
+                        .remove_function_from_services(&namespace, function_id);
                 }
                 // CAS-release ownership. A racing claim will have overwritten
                 // the entry with a new owner id; that predicate fails and we
@@ -2959,6 +3699,9 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
+        // Bindings its trigger types leave with no provider may be taken by a
+        // function standing in for the type (protocol.md §6).
+        self.observers.convert_pending_triggers(self);
         self.channel_manager.remove_channels_by_worker(&worker.id);
         // Release the worker-name lease before the registry entry (its source of
         // truth for the name) is gone. Read the name back through the registry:
@@ -2986,6 +3729,11 @@ impl Engine {
             "event": "worker_disconnected",
             "worker_id": worker.id.to_string(),
         });
+        self.observers.emit(
+            DEFAULT_NAMESPACE,
+            crate::observer::events::ON_WORKERS_CHANGED,
+            || Some(workers_data.clone()),
+        );
         self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
             .await;
 
@@ -3252,6 +4000,38 @@ impl Engine {
         }
     }
 
+    /// Removes an HTTP-invoked registration (the `http_functions` entry and
+    /// the function) only if `worker_id` still owns it, while holding the
+    /// owner entry, as [`Self::release_function_if_owner`] does; ownership
+    /// itself is kept. Returns whether it removed. Without the module, the
+    /// function is removed from the engine directly.
+    fn remove_external_function_if_owner(
+        &self,
+        worker_id: &Uuid,
+        namespace: &str,
+        function_id: &str,
+        http_module: Option<&HttpFunctionsWorker>,
+    ) -> bool {
+        match self
+            .function_owners
+            .entry((namespace.to_string(), function_id.to_string()))
+        {
+            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().0 == *worker_id => {
+                match http_module {
+                    Some(module) => {
+                        module
+                            .http_functions()
+                            .remove(&(namespace.to_string(), function_id.to_string()));
+                        self.remove_function(namespace, function_id);
+                    }
+                    None => self.remove_function_from_engine(namespace, function_id),
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// External-function variant of `release_function_if_owner`. Caller is
     /// responsible for unregistering from `http_functions` and the service
     /// registry on success — this helper only releases the owner index.
@@ -3427,6 +4207,76 @@ impl EngineTrait for Engine {
     }
 }
 
+fn payload_too_large_error(size: usize, limit: usize, requires_upgrade: bool) -> ErrorBody {
+    let remediation = if requires_upgrade {
+        " It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+    } else {
+        " Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+    };
+    ErrorBody::new(
+        "payload_too_large",
+        format!(
+            "Serialized JSON envelope is {size} bytes; target worker accepts up to {limit} bytes.{remediation}"
+        ),
+    )
+}
+
+/// The answer to a worker message over the engine's inbound limit.
+fn inbound_payload_too_large_error(size: u64, limit: usize) -> ErrorBody {
+    ErrorBody::new(
+        "payload_too_large",
+        format!(
+            "Serialized JSON envelope is {size} bytes; the engine reads up to {limit} bytes from a worker. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+        ),
+    )
+}
+
+/// At most the first 128 bytes of `value`: fields recovered from a dropped
+/// message are whatever the worker sent.
+fn log_excerpt(value: &str) -> &str {
+    let mut end = value.len().min(128);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// How often a connection logs the messages over the inbound limit it sends.
+const OVERSIZED_WARN_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Rate limit for the warning about a connection's oversized messages: the
+/// first is logged, then at most one per [`OVERSIZED_WARN_INTERVAL`], with the
+/// number left out since the last one.
+#[derive(Default)]
+struct OversizedWarnings {
+    next_at: Option<tokio::time::Instant>,
+    suppressed: u64,
+}
+
+impl OversizedWarnings {
+    /// `Some(suppressed)` when this message is to be logged.
+    fn admit(&mut self) -> Option<u64> {
+        let now = tokio::time::Instant::now();
+        if self.next_at.is_some_and(|next_at| now < next_at) {
+            self.suppressed += 1;
+            return None;
+        }
+        self.next_at = Some(now + OVERSIZED_WARN_INTERVAL);
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
+
+fn protocol_message_type(message: &Message) -> &'static str {
+    match message {
+        Message::InvokeFunction { .. } => "InvokeFunction",
+        Message::InvocationResult { .. } => "InvocationResult",
+        Message::RegisterFunction { .. } => "RegisterFunction",
+        Message::RegisterTrigger { .. } => "RegisterTrigger",
+        Message::RegisterService { .. } => "RegisterService",
+        _ => "other",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3455,7 +4305,10 @@ mod tests {
         },
     };
 
-    use super::{Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE};
+    use super::{
+        Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE, payload_too_large_error,
+        protocol_message_type,
+    };
 
     fn make_request(function_id: &str) -> crate::engine::RegisterFunctionRequest {
         crate::engine::RegisterFunctionRequest {
@@ -3539,6 +4392,7 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
+            observe: None,
         };
 
         engine
@@ -3619,6 +4473,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
 
         engine
@@ -3648,6 +4503,36 @@ mod tests {
     /// to agree, or unregister/cleanup (which resolve the connection's
     /// namespace) miss and leak the registration.
     #[tokio::test]
+    async fn a_failed_http_invoked_registration_leaves_no_observe_descriptor() {
+        ensure_default_meter();
+        // No `http_functions` module: the HTTP-invoked registration fails.
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "type": "registerfunction",
+            "id": "ext::hook",
+            "invocation": { "url": "http://127.0.0.1:9/hook" },
+            "observe": { "delivery": "owner" }
+        }))
+        .expect("registerfunction");
+        engine.router_msg(&worker, &msg).await.expect("handled");
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "ext::hook")
+                .is_none()
+        );
+        assert!(
+            engine
+                .observers
+                .function_entry(&(DEFAULT_NAMESPACE.to_string(), "ext::hook".to_string()))
+                .is_none(),
+            "its descriptor went with it"
+        );
+    }
+
+    #[tokio::test]
     async fn router_msg_register_function_uses_connection_namespace() {
         ensure_default_meter();
         let engine = Engine::new();
@@ -3666,6 +4551,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
 
         engine
@@ -3928,6 +4814,9 @@ mod tests {
                 action: None,
                 metadata: None,
                 namespace: None,
+                caller: None,
+                observe_depth: None,
+                activation: None,
             };
             engine.router_msg(worker, &invoke).await.expect("invoke");
             match tokio::time::timeout(Duration::from_secs(1), rx.recv())
@@ -4008,6 +4897,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -4045,6 +4935,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&worker, &register_msg)
@@ -4191,6 +5082,7 @@ mod tests {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             };
             engine
                 .dispatch_msg(&worker, &reserved)
@@ -4212,6 +5104,7 @@ mod tests {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             };
             engine
                 .dispatch_msg(&worker, &queue_provider)
@@ -4238,6 +5131,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .dispatch_msg(&dflt, &allowed)
@@ -4270,6 +5164,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&worker, &register_msg)
@@ -4363,6 +5258,7 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
+            observe: None,
         };
         engine
             .router_msg(&worker, &register_msg)
@@ -4590,6 +5486,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&worker, &register_msg)
@@ -4609,6 +5506,9 @@ mod tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
         };
 
         engine
@@ -4652,6 +5552,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -4659,9 +5560,9 @@ mod tests {
 
         let caller_invocation_id = uuid::Uuid::new_v4();
         engine
-            .router_msg(
+            .router_msg_owned(
                 &worker,
-                &Message::InvokeFunction {
+                Message::InvokeFunction {
                     invocation_id: Some(caller_invocation_id),
                     function_id: "kv::get".to_string(),
                     data: json!({ "key": "missing" }),
@@ -4670,6 +5571,9 @@ mod tests {
                     action: None,
                     metadata: None,
                     namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -4693,7 +5597,10 @@ mod tests {
             r#"{{"type":"invocationresult","invocation_id":"{executor_invocation_id}","function_id":"kv::get","result":null}}"#
         );
         let reply: Message = serde_json::from_str(&frame).expect("frame parses");
-        engine.router_msg(&worker, &reply).await.expect("reply");
+        engine
+            .router_msg_owned(&worker, reply)
+            .await
+            .expect("reply");
 
         let answered = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -4723,6 +5630,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owned_remote_invocation_preserves_namespace_payload_and_metadata() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut caller_rx) = mpsc::channel::<Outbound>(8);
+        let caller = WorkerConnection::new(tx);
+        let (tx, mut executor_rx) = mpsc::channel::<Outbound>(8);
+        let executor = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&executor);
+        engine
+            .resolve_connection_namespace(&executor, "orders")
+            .await;
+        engine.cancel_namespace_grace_timer(&executor.id);
+        engine
+            .router_msg_owned(
+                &executor,
+                Message::RegisterFunction {
+                    id: "orders::echo".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                    observe: None,
+                },
+            )
+            .await
+            .expect("register remote function");
+
+        let invocation_id = uuid::Uuid::new_v4();
+        let payload = json!({"items": [1, null, {"name": "example"}]});
+        let metadata = json!({"routing": {"team": "fulfillment"}});
+        engine
+            .router_msg_owned(
+                &caller,
+                Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "orders::echo".to_string(),
+                    data: payload.clone(),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: Some(metadata.clone()),
+                    namespace: Some("orders".to_string()),
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
+                },
+            )
+            .await
+            .expect("invoke remote function in its namespace");
+
+        let dispatched = tokio::time::timeout(Duration::from_secs(1), executor_rx.recv())
+            .await
+            .expect("remote dispatch should complete")
+            .expect("executor channel is open");
+        let Outbound::Protocol(Message::InvokeFunction {
+            invocation_id: Some(executor_invocation_id),
+            function_id,
+            mut data,
+            metadata: received_metadata,
+            ..
+        }) = dispatched
+        else {
+            panic!("expected remote invocation, got {dispatched:?}");
+        };
+        assert_eq!(function_id, "orders::echo");
+        assert_eq!(received_metadata, Some(metadata));
+        assert_eq!(
+            data.as_object_mut().unwrap().remove("_caller_worker_id"),
+            Some(json!(caller.id.to_string()))
+        );
+        assert_eq!(data, payload);
+
+        engine
+            .router_msg_owned(
+                &executor,
+                Message::InvocationResult {
+                    invocation_id: executor_invocation_id,
+                    function_id,
+                    result: Some(data),
+                    error: None,
+                    traceparent: None,
+                    baggage: None,
+                },
+            )
+            .await
+            .expect("deliver remote response");
+        let response = tokio::time::timeout(Duration::from_secs(1), caller_rx.recv())
+            .await
+            .expect("caller should receive a response")
+            .expect("caller channel is open");
+        let Outbound::Protocol(Message::InvocationResult {
+            invocation_id: response_id,
+            result,
+            error,
+            ..
+        }) = response
+        else {
+            panic!("expected invocation result, got {response:?}");
+        };
+        assert_eq!(response_id, invocation_id);
+        assert_eq!(result, Some(payload));
+        assert!(error.is_none());
+        assert_eq!(caller.invocation_count().await, 0);
+        assert_eq!(executor.invocation_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn owned_void_invocation_executes_without_replying_to_supplied_id() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let caller = WorkerConnection::new(tx);
+        let (executed_tx, mut executed_rx) = mpsc::channel(1);
+        engine.register_function_handler(
+            make_request("orders::notify"),
+            super::Handler::new(move |input| {
+                let executed_tx = executed_tx.clone();
+                async move {
+                    executed_tx.send(input).await.expect("record execution");
+                    FunctionResult::Success(Some(json!({"sent": true})))
+                }
+            }),
+        );
+        engine
+            .router_msg_owned(
+                &caller,
+                Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "orders::notify".to_string(),
+                    data: json!(["first", "second"]),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Void),
+                    metadata: None,
+                    namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
+                },
+            )
+            .await
+            .expect("dispatch void call");
+
+        let executed = tokio::time::timeout(Duration::from_secs(1), executed_rx.recv())
+            .await
+            .expect("handler should execute");
+        assert_eq!(executed, Some(json!(["first", "second"])));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), rx.recv())
+                .await
+                .is_err(),
+            "a void call must not produce an invocation result"
+        );
+        assert_eq!(caller.invocation_count().await, 0);
+    }
+
+    #[tokio::test]
     async fn test_router_msg_invoke_function_success_sends_invocation_result() {
         ensure_default_meter();
         let engine = Engine::new();
@@ -4746,6 +5811,9 @@ mod tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
         };
 
         engine
@@ -4824,6 +5892,9 @@ mod tests {
                     }),
                     metadata: None,
                     namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -4915,6 +5986,9 @@ mod tests {
                     }),
                     metadata: None,
                     namespace: Some("project-a".to_string()),
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -4976,6 +6050,9 @@ mod tests {
                     }),
                     metadata: None,
                     namespace: Some("project-a".to_string()),
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -5023,6 +6100,9 @@ mod tests {
                     }),
                     metadata: None,
                     namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -5083,6 +6163,9 @@ mod tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
         };
 
         engine
@@ -5133,6 +6216,9 @@ mod tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
         };
 
         engine
@@ -5183,6 +6269,9 @@ mod tests {
                     action: None,
                     metadata: None,
                     namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -5355,6 +6444,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_trigger_call_releases_binding_before_handler_completes() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let handler_gate = gate.clone();
+        engine.functions.register_function_ns(
+            "orders",
+            "orders::handler".into(),
+            crate::function::Function {
+                _function_id: "orders::handler".into(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                handler: Arc::new(move |_, input, _, metadata| {
+                    let gate = handler_gate.clone();
+                    Box::pin(async move {
+                        assert_eq!(metadata, Some(json!({ "owner": "orders" })));
+                        gate.notified().await;
+                        FunctionResult::Success(Some(input))
+                    })
+                }),
+            },
+        );
+        let trigger = Arc::new(crate::trigger::Trigger {
+            id: "binding".into(),
+            trigger_type: "event".into(),
+            function_id: "orders::handler".into(),
+            config: json!({ "payload": "x".repeat(4096) }),
+            worker_id: None,
+            metadata: Some(json!({ "owner": "orders" })),
+            namespace: "orders".into(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
+        });
+        let binding = Arc::downgrade(&trigger);
+        let input = json!({ "order": 42 });
+        let call = engine.call_trigger(trigger, input.clone());
+        tokio::pin!(call);
+
+        assert!(futures::poll!(&mut call).is_pending());
+        assert!(
+            binding.upgrade().is_none(),
+            "a pending invocation must release the trigger's config and stored metadata"
+        );
+        gate.notify_one();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), call)
+                .await
+                .unwrap()
+                .unwrap(),
+            Some(input)
+        );
+    }
+
+    #[tokio::test]
     async fn test_fire_triggers_invokes_only_matching_trigger_type() {
         ensure_default_meter();
         let engine = Engine::new();
@@ -5431,6 +6577,7 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
+            observe: None,
         };
 
         engine
@@ -5525,6 +6672,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .await;
 
@@ -5554,6 +6703,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -5602,6 +6752,7 @@ mod tests {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             };
             engine
                 .router_msg(&worker, &msg)
@@ -5873,6 +7024,7 @@ mod tests {
         let msg = Message::WorkerRegistered {
             worker_id: "some-worker-id".to_string(),
             reattach_token: None,
+            features: Vec::new(),
         };
 
         engine
@@ -6347,6 +7499,9 @@ mod tests {
                     action: None,
                     metadata: None,
                     namespace: Some(String::new()),
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 },
             )
             .await
@@ -7012,6 +8167,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -7064,6 +8220,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         };
         engine
             .router_msg(&old_worker, &register_msg)
@@ -7165,6 +8322,7 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
+            observe: None,
         };
 
         let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
@@ -7300,6 +8458,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -7390,6 +8549,7 @@ mod tests {
                         response_format: None,
                         metadata: None,
                         invocation: None,
+                        observe: None,
                     },
                 )
                 .await
@@ -7417,6 +8577,7 @@ mod tests {
                             response_format: None,
                             metadata: None,
                             invocation: None,
+                            observe: None,
                         },
                     )
                     .await
@@ -7480,6 +8641,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -7534,6 +8696,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -7605,6 +8768,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -7784,6 +8948,7 @@ mod tests {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                observe: None,
             };
             let reg_trigger = Message::RegisterTrigger {
                 id: "t1".to_string(),
@@ -7895,6 +9060,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -7919,6 +9085,7 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    observe: None,
                 },
             )
             .await
@@ -8015,6 +9182,7 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
+            observe: None,
         };
 
         let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
@@ -8401,6 +9569,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         }
     }
 
@@ -8760,5 +9929,858 @@ mod tests {
         engine.abort_namespace_resolution(&worker);
 
         assert_eq!(engine.connection_namespace(&worker), "orders");
+    }
+
+    // ── UnregisterTriggerType ──────────────────────────────────────────────
+
+    fn register_trigger_type_msg(id: &str, namespace: Option<&str>) -> Message {
+        Message::RegisterTriggerType {
+            id: id.to_string(),
+            description: "provider under test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+            namespace: namespace.map(str::to_string),
+        }
+    }
+
+    fn unregister_trigger_type_msg(id: &str, namespace: Option<&str>) -> Message {
+        Message::UnregisterTriggerType {
+            id: id.to_string(),
+            namespace: namespace.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_type_from_its_provider_removes_it() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register handled");
+        let key = crate::trigger::type_key(DEFAULT_NAMESPACE, "webhook");
+        assert!(engine.trigger_registry.trigger_types.contains_key(&key));
+
+        engine
+            .router_msg(&provider, &unregister_trigger_type_msg("webhook", None))
+            .await
+            .expect("unregister handled");
+
+        assert!(
+            !engine.trigger_registry.trigger_types.contains_key(&key),
+            "the provider retired its own type"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_type_from_another_connection_is_ignored() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (provider_tx, _provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        let (other_tx, _other_rx) = mpsc::channel::<Outbound>(8);
+        let other = WorkerConnection::new(other_tx);
+
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register handled");
+        engine
+            .router_msg(&other, &unregister_trigger_type_msg("webhook", None))
+            .await
+            .expect("unregister handled");
+
+        let key = crate::trigger::type_key(DEFAULT_NAMESPACE, "webhook");
+        assert_eq!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .get(&key)
+                .and_then(|tt| tt.worker_id),
+            Some(provider.id),
+            "only the provider may retire its type"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_type_does_not_remove_an_engine_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "cron",
+                "in-process provider",
+                Box::new(worker.clone()),
+                None,
+            ))
+            .await;
+
+        engine
+            .router_msg(&worker, &unregister_trigger_type_msg("cron", None))
+            .await
+            .expect("unregister handled");
+
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(DEFAULT_NAMESPACE, "cron")),
+            "a provider no connection owns is not any connection's to retire"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_type_parks_the_bindings_it_served() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (provider_tx, _provider_rx) = mpsc::channel::<Outbound>(16);
+        let provider = WorkerConnection::new(provider_tx);
+        let (consumer_tx, _consumer_rx) = mpsc::channel::<Outbound>(16);
+        let consumer = WorkerConnection::new(consumer_tx);
+
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register type handled");
+        engine
+            .router_msg(
+                &consumer,
+                &Message::RegisterTrigger {
+                    id: "hook-1".to_string(),
+                    trigger_type: "webhook".to_string(),
+                    function_id: "orders::on-hook".to_string(),
+                    config: serde_json::json!({ "path": "/orders" }),
+                    metadata: None,
+                    namespace: None,
+                    trigger_namespace: None,
+                },
+            )
+            .await
+            .expect("register trigger handled");
+        assert!(engine.trigger_registry.triggers.contains_key("hook-1"));
+
+        engine
+            .router_msg(&provider, &unregister_trigger_type_msg("webhook", None))
+            .await
+            .expect("unregister handled");
+
+        // The bindings move off the read loop.
+        let parked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("hook-1")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        assert!(
+            parked.is_ok(),
+            "the binding is parked, as when its provider disconnects, and returns with the type"
+        );
+        assert!(
+            !engine.trigger_registry.triggers.contains_key("hook-1"),
+            "nothing can fire the binding any more"
+        );
+    }
+
+    /// `UnregisterTriggerType` is buffered with the registrations: it resolves
+    /// its key from the connection namespace, and must not overtake the
+    /// `RegisterTriggerType` it retires.
+    #[tokio::test]
+    async fn unregister_trigger_type_waits_for_the_namespace_and_keeps_order() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&provider);
+
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register buffered");
+        engine
+            .router_msg(&provider, &unregister_trigger_type_msg("webhook", None))
+            .await
+            .expect("unregister buffered");
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("audit", None))
+            .await
+            .expect("register buffered");
+        assert!(
+            engine.trigger_registry.trigger_types.is_empty(),
+            "nothing applies before the namespace is known"
+        );
+
+        engine
+            .resolve_connection_namespace(&provider, "orders")
+            .await;
+
+        assert!(
+            !engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key("orders", "webhook")),
+            "register then unregister, in arrival order, in the connection's namespace"
+        );
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key("orders", "audit"))
+        );
+        engine.cancel_namespace_grace_timer(&provider.id);
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_type_with_a_blank_namespace_removes_nothing() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(tx);
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register handled");
+
+        engine
+            .router_msg(
+                &provider,
+                &unregister_trigger_type_msg("webhook", Some("  ")),
+            )
+            .await
+            .expect("unregister handled");
+
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(DEFAULT_NAMESPACE, "webhook"))
+        );
+    }
+
+    // ── observe messages before the observer registry ─────────────────────
+
+    /// Every observe message a worker can send decodes and is accepted
+    /// without side effects or replies, and engine→worker variants echoed
+    /// back by a worker are ignored like `WorkerRegistered`.
+    #[tokio::test]
+    async fn observe_messages_from_a_worker_are_accepted_without_replies() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        let frames = [
+            r#"{"type":"observe","id":"o-1","source":{"function_id":"orders::archive"},"target":{"function_id":"search::reindex-order"}}"#,
+            r#"{"type":"unobserve","id":"o-1"}"#,
+            r#"{"type":"observerack","function_id":"cron::on-tick","id":"o-1","revision":1}"#,
+            r#"{"type":"invocationsobserved","items":[]}"#,
+            r#"{"type":"localinvocationstats","window_ms":10000,"functions":[],"dropped_reports":[]}"#,
+            r#"{"type":"observeresult","id":"o-1","state":"active"}"#,
+            r#"{"type":"observerstatechanged","id":"o-1","state":"active","fires":0}"#,
+            r#"{"type":"functionregistered","id":"f","namespace":"default","revision":0,"local_dispatch":false,"observers":[]}"#,
+            r#"{"type":"observerremoved","function_id":"f","namespace":"default","revision":1,"id":"o-1"}"#,
+        ];
+        for frame in frames {
+            let msg: Message = serde_json::from_str(frame).expect(frame);
+            engine.router_msg(&worker, &msg).await.expect(frame);
+        }
+
+        assert!(rx.try_recv().is_err(), "no replies before observers exist");
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.functions.iter().next().is_none());
+    }
+
+    /// `Observe` / `Unobserve` wait behind namespace resolution with the
+    /// registrations, in arrival order: an observe and its unobserve sent
+    /// before `engine::workers::register` still end disposed, not alive.
+    #[tokio::test]
+    async fn observe_and_unobserve_wait_for_the_namespace_in_order() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        let observe: Message = serde_json::from_value(serde_json::json!({
+            "type": "observe",
+            "id": "o-buffered",
+            "source": { "function_id": "orders::create" },
+            "target": { "function_id": "sink::orders" }
+        }))
+        .unwrap();
+        engine
+            .router_msg(&worker, &observe)
+            .await
+            .expect("buffered");
+        engine
+            .router_msg(
+                &worker,
+                &Message::Unobserve {
+                    id: "o-buffered".to_string(),
+                },
+            )
+            .await
+            .expect("buffered");
+        assert!(
+            engine.observers.is_empty(),
+            "nothing applies before the namespace"
+        );
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        assert!(
+            engine.observers.get("o-buffered").is_none(),
+            "created, then disposed"
+        );
+
+        let mut frames = Vec::new();
+        while frames.len() < 2 {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(Outbound::Protocol(msg))) => frames.push(msg),
+                Ok(Some(_)) => {}
+                other => panic!("expected two frames, got {frames:?} then {other:?}"),
+            }
+        }
+        assert!(
+            matches!(&frames[0], Message::ObserveResult { id, .. } if id == "o-buffered"),
+            "{frames:?}"
+        );
+        assert!(
+            matches!(
+                &frames[1],
+                Message::ObserverStateChanged { id, state, .. }
+                    if id == "o-buffered" && *state == crate::protocol::ObserverState::Disposed
+            ),
+            "{frames:?}"
+        );
+        engine.cancel_namespace_grace_timer(&worker.id);
+    }
+
+    fn session_with_hooks(
+        trigger_type_hook: Option<&str>,
+        observer_hook: Option<&str>,
+    ) -> crate::workers::worker::rbac_session::Session {
+        use crate::workers::worker::{
+            WorkerManagerConfig, rbac_config::RbacConfig, rbac_session::Session,
+        };
+        Session {
+            engine: Arc::new(Engine::new()),
+            config: Arc::new(WorkerManagerConfig {
+                rbac: Some(RbacConfig {
+                    auth_function_id: None,
+                    expose_functions: vec![
+                        crate::workers::worker::rbac_config::FunctionFilter::match_pattern("*"),
+                    ],
+                    on_trigger_registration_function_id: None,
+                    on_trigger_type_registration_function_id: trigger_type_hook.map(str::to_string),
+                    on_function_registration_function_id: None,
+                    on_observer_registration_function_id: observer_hook.map(str::to_string),
+                }),
+                ..WorkerManagerConfig::default()
+            }),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: uuid::Uuid::new_v4(),
+            namespaces: Default::default(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({ "tenant": "acme" }),
+            function_registration_prefix: None,
+        }
+    }
+
+    fn register_hook(engine: &Engine, id: &str, answer: serde_json::Value) {
+        engine.register_function_handler(
+            super::RegisterFunctionRequest {
+                function_id: id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            super::Handler::new(move |_input| {
+                let answer = answer.clone();
+                async move { FunctionResult::Success(Some(answer)) }
+            }),
+        );
+    }
+
+    /// A type the registration hook renamed is retired under the name the
+    /// worker knows it by.
+    #[tokio::test]
+    async fn unregister_trigger_type_follows_a_hook_rename() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        register_hook(
+            &engine,
+            "rbac::rename-type",
+            serde_json::json!({ "trigger_type_id": "acme::webhook" }),
+        );
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let provider =
+            WorkerConnection::with_session(tx, session_with_hooks(Some("rbac::rename-type"), None));
+
+        engine
+            .router_msg(&provider, &register_trigger_type_msg("webhook", None))
+            .await
+            .expect("register handled");
+        let filed = crate::trigger::type_key(DEFAULT_NAMESPACE, "acme::webhook");
+        assert!(engine.trigger_registry.trigger_types.contains_key(&filed));
+
+        engine
+            .router_msg(&provider, &unregister_trigger_type_msg("webhook", None))
+            .await
+            .expect("unregister handled");
+        assert!(
+            !engine.trigger_registry.trigger_types.contains_key(&filed),
+            "retired under the id it was filed under"
+        );
+    }
+
+    async fn next_protocol_frame(rx: &mut mpsc::Receiver<Outbound>) -> Message {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(Outbound::Protocol(msg))) => return msg,
+                Ok(Some(_)) => continue,
+                other => panic!("no frame: {other:?}"),
+            }
+        }
+    }
+
+    /// `on_observer_registration_function_id`: an object answer rewrites the
+    /// observer, anything else denies it.
+    #[tokio::test]
+    async fn the_observer_registration_hook_rewrites_or_denies() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        register_hook(
+            &engine,
+            "rbac::observer-hook",
+            serde_json::json!({ "target_function_id": "acme::audit" }),
+        );
+        register_hook(
+            &engine,
+            "rbac::observer-deny",
+            serde_json::Value::Bool(false),
+        );
+
+        let observe: Message = serde_json::from_value(serde_json::json!({
+            "type": "observe",
+            "id": "o-hooked",
+            "source": { "function_id": "orders::create" },
+            "target": { "function_id": "audit::write" }
+        }))
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(
+            tx,
+            session_with_hooks(None, Some("rbac::observer-hook")),
+        );
+        engine.worker_registry.register_worker(worker.clone());
+        engine.router_msg(&worker, &observe).await.expect("handled");
+        let reply = next_protocol_frame(&mut rx).await;
+        assert!(
+            matches!(&reply, Message::ObserveResult { error: None, .. }),
+            "{reply:?}"
+        );
+        let observer = engine.observers.get("o-hooked").expect("created");
+        assert_eq!(observer.target.1, "acme::audit", "rewritten by the hook");
+
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let denied = WorkerConnection::with_session(
+            tx,
+            session_with_hooks(None, Some("rbac::observer-deny")),
+        );
+        engine.worker_registry.register_worker(denied.clone());
+        let mut other = observe.clone();
+        if let Message::Observe { id, .. } = &mut other {
+            *id = "o-denied".to_string();
+        }
+        engine.router_msg(&denied, &other).await.expect("handled");
+        match next_protocol_frame(&mut rx).await {
+            Message::ObserveResult {
+                error: Some(error), ..
+            } => assert_eq!(error.code, "FORBIDDEN"),
+            other => panic!("expected a FORBIDDEN observeresult, got {other:?}"),
+        }
+        assert!(engine.observers.get("o-denied").is_none());
+    }
+
+    #[tokio::test]
+    async fn oversized_invoke_completes_caller_and_cleans_caller_and_target_state() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (caller_tx, _caller_rx) = mpsc::channel::<Outbound>(8);
+        let caller = WorkerConnection::new(caller_tx);
+        engine.worker_registry.register_worker(caller.clone());
+        let (target_tx, mut target_rx) = mpsc::channel::<Outbound>(8);
+        let target = WorkerConnection::new(target_tx);
+        let invocation_id = uuid::Uuid::new_v4();
+        caller.add_invocation(invocation_id).await;
+        target.add_invocation(invocation_id).await;
+        let handler: std::sync::Arc<crate::function::HandlerFn> =
+            std::sync::Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Deferred }));
+        let invocation_task = {
+            let engine = engine.clone();
+            let caller = caller.clone();
+            tokio::spawn(async move {
+                engine
+                    .invocations
+                    .handle_invocation_with_handler(
+                        Some(invocation_id),
+                        Some(&caller),
+                        "caller::fn".into(),
+                        "default",
+                        serde_json::json!({}),
+                        handler,
+                        None,
+                        None,
+                        None,
+                        None,
+                        crate::observer::InvocationCtx::engine_internal_at(0),
+                    )
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(caller.invocation_count().await, 1);
+        caller.receive_message_limit.store(1024, Ordering::Relaxed);
+        target.receive_message_limit.store(1024, Ordering::Relaxed);
+        let invoke = Message::InvokeFunction {
+            invocation_id: Some(invocation_id),
+            function_id: "target::fn".into(),
+            data: serde_json::json!({ "payload": "x".repeat(4096) }),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: None,
+            namespace: None,
+            observe_depth: None,
+            caller: None,
+            activation: None,
+        };
+
+        assert!(
+            engine
+                .guard_outbound(
+                    &target,
+                    invoke.clone(),
+                    serde_json::to_string(&invoke).unwrap()
+                )
+                .await
+                .is_none()
+        );
+        let caller_result = tokio::time::timeout(Duration::from_millis(100), invocation_task)
+            .await
+            .expect("caller completes promptly")
+            .expect("invocation task");
+        assert_eq!(
+            caller_result.unwrap().unwrap_err().code,
+            "payload_too_large"
+        );
+        assert_eq!(caller.invocation_count().await, 0);
+        assert_eq!(target.invocation_count().await, 0);
+        assert!(
+            target_rx.try_recv().is_err(),
+            "oversized invoke is not queued to the target"
+        );
+        let next = Message::WorkerRegistered {
+            worker_id: caller.id.to_string(),
+            reattach_token: None,
+            features: Vec::new(),
+        };
+        assert!(
+            engine
+                .guard_outbound(&caller, next.clone(), serde_json::to_string(&next).unwrap())
+                .await
+                .is_some()
+        );
+    }
+
+    /// An observer activation larger than its target worker accepts is not
+    /// sent, and the target never sees the event: the observer counts a
+    /// `TOO_LARGE` drop, not the target's error. A target that answers
+    /// `payload_too_large` itself (its result was too large) still counts as
+    /// `TARGET_ERROR`.
+    #[tokio::test]
+    async fn an_activation_too_large_for_its_target_is_a_too_large_drop() {
+        use crate::observer::events::test_support;
+
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        engine.register_function_handler(
+            make_request("test::src"),
+            crate::engine::Handler::new(|input: serde_json::Value| async move {
+                FunctionResult::Success(Some(input))
+            }),
+        );
+        let (target_tx, mut target_rx) = mpsc::channel::<Outbound>(8);
+        let target = WorkerConnection::new(target_tx);
+        engine.worker_registry.register_worker(target.clone());
+        engine
+            .router_msg(
+                &target,
+                &Message::RegisterFunction {
+                    id: "test::far".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                    observe: None,
+                },
+            )
+            .await
+            .expect("register the target");
+        target.receive_message_limit.store(1024, Ordering::Relaxed);
+        let (watcher, _socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &watcher,
+            test_support::request("obs", "test::src", "test::far", None),
+        )
+        .await;
+
+        // What the target connection's writer does with the next activation.
+        async fn next_activation(
+            engine: &Engine,
+            target: &WorkerConnection,
+            rx: &mut mpsc::Receiver<Outbound>,
+        ) -> Option<(Message, String)> {
+            loop {
+                let outbound = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("an activation")
+                    .expect("open");
+                if let Outbound::Protocol(msg @ Message::InvokeFunction { .. }) = outbound {
+                    let serialized = serde_json::to_string(&msg).unwrap();
+                    return engine.guard_outbound(target, msg, serialized).await;
+                }
+            }
+        }
+        let info = |engine: &Engine| engine.observers.get_info(engine, None, "obs").unwrap();
+        let settled = |engine: &Engine, drops: u64, failures: u64| {
+            let info = info(engine);
+            info.dropped.get("TOO_LARGE").copied().unwrap_or(0) == drops
+                && info.activation_failures.values().sum::<u64>() == failures
+        };
+
+        engine
+            .call("test::src", json!({ "big": "x".repeat(4096) }))
+            .await
+            .unwrap();
+        assert!(
+            next_activation(&engine, &target, &mut target_rx)
+                .await
+                .is_none(),
+            "not sent"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !settled(&engine, 1, 0) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("a TOO_LARGE drop, not a failure");
+
+        engine
+            .call("test::src", json!({ "small": 1 }))
+            .await
+            .unwrap();
+        let Some((Message::InvokeFunction { invocation_id, .. }, _)) =
+            next_activation(&engine, &target, &mut target_rx).await
+        else {
+            panic!("a small activation is sent");
+        };
+        engine
+            .router_msg(
+                &target,
+                &Message::InvocationResult {
+                    invocation_id: invocation_id.expect("an activation carries an id"),
+                    function_id: "test::far".to_string(),
+                    result: None,
+                    error: Some(payload_too_large_error(70_000_000, 67_108_864, false)),
+                    traceparent: None,
+                    baggage: None,
+                },
+            )
+            .await
+            .expect("the target answers");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !settled(&engine, 1, 1) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the target's own error");
+        assert_eq!(
+            info(&engine).activation_failures.get("TARGET_ERROR"),
+            Some(&1)
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_invocation_result_is_replaced_by_correlated_error() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        worker.receive_message_limit.store(2048, Ordering::Relaxed);
+        let invocation_id = uuid::Uuid::new_v4();
+        let msg = Message::InvocationResult {
+            invocation_id,
+            function_id: "target::fn".into(),
+            result: Some(serde_json::json!({ "payload": "x".repeat(4096) })),
+            error: None,
+            traceparent: None,
+            baggage: None,
+        };
+
+        let (fallback, fallback_payload) = engine
+            .guard_outbound(&worker, msg.clone(), serde_json::to_string(&msg).unwrap())
+            .await
+            .expect("fallback error");
+        assert!(fallback_payload.len() <= 2048);
+        match fallback {
+            Message::InvocationResult {
+                invocation_id: actual_id,
+                function_id,
+                result,
+                error,
+                ..
+            } => {
+                assert_eq!(actual_id, invocation_id);
+                assert_eq!(function_id, "target::fn");
+                assert!(result.is_none());
+                assert_eq!(error.expect("error").code, "payload_too_large");
+            }
+            other => panic!("expected InvocationResult fallback, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "fallback is returned to the single writer"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_at_limit_is_unchanged_and_other_oversized_is_dropped() {
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let message = Message::WorkerRegistered {
+            worker_id: worker.id.to_string(),
+            reattach_token: None,
+            features: Vec::new(),
+        };
+        let exact_size = serde_json::to_string(&message).unwrap().len();
+        worker
+            .receive_message_limit
+            .store(exact_size, Ordering::Relaxed);
+        let (at_limit, serialized) = engine
+            .guard_outbound(
+                &worker,
+                message.clone(),
+                serde_json::to_string(&message).unwrap(),
+            )
+            .await
+            .expect("in-limit message is accepted");
+        assert!(matches!(at_limit, Message::WorkerRegistered { .. }));
+        assert_eq!(serialized.len(), exact_size);
+
+        worker.receive_message_limit.store(1, Ordering::Relaxed);
+        assert!(
+            engine
+                .guard_outbound(
+                    &worker,
+                    message.clone(),
+                    serde_json::to_string(&message).unwrap()
+                )
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn oversized_error_text_and_message_type_are_stable() {
+        let error = payload_too_large_error(20, 16, true);
+        assert_eq!(error.code, "payload_too_large");
+
+        assert_eq!(
+            error.message,
+            "Serialized JSON envelope is 20 bytes; target worker accepts up to 16 bytes. It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+        );
+        assert_eq!(
+            protocol_message_type(&Message::WorkerRegistered {
+                worker_id: "id".into(),
+                reattach_token: None,
+                features: Vec::new(),
+            }),
+            "other"
+        );
+    }
+
+    #[tokio::test]
+    async fn sdk_0245_worker_never_receives_envelopes_over_64_mib() {
+        ensure_default_meter();
+        let registry = crate::worker_connections::WorkerConnectionRegistry::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(1);
+        let worker = WorkerConnection::new(tx);
+        let worker_id = worker.id;
+        registry.register_worker(worker.clone());
+        registry.update_worker_metadata(
+            &worker_id,
+            "rust".into(),
+            Some("0.24.5".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            worker.receive_message_limit.load(Ordering::Relaxed),
+            crate::workers::worker::MAX_JSON_MESSAGE_BYTES
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        let message = Message::InvocationResult {
+            invocation_id,
+            function_id: "target::fn".into(),
+            result: Some(
+                serde_json::json!({ "payload": "x".repeat(crate::workers::worker::MAX_JSON_MESSAGE_BYTES) }),
+            ),
+            error: None,
+            traceparent: None,
+            baggage: None,
+        };
+        let serialized = serde_json::to_string(&message).expect("serialize oversized result");
+        assert!(serialized.len() > crate::workers::worker::MAX_JSON_MESSAGE_BYTES);
+
+        let (fallback, _payload) = Engine::new()
+            .guard_outbound(&worker, message, serialized)
+            .await
+            .expect("correlated error fallback");
+        assert!(matches!(
+            fallback,
+            Message::InvocationResult { invocation_id: actual, result: None, error: Some(error), .. }
+                if actual == invocation_id && error.code == "payload_too_large" && error.message.contains("67108864 bytes")
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "fallback is returned to the sole writer"
+        );
     }
 }

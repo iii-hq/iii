@@ -535,6 +535,10 @@ fn check_runtimes(
     }
 }
 
+/// How long `create_project` waits for its `project_created` send before the
+/// command moves on. Matches the engine CLI's `REPORT_TIMEOUT`.
+const CREATED_EVENT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn create_project(
     product_name: &'static str,
     cli_version: &str,
@@ -589,24 +593,44 @@ async fn create_project(
         project_dir.display()
     ));
 
-    if !skip_install {
-        let install_spinner = cliclack::spinner();
-        install_spinner.start("Installing dependencies (when applicable)...");
-        match telemetry::run_dependency_install(project_dir, selected_languages).await {
-            Ok(()) => install_spinner.stop("Dependency step finished"),
-            Err(e) => {
-                install_spinner.stop("Dependency installation failed");
-                return Err(e);
-            }
+    install_dependencies(
+        (!skip_install).then(|| telemetry::run_dependency_install(project_dir, selected_languages)),
+        created_handle,
+    )
+    .await
+}
+
+/// Runs the dependency step, if there is one, then waits up to
+/// [`CREATED_EVENT_WAIT`] for the `project_created` send.
+///
+/// The send was spawned before the install, so the two overlap and the wait
+/// is usually zero. The wait happens when the install fails too: the project
+/// was created either way, and the caller exits on the error, which would
+/// drop a send still in flight.
+async fn install_dependencies(
+    install: Option<impl std::future::Future<Output = Result<()>>>,
+    created_handle: Option<tokio::task::JoinHandle<()>>,
+) -> Result<()> {
+    let installed = match install {
+        Some(install) => {
+            let install_spinner = cliclack::spinner();
+            install_spinner.start("Installing dependencies (when applicable)...");
+            let installed = install.await;
+            install_spinner.stop(match installed {
+                Ok(()) => "Dependency step finished",
+                Err(_) => "Dependency installation failed",
+            });
+            installed
         }
-    }
+        None => Ok(()),
+    };
 
-    // Best-effort flush: wait up to 2s for telemetry to complete, then move on
+    // Best-effort flush: wait up to CREATED_EVENT_WAIT for telemetry to complete, then move on
     if let Some(handle) = created_handle {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        let _ = tokio::time::timeout(CREATED_EVENT_WAIT, handle).await;
     }
 
-    Ok(())
+    installed
 }
 
 fn print_next_steps(
@@ -636,4 +660,39 @@ fn print_next_steps(
     cliclack::outro("Happy coding!")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_install_still_waits_for_project_created() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let sent = Arc::new(AtomicBool::new(false));
+        let sending = Arc::clone(&sent);
+        let created = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            sending.store(true, Ordering::SeqCst);
+        });
+
+        let result = install_dependencies(
+            Some(async { Err(anyhow::anyhow!("npm install: exit status: 1")) }),
+            Some(created),
+        )
+        .await;
+
+        assert!(result.is_err(), "the install failure is still returned");
+        assert!(
+            sent.load(Ordering::SeqCst),
+            "project_created was dropped with the failed install"
+        );
+    }
+
+    #[test]
+    fn project_created_may_hold_the_command_for_three_seconds() {
+        assert_eq!(CREATED_EVENT_WAIT, std::time::Duration::from_secs(3));
+    }
 }

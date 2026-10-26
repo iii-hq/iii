@@ -1,4 +1,4 @@
-// Used only by the isolated opt-in full-engine regression.
+// Used only by the isolated opt-in full-engine fragmentation regression.
 package main
 
 import (
@@ -6,66 +6,122 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Outbound JSON envelope: 16 MiB (16,777,216 bytes).
-const jsonFrameLimitBytes = 16 * 1024 * 1024
+const (
+	messageLimitBytes = 64 * 1024 * 1024
+	payloadBytes      = 40 * 1024 * 1024
+	patternPeriod     = 97
+	patternAlphabet   = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+var sizeMessage = regexp.MustCompile(`^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https://iii\.dev/docs/creating-workers/channels#payload-size$`)
+
+func expectedByte(index int, marker byte) byte {
+	return patternAlphabet[(index%patternPeriod+int(marker))%len(patternAlphabet)]
+}
+func pattern(size int, marker byte) string {
+	var output strings.Builder
+	output.Grow(size)
+	for index := 0; index < size; index++ {
+		output.WriteByte(expectedByte(index, marker))
+	}
+	return output.String()
+}
+func verifyPayload(encoded json.RawMessage, size int, marker byte) error {
+	var value string
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return err
+	}
+	if len(value) != size {
+		return fmt.Errorf("payload length %d, want %d", len(value), size)
+	}
+	for index := range value {
+		if value[index] != expectedByte(index, marker) {
+			return fmt.Errorf("payload content/order mismatch at byte %d", index)
+		}
+	}
+	return nil
+}
 
 func main() {
-	c := iii.New(os.Getenv("JSON_SIZE_TEST_URL"), iii.WithName("json-size-go"))
-	if err := c.RegisterFunction("size::go", func(_ context.Context, data json.RawMessage) (any, error) {
-		var req struct {
-			Size int `json:"size"`
+	client := iii.New(os.Getenv("JSON_SIZE_TEST_URL"), iii.WithName("json-size-go"))
+	register := func(id string, handler iii.Handler) {
+		if err := client.RegisterFunction(id, handler); err != nil {
+			panic(err)
 		}
-		if err := json.Unmarshal(data, &req); err != nil {
+	}
+	register("size::go-ready", func(context.Context, json.RawMessage) (any, error) { return true, nil })
+	register("size::go", func(_ context.Context, data json.RawMessage) (any, error) {
+		var value string
+		if err := json.Unmarshal(data, &value); err != nil {
 			return nil, err
 		}
-		return strings.Repeat("x", req.Size), nil
-	}); err != nil {
-		panic(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		return value, nil
+	})
+	register("size::go-roundtrip", func(ctx context.Context, data json.RawMessage) (any, error) {
+		var request struct {
+			Target string `json:"target"`
+			Size   int    `json:"size"`
+			Marker string `json:"marker"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		if request.Size != payloadBytes || len(request.Marker) != 1 {
+			return nil, fmt.Errorf("invalid Go caller request")
+		}
+		encoded, err := json.Marshal(pattern(request.Size, request.Marker[0]))
+		if err != nil {
+			return nil, err
+		}
+		result, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: request.Target, Data: encoded, Timeout: 120 * time.Second})
+		if err != nil {
+			return nil, err
+		}
+		if err := verifyPayload(result, request.Size, request.Marker[0]); err != nil {
+			return nil, err
+		}
+		fmt.Println("JSON_SIZE_GO_CROSS_SDK_OK")
+		return true, nil
+	})
+	register("size::go-local-limit", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		encoded, err := json.Marshal(pattern(messageLimitBytes, 'Z'))
+		if err != nil {
+			return nil, err
+		}
+		_, err = client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Data: encoded})
+		var inv *iii.InvocationError
+		if !errors.As(err, &inv) || inv.Code != "payload_too_large" {
+			return nil, fmt.Errorf("expected payload_too_large, got %v", err)
+		}
+		match := sizeMessage.FindStringSubmatch(inv.Message)
+		if match == nil {
+			return nil, fmt.Errorf("unexpected size error: %s", inv.Message)
+		}
+		reported, parseErr := strconv.Atoi(match[1])
+		if parseErr != nil || reported <= messageLimitBytes {
+			return nil, fmt.Errorf("reported size %q not oversized", match[1])
+		}
+		small, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Data: json.RawMessage(`"after-go-limit"`)})
+		if err != nil || string(small) != `"after-go-limit"` {
+			return nil, fmt.Errorf("call after local reject: %s %v", small, err)
+		}
+		return true, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	if err := c.Connect(ctx); err != nil {
+	if err := client.Connect(ctx); err != nil {
 		panic(err)
 	}
-	defer c.Close()
-	call := func(target string, size int) (json.RawMessage, error) {
-		return c.Trigger(ctx, iii.TriggerRequest{FunctionID: target, Data: json.RawMessage(fmt.Sprintf(`{"size":%d}`, size)), Timeout: 10 * time.Second})
-	}
-	for _, target := range []string{"size::rust", "size::node", "size::python"} {
-		for attempt := 0; ; attempt++ {
-			if _, err := call(target, 1); err == nil {
-				break
-			} else if attempt >= 50 {
-				panic(err)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	for _, target := range []string{"size::rust", "size::node", "size::python"} {
-		_, err := call(target, jsonFrameLimitBytes)
-		var ie *iii.InvocationError
-		if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
-			panic(fmt.Sprintf("oversized %s: %v", target, err))
-		}
-		out, err := call(target, 2)
-		if err != nil || string(out) != `"xx"` {
-			panic(fmt.Sprintf("small %s: %s %v", target, out, err))
-		}
-	}
-	// Near-limit engine-forwarded envelope; synthetic Rust socket test separately
-	// proves >16 MiB receive capacity without assuming engine trace growth.
-	near := jsonFrameLimitBytes - 1024
-	data, _ := json.Marshal(strings.Repeat("y", near))
-	out, err := c.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust-length", Data: data, Timeout: 10 * time.Second})
-	if err != nil || string(out) != fmt.Sprint(near) {
-		panic(fmt.Sprintf("near-limit: %s %v", out, err))
-	}
-	fmt.Println("JSON_SIZE_GO_CROSS_SDK_OK")
-	time.Sleep(8 * time.Second)
+	defer client.Close()
+	fmt.Println("JSON_SIZE_GO_PARTICIPANT_READY")
+	select {}
 }

@@ -1,5 +1,8 @@
 //! Two-worker integration tests for custom trigger type lifecycle.
 
+// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
+#![allow(deprecated)]
+
 mod common;
 
 use std::sync::{Arc, Mutex};

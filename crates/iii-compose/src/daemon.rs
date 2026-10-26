@@ -800,6 +800,15 @@ impl Daemon {
             .collect()
     }
 
+    /// The compose file of every loaded project, for `compose::ps`.
+    pub(crate) async fn project_files(&self) -> Vec<std::path::PathBuf> {
+        self.loaded()
+            .await
+            .iter()
+            .map(|project| project.file_path().to_path_buf())
+            .collect()
+    }
+
     /// Every project this daemon knows, for `compose::list`.
     pub async fn list(&self) -> Vec<serde_json::Value> {
         let projects: Vec<Arc<Project>> = self.loaded().await;

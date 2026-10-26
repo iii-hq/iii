@@ -30,17 +30,35 @@ type mockEngine struct {
 	server *httptest.Server
 	url    string
 
-	mu       sync.Mutex
-	received []map[string]json.RawMessage
-	active   *websocket.Conn // most-recent accepted connection, for forced close
+	mu         sync.Mutex
+	received   []map[string]json.RawMessage
+	handshakes []handshake     // one per accepted connection, in order
+	active     *websocket.Conn // most-recent accepted connection, for forced close
 
 	// onReceive, if set, is called for every decoded inbound frame with the
 	// connection it arrived on, letting a test script the engine's reply. It runs
 	// while holding no locks.
 	onReceive func(conn *websocket.Conn, msg map[string]json.RawMessage)
 
+	// onConnect, if set, runs once per accepted connection before any frame is read,
+	// the way the engine greets a worker with workerregistered.
+	onConnect func(conn *websocket.Conn)
+
 	// updated under mu; broadcast lets WaitFor wake on every new frame.
 	gotMessage *sync.Cond
+}
+
+// handshake is what a connection's WebSocket upgrade request carried.
+type handshake struct {
+	uri    string
+	header http.Header
+}
+
+// handshakeAt returns the i-th accepted connection's upgrade request.
+func (m *mockEngine) handshakeAt(i int) handshake {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.handshakes[i]
 }
 
 // newMockEngine starts a mock engine on an ephemeral loopback port and returns it with
@@ -63,10 +81,17 @@ func newMockEngine(t *testing.T) *mockEngine {
 // it, notify waiters, and (unlike the Rust mock) hand it to onReceive so the test can
 // reply on the same connection.
 func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	m.handshakes = append(m.handshakes, handshake{uri: r.URL.RequestURI(), header: r.Header.Clone()})
+	m.mu.Unlock()
+
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
+	// The engine reads frames up to 64 MiB; coder/websocket's default (32 KiB) would
+	// drop the connection on a full report batch.
+	conn.SetReadLimit(64 << 20)
 	// Read frames until the worker disconnects. Use a background-derived context: the
 	// httptest request context is cancelled when the handler returns, which is exactly
 	// what we want to bound reads, so we tie reads to r.Context().
@@ -74,7 +99,11 @@ func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	m.active = conn
+	greet := m.onConnect
 	m.mu.Unlock()
+	if greet != nil {
+		greet(conn)
+	}
 
 	for {
 		typ, data, err := conn.Read(ctx)

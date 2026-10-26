@@ -71,7 +71,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.25.x",
+        "version": "0.26.x",
         "tag": "Next",
         "tabs": [
           {
@@ -87,18 +87,12 @@
                 ]
               },
               {
-                "group": "Upgrading",
-                "pages": [
-                  "next/upgrading/workers-to-compose",
-                  "next/upgrading/from-0-22-x"
-                ]
-              },
-              {
                 "group": "Using iii",
                 "pages": [
                   "next/using-iii/workers",
                   "next/using-iii/workers-registry",
                   "next/using-iii/triggers",
+                  "next/using-iii/observers",
                   "next/using-iii/functions",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
@@ -137,8 +131,18 @@
                   "next/creating-workers/workers",
                   "next/creating-workers/worker-manifest",
                   "next/creating-workers/triggers",
+                  "next/creating-workers/observable-functions",
                   "next/creating-workers/functions",
                   "next/creating-workers/channels"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "next/upgrading/from-0-24-x",
+                  "next/upgrading/migrate-from-streams",
+                  "next/upgrading/workers-to-compose",
+                  "next/upgrading/from-0-22-x"
                 ]
               }
             ]
@@ -168,7 +172,8 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "next/reference/engine-protocol"
+                  "next/reference/engine-protocol",
+                  "next/reference/filters"
                 ]
               },
               {
@@ -207,7 +212,7 @@
         ]
       },
       {
-        "version": "0.24.x",
+        "version": "0.25.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -224,18 +229,12 @@
                 ]
               },
               {
-                "group": "Upgrading",
-                "pages": [
-                  "upgrading/workers-to-compose",
-                  "upgrading/from-0-22-x"
-                ]
-              },
-              {
                 "group": "Using iii",
                 "pages": [
                   "using-iii/workers",
                   "using-iii/workers-registry",
                   "using-iii/triggers",
+                  "using-iii/observers",
                   "using-iii/functions",
                   "using-iii/namespaces",
                   "using-iii/engine",
@@ -274,8 +273,18 @@
                   "creating-workers/workers",
                   "creating-workers/worker-manifest",
                   "creating-workers/triggers",
+                  "creating-workers/observable-functions",
                   "creating-workers/functions",
                   "creating-workers/channels"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "upgrading/from-0-24-x",
+                  "upgrading/migrate-from-streams",
+                  "upgrading/workers-to-compose",
+                  "upgrading/from-0-22-x"
                 ]
               }
             ]
@@ -305,7 +314,8 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "reference/engine-protocol"
+                  "reference/engine-protocol",
+                  "reference/filters"
                 ]
               },
               {
@@ -331,6 +341,141 @@
                 "group": "CLI reference",
                 "pages": [
                   "cli-reference/index"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "pages": [
+              "changelog/index"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.24.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-24-0/index",
+                  "0-24-0/install",
+                  "0-24-0/quickstart",
+                  "0-24-0/troubleshooting"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "0-24-0/upgrading/workers-to-compose",
+                  "0-24-0/upgrading/from-0-22-x"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-24-0/using-iii/workers",
+                  "0-24-0/using-iii/workers-registry",
+                  "0-24-0/using-iii/triggers",
+                  "0-24-0/using-iii/functions",
+                  "0-24-0/using-iii/namespaces",
+                  "0-24-0/using-iii/engine",
+                  "0-24-0/using-iii/compose",
+                  "0-24-0/using-iii/configuration",
+                  "0-24-0/using-iii/console",
+                  "0-24-0/using-iii/cli",
+                  "0-24-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-24-0/understanding-iii/index",
+                  "0-24-0/understanding-iii/engine",
+                  "0-24-0/understanding-iii/compose",
+                  "0-24-0/understanding-iii/namespaces",
+                  "0-24-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-24-0/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "0-24-0/creating-workers/http",
+                      "0-24-0/creating-workers/queues",
+                      "0-24-0/creating-workers/observability",
+                      "0-24-0/creating-workers/sandboxes",
+                      "0-24-0/creating-workers/worker-manager"
+                    ]
+                  },
+                  "0-24-0/creating-workers/workers",
+                  "0-24-0/creating-workers/worker-manifest",
+                  "0-24-0/creating-workers/triggers",
+                  "0-24-0/creating-workers/functions",
+                  "0-24-0/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-24-0/tutorials/linkly/overview",
+                  "0-24-0/tutorials/linkly/agentic",
+                  "0-24-0/tutorials/linkly/foundations",
+                  "0-24-0/tutorials/linkly/observability",
+                  "0-24-0/tutorials/linkly/persistence",
+                  "0-24-0/tutorials/linkly/durable-execution",
+                  "0-24-0/tutorials/linkly/streaming",
+                  "0-24-0/tutorials/linkly/channels",
+                  "0-24-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-24-0/reference/engine-protocol"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "expanded": true,
+                "pages": [
+                  "0-24-0/reference/sdk-node",
+                  "0-24-0/reference/sdk-python",
+                  "0-24-0/reference/sdk-rust",
+                  "0-24-0/reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "0-24-0/reference/helpers-node",
+                  "0-24-0/reference/helpers-python",
+                  "0-24-0/reference/helpers-rust"
+                ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "0-24-0/cli-reference/index"
                 ]
               }
             ]

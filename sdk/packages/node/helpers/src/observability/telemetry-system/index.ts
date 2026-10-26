@@ -121,7 +121,11 @@ export function initOtel(config: OtelConfig = {}): void {
   // OTEL always connects to the engine's dedicated `/otel` endpoint so
   // the telemetry socket doesn't get registered in `worker_registry` as
   // a ghost null-metadata worker alongside the real worker.
-  sharedConnection = new SharedEngineConnection(appendOtelPath(engineWsUrl), config.reconnectionConfig)
+  sharedConnection = new SharedEngineConnection(
+    appendOtelPath(engineWsUrl),
+    config.reconnectionConfig,
+    config.engineWsHeaders,
+  )
 
   // BaggageSpanProcessor must register first: onStart fires in
   // registration order, so baggage entries are materialized as span

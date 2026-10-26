@@ -54,6 +54,25 @@ async def test_register_and_invoke_function(iii_client: III):
 
 
 @pytest.mark.asyncio
+async def test_non_ascii_payload_round_trips_through_the_engine_at_its_utf8_size(iii_client: III):
+    """30 MiB of emoji is a ~30 MiB envelope, as from Node or Rust (with \\u escapes it was ~90 MiB, over the limit)."""
+
+    def echo(data):
+        return data
+
+    # Through the engine, not dispatched in-process.
+    fn = iii_client.register_function("test.bridge.py.echo-utf8", echo, local_dispatch=False)
+    await asyncio.sleep(0.3)
+
+    try:
+        text = "😀" * (30 * 1024 * 1024 // 4)
+        result = iii_client.trigger({"function_id": "test.bridge.py.echo-utf8", "payload": text, "timeout_ms": 60_000})
+        assert result == text
+    finally:
+        fn.unregister()
+
+
+@pytest.mark.asyncio
 async def test_invoke_function_fire_and_forget(iii_client: III):
     """Void trigger fires without waiting for the result."""
     received = []

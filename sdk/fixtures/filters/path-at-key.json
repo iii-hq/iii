@@ -1,0 +1,8 @@
+{
+  "description": "@ after the root is an ordinary key",
+  "filters": {"input.@": {"$eq": 1}},
+  "cases": [
+    { "doc": {"input": {"@": 1}}, "expect": true },
+    { "doc": {"input": {"a": 1}}, "expect": false }
+  ]
+}

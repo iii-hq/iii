@@ -258,6 +258,24 @@ impl FunctionHandler for WorkerConnection {
             if let Some(id) = invocation_id {
                 invocations.insert(id);
             }
+            // The caller, depth and activation of this invocation (D9): only a
+            // connection that declared `observe.v1` gets the new fields. The
+            // engine keeps the depth for what the connection does meanwhile
+            // without saying (see `WorkerConnection::inflight_depth`).
+            let current = crate::observer::InvocationCtx::current();
+            if let (Some(ctx), Some(id)) = (&current, invocation_id)
+                && ctx.observe_depth > 0
+            {
+                self.remember_inflight_depth(id, ctx.observe_depth);
+            }
+            let (caller, observe_depth, activation) = match current {
+                Some(ctx) if self.features.observe_v1() => (
+                    ctx.caller().cloned().map(Box::new),
+                    (ctx.observe_depth > 0).then_some(ctx.observe_depth),
+                    ctx.activation.clone(),
+                ),
+                _ => (None, None, None),
+            };
             permit.send(Outbound::Protocol(Message::InvokeFunction {
                 invocation_id,
                 function_id,
@@ -267,6 +285,9 @@ impl FunctionHandler for WorkerConnection {
                 action: None,
                 metadata,
                 namespace: None,
+                caller,
+                observe_depth,
+                activation,
             }));
             FunctionResult::Deferred
         })

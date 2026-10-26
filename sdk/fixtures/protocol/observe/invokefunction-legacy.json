@@ -1,0 +1,15 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "3c5e7a9b-1d3f-4b5d-9f1a-3c5e7a9b1d3f",
+  "function_id": "orders::create",
+  "data": {
+    "sku": "A-1",
+    "qty": 2
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "baggage": "iii.function.id=checkout::confirm",
+  "metadata": {
+    "session_id": "s_41"
+  },
+  "namespace": "orders"
+}

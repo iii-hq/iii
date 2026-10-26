@@ -1,7 +1,15 @@
-"""Trigger types and handlers."""
+"""Trigger types and handlers.
+
+.. deprecated:: 0.25.0
+    Trigger types are replaced by functions with an observe descriptor
+    (``register_function(id, handler, observe=ObserveHooks(...))``), and
+    triggers by ``iii.observe(source, target)``. Migration guide:
+    https://iii.dev/docs/upgrading/from-0-24-x
+"""
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Generic, TypeVar
 
@@ -18,6 +26,10 @@ R = TypeVar("R")
 class TriggerConfig(BaseModel, Generic[TConfig]):
     """Configuration passed to a trigger handler when a trigger instance is
     registered or unregistered.
+
+    .. deprecated:: 0.25.0
+        Replaced by the :class:`~iii.Observer` an ``on_observer_added`` hook
+        receives (``id``, ``args``, ``filters``, ``target``).
 
     Attributes:
         id: Trigger instance ID.
@@ -42,7 +54,13 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
 
 
 class TriggerHandler(ABC, Generic[TConfig]):
-    """Abstract base class for trigger handlers."""
+    """Abstract base class for trigger handlers.
+
+    .. deprecated:: 0.25.0
+        Replaced by :class:`~iii.ObserveHooks` (``on_observer_added`` /
+        ``on_observer_removed``) on ``register_function``. Migration guide:
+        https://iii.dev/docs/upgrading/from-0-24-x
+    """
 
     @abstractmethod
     async def register_trigger(self, config: TriggerConfig[TConfig]) -> None:
@@ -56,7 +74,12 @@ class TriggerHandler(ABC, Generic[TConfig]):
 
 
 class Trigger:
-    """Represents a registered trigger."""
+    """Represents a registered trigger.
+
+    .. deprecated:: 0.25.0
+        ``register_trigger`` is replaced by ``iii.observe``, which returns an
+        :class:`~iii.ObserverHandle`.
+    """
 
     def __init__(self, unregister_fn: Any) -> None:
         self._unregister_fn = unregister_fn
@@ -68,6 +91,11 @@ class Trigger:
 
 class TriggerTypeRef(Generic[C, R]):
     """Typed handle returned by :meth:`iii.III.register_trigger_type`.
+
+    .. deprecated:: 0.25.0
+        Trigger types are replaced by functions with an observe descriptor,
+        and these helpers by ``iii.observe``. Migration guide:
+        https://iii.dev/docs/upgrading/from-0-24-x
 
     Type parameters:
 
@@ -110,6 +138,9 @@ class TriggerTypeRef(Generic[C, R]):
     ) -> Trigger:
         """Register a trigger with validated config.
 
+        .. deprecated:: 0.25.0
+            Use ``iii.observe(source, target)`` instead.
+
         If the config is a Pydantic model it is serialized automatically.
         """
         if hasattr(config, "model_dump"):
@@ -121,14 +152,15 @@ class TriggerTypeRef(Generic[C, R]):
         # namespace to this worker's — otherwise the function lands in the
         # worker's namespace and the trigger in `default`, never resolving it.
         # The low-level `register_trigger` keeps the engine default (`default`).
-        return self._iii.register_trigger(
+        return self._iii._register_trigger(
             {
                 "type": self._trigger_type_id,
                 "function_id": function_id,
                 "config": config_value,
                 "metadata": metadata,
                 "namespace": self._iii._worker_namespace(),
-            }
+            },
+            stacklevel=2,
         )
 
     def register_function(
@@ -138,7 +170,19 @@ class TriggerTypeRef(Generic[C, R]):
         *,
         description: str | None = None,
     ) -> Any:
-        """Register a function whose input matches the call-request format."""
+        """Register a function whose input matches the call-request format.
+
+        .. deprecated:: 0.25.0
+            Register the function with ``iii.register_function`` and observe
+            the source with ``iii.observe``.
+        """
+        warnings.warn(
+            "TriggerTypeRef.register_function is deprecated and will be removed in a future release. Use "
+            "iii.register_function and iii.observe(source, target) instead. Migration guide: "
+            "https://iii.dev/docs/upgrading/from-0-24-x",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._iii.register_function(
             function_id,
             handler,

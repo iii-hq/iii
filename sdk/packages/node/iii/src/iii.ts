@@ -1,9 +1,11 @@
-import { context, trace } from '@opentelemetry/api'
 import { createRequire } from 'node:module'
 import * as os from 'node:os'
+import { context, trace } from '@opentelemetry/api'
 import { type Data, WebSocket } from 'ws'
 import { ChannelReader, ChannelWriter } from './channels'
 import { InvocationError, isErrorBody, RegistrationRejectedError } from './errors'
+import { compileFilter, FilterError } from './filter'
+import { announceProcess } from './process-marker'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -15,31 +17,14 @@ import {
   WS_PING_INTERVAL_MS,
 } from './iii-constants'
 
-// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
+// Main JSON outbound single-frame threshold: 16 MiB (16,777,216 bytes).
 const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
-// Main JSON inbound message: 64 MiB (67,108,864 bytes).
+// Payload size for each WebSocket fragment when an envelope exceeds the single-frame threshold.
+const MAX_JSON_FRAGMENT_BYTES = 1024 * 1024
+// Main JSON message limit, outbound and inbound: 64 MiB (67,108,864 bytes).
 const MAX_JSON_MESSAGE_BYTES = 64 * 1024 * 1024
+
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
-import {
-  type IIIMessage,
-  type InvocationResultMessage,
-  type InvokeFunctionMessage,
-  type JsonValue,
-  MessageType,
-  type RegisterFunctionMessage,
-  type RegistrationRejectedMessage,
-  type RegisterTriggerMessage,
-  type RegisterTriggerTypeMessage,
-  type StreamChannelRef,
-  type TriggerRegistrationResultMessage,
-  type TriggerRequest,
-  type WorkerRegisteredMessage,
-} from './iii-types'
-import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/helpers/observability'
-import { getMeter, getTracer } from '@iii-dev/helpers/observability/internal'
-import { SpanKind } from '@opentelemetry/api'
-import type { IStream } from './stream'
-import { detectProjectName } from './utils'
 import {
   extractContext,
   getLogger,
@@ -49,11 +34,67 @@ import {
   type OtelConfig,
   recordSpanEvent,
   redactAndTruncate,
+  registerWorkerGauges,
   resolveMaxBytesFromEnv,
   SeverityNumber,
   shutdownOtel,
+  stopWorkerGauges,
   withSpan,
 } from '@iii-dev/helpers/observability'
+import { getMeter, getTracer } from '@iii-dev/helpers/observability/internal'
+import { SpanKind } from '@opentelemetry/api'
+import {
+  type ActivationWire,
+  type CallerWire,
+  type ErrorBody,
+  FEATURE_OBSERVE_V1,
+  type IIIMessage,
+  type InvocationResultMessage,
+  type JsonValue,
+  MessageType,
+  type RegisterFunctionMessage,
+  type RegisterTriggerMessage,
+  type RegisterTriggerTypeMessage,
+  type RegistrationRejectedMessage,
+  SDK_FEATURES,
+  type StreamChannelRef,
+  type TriggerRegistrationResultMessage,
+  type TriggerRequest,
+} from './iii-types'
+import {
+  type ActiveInvocation,
+  currentContext,
+  MAX_LOCAL_DEPTH,
+  publicContext,
+  runInContext,
+} from './invocation-context'
+import { FunctionObservers, OBSERVE_HOOK_TIMEOUT_MS, type ObserveHost } from './observable'
+import type {
+  InvocationContext,
+  ObserveHooks,
+  ObserverHandle,
+  ObserverOptions,
+  ObserveSource,
+  Target,
+} from './observe-types'
+import {
+  buildInvokeFunction,
+  buildObserveMessage,
+  buildObserverAck,
+  callerFor,
+  decodeFunctionRegistered,
+  decodeInvokeFunction,
+  decodeObserveResult,
+  decodeObserverAdded,
+  decodeObserverRemoved,
+  decodeObserverStateChanged,
+  decodeWorkerRegistered,
+  observeDescriptor,
+  stripCaller,
+} from './observe-wire'
+import { ObserverHandleImpl, toObserverState } from './observer-handle'
+import { Reporter, type ReporterLimits } from './reporter'
+import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,
@@ -66,7 +107,7 @@ import type {
   Trigger,
   TriggerTypeRef,
 } from './types'
-import { isChannelRef } from './utils'
+import { detectProjectName, isChannelRef, resolveHeaders } from './utils'
 
 const require = createRequire(import.meta.url)
 const { version: SDK_VERSION } = require('../package.json')
@@ -129,11 +170,7 @@ function resolveAddress(address?: string): string {
  * ever confused by accident -- `??` forwards the empty string, Python's `or`
  * coerced it and Go dropped it, so one mistake produced three behaviours.
  */
-function callNamespace(
-  explicit: string | undefined,
-  worker: string | undefined,
-  source: string,
-): string | undefined {
+function callNamespace(explicit: string | undefined, worker: string | undefined, source: string): string | undefined {
   if (explicit !== undefined && explicit.trim() === '') {
     throw new Error(
       `namespace is empty: ${source} was set to ${JSON.stringify(explicit)}. ` +
@@ -148,11 +185,84 @@ function invocationNamespace(
   explicit: string | undefined,
   worker: string | undefined,
   functionId: string,
+  source = 'TriggerRequest.namespace',
 ): string | undefined {
-  const namespace = callNamespace(explicit, worker, 'TriggerRequest.namespace')
+  const namespace = callNamespace(explicit, worker, source)
   return explicit === undefined && (functionId.startsWith('engine::') || functionId.startsWith('configuration::'))
     ? 'default'
     : namespace
+}
+
+const MIGRATION_GUIDE = 'https://iii.dev/docs/upgrading/from-0-24-x'
+
+/** CONTRACT §5: one warning per process per deprecated API. */
+const DEPRECATIONS = {
+  registerTrigger: `registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source, target) instead. Migration guide: ${MIGRATION_GUIDE}`,
+  registerTriggerType: `registerTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (registerFunction(id, handler, { observe: { ... } })) instead. Migration guide: ${MIGRATION_GUIDE}`,
+} as const
+
+const deprecationsWarned = new Set<keyof typeof DEPRECATIONS>()
+
+/**
+ * Local dispatch hands the handler a copy of the caller's payload and the
+ * caller a copy of the result (value semantics, as over the wire):
+ * `structuredClone`, or JSON for what it cannot clone (functions, class
+ * instances with methods the clone would drop).
+ */
+function cloneValue<T>(value: T): T {
+  if (value === null || typeof value !== 'object') {
+    return (typeof value === 'function' || typeof value === 'symbol' ? undefined : value) as T
+  }
+  try {
+    return structuredClone(value)
+  } catch {
+    const text = JSON.stringify(value)
+    return (text === undefined ? undefined : JSON.parse(text)) as T
+  }
+}
+
+/** Frames only an engine with `observe.v1` understands (CONTRACT D2). */
+const OBSERVE_FAMILY: ReadonlySet<MessageType> = new Set([
+  MessageType.Observe,
+  MessageType.Unobserve,
+  MessageType.ObserverAck,
+  MessageType.InvocationsObserved,
+  MessageType.LocalInvocationStats,
+])
+
+const UNSUPPORTED_REASON = {
+  code: 'UNSUPPORTED',
+  message: 'the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later',
+}
+
+/** `args_format` needs `delivery: 'owner'`: an auto function's events are its invocations, offered to every observer. */
+function validateObserveHooks(functionId: string, hooks: ObserveHooks | undefined): void {
+  if (!hooks) return
+  const delivery = hooks.delivery
+  if (delivery !== undefined && delivery !== 'auto' && delivery !== 'owner') {
+    throw new InvocationError({
+      code: 'INVALID_OBSERVE_DESCRIPTOR',
+      message: `observe.delivery must be 'auto' or 'owner', got ${JSON.stringify(delivery)}`,
+      function_id: functionId,
+    })
+  }
+  if (hooks.args_format !== undefined && delivery !== 'owner') {
+    throw new InvocationError({
+      code: 'INVALID_OBSERVE_DESCRIPTOR',
+      message: "observe.args_format requires delivery: 'owner' (an auto function takes no args)",
+      function_id: functionId,
+    })
+  }
+}
+
+/** The error a handler's failure becomes, the same on the local and the remote path. */
+function handlerErrorBody(error: unknown): ErrorBody {
+  const isError = error instanceof Error
+  return {
+    code: 'invocation_failed',
+    message: isError ? error.message : String(error),
+    stacktrace: isError ? error.stack : undefined,
+  }
 }
 
 function resolveNamespace(optionNamespace?: string): string | undefined {
@@ -244,13 +354,20 @@ export type InitOptions = {
   /**
    * OpenTelemetry configuration. OTel is initialized automatically by default.
    * Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable.
-   * The `engineWsUrl` is set automatically from the III address.
+   * The `engineWsUrl` is set automatically from the III address, and `engineWsHeaders`
+   * from the handshake headers of the main connection.
    */
-  otel?: Omit<OtelConfig, 'engineWsUrl'>
-  /** Custom HTTP headers sent during the WebSocket handshake. */
+  otel?: Omit<OtelConfig, 'engineWsUrl' | 'engineWsHeaders'>
+  /**
+   * Custom HTTP headers sent during the WebSocket handshake, on the main connection and
+   * on streaming channels. `Authorization: Bearer $III_TOKEN` is added unless you set
+   * `Authorization` here.
+   */
   headers?: Record<string, string>
   /** @internal */
   telemetry?: TelemetryOptions
+  /** @internal Test knobs for the observe hooks and the reporter. */
+  observe?: { hookTimeoutMs?: number; reporter?: Partial<ReporterLimits> }
 }
 
 class Sdk implements IIIClient {
@@ -278,6 +395,21 @@ class Sdk implements IIIClient {
   // namespace/name collision). Terminal: no reconnect follows. Mirrors the
   // Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
   private fatalError?: RegistrationRejectedError
+  // Observers this worker created, replayed (same id) on every connection.
+  private observers = new Map<string, ObserverHandleImpl>()
+  // The engine's features (`WorkerRegistered.features`), kept across a
+  // disconnect until the next `WorkerRegistered` replaces them.
+  private engineFeatures: ReadonlySet<string> = new Set()
+  // `WorkerRegistered` arrived on the current connection.
+  private registeredOnConnection = false
+  // Bumped on every connection: `functionregistered` confirms a function on one.
+  private connectionEpoch = 0
+  // Observe-family frames that wait for the next connection's features.
+  private observeQueue: Record<string, unknown>[] = []
+  private hooksInactiveWarned = new Set<string>()
+  private readonly reporter: Reporter
+  private readonly observeHost: ObserveHost
+  private removeProcessMarker: () => void
 
   constructor(
     private readonly address: string,
@@ -293,15 +425,65 @@ class Sdk implements IIIClient {
       ...options?.reconnectionConfig,
     }
 
-    // Initialize OpenTelemetry (enabled by default, opt-out via config or env)
-    initOtel({ ...options?.otel, engineWsUrl: this.address })
+    this.reporter = new Reporter(
+      {
+        online: () => this.observeOnline(),
+        status: (functionId) => {
+          const state = this.functions.get(functionId)?.observe
+          if (!state || state.releasedEpoch === this.connectionEpoch) return 'gone'
+          return state.confirmedEpoch === this.connectionEpoch ? 'ready' : 'wait'
+        },
+        sendFrame: (data) => {
+          if (!this.isOpen()) return false
+          this.sendMessageRaw(data)
+          return true
+        },
+        pendingBytes: () => this.ws?.bufferedAmount ?? 0,
+        logError: (message, error) => this.logError(message, error),
+      },
+      options?.observe?.reporter,
+    )
+    this.observeHost = {
+      identity: () =>
+        this.workerId !== undefined
+          ? { worker_id: this.workerId, worker_name: this.workerName }
+          : { worker_name: this.workerName },
+      sendAck: (ack) => this.sendMessage(MessageType.ObserverAck, buildObserverAck(ack), true),
+      reporter: this.reporter,
+      callTarget: (target, observerId, payload, timeoutMs) =>
+        this.invokeRemote({ function_id: target, payload, timeoutMs }, undefined, { observer_id: observerId }),
+      logError: (message, error) => this.logError(message, error),
+      hookTimeoutMs: () => options?.observe?.hookTimeoutMs ?? OBSERVE_HOOK_TIMEOUT_MS,
+      traceContext: () => ({ traceparent: injectTraceparent(), baggage: injectBaggage() }),
+    }
 
+    // Initialize OpenTelemetry (enabled by default, opt-out via config or env)
+    initOtel({
+      ...options?.otel,
+      engineWsUrl: this.address,
+      engineWsHeaders: resolveHeaders(options?.headers),
+    })
+
+    // Lets `iii ps` find this worker however it was started.
+    this.removeProcessMarker = announceProcess(this.address, this.workerName)
+
+    this.reporter.start()
     this.connect()
+  }
+
+  private warnDeprecated(api: keyof typeof DEPRECATIONS): void {
+    if (deprecationsWarned.has(api)) return
+    deprecationsWarned.add(api)
+    this.logWarn(DEPRECATIONS[api])
   }
 
   /**
    * Registers a custom trigger type with the engine. A trigger type defines
    * how external events (HTTP, cron, queue, etc.) map to function invocations.
+   *
+   * @deprecated Register a function with an observe descriptor instead:
+   * `registerFunction(id, handler, { observe: { delivery: 'owner', onObserverAdded, onObserverRemoved } })`.
+   * Logs a warning once per process. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
    *
    * @param triggerType - Trigger type registration input.
    * @param triggerType.id - Unique trigger type identifier.
@@ -323,6 +505,7 @@ class Sdk implements IIIClient {
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
   ): TriggerTypeRef<TConfig> => {
+    this.warnDeprecated('registerTriggerType')
     const message = this.snapshotRegistration<RegisterTriggerTypeMessage>({
       ...triggerType,
       message_type: MessageType.RegisterTriggerType,
@@ -368,16 +551,25 @@ class Sdk implements IIIClient {
   /**
    * Unregisters a previously registered trigger type.
    *
+   * @deprecated Trigger types are replaced by functions with an observe
+   * descriptor; unregister the function instead. Migration guide:
+   * https://iii.dev/docs/upgrading/from-0-24-x
+   *
    * @param triggerType - The trigger type to unregister (must match the `id` used during registration).
    */
   unregisterTriggerType = (triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>): void => {
-    this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
-    this.triggerTypes.delete(triggerType.id)
+    // The engine reads `{ id, namespace? }` (sdk/fixtures/protocol/observe/unregistertriggertype.json).
+    const { id, namespace } = triggerType
+    this.sendMessage(MessageType.UnregisterTriggerType, namespace !== undefined ? { id, namespace } : { id }, true)
+    this.triggerTypes.delete(id)
   }
 
   /**
    * Binds a trigger configuration to a registered function. When the trigger
    * fires, the engine invokes the target function.
+   *
+   * @deprecated Use `iii.observe(source, target)` instead. Logs a warning once
+   * per process. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
    *
    * @param trigger - Trigger registration input.
    * @param trigger.type - Trigger type (e.g. `http`, `durable:subscriber`, `cron`).
@@ -398,6 +590,7 @@ class Sdk implements IIIClient {
    * ```
    */
   registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
+    this.warnDeprecated('registerTrigger')
     const id = crypto.randomUUID()
     const fullTrigger: RegisterTriggerMessage = this.snapshotRegistration({
       ...trigger,
@@ -409,11 +602,7 @@ class Sdk implements IIIClient {
       // that fires and resolves nothing. Naming another namespace, `default`
       // included, stays a matter of saying so.
       ...(() => {
-        const namespace = callNamespace(
-          trigger.namespace,
-          this.namespace,
-          'RegisterTriggerInput.namespace',
-        )
+        const namespace = callNamespace(trigger.namespace, this.namespace, 'RegisterTriggerInput.namespace')
         return namespace !== undefined ? { namespace } : {}
       })(),
     })
@@ -467,13 +656,20 @@ class Sdk implements IIIClient {
       throw new Error(`function id already registered: ${functionId}`)
     }
 
+    // The hooks stay here; only the descriptor's four fields travel, and
+    // `localDispatch` is this SDK's alone.
+    const { observe: hooks, localDispatch, ...wireOptions } = options ?? {}
+    validateObserveHooks(functionId, hooks)
+    const descriptor = observeDescriptor(hooks)
+    const registration = descriptor ? { ...wireOptions, observe: descriptor } : wireOptions
+
     const isHandler = typeof handlerOrInvocation === 'function'
 
     const fullMessage: RegisterFunctionMessage = this.snapshotRegistration(
       isHandler
-        ? { ...options, id: functionId, message_type: MessageType.RegisterFunction }
+        ? { ...registration, id: functionId, message_type: MessageType.RegisterFunction }
         : {
-            ...options,
+            ...registration,
             id: functionId,
             message_type: MessageType.RegisterFunction,
             invocation: {
@@ -488,10 +684,16 @@ class Sdk implements IIIClient {
 
     this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
 
+    const observe = new FunctionObservers(functionId, hooks, localDispatch !== false, isHandler, this.observeHost)
+    if (observe.needsObserve && this.registeredOnConnection && !this.engineFeatures.has(FEATURE_OBSERVE_V1)) {
+      this.warnHooksInactive(functionId)
+    }
+
     if (isHandler) {
       const handler = handlerOrInvocation as RemoteFunctionHandler
       this.functions.set(functionId, {
         message: fullMessage,
+        observe,
         handler: async (input, metadata?: JsonValue, traceparent?: string, baggage?: string) => {
           const tracePayloads = !(
             process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
@@ -521,10 +723,7 @@ class Sdk implements IIIClient {
             } catch (err) {
               if (tracePayloads) {
                 const errMsg = err instanceof Error ? err.message : String(err)
-                const { json, truncated } = redactAndTruncate(
-                  { error: errMsg },
-                  payloadMaxBytes,
-                )
+                const { json, truncated } = redactAndTruncate({ error: errMsg }, payloadMaxBytes)
                 recordSpanEvent('iii.invocation.output', {
                   'iii.payload.json': json,
                   'iii.payload.truncated': truncated,
@@ -559,16 +758,156 @@ class Sdk implements IIIClient {
         },
       })
     } else {
-      this.functions.set(functionId, { message: fullMessage })
+      this.functions.set(functionId, { message: fullMessage, observe })
     }
 
     return {
       id: functionId,
       unregister: () => {
+        // A stale ref (the id was unregistered and registered again) must not
+        // touch the registration that replaced it: nothing to do.
+        if (this.functions.get(functionId)?.observe !== observe) return
         this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
         this.functions.delete(functionId)
+        observe.dispose()
       },
+      isObserved: () => observe.isObserved(),
+      observers: () => observe.observers(),
     }
+  }
+
+  /**
+   * Observes a function: every event of `source` (an invocation of an auto
+   * function, or what its owner hands over) that passes `source.filters`
+   * invokes `target`, a registered function.
+   *
+   * Returns synchronously, also before the connection is up; the observer is
+   * replayed with the same id on every reconnect. Errors (`INVALID_ARGS`,
+   * `INVALID_FILTER`, `FORBIDDEN`, an owner's rejection, `UNSUPPORTED` against
+   * an engine without observe) show up as state `error` and reject `ready()`.
+   *
+   * @param source - What is observed: `function_id`, `args` (owner-delivered
+   *   functions only), `filters`, and `on` / `capture` / `deliver`.
+   * @param target - The function to invoke (registered first; until then the observer is `pending`).
+   * @param options - Policy and metadata: `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
+   *
+   * @example
+   * ```typescript
+   * iii.registerFunction('alerts::payment-failed', async ({ input, error }: Observed) => notify(input, error))
+   *
+   * const failures = iii.observe(
+   *   { function_id: 'payments::charge', on: 'error', filters: { 'input.amount': { $gte: 500 } } },
+   *   'alerts::payment-failed',
+   * )
+   * await failures.ready()
+   * // later
+   * await failures.dispose()
+   * ```
+   */
+  observe = (source: ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle => {
+    if (!source || typeof source.function_id !== 'string' || source.function_id.trim() === '') {
+      throw new Error('observe: source.function_id is required')
+    }
+    const targetId = typeof target === 'string' ? target : target?.function_id
+    if (typeof targetId !== 'string' || targetId.trim() === '') {
+      throw new Error('observe: target is required (the id of a registered function)')
+    }
+    const id = options?.id ?? crypto.randomUUID()
+    if (this.observers.has(id)) {
+      throw new Error(`observe: observer id already in use: ${id}`)
+    }
+    const onDispose = (h: ObserverHandleImpl) => this.disposeObserver(h)
+    const logError = (msg: string, error?: unknown) => this.logError(msg, error)
+    // Nothing is sent for an observer that cannot be valid; its handle says why.
+    const refused = (reason: { code: string; message: string }) => {
+      const handle = new ObserverHandleImpl(
+        id,
+        { id, source: { function_id: source.function_id }, target: { function_id: targetId } },
+        onDispose,
+        logError,
+      )
+      handle.setState('error', reason)
+      return handle
+    }
+    // Validated as written, before JSON could drop or rewrite a clause (an
+    // `undefined` operand, `NaN`, a `Date`, a `Map`) and widen the filter.
+    if (source.filters !== undefined) {
+      try {
+        compileFilter(source.filters)
+      } catch (error) {
+        if (!(error instanceof FilterError)) throw error
+        return refused({ code: error.code, message: error.message })
+      }
+    }
+    let message: ReturnType<typeof buildObserveMessage>
+    try {
+      message = buildObserveMessage(id, source, target, options, (explicit, functionId, field) =>
+        invocationNamespace(explicit, this.namespace, functionId, field),
+      )
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error
+      // Not JSON (a BigInt, a cycle in the args or options)
+      return refused({ code: 'INVALID_ARGS', message: `observe: the source or options are not JSON: ${error.message}` })
+    }
+    const handle = new ObserverHandleImpl(id, message, onDispose, logError)
+    this.observers.set(id, handle)
+    if (this.registeredOnConnection && this.isOpen()) {
+      if (this.engineFeatures.has(FEATURE_OBSERVE_V1)) this.sendObserve(handle)
+      else handle.setState('error', UNSUPPORTED_REASON)
+    }
+    return handle
+  }
+
+  /**
+   * The invocation the calling code runs in (in every handler, remote or
+   * local), or `undefined` outside any handler.
+   *
+   * @example
+   * ```typescript
+   * iii.registerFunction('orders::create', async (order) => {
+   *   const inv = iii.currentInvocation() // { function_id, invocation_id, caller, observe_depth }
+   *   return { id: inv?.invocation_id }
+   * })
+   * ```
+   */
+  currentInvocation = (): InvocationContext | undefined => publicContext(currentContext())
+
+  private sendObserve(handle: ObserverHandleImpl): void {
+    this.sendMessage(MessageType.Observe, handle.message, true)
+    handle.sent = true
+  }
+
+  private disposeObserver(handle: ObserverHandleImpl): void {
+    if (this.observers.get(handle.id) === handle) this.observers.delete(handle.id)
+    if (!handle.sent) return
+    this.sendObserveFamily(MessageType.Unobserve, { id: handle.id })
+  }
+
+  /**
+   * An observe-family frame that must not be lost to a disconnect (`unobserve`:
+   * a reattach would otherwise keep the observer alive). Without a registered
+   * connection it waits for the next `WorkerRegistered`, and goes out only if
+   * that engine advertises `observe.v1`.
+   */
+  private sendObserveFamily(type: MessageType, message: Record<string, unknown>): void {
+    if (!this.isOpen() || !this.registeredOnConnection) {
+      this.observeQueue.push({ type, ...message })
+    } else if (this.engineFeatures.has(FEATURE_OBSERVE_V1)) {
+      this.sendMessage(type, message, true)
+    }
+  }
+
+  private warnHooksInactive(functionId: string): void {
+    if (this.hooksInactiveWarned.has(functionId)) return
+    this.hooksInactiveWarned.add(functionId)
+    this.logWarn(
+      `Function "${functionId}" declares observe hooks or owner delivery, but the engine does not support observe (observe.v1): it is registered as a plain function and its observe hooks are inactive.`,
+    )
+  }
+
+  /** Connected to an engine that advertised `observe.v1`. */
+  private observeOnline(): boolean {
+    return this.isOpen() && this.registeredOnConnection && this.engineFeatures.has(FEATURE_OBSERVE_V1)
   }
 
   /**
@@ -585,8 +924,8 @@ class Sdk implements IIIClient {
     )
 
     return {
-      writer: new ChannelWriter(this.address, result.writer),
-      reader: new ChannelReader(this.address, result.reader),
+      writer: new ChannelWriter(this.address, result.writer, this.options?.headers),
+      reader: new ChannelReader(this.address, result.reader, this.options?.headers),
       writerRef: result.writer,
       readerRef: result.reader,
     }
@@ -634,30 +973,68 @@ class Sdk implements IIIClient {
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
-  trigger = async <TInput = unknown, TOutput = any>(
-    request: TriggerRequest<TInput>,
-  ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, metadata } = request
+  trigger = async <TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput> => {
+    const { function_id, action } = request
     // Engine-owned builtins stay in `default`. Other implicit calls stay in
     // this worker's namespace. An explicit request namespace always wins.
     const namespace = invocationNamespace(request.namespace, this.namespace, function_id)
+
+    // Local dispatch (sdk.md §3): a function this worker hosts, confirmed by
+    // the engine for in-process calls, in the namespace it registered in.
+    // `enqueue` expects a queue receipt, so it always goes to the engine, and
+    // so does a call already MAX_LOCAL_DEPTH local calls deep.
+    if (request.dispatch !== 'remote' && action?.type !== 'enqueue') {
+      const fn = this.functions.get(function_id)
+      const observe = fn?.observe
+      if (
+        fn?.handler &&
+        observe?.localDispatch &&
+        (namespace === undefined || namespace === observe.namespace) &&
+        (currentContext()?.localDepth ?? 0) < MAX_LOCAL_DEPTH
+      ) {
+        return this.invokeLocal<TOutput>(function_id, fn.handler, observe, request)
+      }
+    }
+    return this.invokeRemote<TOutput>(request, namespace)
+  }
+
+  /** `caller` and `observe_depth` an outgoing call carries from the current handler (engines with `observe.v1`). */
+  private outgoingObserveFields(): { caller?: CallerWire; observe_depth?: number } {
+    const cur = currentContext()
+    if (!cur || !this.engineFeatures.has(FEATURE_OBSERVE_V1)) return {}
+    return { caller: callerFor(cur), observe_depth: cur.observe_depth }
+  }
+
+  /** The routed path: an `InvokeFunction` through the engine. */
+  private invokeRemote<TOutput>(
+    request: TriggerRequest<unknown>,
+    namespace: string | undefined,
+    activation?: ActivationWire,
+  ): Promise<TOutput> {
+    const { function_id, payload, action, timeoutMs, metadata } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
+    const observeFields = this.outgoingObserveFields()
 
     // Void is fire-and-forget, no invocation_id, no response
     if (action?.type === 'void') {
       const traceparent = injectTraceparent()
       const baggage = injectBaggage()
-      this.sendMessage(MessageType.InvokeFunction, {
-        function_id,
-        data: payload,
-        traceparent,
-        baggage,
-        action,
-        metadata,
-        // Omitted only when this worker has no namespace either.
-        ...(namespace !== undefined ? { namespace } : {}),
-      })
-      return undefined as TOutput
+      this.sendMessage(
+        MessageType.InvokeFunction,
+        buildInvokeFunction({
+          function_id,
+          data: payload,
+          traceparent,
+          baggage,
+          action,
+          metadata,
+          // Omitted only when this worker has no namespace either.
+          namespace,
+          ...observeFields,
+          activation,
+        }) as Omit<IIIMessage, 'message_type'>,
+      )
+      return Promise.resolve(undefined as TOutput)
     }
 
     // Enqueue and default: send invocation_id, await response
@@ -693,17 +1070,148 @@ class Sdk implements IIIClient {
         timeout,
       })
 
-      this.sendMessage(MessageType.InvokeFunction, {
-        invocation_id,
-        function_id,
-        data: payload,
-        traceparent,
-        baggage,
-        action,
-        metadata,
-        // Omitted only when this worker has no namespace either.
-        ...(namespace !== undefined ? { namespace } : {}),
-      })
+      this.sendMessage(
+        MessageType.InvokeFunction,
+        buildInvokeFunction({
+          invocation_id,
+          function_id,
+          data: payload,
+          traceparent,
+          baggage,
+          action,
+          metadata,
+          // Omitted only when this worker has no namespace either.
+          namespace,
+          ...observeFields,
+          activation,
+        }) as Omit<IIIMessage, 'message_type'>,
+      )
+    })
+  }
+
+  /**
+   * The local path (sdk.md §4.3): runs the handler in-process, with a copy of
+   * the payload, inside a new invocation context; the same timeout and error
+   * shape as the remote path; reports the call when an observer matches.
+   * Puts nothing on the wire when nobody observes the function.
+   */
+  private invokeLocal<TOutput>(
+    function_id: string,
+    handler: NonNullable<RemoteFunctionData['handler']>,
+    observe: FunctionObservers,
+    request: TriggerRequest<unknown>,
+  ): Promise<TOutput> {
+    const parent = currentContext()
+    const caller: CallerWire =
+      this.workerId !== undefined
+        ? { worker_id: this.workerId, worker_name: this.workerName }
+        : { worker_name: this.workerName }
+    if (parent) {
+      caller.function_id = parent.function_id
+      caller.invocation_id = parent.invocation_id
+      const grandparent = stripCaller(parent.caller)
+      if (grandparent && Object.keys(grandparent).length > 0) caller.parent = grandparent
+    }
+    const traceparent = injectTraceparent()
+    const baggage = injectBaggage()
+    const ctx: ActiveInvocation = {
+      function_id,
+      invocation_id: crypto.randomUUID(),
+      caller,
+      observe_depth: parent?.observe_depth ?? 0,
+      metadata: request.metadata,
+      traceparent,
+      baggage,
+      localDepth: (parent?.localDepth ?? 0) + 1,
+    }
+
+    // The observers this call is evaluated against: those active when it
+    // started. None → it is not reported, and its input is not copied for it.
+    const observed = observe.delivery === 'auto' ? observe.compiled : []
+    let input: unknown
+    let observedInput: unknown
+    let observedMetadata: unknown
+    let metadata: unknown
+    try {
+      // What observers see is the payload and metadata as the caller passed them
+      // when the call started, not what the handler or the caller made of them since.
+      if (observed.length > 0) {
+        observedInput = cloneValue(request.payload)
+        observedMetadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
+      }
+      input = this.resolveChannelValue(cloneValue(request.payload))
+      metadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+
+    const startedAt = Date.now()
+    const t0 = performance.now()
+    const finish = (ok: boolean, output: unknown, error: ErrorBody | undefined) => {
+      try {
+        const duration = performance.now() - t0
+        this.reporter.recordLocal(function_id, ok, duration)
+        observe.reportLocal(observed, {
+          invocation_id: ctx.invocation_id,
+          ok,
+          input: observedInput,
+          output,
+          error,
+          caller: ctx.caller,
+          metadata: observedMetadata,
+          started_at_ms: startedAt,
+          duration_ms: duration,
+          observe_depth: ctx.observe_depth,
+          traceparent,
+          baggage,
+        })
+      } catch (reportError) {
+        this.logError(`Failed to report a local invocation of ${function_id}`, reportError)
+      }
+    }
+
+    const done = runInContext(ctx, () => handler(input, metadata as JsonValue, traceparent, baggage)).then(
+      (output) => {
+        finish(true, output, undefined)
+        return output
+      },
+      (error) => {
+        const body = handlerErrorBody(error)
+        finish(false, undefined, body)
+        throw new InvocationError({ ...body, function_id })
+      },
+    )
+
+    if (request.action?.type === 'void') {
+      done.catch((error) => this.logError(`Error invoking function ${function_id}`, error))
+      return Promise.resolve(undefined as TOutput)
+    }
+
+    const effectiveTimeout = request.timeoutMs ?? this.invocationTimeoutMs
+    return new Promise<TOutput>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(
+          new InvocationError({
+            code: 'TIMEOUT',
+            message: `invocation timed out after ${effectiveTimeout}ms`,
+            function_id,
+          }),
+        )
+      }, effectiveTimeout)
+      done.then(
+        (output) => {
+          clearTimeout(timeout)
+          try {
+            resolve(cloneValue(output) as TOutput)
+          } catch (error) {
+            reject(error)
+          }
+        },
+        (error) => {
+          clearTimeout(timeout)
+          reject(error)
+        },
+      )
     })
   }
 
@@ -729,8 +1237,11 @@ class Sdk implements IIIClient {
           project_name: telemetryOpts?.project_name ?? detectProjectName(),
           framework: telemetryOpts?.framework?.trim() || 'iii-node',
         },
+        // Opts this connection into the observe messages (CONTRACT D2).
+        features: [...SDK_FEATURES],
       },
       action: { type: 'void' },
+      dispatch: 'remote',
     })
   }
 
@@ -743,6 +1254,8 @@ class Sdk implements IIIClient {
    * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
    * not registered; atomic updates are handled by the engine's built-in
    * stream update logic.
+   *
+   * @deprecated __helpers_create_stream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
    */
   __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
     this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
@@ -778,6 +1291,16 @@ class Sdk implements IIIClient {
    */
   shutdown = async (): Promise<void> => {
     this.isShuttingDown = true
+    this.removeProcessMarker()
+
+    // Last chance for buffered reports and counters to reach the engine.
+    try {
+      this.reporter.flush()
+      this.reporter.sendStats()
+    } catch (error) {
+      this.logError('Failed to flush observed invocations on shutdown', error)
+    }
+    this.reporter.stop()
 
     this.stopMetricsReporting()
 
@@ -833,9 +1356,9 @@ class Sdk implements IIIClient {
 
     this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address, {
-      // Match the engine's message bound; outbound single frames use 16 MiB.
+      // Match the engine's inbound message bound; outbound envelopes may be fragmented up to the same size.
       maxPayload: MAX_JSON_MESSAGE_BYTES,
-      headers: this.options?.headers,
+      headers: resolveHeaders(this.options?.headers),
       handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
     })
     this.ws.on('open', this.onSocketOpen.bind(this))
@@ -941,6 +1464,9 @@ class Sdk implements IIIClient {
     this.ws?.removeAllListeners()
     this.ws?.terminate()
     this.ws = undefined
+    // Local dispatch and the compiled observer sets survive; what was sent on
+    // this connection is replayed on the next one.
+    this.registeredOnConnection = false
 
     this.setConnectionState('disconnected')
     this.stopMetricsReporting()
@@ -951,6 +1477,8 @@ class Sdk implements IIIClient {
     this.clearReconnectTimeout()
     this.reconnectAttempt = 0
     this.setConnectionState('connected')
+    this.connectionEpoch++
+    this.registeredOnConnection = false
 
     this.ws?.on('message', this.onMessage.bind(this))
 
@@ -984,7 +1512,6 @@ class Sdk implements IIIClient {
     // registrations so the engine knows this connection's namespace up front.
     this.registerWorkerMetadata()
 
-
     this.triggerTypes.forEach(({ message }) => {
       this.replayRegistration(MessageType.RegisterTriggerType, message)
     })
@@ -994,11 +1521,18 @@ class Sdk implements IIIClient {
     this.triggers.forEach((trigger) => {
       this.replayRegistration(MessageType.RegisterTrigger, trigger)
     })
+    // Observers follow the functions (so local targets exist first), once
+    // `WorkerRegistered` says whether this engine supports them.
 
     // Optimized: swap with empty array instead of splice
     const pending = this.messagesToSend
     this.messagesToSend = []
     for (const message of pending) {
+      // Observe frames wait for this engine's features (WorkerRegistered).
+      if (OBSERVE_FAMILY.has(message.type as MessageType)) {
+        this.observeQueue.push(message)
+        continue
+      }
       if (
         message.type === MessageType.InvokeFunction &&
         typeof message.invocation_id === 'string' &&
@@ -1021,10 +1555,7 @@ class Sdk implements IIIClient {
     return JSON.parse(JSON.stringify(message)) as T
   }
 
-  private replayRegistration(
-    type: MessageType,
-    message: Omit<IIIMessage, 'message_type'>,
-  ): void {
+  private replayRegistration(type: MessageType, message: Omit<IIIMessage, 'message_type'>): void {
     try {
       this.sendMessage(type, message, true)
     } catch (error) {
@@ -1037,23 +1568,22 @@ class Sdk implements IIIClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
-  // Main protocol JSON uses one frame, with an inclusive 16 MiB limit.
+  // Classify the complete serialized envelope against the inclusive message limit.
   private prepareJson(message: Record<string, unknown>): string {
     const data = JSON.stringify(message)
     const size = Buffer.byteLength(data, 'utf8')
-    if (size <= MAX_JSON_FRAME_BYTES) return data
-    const error = new InvocationError({
-      code: 'payload_too_large',
-      message: `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for large data.`,
-    })
+    if (size <= MAX_JSON_MESSAGE_BYTES) return data
+    const detail = `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size`
+    const error = new InvocationError({ code: 'payload_too_large', message: detail })
     if (message.type === MessageType.InvocationResult) {
+      // The wire body carries the bare message: the caller's InvocationError adds the `code: ` prefix.
       const fallback = JSON.stringify({
         type: MessageType.InvocationResult,
         invocation_id: message.invocation_id,
         function_id: message.function_id,
-        error: { code: error.code, message: error.message },
+        error: { code: error.code, message: detail },
       })
-      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_FRAME_BYTES) return fallback
+      if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_MESSAGE_BYTES) return fallback
     }
     if (typeof message.invocation_id === 'string') {
       const pending = this.invocations.get(message.invocation_id)
@@ -1065,17 +1595,35 @@ class Sdk implements IIIClient {
 
   private sendMessageRaw(data: string): void {
     // Reattach and queue flush bypass sendMessage.
-    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_FRAME_BYTES) {
+    if (Buffer.byteLength(data, 'utf8') > MAX_JSON_MESSAGE_BYTES) {
       data = this.prepareJson(JSON.parse(data))
     }
     if (this.ws && this.isOpen()) {
+      let offset = 0
       try {
-        this.ws.send(data, (err) => {
-          if (err) {
-            this.logError('Failed to send message', err)
-          }
-        })
+        const size = Buffer.byteLength(data, 'utf8')
+        if (size <= MAX_JSON_FRAME_BYTES) {
+          this.ws.send(data, (err) => {
+            if (err) {
+              this.logError('Failed to send message', err)
+            }
+          })
+          return
+        }
+
+        const bytes = Buffer.from(data, 'utf8')
+        // Keep this loop synchronous: ws queues sends in call order, so no data
+        // frame from another message can appear between these fragments.
+        for (; offset < bytes.length; offset += MAX_JSON_FRAGMENT_BYTES) {
+          const end = Math.min(offset + MAX_JSON_FRAGMENT_BYTES, bytes.length)
+          this.ws.send(bytes.subarray(offset, end), { binary: false, fin: end === bytes.length }, (err) => {
+            if (err) {
+              this.logError('Failed to send message', err)
+            }
+          })
+        }
       } catch (error) {
+        if (offset > 0) this.ws?.terminate()
         this.logError('Exception while sending message', error)
       }
     }
@@ -1156,6 +1704,9 @@ class Sdk implements IIIClient {
     owner_worker_id: string
   }): void {
     if (init.code === FUNCTION_NAMESPACE_CONFLICT) {
+      // The engine refused it: no local dispatch, no observers for it here.
+      if (init.function_id !== undefined)
+        this.functions.get(init.function_id)?.observe?.onRegistrationRejected(this.connectionEpoch)
       this.logWarn(
         `Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
       )
@@ -1243,10 +1794,7 @@ class Sdk implements IIIClient {
     // would set message to the literal string "undefined" after type coercion
     // and leak an uninformative rejection. Fall back through String(error)
     // so every path produces a concrete, readable string.
-    const message =
-      typeof error === 'string'
-        ? error
-        : (JSON.stringify(error) ?? String(error))
+    const message = typeof error === 'string' ? error : (JSON.stringify(error) ?? String(error))
     return new InvocationError({
       code: 'UNKNOWN',
       message,
@@ -1254,21 +1802,41 @@ class Sdk implements IIIClient {
     })
   }
 
+  /**
+   * Replaces channel refs with readers / writers. Copy-on-write: a value
+   * without refs is returned as it is. Only arrays and plain objects are
+   * walked, so a locally dispatched payload keeps its `Date`s, `Map`s and
+   * class instances.
+   */
   private resolveChannelValue(value: unknown): unknown {
     if (isChannelRef(value)) {
       return value.direction === 'read'
-        ? new ChannelReader(this.address, value)
-        : new ChannelWriter(this.address, value)
+        ? new ChannelReader(this.address, value, this.options?.headers)
+        : new ChannelWriter(this.address, value, this.options?.headers)
     }
     if (Array.isArray(value)) {
-      return value.map((item) => this.resolveChannelValue(item))
+      let out: unknown[] | undefined
+      for (let i = 0; i < value.length; i++) {
+        const resolved = this.resolveChannelValue(value[i])
+        if (resolved !== value[i]) {
+          out ??= value.slice()
+          out[i] = resolved
+        }
+      }
+      return out ?? value
     }
     if (value !== null && typeof value === 'object') {
-      const out: Record<string, unknown> = {}
+      const proto = Object.getPrototypeOf(value)
+      if (proto !== Object.prototype && proto !== null) return value
+      let out: Record<string, unknown> | undefined
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = this.resolveChannelValue(v)
+        const resolved = this.resolveChannelValue(v)
+        if (resolved !== v) {
+          out ??= { ...(value as Record<string, unknown>) }
+          out[k] = resolved
+        }
       }
-      return out
+      return out ?? value
     }
     return value
   }
@@ -1280,6 +1848,7 @@ class Sdk implements IIIClient {
     metadata?: JsonValue,
     traceparent?: string,
     baggage?: string,
+    observeFields: { caller?: CallerWire; observe_depth?: number; activation?: ActivationWire } = {},
   ): Promise<unknown> {
     const fn = this.functions.get(function_id)
     const getResponseTraceparent = () => injectTraceparent() ?? traceparent
@@ -1288,9 +1857,26 @@ class Sdk implements IIIClient {
     const resolvedInput = this.resolveChannelValue(input) as TInput
 
     if (fn?.handler) {
+      const handler = fn.handler
+      // The invocation context every handler sees (`currentInvocation()`), and
+      // what the calls it makes carry as their caller.
+      const ctx: ActiveInvocation = {
+        function_id,
+        invocation_id: invocation_id ?? crypto.randomUUID(),
+        observe_depth: observeFields.observe_depth ?? 0,
+        metadata,
+        traceparent,
+        baggage,
+      }
+      if (observeFields.caller) ctx.caller = observeFields.caller
+      if (observeFields.activation) ctx.activation = observeFields.activation
+      const run = () => runInContext(ctx, () => handler(resolvedInput, metadata, traceparent, baggage))
+
+      // Fire-and-forget (`void`, no invocation id): never answered. Activations
+      // carry an id and are answered like any call (CONTRACT D16).
       if (!invocation_id) {
         try {
-          await fn.handler(resolvedInput, metadata, traceparent, baggage)
+          await run()
         } catch (error) {
           this.logError(`Error invoking function ${function_id}`, error)
         }
@@ -1298,7 +1884,7 @@ class Sdk implements IIIClient {
       }
 
       try {
-        const result = await fn.handler(resolvedInput, metadata, traceparent, baggage)
+        const result = await run()
         this.sendMessage(MessageType.InvocationResult, {
           invocation_id,
           function_id,
@@ -1398,14 +1984,48 @@ class Sdk implements IIIClient {
     }
   }
 
-  private onTriggerRegistrationResult(
-    message: { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
-  ): void {
+  private onTriggerRegistrationResult(message: {
+    id: string
+    trigger_type?: string
+    type?: string
+    function_id: string
+    error?: { code: string; message: string; stacktrace?: string }
+  }): void {
     if (!message.error) return
     const triggerType = message.trigger_type ?? message.type ?? ''
-    console.error(
-      `[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`,
-    )
+    console.error(`[iii] Trigger registration failed for "${message.id}" (${triggerType}): ${message.error.message}`)
+  }
+
+  /**
+   * `WorkerRegistered` told this connection what the engine supports. With
+   * `observe.v1` the observers are replayed (after the functions, sent on
+   * open) and held reports flushed; without it `observe()` fails with
+   * `UNSUPPORTED` and observe hooks are inactive.
+   */
+  private onEngineFeatures(features: string[]): void {
+    this.engineFeatures = new Set(features)
+    this.registeredOnConnection = true
+    const queued = this.observeQueue
+    this.observeQueue = []
+    if (this.engineFeatures.has(FEATURE_OBSERVE_V1)) {
+      for (const message of queued) this.sendMessageRaw(JSON.stringify(message))
+      for (const handle of this.observers.values()) this.sendObserve(handle)
+      this.reporter.flush()
+      return
+    }
+    for (const handle of this.observers.values()) handle.setState('error', UNSUPPORTED_REASON)
+    for (const [functionId, fn] of this.functions) {
+      if (fn.observe?.needsObserve) this.warnHooksInactive(functionId)
+    }
+    this.reporter.clear()
+  }
+
+  private onObserverState(id: string, wireState: string, reason?: ErrorBody): void {
+    const handle = this.observers.get(id)
+    if (!handle) return
+    const state = toObserverState(wireState)
+    handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
+    if (state === 'disposed') this.observers.delete(id)
   }
 
   private onMessage(socketMessage: Data): void {
@@ -1426,10 +2046,42 @@ class Sdk implements IIIClient {
       const { invocation_id, result, error } = message as InvocationResultMessage
       this.onInvocationResult(invocation_id, result, error)
     } else if (msgType === MessageType.InvokeFunction) {
-      const { invocation_id, function_id, data, metadata, traceparent, baggage } = message as InvokeFunctionMessage
-      this.onInvokeFunction(invocation_id, function_id, data, metadata, traceparent, baggage)
+      const { invocation_id, function_id, data, metadata, traceparent, baggage, caller, observe_depth, activation } =
+        decodeInvokeFunction(message)
+      this.onInvokeFunction(invocation_id, function_id, data, metadata, traceparent, baggage, {
+        caller,
+        observe_depth,
+        activation,
+      })
+    } else if (msgType === MessageType.FunctionRegistered) {
+      const msg = decodeFunctionRegistered(message)
+      // Its reports held across a reconnect are flushed once the set is acked.
+      this.functions.get(msg.id)?.observe?.onFunctionRegistered(msg, this.connectionEpoch)
+    } else if (msgType === MessageType.ObserverAdded) {
+      const msg = decodeObserverAdded(message)
+      this.functions.get(msg.function_id)?.observe?.onObserverAdded(msg)
+    } else if (msgType === MessageType.ObserverRemoved) {
+      const msg = decodeObserverRemoved(message)
+      this.functions.get(msg.function_id)?.observe?.onObserverRemoved(msg)
+    } else if (msgType === MessageType.ObserveResult) {
+      const msg = decodeObserveResult(message)
+      if (msg.warnings && msg.warnings.length > 0) {
+        this.logWarn(`Observer ${msg.id}: ${msg.warnings.join('; ')}`)
+      }
+      this.onObserverState(msg.id, msg.state, msg.error)
+    } else if (msgType === MessageType.ObserverStateChanged) {
+      const msg = decodeObserverStateChanged(message)
+      this.onObserverState(msg.id, msg.state, msg.reason)
     } else if (msgType === MessageType.RegisterTrigger) {
-      this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
+      this.onRegisterTrigger(
+        message as {
+          trigger_type: string
+          id: string
+          function_id: string
+          config: unknown
+          metadata?: Record<string, unknown>
+        },
+      )
     } else if (msgType === MessageType.UnregisterTrigger) {
       this.onUnregisterTrigger(
         message as {
@@ -1442,14 +2094,21 @@ class Sdk implements IIIClient {
       )
     } else if (msgType === MessageType.TriggerRegistrationResult) {
       this.onTriggerRegistrationResult(
-        message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
+        message as {
+          id: string
+          trigger_type?: string
+          type?: string
+          function_id: string
+          error?: { code: string; message: string; stacktrace?: string }
+        },
       )
     } else if (msgType === MessageType.WorkerRegistered) {
-      const { worker_id, reattach_token } = message as WorkerRegisteredMessage
+      const { worker_id, reattach_token, features } = decodeWorkerRegistered(message)
       this.workerId = worker_id
       this.reattachToken = reattach_token
       console.debug('[iii] Worker registered with ID:', worker_id)
       this.startMetricsReporting()
+      this.onEngineFeatures(features ?? [])
     } else if (msgType === MessageType.RegistrationRejected) {
       const { code, namespace, worker_name, function_id, owner_worker_id } = message as RegistrationRejectedMessage
       this.onRegistrationRejected({ code, namespace, worker_name, function_id, owner_worker_id })

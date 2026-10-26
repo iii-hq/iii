@@ -1,0 +1,13 @@
+{
+  "description": "the root must be input, output, error, caller or metadata",
+  "cases": [
+    { "filters": {"inputs.x": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "inputs" },
+    { "filters": {"Input.x": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "roots are case-sensitive" },
+    { "filters": {"payload.x": {"$eq": 1}}, "code": "INVALID_FILTER", "note": "payload" },
+    { "filters": {"args.expression": {"$eq": "x"}}, "code": "INVALID_FILTER", "note": "args are not filters" },
+    { "filters": {"result": {"$exists": true}}, "code": "INVALID_FILTER", "note": "result" },
+    { "filters": {"x": {"$exists": true}}, "code": "INVALID_FILTER", "note": "bare key" },
+    { "filters": {"inp\\.ut": {"$exists": true}}, "code": "INVALID_FILTER", "note": "escaped root is a different key" },
+    { "filters": {"$or": [{"status": {"$eq": "x"}}]}, "code": "INVALID_FILTER", "note": "unknown root inside $or" }
+  ]
+}

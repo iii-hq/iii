@@ -5,6 +5,11 @@ import time
 
 import pytest
 
+# Fixtures of the observe tests: a fake engine for the unit tests, and workers
+# of their own against the real engine for the integration tests.
+from observe_e2e_utils import fid, worker  # noqa: F401
+from observe_fake_engine import connect, engine, engine_factory, quiet_otel  # noqa: F401
+
 from iii import InitOptions
 from iii.iii import III
 

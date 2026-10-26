@@ -3,6 +3,21 @@ import * as path from 'node:path'
 import type { StreamChannelRef } from './iii-types'
 
 /**
+ * Handshake headers for an engine connection: the caller's, plus
+ * `Authorization: Bearer $III_TOKEN` when the variable is set and not blank.
+ * An `Authorization` header the caller passed wins (names match
+ * case-insensitively). Browsers cannot set handshake headers, so this lives in
+ * the Node package only.
+ */
+export function resolveHeaders(explicit?: Record<string, string>): Record<string, string> | undefined {
+  const token = process.env.III_TOKEN?.trim()
+  if (!token || Object.keys(explicit ?? {}).some((name) => name.toLowerCase() === 'authorization')) {
+    return explicit
+  }
+  return { ...explicit, Authorization: `Bearer ${token}` }
+}
+
+/**
  * Returns a project identifier for telemetry, derived from the current working
  * directory. Reads `package.json` `name` if present at `cwd`; otherwise falls
  * back to the basename of `cwd`. Returns `undefined` only when both signals

@@ -52,6 +52,10 @@ Restart the project. The first restart can take a few minutes because Compose do
 iii trigger compose::restart --timeout-ms 600000
 ```
 
+The links you created in Chapters 1 and 2 lived only in the in-memory `state`: the restart clears
+them, and the new `links` table starts empty. Once this chapter's code is in, create again with
+`POST /links` any link you still need.
+
 The worker will be in charge of defining its own schema. We'll build up the necessary changes to
 `link/src/index.ts` in pieces.
 
@@ -67,7 +71,7 @@ The worker will be in charge of defining its own schema. We'll build up the nece
 First add the `DB` constant **near the top of `link/src/index.ts`**:
 
 ```typescript src/index.ts {4}
-import { registerWorker } from "iii-sdk";
+import { InvocationError, registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
 const DB = "primary"; // Matches the database name in worker-compose.yaml
@@ -122,20 +126,31 @@ ensureSchema().catch((err) => logger.error("database: schema init failed", { err
 
 #### Write links to the database
 
-**Modify `link::create`** to write to both the database (durable record) and `state` (hot cache):
+**Modify `link::create`** to write to both the database (durable record) and `state` (hot cache).
+The `code` column is the table's primary key, so the database itself refuses a second link with the
+same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of
+a database error, and `database::execute` reports the count as `affected_rows`. Zero means the code
+is taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering
+`409` with `link::create`'s own message rather than the database's.
 
-```typescript src/index.ts {2,4-11}
+```typescript src/index.ts {2,4-17}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   const code = payload.code ?? makeCode();
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
-  await worker.trigger({
+  // ON CONFLICT DO NOTHING turns a taken code into zero inserted rows instead
+  // of a database error, so link::create can say so in its own words.
+  const { affected_rows } = await worker.trigger<
+    { db: string; sql: string; params: string[] },
+    { affected_rows: number }
+  >({
     function_id: "database::execute",
     payload: {
       db: DB,
-      sql: "INSERT INTO links (code, url, created_at) VALUES (?, ?, ?)",
+      sql: "INSERT INTO links (code, url, created_at) VALUES (?, ?, ?) ON CONFLICT(code) DO NOTHING",
       params: [code, url, new Date().toISOString()],
     },
   });
+  if (affected_rows === 0) throw new Error(`code \`${code}\` is already taken`);
   await worker.trigger({
     function_id: "state::set",
     payload: { scope: "links", key: code, value: { url } },
@@ -144,10 +159,6 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   return { code, url };
 });
 ```
-
-This version removes the Chapter 1 check for a taken code. The `code` column is the PRIMARY KEY of
-the `links` table, so the database rejects a duplicate code. `link::create` then throws an error,
-and `http::create` still returns `409`.
 
 #### Read links from the database
 
@@ -272,6 +283,14 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 
 `--help` also works with a function ID. Run `iii trigger database::query --help` to see the
 arguments that `database::query` accepts.
+
+Run the loop a second time and each `POST /links` answers `409`, because the codes are taken:
+
+```json
+{ "error": "code `iii-example-1` is already taken" }
+```
+
+The redirects still go through, so the click count above grows by three on every run.
 
 ## Conclusion
 

@@ -1041,3 +1041,15 @@ class TestCalculateVersionBumpNone:
         assert step("0.19.5-next.1", "none", "next") == "0.19.5-next.2"  # iterate
         assert step("0.19.5-next.2", "none", "next") == "0.19.5-next.3"  # iterate
         assert step("0.19.5-next.3", "patch", "none") == "0.19.5"  # promote
+
+
+@pytest.mark.parametrize("inflight,expected", [
+    (None, "0.25.0-rc.2"),  # alpha/legacy callers keep the global behavior
+    ([], "0.24.0-rc.1"),  # explicit empty ancestry must not fall back to all tags
+    (["iii/v0.24.1-rc.1"], "0.24.1-rc.8"),
+])
+def test_scoped_train_discovery_preserves_global_counters(inflight, expected):
+    tags = ["iii/v0.24.0", "iii/v0.24.1-rc.1", "iii/v0.24.1-rc.7", "iii/v0.25.0-rc.1"]
+    assert calculate_version(
+        "0.24.0", "none", "rc", "0.24.0", tags, "iii", inflight_tags=inflight,
+    ) == expected

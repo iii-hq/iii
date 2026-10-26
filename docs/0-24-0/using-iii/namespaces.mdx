@@ -1,0 +1,245 @@
+---
+title: "Namespaces"
+description: "Set worker namespaces, call namespaced functions, and handle namespace conflicts."
+owner: "devrel"
+type: "how-to"
+---
+
+Every worker has an effective namespace. A worker uses `default` when you do not set one. Use a
+non-default namespace when multiple tenants or projects must use the same worker name or function id
+on one engine.
+
+## Set a worker namespace
+
+The SDK selects the worker namespace in this order:
+
+| Priority | Source                                                  |
+| -------- | ------------------------------------------------------- |
+| 1        | The explicit `namespace` SDK option                     |
+| 2        | The worker process `III_NAMESPACE` environment variable |
+| 3        | `default`                                               |
+
+Use a non-empty string for a namespace. Leave the option out and the SDK reads `III_NAMESPACE`
+itself, then falls back to `default`; an absent option gives the same result as passing
+`process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
+`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value is invalid
+and fails in both the SDK and at the engine.
+
+{/* TODO: Add this back when compose is released */}
+
+{/* ### Managed workers */}
+
+{/* Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker */}
+
+{/* package independent from one tenant or project. */}
+
+{/* ```yaml compose.yaml */}
+
+{/* services: */}
+
+{/* state-orders: */}
+
+{/* image: example/state-worker:latest */}
+
+{/* environment: */}
+
+{/* III_URL: ws://iii:49134 */}
+
+{/* III_NAMESPACE: orders */}
+
+{/* ``` */}
+
+{/* The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a */}
+
+{/* per-worker `namespace:` key in `config.yaml`; that key does not exist. */}
+
+### SDK option
+
+Use the explicit option when application code must select the namespace. The option has priority
+over `III_NAMESPACE`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL!, {
+      workerName: "state",
+      namespace: "orders",
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="state", namespace="orders"),
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, register_worker};
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Browser">
+    ```typescript
+    import { registerWorker } from "iii-browser-sdk";
+
+    const worker = registerWorker("ws://localhost:49135", {
+      workerName: "checkout-tab",
+      namespace: "orders",
+    });
+    ```
+
+  </Tab>
+</Tabs>
+
+The browser SDK cannot read a process environment. Pass its namespace explicitly or obtain it from
+trusted runtime configuration.
+
+## Trigger a function in a namespace
+
+Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
+call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
+no namespace of its own resolves in `default`, as before.
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger --namespace orders state::get key=cart
+    ```
+
+  </Tab>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "state::get",
+      payload: { key: "cart" },
+      namespace: "orders",
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "state::get",
+        "payload": {"key": "cart"},
+        "namespace": "orders",
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::TriggerRequest;
+    use serde_json::json;
+
+    let result = worker
+        .trigger(
+            TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "key": "cart" }),
+                action: None,
+                timeout_ms: None,
+            }
+            .namespace("orders"),
+        )
+        .await?;
+    ```
+
+  </Tab>
+</Tabs>
+
+A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
+
+<Note>
+  `iii trigger --namespace <NS>` calls a function in that namespace. Without the flag it resolves in
+  `default`: a CLI invocation has no namespace of its own to inherit.
+</Note>
+
+## Point a trigger at a namespaced function
+
+Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
+the target to the worker's namespace. Set `namespace` to bind it elsewhere, which is what a trigger
+pointing at an engine builtin needs, since those exist only in `default`.
+
+```typescript
+// Bound to this worker's namespace.
+worker.registerTrigger({
+  type: "http",
+  function_id: "state::get",
+  config: { api_path: "/orders/state", http_method: "GET" },
+});
+
+// Bound to `default`, where the engine's own functions live.
+worker.registerTrigger({
+  type: "cron",
+  function_id: "engine::workers::list",
+  config: { schedule: "0 * * * *" },
+  namespace: "default",
+});
+```
+
+## Inspect namespaces
+
+Every row from `engine::functions::list` and `engine::workers::list` contains a `namespace` field.
+The list functions return all namespaces.
+
+Pass `namespace` to an info function for strict lookup:
+
+```bash
+iii trigger engine::workers::info --json '{"name":"state","namespace":"orders"}'
+```
+
+Without a namespace, `engine::functions::info` and `engine::workers::info` first use a `default`
+entry. If no `default` entry exists, they resolve a name that exists in only one namespace. They
+return an ambiguity when the name exists in multiple namespaces.
+
+## Handle a rejected registration
+
+The engine sends `registrationrejected` when a live worker already owns the same identity in the
+same namespace.
+
+| Code                          | Effect                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | Fatal. The engine closes the new connection. The SDK does not reconnect.                    |
+| `FUNCTION_NAMESPACE_CONFLICT` | The engine rejects one function. The worker stays connected and serves its other functions. |
+
+For a worker-name conflict, change the worker name or namespace. For a function conflict, remove the
+duplicate function id or move one worker to another namespace.
+
+<Warning>
+  A connected worker does not confirm that all its functions are registered. SDKs report a function
+  conflict as a warning. Treat the warning as a startup error when the worker requires every
+  function.
+</Warning>
+
+For the wire fields and the exact conflict sequence, see
+[`RegistrationRejected`](../reference/engine-protocol#registrationrejected).
+
+## Configure RBAC for a namespace
+
+An `iii-worker-manager` `expose_functions` rule without a namespace applies to `default` only. Add
+the exact namespace when the rule must expose a namespaced function. See
+[Namespace-scoped function rules](../creating-workers/worker-manager#namespace-scoped-function-rules).
+
+## Related
+
+- [Understand namespaces](../understanding-iii/namespaces)
+- [Registration namespace timeout](./configuration#registration-namespace-timeout)
+- [Upgrade from 0.22.x](../upgrading/from-0-22-x)

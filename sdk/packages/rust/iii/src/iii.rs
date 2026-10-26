@@ -1,9 +1,12 @@
-// Main JSON outbound envelope: 16 MiB (16,777,216 bytes).
-const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
-// Main JSON inbound frame/message: 64 MiB (67,108,864 bytes).
+// Main JSON single-frame threshold: 16 MiB (16,777,216 bytes).
+pub(crate) const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
+// Main JSON inbound and outbound message limit: 64 MiB (67,108,864 bytes).
 const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+// Payload bytes in each outbound fragment above the single-frame threshold.
+const JSON_FRAGMENT_BYTES: usize = 1024 * 1024;
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod json_size_tests {
     use super::*;
 
@@ -21,8 +24,8 @@ mod json_size_tests {
         let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
         let (mut tx, _) = stream.split();
         let sdk = IIIClient::new("ws://127.0.0.1:0");
-        let rejected =
-            IIIClient::prepare_envelope(&invocation("x".repeat(MAX_JSON_FRAME_BYTES))).unwrap_err();
+        let rejected = IIIClient::prepare_envelope(&invocation("x".repeat(MAX_JSON_MESSAGE_BYTES)))
+            .unwrap_err();
         assert_eq!(
             rejected.invocation_error().unwrap().code,
             "payload_too_large"
@@ -31,7 +34,7 @@ mod json_size_tests {
             IIIClient::prepare_envelope(&Message::InvocationResult {
                 invocation_id: Uuid::nil(),
                 function_id: "f".into(),
-                result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+                result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
                 error: None,
                 traceparent: None,
                 baggage: None,
@@ -53,7 +56,7 @@ mod json_size_tests {
         let error = sdk
             .trigger(crate::protocol::TriggerRequest {
                 function_id: "size::echo".into(),
-                payload: Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+                payload: Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
                 action: None,
                 timeout_ms: Some(100),
             })
@@ -95,7 +98,7 @@ mod json_size_tests {
         let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
         assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
 
-        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
 
         let types = sdk.inner.trigger_types.lock_or_recover();
         let accepted = &types["size::custom"];
@@ -127,7 +130,7 @@ mod json_size_tests {
         assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
         let rejected = sdk.register_function_inner(
             RegisterFunctionMessage::with_id("size::handler".into())
-                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+                .with_description("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             None,
         );
         rejected.unregister();
@@ -150,16 +153,16 @@ mod json_size_tests {
         sdk.inner.running.store(true, Ordering::SeqCst);
         let rejected = sdk.register_function_inner(
             RegisterFunctionMessage::with_id("size::rejected".into())
-                .with_description("x".repeat(MAX_JSON_FRAME_BYTES)),
+                .with_description("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             None,
         );
         rejected.unregister();
-        register_test_type(&sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
         let error = sdk
             .register_trigger(RegisterTriggerInput::new(
                 "size::custom",
                 "size::handler",
-                Value::String("x".repeat(MAX_JSON_FRAME_BYTES)),
+                Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
             ))
             .err()
             .expect("oversized trigger must fail");
@@ -187,7 +190,7 @@ mod json_size_tests {
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let owned = sdk.inner.trigger_types.lock_or_recover();
         let thread = std::thread::spawn(move || {
-            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_FRAME_BYTES));
+            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
             finished_tx.send(()).unwrap();
         });
         // Holding the mutex makes the old insertion-before-validation path
@@ -212,7 +215,7 @@ mod json_size_tests {
             .clone();
         let mut rejected_message = rejected_message.to_message();
         if let Message::RegisterTriggerType { description, .. } = &mut rejected_message {
-            *description = "x".repeat(MAX_JSON_FRAME_BYTES);
+            *description = "x".repeat(MAX_JSON_MESSAGE_BYTES);
         }
         let rejected_sdk = sdk.clone();
         let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
@@ -256,35 +259,315 @@ mod json_size_tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
+        }
+    }
+
+    fn envelope_with_size(size: usize) -> PreparedEnvelope {
+        let overhead = serde_json::to_string(&invocation(String::new()))
+            .unwrap()
+            .len();
+        IIIClient::prepare_envelope(&invocation("x".repeat(size - overhead))).unwrap()
+    }
+
+    fn assert_frame_classification(envelope: &PreparedEnvelope, expected_size: usize) {
+        assert_eq!(envelope.payload.len(), expected_size);
+        let frames = outbound_ws_frames(envelope);
+        if expected_size <= MAX_JSON_FRAME_BYTES {
+            assert_eq!(frames.len(), 1);
+            assert!(matches!(frames[0], WsMessage::Text(_)));
+            return;
+        }
+
+        let expected_count = expected_size.div_ceil(JSON_FRAGMENT_BYTES);
+        assert_eq!(frames.len(), expected_count);
+        for (index, frame) in frames.iter().enumerate() {
+            let WsMessage::Frame(frame) = frame else {
+                panic!("expected a fragmented WebSocket frame");
+            };
+            let is_first = index == 0;
+            let is_final = index + 1 == expected_count;
+            let opcode = if is_first { Data::Text } else { Data::Continue };
+            assert_eq!(frame.header().opcode, OpCode::Data(opcode));
+            assert_eq!(frame.header().is_final, is_final);
+            let expected_payload = if is_final {
+                expected_size - index * JSON_FRAGMENT_BYTES
+            } else {
+                JSON_FRAGMENT_BYTES
+            };
+            assert_eq!(frame.payload().len(), expected_payload);
         }
     }
 
     #[test]
-    fn complete_utf8_envelope_has_inclusive_boundary() {
-        let overhead = serde_json::to_string(&invocation(String::new()))
-            .unwrap()
-            .len();
+    fn complete_utf8_envelope_has_inclusive_single_frame_and_message_boundaries() {
         for size in [
             MAX_JSON_FRAME_BYTES - 1,
             MAX_JSON_FRAME_BYTES,
             MAX_JSON_FRAME_BYTES + 1,
+            40 * 1024 * 1024,
+            MAX_JSON_MESSAGE_BYTES,
         ] {
-            let message = invocation("x".repeat(size - overhead));
-            let result = IIIClient::prepare_envelope(&message);
-            if size <= MAX_JSON_FRAME_BYTES {
-                assert_eq!(result.unwrap().payload.len(), size);
-            } else {
-                let error = result.unwrap_err();
-                assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
-            }
+            let envelope = envelope_with_size(size);
+            assert_frame_classification(&envelope, size);
         }
+
+        let overhead = serde_json::to_string(&invocation(String::new()))
+            .unwrap()
+            .len();
+        let message = invocation("x".repeat(MAX_JSON_MESSAGE_BYTES + 1 - overhead));
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        let size = MAX_JSON_MESSAGE_BYTES + 1;
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
     }
 
     #[test]
-    fn unicode_and_escapes_use_serialized_bytes() {
-        let input = "😀é\n\"\\".repeat(1_700_000);
+    fn unicode_is_counted_as_serialized_utf8_and_fragments_may_split_codepoints() {
+        let input = "😀é\n\"\\\\".repeat(1_500_000);
         assert!(input.chars().count() < MAX_JSON_FRAME_BYTES);
-        assert!(IIIClient::prepare_envelope(&invocation(input)).is_err());
+        let envelope = IIIClient::prepare_envelope(&invocation(input)).unwrap();
+        assert!(envelope.payload.len() > MAX_JSON_FRAME_BYTES);
+        assert!(envelope.payload.len() <= MAX_JSON_MESSAGE_BYTES);
+
+        let mut message = invocation("😀".repeat(5_000_000));
+        for _ in 0..4 {
+            let serialized = serde_json::to_string(&message).unwrap();
+            if !serialized.is_char_boundary(JSON_FRAGMENT_BYTES) {
+                break;
+            }
+            if let Message::InvokeFunction { function_id, .. } = &mut message {
+                function_id.push('x');
+            }
+        }
+        let serialized = serde_json::to_string(&message).unwrap();
+        assert!(!serialized.is_char_boundary(JSON_FRAGMENT_BYTES));
+        let envelope = IIIClient::prepare_envelope(&message).unwrap();
+        let frames = outbound_ws_frames(&envelope);
+        let payloads: Vec<_> = frames
+            .iter()
+            .map(|frame| match frame {
+                WsMessage::Frame(frame) => frame.payload(),
+                _ => panic!("expected a fragmented data frame"),
+            })
+            .collect();
+        assert!(std::str::from_utf8(payloads[0]).is_err());
+        let reassembled: Vec<u8> = payloads.into_iter().flatten().copied().collect();
+        assert_eq!(reassembled, serialized.as_bytes());
+        let decoded: Message = serde_json::from_slice(&reassembled).unwrap();
+        assert!(matches!(decoded, Message::InvokeFunction { .. }));
+    }
+
+    #[test]
+    fn multibyte_envelope_over_message_limit_is_rejected_by_utf8_byte_count() {
+        let message = invocation("😀".repeat(17_000_000));
+        let serialized = serde_json::to_string(&message).unwrap();
+        let character_count = serialized.chars().count();
+        let byte_count = serialized.len();
+
+        assert!(character_count < MAX_JSON_MESSAGE_BYTES);
+        assert!(byte_count > MAX_JSON_MESSAGE_BYTES);
+        assert_eq!(character_count, 17_000_117);
+        assert_eq!(byte_count, 68_000_117);
+
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {byte_count} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
+    }
+
+    #[test]
+    fn escaped_utf8_below_message_limit_is_rejected_after_json_expansion() {
+        let input = String::from_utf8(vec![0; 11_200_000]).unwrap();
+        let raw_bytes = input.len();
+        let message = invocation(input);
+        let serialized = serde_json::to_string(&message).unwrap();
+        let envelope_bytes = serialized.len();
+
+        assert!(raw_bytes < MAX_JSON_MESSAGE_BYTES);
+        assert!(envelope_bytes > MAX_JSON_MESSAGE_BYTES);
+        assert!(
+            envelope_bytes >= 6 * raw_bytes,
+            "NUL escaping should expand each raw byte to a six-byte JSON escape"
+        );
+
+        let error = IIIClient::prepare_envelope(&message).unwrap_err();
+        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
+        assert_eq!(
+            error.invocation_error().unwrap().message,
+            format!(
+                "Serialized JSON envelope is {envelope_bytes} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fragmented_envelopes_reassemble_under_engine_frame_limits() {
+        use tokio_tungstenite::accept_async_with_config;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(MAX_JSON_FRAME_BYTES))
+                .max_message_size(Some(MAX_JSON_MESSAGE_BYTES));
+            let mut ws = accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            for expected_size in [
+                MAX_JSON_FRAME_BYTES,
+                MAX_JSON_FRAME_BYTES + 1,
+                40 * 1024 * 1024,
+                MAX_JSON_MESSAGE_BYTES,
+            ] {
+                let frame = ws.next().await.unwrap().unwrap();
+                let text = frame.into_text().unwrap();
+                assert_eq!(text.len(), expected_size);
+                assert!(text.starts_with("{\"type\":\"invokefunction\""));
+                assert!(text.ends_with('}'));
+            }
+            let frame = ws.next().await.unwrap().unwrap();
+            let text = frame.into_text().unwrap();
+            let parsed: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed["data"].as_str().unwrap().chars().count(), 4_200_000);
+            ws.send(WsMessage::Ping(Bytes::new())).await.unwrap();
+            assert!(matches!(
+                ws.next().await.unwrap().unwrap(),
+                WsMessage::Pong(_)
+            ));
+        });
+
+        let (stream, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let (mut tx, mut rx) = stream.split();
+        let sdk = IIIClient::new("ws://127.0.0.1:0");
+        for size in [
+            MAX_JSON_FRAME_BYTES,
+            MAX_JSON_FRAME_BYTES + 1,
+            40 * 1024 * 1024,
+            MAX_JSON_MESSAGE_BYTES,
+        ] {
+            sdk.send_ws(&mut tx, &envelope_with_size(size))
+                .await
+                .unwrap();
+        }
+        let mut unicode = invocation("😀".repeat(4_200_000));
+        for _ in 0..4 {
+            let serialized = serde_json::to_string(&unicode).unwrap();
+            if !serialized.is_char_boundary(JSON_FRAGMENT_BYTES) {
+                break;
+            }
+            if let Message::InvokeFunction { function_id, .. } = &mut unicode {
+                function_id.push('x');
+            }
+        }
+        sdk.send_ws(&mut tx, &IIIClient::prepare_envelope(&unicode).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.next().await.unwrap().unwrap(),
+            WsMessage::Ping(_)
+        ));
+        tx.send(WsMessage::Pong(Bytes::new())).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_callers_cannot_interleave_fragments_and_connection_stays_open() {
+        use tokio_tungstenite::accept_async_with_config;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ping_tx, ping_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(MAX_JSON_FRAME_BYTES))
+                .max_message_size(Some(MAX_JSON_MESSAGE_BYTES));
+            let mut ws = accept_async_with_config(socket, Some(config))
+                .await
+                .unwrap();
+            let mut received = HashSet::new();
+            while received.len() < 3 {
+                let frame = ws.next().await.unwrap().unwrap();
+                let WsMessage::Text(text) = frame else {
+                    continue;
+                };
+                let parsed: Value = serde_json::from_str(&text).unwrap();
+                let Some(function_id) = parsed["function_id"].as_str() else {
+                    continue;
+                };
+                if function_id.starts_with("size::concurrent_") {
+                    assert_eq!(
+                        parsed["data"].as_str().unwrap().len(),
+                        MAX_JSON_FRAME_BYTES + 1
+                    );
+                    received.insert(function_id.to_owned());
+                }
+            }
+            assert_eq!(received.len(), 3);
+            ws.send(WsMessage::Ping(Bytes::new())).await.unwrap();
+            let _ = ping_tx.send(());
+            loop {
+                let frame = ws.next().await.unwrap().unwrap();
+                let WsMessage::Text(text) = frame else {
+                    continue;
+                };
+                let parsed: Value = serde_json::from_str(&text).unwrap();
+                if parsed["function_id"] == "size::after" {
+                    break;
+                }
+            }
+        });
+
+        let sdk = IIIClient::new(&format!("ws://{address}"));
+        sdk.connect();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sdk.get_connection_state() != IIIConnectionState::Connected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("client should connect to the in-process engine");
+
+        let mut callers = Vec::new();
+        for index in 0..3 {
+            let sdk = sdk.clone();
+            callers.push(tokio::task::spawn_blocking(move || {
+                let mut message = invocation("x".repeat(MAX_JSON_FRAME_BYTES + 1));
+                if let Message::InvokeFunction { function_id, .. } = &mut message {
+                    *function_id = format!("size::concurrent_{index}");
+                }
+                sdk.send_message(message).unwrap();
+            }));
+        }
+        for caller in callers {
+            caller.await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(20), ping_rx)
+            .await
+            .expect("server should receive whole fragmented messages before ping")
+            .unwrap();
+        let mut after = invocation("after".to_owned());
+        if let Message::InvokeFunction { function_id, .. } = &mut after {
+            *function_id = "size::after".into();
+        }
+        sdk.send_message(after).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("connection should remain open after fragmented messages")
+            .unwrap();
+        sdk.shutdown_async().await;
     }
 
     #[test]
@@ -292,15 +575,22 @@ mod json_size_tests {
         let message = Message::InvocationResult {
             invocation_id: Uuid::nil(),
             function_id: "size::echo".into(),
-            result: Some(Value::String("x".repeat(MAX_JSON_FRAME_BYTES))),
+            result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
         };
+        let size = serde_json::to_string(&message).unwrap().len();
         let payload = IIIClient::prepare_envelope(&message).unwrap().payload;
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["invocation_id"], Uuid::nil().to_string());
         assert_eq!(parsed["error"]["code"], "payload_too_large");
+        assert_eq!(
+            parsed["error"]["message"],
+            format!(
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            )
+        );
         assert!(parsed.get("result").is_none());
         assert!(!payload.contains("secret"));
     }
@@ -317,14 +607,14 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 /// Extension trait for Mutex that recovers from poisoning instead of panicking.
 /// This is safe when the protected data is still valid after a panic in another thread.
-trait MutexExt<T> {
+pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
 }
 
@@ -343,9 +633,15 @@ use tokio::{
 };
 #[cfg(test)]
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{Message as WsMessage, Utf8Bytes, protocol::WebSocketConfig},
+use tokio_tungstenite::tungstenite::{
+    Bytes, Message as WsMessage, Utf8Bytes,
+    protocol::{
+        WebSocketConfig,
+        frame::{
+            Frame,
+            coding::{Data, OpCode},
+        },
+    },
 };
 use uuid::Uuid;
 
@@ -353,15 +649,26 @@ const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use iii_helpers::http::HttpInvocationConfig;
 
+use arc_swap::ArcSwap;
+
 use crate::{
-    channels::{ChannelReader, ChannelWriter, StreamChannelRef},
-    error::Error,
-    protocol::{
-        ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message, RegisterFunctionMessage,
-        RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
-        TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
-        UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT,
+    channels::{
+        ChannelReader, ChannelWriter, StreamChannelRef, handshake_headers, handshake_request,
     },
+    context::{InvocationCtx, with_current},
+    dispatch::{error_body, execute, run_reporter},
+    error::Error,
+    observable::{FunctionEntry, HookOp, Observe, Observer},
+    observe::{ObserverEntry, ObserverReason},
+    protocol::{
+        Activation, Caller, Dispatch, ErrorBody, FEATURE_OBSERVE_V1, FUNCTION_NAMESPACE_CONFLICT,
+        Message, ObserverState, ParentCaller, RegisterFunctionMessage, RegisterTriggerInput,
+        RegisterTriggerMessage, RegisterTriggerTypeMessage, SDK_FEATURES, TriggerAction,
+        TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
+        UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT, observe_codes,
+    },
+    reporter::Reporter,
+    transport::{self, WsConnectResult, WsStream},
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{
         Channel, RemoteFunctionData, RemoteFunctionHandlerWithMetadata, RemoteTriggerTypeData,
@@ -371,7 +678,143 @@ use crate::{
 use iii_helpers::observability as telemetry;
 use iii_helpers::observability::OtelConfig;
 
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// Where the deprecated trigger APIs point to.
+const MIGRATION_GUIDE: &str = "https://iii.dev/docs/upgrading/from-0-24-x";
+
+/// Logs `message` the first time `warned` is seen unset: one warning per
+/// process per deprecated API.
+fn warn_deprecated_once(warned: &AtomicBool, message: &str) {
+    if !warned.swap(true, Ordering::Relaxed) {
+        tracing::warn!("{message} Migration guide: {MIGRATION_GUIDE}");
+    }
+}
+
+static WARNED_REGISTER_TRIGGER: AtomicBool = AtomicBool::new(false);
+static WARNED_REGISTER_TRIGGER_TYPE: AtomicBool = AtomicBool::new(false);
+
+fn warn_register_trigger() {
+    warn_deprecated_once(
+        &WARNED_REGISTER_TRIGGER,
+        "register_trigger is deprecated and will be removed in a future release. Use \
+         iii.observe(Source::function(..).args(..), target) instead.",
+    );
+}
+
+fn warn_register_trigger_type() {
+    warn_deprecated_once(
+        &WARNED_REGISTER_TRIGGER_TYPE,
+        "register_trigger_type is deprecated and will be removed in a future release. Register \
+         a function with an observe descriptor (RegisterFunction::observe(Observe::owner()..)) \
+         instead.",
+    );
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `caller` as the `parent` of a call made from the handler it invoked; `None`
+/// when it names nothing.
+pub(crate) fn parent_of(caller: &Caller) -> Option<ParentCaller> {
+    let parent = caller.strip();
+    (parent != ParentCaller::default()).then_some(parent)
+}
+
+/// An invocation sent through the engine.
+pub(crate) struct RemoteCall {
+    pub function_id: String,
+    pub payload: Value,
+    pub action: Option<TriggerAction>,
+    pub timeout: Option<Duration>,
+    pub metadata: Option<Value>,
+    pub namespace: Option<String>,
+    pub caller: Option<Box<Caller>>,
+    pub observe_depth: Option<u32>,
+    pub activation: Option<Activation>,
+}
+
+type ObserveSupportFn = Arc<dyn Fn(bool) + Send + Sync>;
+
+/// A listener of [`IIIClient::on_engine_supports_observe`].
+struct SupportListener {
+    id: u64,
+    /// Cleared by `unsubscribe`: a call already queued does not start.
+    active: Arc<AtomicBool>,
+    /// The value it was last told (or found when added).
+    heard: Option<bool>,
+    call: ObserveSupportFn,
+}
+
+/// Listeners of the engine's observe support.
+#[derive(Default)]
+struct ObserveSupport {
+    next_id: u64,
+    listeners: Vec<SupportListener>,
+}
+
+impl ObserveSupport {
+    /// Tells each listener `observe`; enqueued under the lock, so listeners
+    /// hear changes in order.
+    fn notify(listeners: Vec<(Arc<AtomicBool>, ObserveSupportFn)>, observe: bool) {
+        crate::observe::deliver(Box::new(move || {
+            for (active, listener) in listeners {
+                if !active.load(Ordering::Acquire) {
+                    continue;
+                }
+                // one listener's panic does not cost the others the change
+                let call = std::panic::AssertUnwindSafe(|| listener(observe));
+                if let Err(panic) = std::panic::catch_unwind(call) {
+                    tracing::warn!(
+                        "engine observe support listener panicked: {}",
+                        crate::observable::panic_message(&panic)
+                    );
+                }
+            }
+        }));
+    }
+}
+
+/// A listener added with [`IIIClient::on_engine_supports_observe`].
+#[derive(Debug)]
+pub struct ObserveSupportListener {
+    support: std::sync::Weak<Mutex<ObserveSupport>>,
+    id: u64,
+    active: Arc<AtomicBool>,
+}
+
+impl ObserveSupportListener {
+    /// Stops calling the listener: once this returns no call starts, queued
+    /// ones included (a call already running finishes).
+    pub fn unsubscribe(self) {
+        self.active.store(false, Ordering::Release);
+        if let Some(support) = self.support.upgrade() {
+            support
+                .lock_or_recover()
+                .listeners
+                .retain(|listener| listener.id != self.id);
+        }
+    }
+}
+
+/// What the engine said it supports, on the current connection.
+const ENGINE_FEATURES_UNKNOWN: u8 = 0;
+const ENGINE_WITHOUT_OBSERVE: u8 = 1;
+const ENGINE_WITH_OBSERVE: u8 = 2;
+
+/// Observe messages (acks, unobserves) held at most across a reconnect, by
+/// count and by bytes; the rest are dropped. Reports go back in the report
+/// buffer instead, under its own bound.
+const MAX_HELD_FRAMES: usize = 4096;
+const MAX_HELD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Registration key prefix of `observe` frames.
+const OBSERVER_KEY_PREFIX: &str = "observer:";
 
 /// Worker information returned by `engine::workers::list`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +861,11 @@ pub struct TriggerInfo {
 }
 
 /// Builder for registering a custom trigger type with optional format schemas.
+///
+/// **Deprecated since 0.25.0** together with
+/// [`IIIClient::register_trigger_type`]: register a function with an observe
+/// descriptor ([`RegisterFunction::observe`]) instead. Migration guide:
+/// <https://iii.dev/docs/upgrading/from-0-24-x>.
 ///
 /// Type parameters:
 /// - `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
@@ -483,6 +931,9 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
 
 /// Typed handle returned by [`IIIClient::register_trigger_type`].
 ///
+/// **Deprecated since 0.25.0** with it; see
+/// <https://iii.dev/docs/upgrading/from-0-24-x>.
+///
 /// Type parameters:
 /// - `C`: trigger registration type for [`register_trigger`](Self::register_trigger)
 /// - `R`: call request type for [`register_function`](Self::register_function)
@@ -495,11 +946,16 @@ pub struct TriggerTypeRef<C = Value, R = Value> {
 
 impl<C: Serialize, R> TriggerTypeRef<C, R> {
     /// Register a trigger with compile-time validated trigger config.
+    #[deprecated(
+        since = "0.25.0",
+        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_trigger(
         &self,
         function_id: impl Into<String>,
         config: C,
     ) -> Result<Trigger, Error> {
+        #[allow(deprecated)]
         self.register_trigger_with_metadata(function_id, config, None)
     }
 
@@ -509,6 +965,10 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
     /// trigger's namespace to this worker's — otherwise the function lands in the
     /// worker's namespace and the trigger in `default`, never resolving it. The
     /// low-level [`IIIClient::register_trigger`] keeps the engine default.
+    #[deprecated(
+        since = "0.25.0",
+        note = "use iii.observe_with(Source::function(..).args(..), target, ObserverOptions::default().metadata(..)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_trigger_with_metadata(
         &self,
         function_id: impl Into<String>,
@@ -525,6 +985,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         // same thing, and saying it here keeps the two from drifting.
         input.metadata = metadata;
         input.namespace = self.iii.namespace();
+        #[allow(deprecated)]
         self.iii.register_trigger(input)
     }
 }
@@ -535,6 +996,10 @@ where
 {
     /// Register a sync function whose input type must match
     /// the call request format `R`.
+    #[deprecated(
+        since = "0.25.0",
+        note = "use iii.register_function(id, RegisterFunction::new(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_function<O, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
@@ -545,6 +1010,10 @@ where
 
     /// Register an async function whose input type must match
     /// the call request format `R`.
+    #[deprecated(
+        since = "0.25.0",
+        note = "use iii.register_function(id, RegisterFunction::new_async(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_function_async<O, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
@@ -574,6 +1043,10 @@ pub struct TelemetryOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerMetadata {
     pub runtime: String,
+    /// Version reported to the engine and shown by `engine::workers::list`.
+    /// Defaults to this SDK's version and may be set to the worker's own: the
+    /// engine sizes the messages it sends this worker by the
+    /// `large-messages.v1` feature the SDK declares, not by this field.
     pub version: String,
     /// Worker name reported to the engine. In managed identity mode, a
     /// non-empty `III_WORKER_NAME` overrides this value when the client is
@@ -867,16 +1340,49 @@ impl Drop for SpareCapacityLease {
 }
 
 #[derive(Debug)]
-struct PreparedEnvelope {
-    payload: Utf8Bytes,
+pub(crate) struct PreparedEnvelope {
+    pub(crate) payload: Utf8Bytes,
     registration_key: Option<String>,
+    /// An observe message (`observe`, `unobserve`, `observerack`, reports,
+    /// stats): only for an engine that advertised observe.
+    observe_family: bool,
+    /// A report frame's bytes, held against the report buffer's bound until
+    /// the frame is written or dropped.
+    report_lease: Option<crate::reporter::ReportLease>,
+    /// A write of it failed: it may have reached the peer anyway.
+    write_failed: bool,
     // The payload is dropped before its lease; send_ws borrows the envelope
     // throughout its shared-byte clone and network await.
     _spare_capacity: Option<SpareCapacityLease>,
 }
 
+fn outbound_ws_frames(message: &PreparedEnvelope) -> Vec<WsMessage> {
+    if message.payload.len() <= MAX_JSON_FRAME_BYTES {
+        return vec![WsMessage::Text(message.payload.clone())];
+    }
+
+    let payload: Bytes = message.payload.clone().into();
+    (0..payload.len())
+        .step_by(JSON_FRAGMENT_BYTES)
+        .map(|offset| {
+            let end = (offset + JSON_FRAGMENT_BYTES).min(payload.len());
+            let opcode = if offset == 0 {
+                Data::Text
+            } else {
+                Data::Continue
+            };
+            let is_final = end == payload.len();
+            WsMessage::Frame(Frame::message(
+                payload.slice(offset..end),
+                OpCode::Data(opcode),
+                is_final,
+            ))
+        })
+        .collect()
+}
+
 impl PreparedEnvelope {
-    fn from_json(
+    pub(crate) fn from_json(
         mut payload: String,
         registration_key: Option<String>,
         budget: Option<&Arc<AtomicUsize>>,
@@ -890,12 +1396,38 @@ impl PreparedEnvelope {
         Self {
             payload: payload.into(),
             registration_key,
+            observe_family: false,
+            report_lease: None,
+            write_failed: false,
             _spare_capacity: lease,
         }
     }
+
+    /// Holds the frame's bytes against the report bound while it waits.
+    pub(crate) fn with_report_lease(mut self, lease: crate::reporter::ReportLease) -> Self {
+        self.report_lease = Some(lease);
+        self
+    }
+
+    /// Marks an observe message; see [`IIIClient::hold_observe_frames`].
+    pub(crate) fn observe_family(mut self) -> Self {
+        self.observe_family = true;
+        self
+    }
 }
 
-enum Outbound {
+fn is_observe_family(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Observe { .. }
+            | Message::Unobserve { .. }
+            | Message::ObserverAck { .. }
+            | Message::InvocationsObserved { .. }
+            | Message::LocalInvocationStats { .. }
+    )
+}
+
+pub(crate) enum Outbound {
     Message(PreparedEnvelope),
     Shutdown,
 }
@@ -903,13 +1435,23 @@ enum Outbound {
 type PendingInvocation = oneshot::Sender<Result<Value, Error>>;
 
 // WebSocket transmitter type alias
-type WsTx = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    WsMessage,
->;
+type WsTx = futures_util::stream::SplitSink<WsStream, WsMessage>;
+
+/// An `invokefunction` received from the engine.
+struct InboundInvocation {
+    invocation_id: Option<Uuid>,
+    function_id: String,
+    data: Value,
+    traceparent: Option<String>,
+    baggage: Option<String>,
+    metadata: Option<Value>,
+    caller: Option<Box<Caller>>,
+    observe_depth: Option<u32>,
+    activation: Option<Activation>,
+}
 
 /// Inject trace context headers for outbound messages.
-fn inject_trace_headers() -> (Option<String>, Option<String>) {
+pub(crate) fn inject_trace_headers() -> (Option<String>, Option<String>) {
     use iii_helpers::observability as context;
     (context::inject_traceparent(), context::inject_baggage())
 }
@@ -928,15 +1470,43 @@ pub enum IIIConnectionState {
 pub struct FunctionRef {
     pub id: String,
     unregister_fn: Arc<dyn Fn() + Send + Sync>,
+    state: Arc<FunctionEntry>,
 }
 
 impl FunctionRef {
     pub fn unregister(&self) {
         (self.unregister_fn)();
     }
+
+    /// Whether any observer is active on this function, in one atomic load and
+    /// without allocating. Check it before building an event nobody would
+    /// receive.
+    ///
+    /// ```rust,no_run
+    /// # fn demo(row_changed: &iii_sdk::runtime::FunctionRef) {
+    /// if !row_changed.is_observed() {
+    ///     return; // nothing serialized, nothing sent
+    /// }
+    /// # }
+    /// ```
+    #[inline]
+    pub fn is_observed(&self) -> bool {
+        self.state.is_observed()
+    }
+
+    /// The active observers, as the owner sees them.
+    pub fn observers(&self) -> Vec<Observer> {
+        self.state.observers()
+    }
+
+    /// Whether calls to this function from this worker currently run
+    /// in-process (the engine confirmed it with `local_dispatch: true`).
+    pub fn local_dispatch_active(&self) -> bool {
+        self.state.local_dispatch()
+    }
 }
 
-fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
+pub(crate) fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
     serde_json::to_value(
         schemars::r#gen::SchemaSettings::draft07()
             .into_generator()
@@ -1164,6 +1734,7 @@ fn empty_message() -> RegisterFunctionMessage {
         response_format: None,
         metadata: None,
         invocation: None,
+        observe: None,
     }
 }
 
@@ -1187,9 +1758,22 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`metadata`](Self::metadata)
 /// - [`request_format`](Self::request_format): overrides any auto-extracted schema.
 /// - [`response_format`](Self::response_format): overrides any auto-extracted schema.
+/// - [`observe`](Self::observe): how observers of the function are delivered,
+///   and the hooks that run when one is added or removed.
+/// - [`local_dispatch`](Self::local_dispatch): opt out of in-process calls.
 pub struct RegisterFunction {
     message: RegisterFunctionMessage,
     handler: Option<RemoteFunctionHandlerWithMetadata>,
+    observe: Option<Observe>,
+    local_dispatch: bool,
+}
+
+/// The parts of a [`RegisterFunction`].
+pub(crate) struct RegistrationParts {
+    pub message: RegisterFunctionMessage,
+    pub handler: Option<RemoteFunctionHandlerWithMetadata>,
+    pub observe: Option<Observe>,
+    pub local_dispatch: bool,
 }
 
 impl RegisterFunction {
@@ -1207,6 +1791,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(f.into_handler()),
+            observe: None,
+            local_dispatch: true,
         }
     }
 
@@ -1224,6 +1810,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(f.into_handler()),
+            observe: None,
+            local_dispatch: true,
         }
     }
 
@@ -1235,6 +1823,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: None,
+            observe: None,
+            local_dispatch: true,
         }
     }
 
@@ -1262,13 +1852,38 @@ impl RegisterFunction {
         self
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        RegisterFunctionMessage,
-        Option<RemoteFunctionHandlerWithMetadata>,
-    ) {
-        (self.message, self.handler)
+    /// How observers of this function are delivered, and the hooks that run
+    /// when one is added or removed ([`Observe::owner`] / [`Observe::auto`]).
+    /// Every function is observable without it, as `auto` without hooks.
+    ///
+    /// Against an engine without observe support the function registers as a
+    /// plain function and its hooks never run (one warning is logged).
+    pub fn observe(mut self, observe: Observe) -> Self {
+        self.message.observe = Some(observe.descriptor.clone());
+        self.observe = Some(observe);
+        self
+    }
+
+    /// Whether calls to this function from this same worker may run
+    /// in-process once the engine allows it. Default `true`.
+    ///
+    /// A local call runs on the caller's task, and a sync handler
+    /// ([`RegisterFunction::new`]) runs inline on it. The call's timeout then
+    /// cannot interrupt it (it never yields), and the caller waits for it
+    /// however long it takes: make a handler that can block async, or opt it
+    /// out here.
+    pub fn local_dispatch(mut self, enabled: bool) -> Self {
+        self.local_dispatch = enabled;
+        self
+    }
+
+    pub(crate) fn into_parts(self) -> RegistrationParts {
+        RegistrationParts {
+            message: self.message,
+            handler: self.handler,
+            observe: self.observe,
+            local_dispatch: self.local_dispatch,
+        }
     }
 }
 
@@ -1303,12 +1918,12 @@ impl Default for ConnTimings {
     }
 }
 
-struct IIIInner {
+pub(crate) struct IIIInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
     spare_capacity_budget: Arc<AtomicUsize>,
-    receiver: Mutex<Option<mpsc::UnboundedReceiver<Outbound>>>,
-    running: AtomicBool,
+    pub(crate) receiver: Mutex<Option<mpsc::UnboundedReceiver<Outbound>>>,
+    pub(crate) running: AtomicBool,
     started: AtomicBool,
     pending: Mutex<HashMap<Uuid, PendingInvocation>>,
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
@@ -1332,6 +1947,29 @@ struct IIIInner {
     reattach_token: Mutex<Option<String>>,
     identity_mode: WorkerIdentityMode,
     registration_changed: Notify,
+    /// Observers this worker created, replayed on every connection that
+    /// supports observe.
+    observers: Mutex<HashMap<String, Arc<ObserverEntry>>>,
+    /// `ENGINE_*` on the current connection: unknown until `WorkerRegistered`.
+    engine_features: AtomicU8,
+    /// The last engine advertised observe: outgoing calls carry `caller`.
+    engine_observe_last: AtomicBool,
+    /// Listeners of [`IIIClient::on_engine_supports_observe`].
+    observe_support: Arc<Mutex<ObserveSupport>>,
+    /// Functions already named in the warning that the engine leaves their
+    /// observe hooks inactive; cleared by an engine that supports observe.
+    warned_no_observe: Mutex<HashSet<String>>,
+    /// Incremented on every established connection; a function confirmed on
+    /// an older one waits for its new `functionregistered`.
+    pub(crate) connection_epoch: AtomicU64,
+    /// This worker as a caller: `worker_id` from the engine, `worker_name`.
+    identity: ArcSwap<Caller>,
+    reporter: Reporter,
+    /// `on_observer_added` timeout; shortened by tests.
+    hook_timeout_ms: AtomicU64,
+    /// Observe messages queued on a connection that dropped, waiting for the
+    /// next engine's features.
+    held_frames: Mutex<Vec<PreparedEnvelope>>,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -1339,7 +1977,7 @@ struct IIIInner {
 /// Create with [`register_worker`](crate::register_worker).
 #[derive(Clone)]
 pub struct IIIClient {
-    inner: Arc<IIIInner>,
+    pub(crate) inner: Arc<IIIInner>,
 }
 
 impl IIIClient {
@@ -1365,6 +2003,10 @@ impl IIIClient {
         if identity_mode == WorkerIdentityMode::Managed {
             apply_managed_identity_from_env(&mut metadata);
         }
+        let identity = Caller {
+            worker_name: Some(metadata.name.clone()),
+            ..Caller::default()
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = IIIInner {
             address: address.into(),
@@ -1388,10 +2030,94 @@ impl IIIClient {
             reattach_token: Mutex::new(None),
             identity_mode,
             registration_changed: Notify::new(),
+            observers: Mutex::new(HashMap::new()),
+            engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
+            engine_observe_last: AtomicBool::new(false),
+            observe_support: Arc::default(),
+            warned_no_observe: Mutex::new(HashSet::new()),
+            connection_epoch: AtomicU64::new(0),
+            identity: ArcSwap::from_pointee(identity),
+            reporter: Reporter::default(),
+            hook_timeout_ms: AtomicU64::new(crate::observable::HOOK_TIMEOUT.as_millis() as u64),
+            held_frames: Mutex::new(Vec::new()),
         };
         Self {
             inner: Arc::new(inner),
         }
+    }
+
+    pub(crate) fn from_inner(inner: Arc<IIIInner>) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn functions(&self) -> MutexGuard<'_, HashMap<String, RemoteFunctionData>> {
+        self.inner.functions.lock_or_recover()
+    }
+
+    pub(crate) fn function_entry(&self, function_id: &str) -> Option<Arc<FunctionEntry>> {
+        self.functions()
+            .get(function_id)
+            .map(|data| data.observe.clone())
+    }
+
+    pub(crate) fn reporter(&self) -> &Reporter {
+        &self.inner.reporter
+    }
+
+    pub(crate) fn hook_timeout(&self) -> Duration {
+        Duration::from_millis(self.inner.hook_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn connection_epoch(&self) -> u64 {
+        self.inner.connection_epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.inner.running.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn is_connected(&self) -> bool {
+        self.get_connection_state() == IIIConnectionState::Connected
+    }
+
+    /// The engine on the current connection advertised `observe.v1`.
+    pub(crate) fn engine_observes(&self) -> bool {
+        self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITH_OBSERVE
+    }
+
+    /// This worker as a caller: `{ worker_id, worker_name }`.
+    pub(crate) fn self_caller(&self) -> Caller {
+        Caller::clone(&self.inner.identity.load())
+    }
+
+    fn update_identity(&self, worker_id: Option<String>, worker_name: Option<String>) {
+        self.inner.identity.rcu(|current| Caller {
+            worker_id: worker_id.clone().or_else(|| current.worker_id.clone()),
+            worker_name: worker_name.clone().or_else(|| current.worker_name.clone()),
+            ..Caller::default()
+        });
+    }
+
+    /// `caller` and `observe_depth` for a call made through the engine from
+    /// the current task: the handler it runs in, and that handler's caller as
+    /// `parent`. Only towards an engine that advertised observe.
+    pub(crate) fn outgoing_caller(&self) -> (Option<Box<Caller>>, Option<u32>) {
+        if !self.inner.engine_observe_last.load(Ordering::Relaxed) {
+            return (None, None);
+        }
+        with_current(|current| match current {
+            None => (None, None),
+            Some(cur) => (
+                Some(Box::new(Caller {
+                    worker_id: None,
+                    worker_name: None,
+                    function_id: Some(cur.function_id.clone()),
+                    invocation_id: Some(cur.invocation_id.clone()),
+                    parent: cur.caller.as_ref().and_then(parent_of),
+                })),
+                (cur.observe_depth > 0).then_some(cur.observe_depth),
+            ),
+        })
     }
 
     /// Get the engine WebSocket address this client connects to.
@@ -1407,6 +2133,7 @@ impl IIIClient {
         if self.inner.identity_mode == WorkerIdentityMode::Managed {
             apply_managed_identity_from_env(&mut metadata);
         }
+        self.update_identity(None, Some(metadata.name.clone()));
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
     }
 
@@ -1488,6 +2215,24 @@ impl IIIClient {
         *self.inner.otel_config.lock_or_recover() = Some(config);
     }
 
+    /// The telemetry config, with the engine URL and handshake headers of this
+    /// connection filled in when the caller set none.
+    fn take_otel_config(&self) -> OtelConfig {
+        let mut config = self
+            .inner
+            .otel_config
+            .lock_or_recover()
+            .take()
+            .unwrap_or_default();
+        if config.engine_ws_url.is_none() {
+            config.engine_ws_url = Some(self.inner.address.clone());
+        }
+        config
+            .engine_ws_headers
+            .get_or_insert_with(|| handshake_headers(self.inner.headers.lock_or_recover().clone()));
+        config
+    }
+
     pub(crate) fn connect(&self) {
         if self.inner.started.swap(true, Ordering::SeqCst) {
             return;
@@ -1500,18 +2245,7 @@ impl IIIClient {
 
         let iii = self.clone();
 
-        let otel_config = {
-            let mut config = self
-                .inner
-                .otel_config
-                .lock_or_recover()
-                .take()
-                .unwrap_or_default();
-            if config.engine_ws_url.is_none() {
-                config.engine_ws_url = Some(self.inner.address.clone());
-            }
-            config
-        };
+        let otel_config = self.take_otel_config();
 
         // Spawn a dedicated OS thread with its own tokio runtime so
         // the connection loop is independent of the caller's runtime.
@@ -1521,6 +2255,15 @@ impl IIIClient {
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
             .spawn(move || {
+                // Lets `iii ps` find this worker while the connection loop runs.
+                let _marker = crate::process_marker::Marker::announce(
+                    &iii.inner.address,
+                    iii.inner
+                        .worker_metadata
+                        .lock_or_recover()
+                        .as_ref()
+                        .map(|metadata| metadata.name.as_str()),
+                );
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1529,6 +2272,7 @@ impl IIIClient {
                 rt.block_on(async move {
                     let otel_active = telemetry::init_otel(otel_config).await;
 
+                    tokio::spawn(run_reporter(iii.clone()));
                     iii.run_connection(rx).await;
 
                     if otel_active {
@@ -1555,6 +2299,8 @@ impl IIIClient {
     /// ```
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+        // reports still buffered will never go out: counted as INACTIVE
+        self.inner.reporter.close();
         self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
@@ -1586,20 +2332,55 @@ impl IIIClient {
     /// ```
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
+        // reports still buffered will never go out: counted as INACTIVE
+        self.inner.reporter.close();
         self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
     }
 
+    #[cfg(test)]
     fn register_function_inner(
         &self,
         message: RegisterFunctionMessage,
         handler: Option<RemoteFunctionHandlerWithMetadata>,
     ) -> FunctionRef {
+        self.register_function_parts(RegistrationParts {
+            message,
+            handler,
+            observe: None,
+            local_dispatch: true,
+        })
+    }
+
+    fn register_function_parts(&self, parts: RegistrationParts) -> FunctionRef {
+        let RegistrationParts {
+            message,
+            handler,
+            observe,
+            local_dispatch,
+        } = parts;
         let id = message.id.clone();
         if id.trim().is_empty() {
             panic!("id is required");
         }
+        if let Some(observe) = &observe {
+            if observe.descriptor.args_format.is_some()
+                && observe.delivery() != crate::protocol::Delivery::Owner
+            {
+                panic!(
+                    "{}: function '{id}' declares args_format with auto delivery; args are \
+                     for an owner that routes by them, use Observe::owner()",
+                    observe_codes::INVALID_OBSERVE_DESCRIPTOR
+                );
+            }
+        }
+        let state = Arc::new(FunctionEntry::new(
+            id.clone(),
+            observe.as_ref(),
+            handler.is_some(),
+            local_dispatch,
+        ));
         let envelope = match Self::prepare_envelope(&message.to_message()) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -1608,10 +2389,15 @@ impl IIIClient {
                 return FunctionRef {
                     id,
                     unregister_fn: Arc::new(|| {}),
+                    state,
                 };
             }
         };
-        let data = RemoteFunctionData { message, handler };
+        let data = RemoteFunctionData {
+            message,
+            handler,
+            observe: state.clone(),
+        };
         let mut funcs = self.inner.functions.lock_or_recover();
         match funcs.entry(id.clone()) {
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -1623,17 +2409,33 @@ impl IIIClient {
         }
         drop(funcs);
         let _ = self.send_prepared(envelope);
+        // Registered after this engine said it has no observe: warned here,
+        // as `on_engine_features` did for the functions it found.
+        if state.needs_observe
+            && self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITHOUT_OBSERVE
+        {
+            self.warn_no_observe(vec![id.clone()]);
+        }
 
         let iii = self.clone();
         let unregister_id = id.clone();
         let unregister_fn = Arc::new(move || {
-            let _ = iii.inner.functions.lock_or_recover().remove(&unregister_id);
+            let removed = iii.inner.functions.lock_or_recover().remove(&unregister_id);
+            if let Some(data) = removed {
+                data.observe.release();
+                data.observe.enqueue(&iii, HookOp::Reset { last: true });
+                iii.reporter().discard(&unregister_id);
+            }
             let _ = iii.send_message(Message::UnregisterFunction {
                 id: unregister_id.clone(),
             });
         });
 
-        FunctionRef { id, unregister_fn }
+        FunctionRef {
+            id,
+            unregister_fn,
+            state,
+        }
     }
 
     /// Register a function with the engine.
@@ -1649,7 +2451,9 @@ impl IIIClient {
     ///   `.response_format(...)` as needed.
     ///
     /// # Panics
-    /// Panics if `id` is empty or already registered.
+    /// Panics if `id` is empty or already registered, and with
+    /// `INVALID_OBSERVE_DESCRIPTOR` when an [`Observe::auto`] descriptor
+    /// declares an `args_format`.
     ///
     /// # Examples
     /// ```rust,no_run
@@ -1717,9 +2521,9 @@ impl IIIClient {
         id: impl Into<String>,
         registration: RegisterFunction,
     ) -> FunctionRef {
-        let (mut message, handler) = registration.into_parts();
-        message.id = id.into();
-        self.register_function_inner(message, handler)
+        let mut parts = registration.into_parts();
+        parts.message.id = id.into();
+        self.register_function_parts(parts)
     }
 
     /// Register a custom trigger type with the engine.
@@ -1727,8 +2531,15 @@ impl IIIClient {
     /// Returns a [`TriggerTypeRef`] handle that can register triggers and
     /// functions with compile-time validated types.
     ///
+    /// It keeps working in 0.25 and logs one warning per process. A new
+    /// provider registers a function with an observe descriptor instead
+    /// (`RegisterFunction::new(..).observe(Observe::owner().args_format::<Config>().handler(..))`):
+    /// [`ObserveHandler`](crate::ObserveHandler) replaces [`TriggerHandler`],
+    /// and observers' args replace trigger configs.
+    ///
     /// # Examples
     /// ```rust,no_run
+    /// # #![allow(deprecated)]
     /// # use iii_sdk::{IIIClient, RegisterTriggerType};
     /// # use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
     /// # struct MyHandler;
@@ -1752,7 +2563,42 @@ impl IIIClient {
     /// });
     /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
     /// ```
+    #[deprecated(
+        since = "0.25.0",
+        note = "register a function with RegisterFunction::observe(Observe::owner()..) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_trigger_type<H, C, R>(
+        &self,
+        trigger_type: RegisterTriggerType<H, C, R>,
+    ) -> TriggerTypeRef<C, R>
+    where
+        H: TriggerHandler + 'static,
+    {
+        warn_register_trigger_type();
+        self.register_trigger_type_inner(trigger_type)
+    }
+
+    /// [`register_trigger_type`](Self::register_trigger_type) without the
+    /// runtime deprecation warning: for iii's own crates that still provide a
+    /// trigger type while its subscribers move to observers, so a deprecation
+    /// meant for user code is not printed on every run. Not part of the
+    /// public API.
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.25.0",
+        note = "register a function with RegisterFunction::observe(Observe::owner()..) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
+    pub fn register_trigger_type_without_warning<H, C, R>(
+        &self,
+        trigger_type: RegisterTriggerType<H, C, R>,
+    ) -> TriggerTypeRef<C, R>
+    where
+        H: TriggerHandler + 'static,
+    {
+        self.register_trigger_type_inner(trigger_type)
+    }
+
+    fn register_trigger_type_inner<H, C, R>(
         &self,
         trigger_type: RegisterTriggerType<H, C, R>,
     ) -> TriggerTypeRef<C, R>
@@ -1800,12 +2646,19 @@ impl IIIClient {
 
     /// Unregister a previously registered trigger type.
     ///
+    /// **Deprecated since 0.25.0** with [`register_trigger_type`](Self::register_trigger_type).
+    ///
     /// # Examples
     /// ```rust,no_run
+    /// # #![allow(deprecated)]
     /// # use iii_sdk::{register_worker, InitOptions};
     /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
     /// worker.unregister_trigger_type("cron");
     /// ```
+    #[deprecated(
+        since = "0.25.0",
+        note = "unregister the function registered with RegisterFunction::observe instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn unregister_trigger_type(&self, id: impl Into<String>) {
         let id = id.into();
         self.inner.trigger_types.lock_or_recover().remove(&id);
@@ -1816,11 +2669,17 @@ impl IIIClient {
     /// Bind a trigger configuration to a registered function.
     /// <!-- docs:expand-params -->
     ///
+    /// It keeps working in 0.25 and logs one warning per process. The http,
+    /// cron, queue, state, stream, pubsub and database workers still publish
+    /// trigger types, so keep using it for them until they ship source
+    /// functions; observe any other function with [`observe`](Self::observe).
+    ///
     /// # Arguments
     /// * `input` - Trigger registration input with trigger_type, function_id, and config.
     ///
     /// # Examples
     /// ```rust
+    /// # #![allow(deprecated)]
     /// # use iii_sdk::IIIClient;
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
@@ -1834,7 +2693,12 @@ impl IIIClient {
     /// trigger.unregister();
     /// # Ok::<(), iii_sdk::Error>(())
     /// ```
+    #[deprecated(
+        since = "0.25.0",
+        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+    )]
     pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
+        warn_register_trigger();
         let id = Uuid::new_v4().to_string();
         let message = RegisterTriggerMessage {
             id: id.clone(),
@@ -1884,13 +2748,24 @@ impl IIIClient {
         Ok(Trigger::new(unregister_fn))
     }
 
-    /// Invoke a remote function.
+    /// Invoke a function.
     /// <!-- docs:expand-params: TriggerRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
     /// - No action: synchronous, waits for the function to return.
     /// - [`TriggerAction::Enqueue`]: async via named queue.
     /// - [`TriggerAction::Void`][]: fire-and-forget.
+    ///
+    /// A function this worker registered itself runs in-process once the
+    /// engine allowed it ("local dispatch", see [`Dispatch`]): same result,
+    /// error shape and timeout, and nothing on the wire unless an observer's
+    /// filters match the call. A sync handler then runs inline on the
+    /// caller's task, where the timeout cannot interrupt it: a sync handler
+    /// that can block should be async, or registered with
+    /// [`RegisterFunction::local_dispatch(false)`](RegisterFunction::local_dispatch).
+    /// [`TriggerRequest::dispatch`] with [`Dispatch::Remote`]
+    /// forces the engine path. Calls made from inside a handler carry that
+    /// handler as their `caller`.
     ///
     /// # Examples
     /// ```rust
@@ -1941,36 +2816,87 @@ impl IIIClient {
         &self,
         request: impl Into<TriggerRequestWithMetadata>,
     ) -> Result<Value, Error> {
-        let request = request.into();
-        let req = request.request;
-        let metadata = request.metadata;
+        let TriggerRequestWithMetadata {
+            request: req,
+            metadata,
+            namespace,
+            dispatch,
+        } = request.into();
         // Engine-owned builtins always live in `default`. Other implicit calls
         // stay in the caller's namespace. An explicit request namespace wins.
         let namespace = invocation_namespace(
-            request.namespace,
+            namespace,
             self.namespace(),
             &req.function_id,
             "TriggerRequest.namespace",
         )?;
+
+        // Local dispatch: a function this worker hosts, confirmed by the
+        // engine, runs in-process. `enqueue` keeps its queue receipt, and a
+        // call nested too deep in local calls (a function recursing into
+        // itself) goes through the engine rather than deeper into the stack.
+        if dispatch == Dispatch::Auto
+            && !matches!(req.action, Some(TriggerAction::Enqueue { .. }))
+            && crate::context::local_depth() < crate::dispatch::MAX_LOCAL_DEPTH
+        {
+            if let Some((handler, entry)) =
+                self.local_target(&req.function_id, namespace.as_deref())
+            {
+                return self.invoke_local(handler, entry, req, metadata).await;
+            }
+        }
+
+        let (caller, observe_depth) = self.outgoing_caller();
+        self.invoke_remote(RemoteCall {
+            function_id: req.function_id,
+            payload: req.payload,
+            action: req.action,
+            timeout: req.timeout_ms.map(Duration::from_millis),
+            metadata,
+            namespace,
+            caller,
+            observe_depth,
+            activation: None,
+        })
+        .await
+    }
+
+    /// Sends an invocation through the engine and waits for its result (or
+    /// its queue receipt), or returns at once for a `void` one.
+    pub(crate) async fn invoke_remote(&self, call: RemoteCall) -> Result<Value, Error> {
+        let RemoteCall {
+            function_id,
+            payload,
+            action,
+            timeout,
+            metadata,
+            namespace,
+            caller,
+            observe_depth,
+            activation,
+        } = call;
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
-        if matches!(req.action, Some(TriggerAction::Void)) {
+        if matches!(action, Some(TriggerAction::Void)) {
             self.send_message(Message::InvokeFunction {
                 invocation_id: None,
-                function_id: req.function_id,
-                data: req.payload,
+                function_id,
+                data: payload,
                 traceparent: tp,
                 baggage: bg,
-                action: req.action,
+                action,
                 metadata,
                 namespace,
+                caller,
+                observe_depth,
+                activation,
             })?;
             return Ok(Value::Null);
         }
 
         // Enqueue and default: use invocation_id to receive acknowledgement/result
-        let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+        let timeout = timeout.unwrap_or(Duration::from_millis(DEFAULT_TIMEOUT_MS));
         let invocation_id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
 
@@ -1981,13 +2907,16 @@ impl IIIClient {
 
         if let Err(error) = self.send_message(Message::InvokeFunction {
             invocation_id: Some(invocation_id),
-            function_id: req.function_id,
-            data: req.payload,
+            function_id,
+            data: payload,
             traceparent: tp,
             baggage: bg,
-            action: req.action,
+            action,
             metadata,
             namespace,
+            caller,
+            observe_depth,
+            activation,
         }) {
             self.inner.pending.lock_or_recover().remove(&invocation_id);
             return Err(error);
@@ -2018,7 +2947,90 @@ impl IIIClient {
         *self.inner.connection_state.lock_or_recover()
     }
 
-    fn set_connection_state(&self, state: IIIConnectionState) {
+    /// Whether the engine on the current connection supports observe: it
+    /// advertised `observe.v1` in its `WorkerRegistered`. `None` until that
+    /// arrives, before the first connection and again while reconnecting.
+    ///
+    /// Without it, `observe()` fails with `UNSUPPORTED` and observable
+    /// functions register as plain functions whose hooks never run; a
+    /// worker can keep a fallback for older engines (its former trigger
+    /// type, say) when this is `Some(false)`. Pair it with
+    /// [`on_engine_supports_observe`](Self::on_engine_supports_observe) to
+    /// follow changes across reconnects.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// if worker.engine_supports_observe() == Some(false) {
+    ///     eprintln!("engine without observe: keeping the fallback");
+    /// }
+    /// ```
+    pub fn engine_supports_observe(&self) -> Option<bool> {
+        match self.inner.engine_features.load(Ordering::SeqCst) {
+            ENGINE_WITH_OBSERVE => Some(true),
+            ENGINE_WITHOUT_OBSERVE => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Calls `listener` with the engine's observe support (see
+    /// [`engine_supports_observe`](Self::engine_supports_observe)) when it
+    /// becomes known and whenever a later connection's `WorkerRegistered`
+    /// changes it (an engine upgraded or rolled back between reconnects).
+    /// Not called for a reconnect to an engine that says the same, nor while
+    /// reconnecting (the value is unknown then, not changed).
+    ///
+    /// A listener is called with the current value right away when it is
+    /// known; one added while it is not (before the first connection,
+    /// while reconnecting) hears it from the next `WorkerRegistered`, the
+    /// same value or not. Either way it sees every value from the current
+    /// one on, in order. Listeners run on the same thread as
+    /// [`ObserverHandle::on_state_change`](crate::ObserverHandle::on_state_change)
+    /// listeners, never on the connection's read loop: one may call the
+    /// client.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// let listener = worker.on_engine_supports_observe(|observe| {
+    ///     if !observe {
+    ///         eprintln!("engine without observe: registering the fallback");
+    ///     }
+    /// });
+    /// // later
+    /// listener.unsubscribe();
+    /// ```
+    pub fn on_engine_supports_observe<F>(&self, listener: F) -> ObserveSupportListener
+    where
+        F: Fn(bool) + Send + Sync + 'static,
+    {
+        let call: ObserveSupportFn = Arc::new(listener);
+        let active = Arc::new(AtomicBool::new(true));
+        let mut support = self.inner.observe_support.lock_or_recover();
+        // read under the lock: `on_engine_features` stores the value before
+        // taking it, so a change either shows here or finds `heard` stale
+        let current = self.engine_supports_observe();
+        let id = support.next_id;
+        support.next_id += 1;
+        support.listeners.push(SupportListener {
+            id,
+            active: active.clone(),
+            heard: current,
+            call: call.clone(),
+        });
+        if let Some(observe) = current {
+            ObserveSupport::notify(vec![(active.clone(), call)], observe);
+        }
+        ObserveSupportListener {
+            support: Arc::downgrade(&self.inner.observe_support),
+            id,
+            active,
+        }
+    }
+
+    pub(crate) fn set_connection_state(&self, state: IIIConnectionState) {
         let mut current = self.inner.connection_state.lock_or_recover();
         if *current == state {
             return;
@@ -2038,7 +3050,12 @@ impl IIIClient {
                 let telem = metadata.telemetry.get_or_insert_with(Default::default);
                 telem.framework = Some("iii-rust".to_string());
             }
-            if let Ok(value) = serde_json::to_value(metadata) {
+            if let Ok(mut value) = serde_json::to_value(metadata) {
+                // The protocol features this SDK speaks: the engine pushes
+                // observe messages only to a connection that declared them.
+                if let Value::Object(map) = &mut value {
+                    map.insert("features".to_string(), serde_json::json!(SDK_FEATURES));
+                }
                 let _ = self.send_message(Message::InvokeFunction {
                     invocation_id: None,
                     function_id: "engine::workers::register".to_string(),
@@ -2048,12 +3065,15 @@ impl IIIClient {
                     action: Some(TriggerAction::Void),
                     metadata: None,
                     namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
                 });
             }
         }
     }
 
-    // A single-frame JSON envelope must fit Axum's inclusive 16 MiB frame limit.
+    // Receive complete JSON messages up to the shared 64 MiB message limit.
     fn receive_config() -> WebSocketConfig {
         WebSocketConfig::default()
             .max_frame_size(Some(MAX_JSON_MESSAGE_BYTES))
@@ -2083,15 +3103,17 @@ impl IIIClient {
     ) -> Result<PreparedEnvelope, Error> {
         let payload = serde_json::to_string(message)?;
         let size = payload.len();
-        if size <= MAX_JSON_FRAME_BYTES {
-            return Ok(PreparedEnvelope::from_json(
-                payload,
-                Self::registration_key(message),
-                budget,
-            ));
+        if size <= MAX_JSON_MESSAGE_BYTES {
+            let envelope =
+                PreparedEnvelope::from_json(payload, Self::registration_key(message), budget);
+            return Ok(if is_observe_family(message) {
+                envelope.observe_family()
+            } else {
+                envelope
+            });
         }
         let error_message = format!(
-            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_FRAME_BYTES} bytes. Use channels for large data."
+            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
         );
         if let Message::InvocationResult {
             invocation_id,
@@ -2112,7 +3134,7 @@ impl IIIClient {
                 baggage: None,
             };
             let payload = serde_json::to_string(&fallback)?;
-            if payload.len() <= MAX_JSON_FRAME_BYTES {
+            if payload.len() <= MAX_JSON_MESSAGE_BYTES {
                 return Ok(PreparedEnvelope::from_json(payload, None, None));
             }
         }
@@ -2123,7 +3145,7 @@ impl IIIClient {
         })
     }
 
-    fn send_message(&self, message: Message) -> Result<(), Error> {
+    pub(crate) fn send_message(&self, message: Message) -> Result<(), Error> {
         let envelope = match self.prepare_outbound(&message) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -2134,8 +3156,14 @@ impl IIIClient {
         self.send_prepared(envelope)
     }
 
-    fn send_prepared(&self, envelope: PreparedEnvelope) -> Result<(), Error> {
+    pub(crate) fn send_prepared(&self, envelope: PreparedEnvelope) -> Result<(), Error> {
         if !self.inner.running.load(Ordering::SeqCst) {
+            if envelope.report_lease.is_some() {
+                // a report frame that will never be sent is counted, not lost
+                self.inner
+                    .reporter
+                    .count_frame(envelope.payload.as_str(), observe_codes::INACTIVE);
+            }
             return Ok(());
         }
 
@@ -2145,8 +3173,19 @@ impl IIIClient {
             .map_err(|_| Error::NotConnected)
     }
 
+    /// Opens the worker connection; `TCP_NODELAY` is negotiated with the
+    /// engine (see `transport::connect`).
+    async fn connect_socket(&self) -> WsConnectResult {
+        let headers = handshake_headers(self.inner.headers.lock_or_recover().clone());
+        let request = handshake_request(&self.inner.address, &headers)?;
+        transport::connect(request, Some(Self::receive_config())).await
+    }
+
     async fn run_connection(&self, mut rx: mpsc::UnboundedReceiver<Outbound>) {
         let mut queue: Vec<PreparedEnvelope> = Vec::new();
+        // Report frames of a dropped connection, in order, until they are
+        // back in the report buffer.
+        let mut reports: Vec<PreparedEnvelope> = Vec::new();
         let mut has_connected_before = false;
 
         while self.inner.running.load(Ordering::SeqCst) {
@@ -2157,46 +3196,24 @@ impl IIIClient {
                 IIIConnectionState::Connecting
             });
 
-            let custom_headers = self.inner.headers.lock_or_recover().clone();
-
             // Cap the whole connect (TCP + TLS + WS upgrade): a stalled
             // socket otherwise wedges this loop forever and the worker sits
             // in Reconnecting with zero functions registered engine-side
             // (MOT-3857).
-            let connect_result = tokio::time::timeout(t.connect_timeout, async {
-                if let Some(ref h) = custom_headers {
-                    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-                    use tokio_tungstenite::tungstenite::http;
-                    let mut request = self
-                        .inner
-                        .address
-                        .as_str()
-                        .into_client_request()
-                        .expect("valid ws request");
-                    for (k, v) in h {
-                        if let (Ok(name), Ok(val)) = (
-                            http::header::HeaderName::from_bytes(k.as_bytes()),
-                            http::header::HeaderValue::from_str(v),
-                        ) {
-                            request.headers_mut().insert(name, val);
-                        }
-                    }
-                    connect_async_with_config(request, Some(Self::receive_config()), false).await
-                } else {
-                    connect_async_with_config(
-                        &self.inner.address,
-                        Some(Self::receive_config()),
-                        false,
-                    )
-                    .await
-                }
-            })
-            .await;
+            let connect_result =
+                tokio::time::timeout(t.connect_timeout, self.connect_socket()).await;
 
             match connect_result {
                 Ok(Ok((stream, _))) => {
                     tracing::info!(address = %self.inner.address, "iii connected");
                     has_connected_before = true;
+                    // A new connection: the engine's features are unknown until
+                    // its `WorkerRegistered`, and every function waits for its
+                    // `functionregistered` here before its reports go out.
+                    self.inner
+                        .engine_features
+                        .store(ENGINE_FEATURES_UNKNOWN, Ordering::SeqCst);
+                    self.inner.connection_epoch.fetch_add(1, Ordering::AcqRel);
                     self.set_connection_state(IIIConnectionState::Connected);
                     let (mut ws_tx, mut ws_rx) = stream.split();
 
@@ -2227,6 +3244,10 @@ impl IIIClient {
 
                     queue.extend(self.collect_registrations());
                     Self::dedupe_registrations(&mut queue);
+                    // Observers are replayed once this engine said it supports
+                    // them (`WorkerRegistered`), not blindly; report frames
+                    // go back in the buffer below, oldest first.
+                    self.hold_observe_frames(&mut queue, &mut reports);
 
                     // Snapshot the registration keys we're about to send so
                     // we can drop duplicate copies still pending in `rx`.
@@ -2253,8 +3274,11 @@ impl IIIClient {
                         Self::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
                     if shutdown {
                         self.inner.running.store(false, Ordering::SeqCst);
+                        self.abandon_reports(&mut queue, &mut reports, &mut rx);
                         return;
                     }
+                    self.hold_observe_frames(&mut queue, &mut reports);
+                    self.requeue_reports(&mut reports);
 
                     if !queue.is_empty() {
                         if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
@@ -2284,19 +3308,22 @@ impl IIIClient {
                         tokio::select! {
                             outgoing = rx.recv() => {
                                 match outgoing {
-                                    Some(Outbound::Message(message)) => {
+                                    Some(Outbound::Message(mut message)) => {
                                         if let Err(err) = self.send_ws(&mut ws_tx, &message).await {
                                             tracing::warn!(error = %err, "send failed; reconnecting");
+                                            message.write_failed = true;
                                             queue.push(message);
                                             should_reconnect = true;
                                         }
                                     }
                                     Some(Outbound::Shutdown) => {
                                         self.inner.running.store(false, Ordering::SeqCst);
+                                        self.abandon_reports(&mut queue, &mut reports, &mut rx);
                                         return;
                                     }
                                     None => {
                                         self.inner.running.store(false, Ordering::SeqCst);
+                                        self.abandon_reports(&mut queue, &mut reports, &mut rx);
                                         return;
                                     }
                                 }
@@ -2344,6 +3371,18 @@ impl IIIClient {
                             }
                         }
                     }
+
+                    if should_reconnect {
+                        // The link is gone now, not after the retry delay:
+                        // reports wait in their buffer instead of queueing
+                        // behind a dead socket, and every function waits for
+                        // its confirmation on the next connection.
+                        self.set_connection_state(IIIConnectionState::Reconnecting);
+                        self.inner.connection_epoch.fetch_add(1, Ordering::AcqRel);
+                        self.inner
+                            .engine_features
+                            .store(ENGINE_FEATURES_UNKNOWN, Ordering::SeqCst);
+                    }
                 }
                 Ok(Err(err)) => {
                     tracing::warn!(error = %err, "failed to connect; retrying");
@@ -2360,6 +3399,32 @@ impl IIIClient {
                 sleep(t.retry_delay).await;
             }
         }
+        // stopped (shutdown or a fatal rejection)
+        self.abandon_reports(&mut queue, &mut reports, &mut rx);
+    }
+
+    /// The worker stopped: the report frames it can no longer send, and the
+    /// items still buffered, are counted as `INACTIVE`, never dropped
+    /// silently.
+    fn abandon_reports(
+        &self,
+        queue: &mut Vec<PreparedEnvelope>,
+        reports: &mut Vec<PreparedEnvelope>,
+        rx: &mut mpsc::UnboundedReceiver<Outbound>,
+    ) {
+        while let Ok(outbound) = rx.try_recv() {
+            if let Outbound::Message(envelope) = outbound {
+                queue.push(envelope);
+            }
+        }
+        for envelope in queue.drain(..).chain(reports.drain(..)) {
+            if envelope.report_lease.is_some() {
+                self.inner
+                    .reporter
+                    .count_frame(envelope.payload.as_str(), observe_codes::INACTIVE);
+            }
+        }
+        self.inner.reporter.close();
     }
 
     fn collect_registrations(&self) -> Vec<PreparedEnvelope> {
@@ -2400,8 +3465,80 @@ impl IIIClient {
             Message::RegisterTriggerType { id, .. } => Some(format!("trigger_type:{id}")),
             Message::RegisterTrigger { id, .. } => Some(format!("trigger:{id}")),
             Message::RegisterFunction { id, .. } => Some(format!("function:{id}")),
+            Message::Observe { id, .. } => Some(format!("{OBSERVER_KEY_PREFIX}{id}")),
             _ => None,
         }
+    }
+
+    /// Observe messages left over from a previous connection wait for this
+    /// engine's `WorkerRegistered`: sent when it advertises observe, dropped
+    /// otherwise. Leftover `observe` frames are dropped now: every live
+    /// observer is replayed from the map once the engine said it can take
+    /// them.
+    fn hold_observe_frames(
+        &self,
+        queue: &mut Vec<PreparedEnvelope>,
+        reports: &mut Vec<PreparedEnvelope>,
+    ) {
+        let mut held = self.inner.held_frames.lock_or_recover();
+        let mut held_bytes: usize = held.iter().map(|e| e.payload.len()).sum();
+        let mut kept = Vec::with_capacity(queue.len());
+        for envelope in queue.drain(..) {
+            let replayed = envelope
+                .registration_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with(OBSERVER_KEY_PREFIX));
+            if replayed {
+                continue;
+            }
+            if envelope.report_lease.is_some() {
+                reports.push(envelope);
+            } else if envelope.observe_family {
+                if held.len() < MAX_HELD_FRAMES
+                    && held_bytes + envelope.payload.len() <= MAX_HELD_BYTES
+                {
+                    held_bytes += envelope.payload.len();
+                    held.push(envelope);
+                } else {
+                    tracing::debug!(
+                        "too many observe messages held across reconnects; dropping one"
+                    );
+                }
+            } else {
+                kept.push(envelope);
+            }
+        }
+        *queue = kept;
+    }
+
+    /// Puts the report frames a dropped connection left behind back in the
+    /// report buffer, oldest first, to wait for their functions' confirmation
+    /// on the new connection. A frame whose write failed is not resent: it
+    /// may have reached the engine, and reports are at-most-once. Its items
+    /// count as `INACTIVE`.
+    fn requeue_reports(&self, reports: &mut Vec<PreparedEnvelope>) {
+        let mut frames = Vec::with_capacity(reports.len());
+        for mut envelope in reports.drain(..) {
+            if envelope.write_failed {
+                self.inner
+                    .reporter
+                    .count_frame(envelope.payload.as_str(), observe_codes::INACTIVE);
+            } else {
+                // the items' push order, to put them back in their place
+                let seqs = envelope
+                    .report_lease
+                    .as_mut()
+                    .map(|lease| std::mem::take(&mut lease.seqs))
+                    .unwrap_or_default();
+                frames.push((envelope.payload.as_str().to_string(), seqs));
+            }
+            // the frame's lease is released here, before its items count again
+        }
+        self.inner.reporter.requeue_frames(
+            frames
+                .iter()
+                .map(|(frame, seqs)| (frame.as_str(), seqs.as_slice())),
+        );
     }
 
     /// Drain everything currently pending in the outbound `rx` channel,
@@ -2465,8 +3602,9 @@ impl IIIClient {
         std::mem::swap(queue, &mut drained);
 
         let mut iter = drained.into_iter();
-        while let Some(message) = iter.next() {
+        while let Some(mut message) = iter.next() {
             if let Err(err) = self.send_ws(ws_tx, &message).await {
+                message.write_failed = true;
                 queue.push(message);
                 queue.extend(iter);
                 return Err(err);
@@ -2477,18 +3615,20 @@ impl IIIClient {
     }
 
     async fn send_ws(&self, ws_tx: &mut WsTx, message: &PreparedEnvelope) -> Result<(), Error> {
-        // Bound the send: on a blackholed peer with a full TCP send window,
-        // send().await can block indefinitely — and since callers await this
-        // inside select! handlers, an unbounded send wedges the entire
-        // connection loop (idle detection included). A send that can't
-        // complete within the idle window is a dead link; reconnect.
-        let t = *self.inner.timings.lock_or_recover();
-        match tokio::time::timeout(
-            t.idle_timeout,
-            ws_tx.send(WsMessage::Text(message.payload.clone())),
-        )
-        .await
-        {
+        let timeout = self.inner.timings.lock_or_recover().idle_timeout;
+        for frame in outbound_ws_frames(message) {
+            self.send_ws_frame(ws_tx, frame, timeout).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_ws_frame(
+        &self,
+        ws_tx: &mut WsTx,
+        frame: WsMessage,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        match tokio::time::timeout(timeout, ws_tx.send(frame)).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.into()),
             Err(_) => {
@@ -2509,7 +3649,7 @@ impl IIIClient {
         }
     }
 
-    fn handle_message(&self, payload: &str) -> Result<(), Error> {
+    pub(crate) fn handle_message(&self, payload: &str) -> Result<(), Error> {
         let message: Message = serde_json::from_str(payload)?;
 
         match message {
@@ -2530,15 +3670,21 @@ impl IIIClient {
                 action: _,
                 metadata,
                 namespace: _,
+                caller,
+                observe_depth,
+                activation,
             } => {
-                self.handle_invoke_function(
+                self.handle_invoke_function(InboundInvocation {
                     invocation_id,
                     function_id,
                     data,
                     traceparent,
                     baggage,
                     metadata,
-                );
+                    caller,
+                    observe_depth,
+                    activation,
+                });
             }
             Message::RegisterTrigger {
                 id,
@@ -2573,11 +3719,88 @@ impl IIIClient {
             Message::WorkerRegistered {
                 worker_id,
                 reattach_token,
+                features,
             } => {
-                tracing::debug!(worker_id = %worker_id, "Worker registered");
+                tracing::debug!(worker_id = %worker_id, features = ?features, "Worker registered");
+                self.update_identity(Some(worker_id.clone()), None);
                 *self.inner.worker_id.lock_or_recover() = Some(worker_id);
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
+                self.on_engine_features(features.iter().any(|f| f == FEATURE_OBSERVE_V1));
                 self.inner.registration_changed.notify_waiters();
+            }
+            Message::FunctionRegistered {
+                id,
+                namespace,
+                revision,
+                local_dispatch,
+                observers,
+            } => match self.function_entry(&id) {
+                Some(entry) => entry.enqueue(
+                    self,
+                    HookOp::Registered {
+                        revocation: entry.revocation(),
+                        epoch: self.connection_epoch(),
+                        namespace,
+                        revision,
+                        local_dispatch,
+                        observers,
+                    },
+                ),
+                None => {
+                    tracing::debug!(function_id = %id, "functionregistered for a function no longer registered")
+                }
+            },
+            Message::ObserverAdded {
+                function_id,
+                namespace,
+                revision,
+                observer,
+            } => match self.function_entry(&function_id) {
+                Some(entry) => entry.enqueue(
+                    self,
+                    HookOp::Added {
+                        namespace,
+                        revision,
+                        observer,
+                    },
+                ),
+                None => {
+                    tracing::debug!(function_id = %function_id, "observeradded for a function no longer registered")
+                }
+            },
+            Message::ObserverRemoved {
+                function_id,
+                revision,
+                id,
+                ..
+            } => {
+                if let Some(entry) = self.function_entry(&function_id) {
+                    entry.enqueue(self, HookOp::Removed { revision, id });
+                }
+            }
+            Message::ObserveResult {
+                id,
+                state,
+                error,
+                warnings,
+            } => {
+                if let Some(entry) = self.observer_entry(&id) {
+                    entry.set_warnings(warnings);
+                    self.apply_observer_state(&entry, state, error, None);
+                }
+            }
+            Message::ObserverStateChanged {
+                id,
+                state,
+                reason,
+                fires,
+            } => {
+                if let Some(entry) = self.observer_entry(&id) {
+                    self.apply_observer_state(&entry, state, reason, Some(fires));
+                }
+            }
+            Message::Unknown => {
+                tracing::debug!("ignoring a message type this SDK does not know");
             }
             Message::RegistrationRejected {
                 code,
@@ -2641,6 +3864,16 @@ impl IIIClient {
                     "function registration rejected: another worker in this namespace already \
                      owns this function id; the worker keeps serving its other functions"
                 );
+                // Another worker owns it now: calls go through the engine to
+                // that owner, and this worker's observer set is void.
+                if let Some(entry) = function_id
+                    .as_deref()
+                    .and_then(|id| self.function_entry(id))
+                {
+                    entry.release();
+                    self.inner.reporter.discard(&entry.id);
+                    entry.enqueue(self, HookOp::Reset { last: false });
+                }
             }
             WORKER_NAMESPACE_CONFLICT => {
                 self.fail_registration_fatal(
@@ -2726,16 +3959,24 @@ impl IIIClient {
         }
     }
 
-    fn handle_invoke_function(
-        &self,
-        invocation_id: Option<Uuid>,
-        function_id: String,
-        data: Value,
-        traceparent: Option<String>,
-        baggage: Option<String>,
-        metadata: Option<Value>,
-    ) {
+    fn handle_invoke_function(&self, inbound: InboundInvocation) {
+        let InboundInvocation {
+            invocation_id,
+            function_id,
+            data,
+            traceparent,
+            baggage,
+            metadata,
+            caller,
+            observe_depth,
+            activation,
+        } = inbound;
         tracing::debug!(function_id = %function_id, traceparent = ?traceparent, baggage = ?baggage, "Invoking function");
+
+        // An observer activation is answered like any call: the engine
+        // discards the result of an auto or emit activation, and the answer
+        // frees the observer's in-flight slot.
+        let reply_to = invocation_id;
 
         // Preserve HTTP-only registrations without copying their descriptors.
         let function_handler = self
@@ -2758,7 +3999,7 @@ impl IIIClient {
             };
             tracing::warn!(function_id = %function_id, "Invocation: {}", message);
 
-            if let Some(invocation_id) = invocation_id {
+            if let Some(invocation_id) = reply_to {
                 let (resp_tp, resp_bg) = inject_trace_headers();
 
                 let error = ErrorBody {
@@ -2782,146 +4023,42 @@ impl IIIClient {
             return;
         };
 
+        // The current invocation, for calls and emits made by the handler.
+        let ctx = InvocationCtx {
+            function_id: function_id.clone(),
+            invocation_id: invocation_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            caller: caller.map(|caller| *caller),
+            activation,
+            observe_depth: observe_depth.unwrap_or(0),
+            metadata: metadata.clone(),
+            traceparent: None,
+            baggage: None,
+        };
+
         let iii = self.clone();
 
         tokio::spawn(async move {
-            // Extract incoming trace context and create a span for this invocation.
-            // This ensures the handler and any outbound calls it makes (e.g.
-            // invoke_function_with_timeout) are linked as children of the caller's trace.
-            // We use FutureExt::with_context() instead of cx.attach() because
-            // ContextGuard is !Send and can't be held across .await in tokio::spawn.
-            let otel_cx = {
-                use iii_helpers::observability::extract_context;
-                use iii_helpers::observability::opentelemetry::trace::{
-                    SpanKind, TraceContextExt, Tracer,
-                };
+            // Extract incoming trace context and create a span for this
+            // invocation, so the handler and any outbound calls it makes are
+            // linked as children of the caller's trace.
+            let parent_cx = iii_helpers::observability::extract_context(
+                traceparent.as_deref(),
+                baggage.as_deref(),
+            );
+            let executed = execute(parent_cx, data, metadata, handler, ctx, 0).await;
 
-                let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
-                let tracer =
-                    iii_helpers::observability::opentelemetry::global::tracer("iii-rust-sdk");
-                // INTERNAL and named `execute` (not `call`/`trigger`): the engine
-                // already emits the SERVER `call <fn>` span for this hop AND a
-                // `trigger <fn>` span from fire_triggers. Reusing either name would
-                // duplicate an engine span under the worker's service. `execute` is
-                // unique, so the worker handler span reads as a clean internal child
-                // of the engine's call span (and is collapsible by a single rule).
-                let span = tracer
-                    .span_builder(format!("execute {}", function_id))
-                    .with_kind(SpanKind::Internal)
-                    .start_with_context(&tracer, &parent_cx);
-                parent_cx.with_span(span)
-            };
-
-            let trace_payloads = !std::env::var("III_DISABLE_TRACE_PAYLOADS")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-
-            let payload_max_bytes = iii_helpers::observability::resolve_max_bytes_from_env();
-
-            if trace_payloads {
-                use iii_helpers::observability::opentelemetry::KeyValue;
-                use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
-                use iii_helpers::observability::redact_and_truncate;
-                let span = otel_cx.span();
-                if span.is_recording() {
-                    let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
-                    span.add_event(
-                        "iii.invocation.input",
-                        vec![
-                            KeyValue::new("iii.payload.json", input_json),
-                            KeyValue::new("iii.payload.truncated", truncated),
-                        ],
-                    );
-                }
-            }
-
-            let result = {
-                use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-                handler(data, metadata).with_context(otel_cx.clone()).await
-            };
-
-            if trace_payloads {
-                use iii_helpers::observability::opentelemetry::KeyValue;
-                use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
-                use iii_helpers::observability::redact_and_truncate;
-                let span = otel_cx.span();
-                if span.is_recording() {
-                    let (output_json, truncated, ok) = match &result {
-                        Ok(value) => {
-                            let (j, t) = redact_and_truncate(value, payload_max_bytes);
-                            (j, t, true)
-                        }
-                        Err(err) => {
-                            let payload = serde_json::json!({ "error": err.to_string() });
-                            let (j, t) = redact_and_truncate(&payload, payload_max_bytes);
-                            (j, t, false)
-                        }
-                    };
-                    span.add_event(
-                        "iii.invocation.output",
-                        vec![
-                            KeyValue::new("iii.payload.json", output_json),
-                            KeyValue::new("iii.payload.truncated", truncated),
-                            KeyValue::new("iii.payload.ok", ok),
-                        ],
-                    );
-                }
-            }
-
-            // Record span status based on result
-            let mut error_stacktrace: Option<String> = None;
-            {
-                use iii_helpers::observability::opentelemetry::KeyValue;
-                use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt};
-                let span = otel_cx.span();
-                match &result {
-                    Ok(_) => span.set_status(Status::Ok),
-                    Err(err) => {
-                        let (exc_type, exc_message, stacktrace) = match err {
-                            Error::Remote {
-                                code,
-                                message,
-                                stacktrace,
-                            } => (
-                                code.clone(),
-                                message.clone(),
-                                stacktrace.clone().unwrap_or_else(|| {
-                                    std::backtrace::Backtrace::force_capture().to_string()
-                                }),
-                            ),
-                            other => (
-                                "InvocationError".to_string(),
-                                other.to_string(),
-                                std::backtrace::Backtrace::force_capture().to_string(),
-                            ),
-                        };
-                        span.set_status(Status::error(exc_message.clone()));
-                        span.add_event(
-                            "exception",
-                            vec![
-                                KeyValue::new("exception.type", exc_type),
-                                KeyValue::new("exception.message", exc_message),
-                                KeyValue::new("exception.stacktrace", stacktrace.clone()),
-                            ],
-                        );
-                        // Consumed only by the non-`Remote` fallback arm when
-                        // building the wire ErrorBody below; `Remote` passes
-                        // its own (possibly absent) stacktrace through.
-                        error_stacktrace = Some(stacktrace);
-                    }
-                }
-            }
-
-            if let Some(invocation_id) = invocation_id {
+            if let Some(invocation_id) = reply_to {
                 // Inject trace context from our span into the response.
                 // We briefly attach the otel context (no .await crossing)
                 // so inject_traceparent/inject_baggage can read it.
                 let (resp_tp, resp_bg) = {
-                    let _guard = otel_cx.attach();
+                    let _guard = executed.otel_cx.attach();
                     inject_trace_headers()
                 };
 
-                let message = match result {
+                let message = match executed.result {
                     Ok(value) => Message::InvocationResult {
                         invocation_id,
                         function_id,
@@ -2930,45 +4067,174 @@ impl IIIClient {
                         traceparent: resp_tp,
                         baggage: resp_bg,
                     },
-                    Err(err) => {
-                        let error_body = match err {
-                            Error::Remote {
-                                code,
-                                message,
-                                stacktrace,
-                            } => ErrorBody {
-                                code,
-                                message,
-                                // `Remote` is a structured, expected error owned by
-                                // the handler, respect `stacktrace: None` instead of
-                                // backfilling the dispatch-loop backtrace, which
-                                // points at the SDK event loop, not the error site.
-                                stacktrace,
-                            },
-                            other => ErrorBody {
-                                code: "invocation_failed".to_string(),
-                                message: other.to_string(),
-                                stacktrace: error_stacktrace.or_else(|| {
-                                    Some(std::backtrace::Backtrace::force_capture().to_string())
-                                }),
-                            },
-                        };
-                        Message::InvocationResult {
-                            invocation_id,
-                            function_id,
-                            result: None,
-                            error: Some(error_body),
-                            traceparent: resp_tp,
-                            baggage: resp_bg,
-                        }
-                    }
+                    Err(err) => Message::InvocationResult {
+                        invocation_id,
+                        function_id,
+                        result: None,
+                        error: Some(error_body(err, executed.stacktrace)),
+                        traceparent: resp_tp,
+                        baggage: resp_bg,
+                    },
                 };
 
                 let _ = iii.send_message(message);
-            } else if let Err(err) = result {
+            } else if let Err(err) = executed.result {
                 tracing::warn!(error = %err, "error handling async invocation");
             }
         });
+    }
+
+    /// The engine's features on this connection are known: replay the
+    /// observers (or fail them with `UNSUPPORTED`), and say once when the
+    /// engine leaves functions' observe hooks inactive.
+    fn on_engine_features(&self, observe: bool) {
+        self.inner.engine_features.store(
+            if observe {
+                ENGINE_WITH_OBSERVE
+            } else {
+                ENGINE_WITHOUT_OBSERVE
+            },
+            Ordering::SeqCst,
+        );
+        self.inner
+            .engine_observe_last
+            .store(observe, Ordering::Relaxed);
+        let held = std::mem::take(&mut *self.inner.held_frames.lock_or_recover());
+        let observers: Vec<Arc<ObserverEntry>> = self
+            .inner
+            .observers
+            .lock_or_recover()
+            .values()
+            .cloned()
+            .collect();
+        if observe {
+            for envelope in held {
+                let _ = self.send_prepared(envelope);
+            }
+            for entry in observers {
+                self.send_observe(&entry);
+            }
+        } else {
+            if !held.is_empty() {
+                tracing::debug!(
+                    frames = held.len(),
+                    "dropping observe messages queued for an engine without observe"
+                );
+            }
+            for entry in observers {
+                Self::fail_unsupported(&entry);
+            }
+            let inactive: Vec<String> = self
+                .functions()
+                .values()
+                .filter(|data| data.observe.needs_observe)
+                .map(|data| data.message.id.clone())
+                .collect();
+            self.warn_no_observe(inactive);
+        }
+        if observe {
+            // a later engine without observe is worth saying again
+            self.inner.warned_no_observe.lock_or_recover().clear();
+        }
+        {
+            // each listener that has not heard this value yet: after a
+            // change, or added while reconnecting
+            let mut support = self.inner.observe_support.lock_or_recover();
+            let tell: Vec<(Arc<AtomicBool>, ObserveSupportFn)> = support
+                .listeners
+                .iter_mut()
+                .filter(|listener| listener.heard != Some(observe))
+                .map(|listener| {
+                    listener.heard = Some(observe);
+                    (listener.active.clone(), listener.call.clone())
+                })
+                .collect();
+            if !tell.is_empty() {
+                ObserveSupport::notify(tell, observe);
+            }
+        }
+        // Reports buffered while disconnected wait for their functions'
+        // confirmation; stats and anything else due go out now.
+        self.inner.reporter.wake.notify_one();
+    }
+
+    /// Warns, once per function, that the engine leaves these functions'
+    /// observe hooks inactive.
+    fn warn_no_observe(&self, functions: Vec<String>) {
+        let fresh: Vec<String> = {
+            let mut warned = self.inner.warned_no_observe.lock_or_recover();
+            functions
+                .into_iter()
+                .filter(|id| warned.insert(id.clone()))
+                .collect()
+        };
+        if !fresh.is_empty() {
+            tracing::warn!(
+                functions = ?fresh,
+                "the engine does not support observe (no `observe.v1`): these functions are \
+                 registered as plain functions and their observe hooks will not run"
+            );
+        }
+    }
+
+    fn fail_unsupported(entry: &ObserverEntry) {
+        entry.set(
+            ObserverState::Error,
+            Some(ObserverReason {
+                code: observe_codes::UNSUPPORTED.to_string(),
+                message: "the engine does not support observe (no `observe.v1`)".to_string(),
+            }),
+            None,
+        );
+    }
+
+    fn send_observe(&self, entry: &ObserverEntry) {
+        let _order = entry.send_lock.lock_or_recover();
+        if entry.disposing.load(Ordering::Acquire) {
+            return;
+        }
+        entry.sent.store(true, Ordering::Release);
+        if let Err(error) = self.send_message(entry.message.clone()) {
+            tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");
+        }
+    }
+
+    /// Starts tracking a new observer: sent now when this engine supports
+    /// observe, failed when it does not, and sent on `WorkerRegistered`
+    /// before that.
+    pub(crate) fn track_observer(&self, entry: Arc<ObserverEntry>) {
+        self.inner
+            .observers
+            .lock_or_recover()
+            .insert(entry.id.clone(), entry.clone());
+        match self.inner.engine_features.load(Ordering::SeqCst) {
+            ENGINE_WITH_OBSERVE => self.send_observe(&entry),
+            ENGINE_WITHOUT_OBSERVE => Self::fail_unsupported(&entry),
+            _ => {}
+        }
+    }
+
+    /// Stops replaying an observer.
+    pub(crate) fn forget_observer(&self, id: &str) {
+        self.inner.observers.lock_or_recover().remove(id);
+    }
+
+    fn observer_entry(&self, id: &str) -> Option<Arc<ObserverEntry>> {
+        self.inner.observers.lock_or_recover().get(id).cloned()
+    }
+
+    fn apply_observer_state(
+        &self,
+        entry: &ObserverEntry,
+        state: ObserverState,
+        reason: Option<ErrorBody>,
+        fires: Option<u64>,
+    ) {
+        if state == ObserverState::Disposed {
+            // Disposed by the engine (policy, expiry, grace): not replayed.
+            self.forget_observer(&entry.id);
+        }
+        entry.set(state, reason.map(ObserverReason::from), fires);
     }
 
     fn handle_register_trigger(
@@ -3098,15 +4364,17 @@ pub(crate) async fn internal_create_channel(
     )
     .map_err(|e| Error::Serde(e.to_string()))?;
 
+    let headers = iii.inner.headers.lock_or_recover().clone();
     Ok(Channel {
-        writer: ChannelWriter::new(&iii.inner.address, &writer_ref),
-        reader: ChannelReader::new(&iii.inner.address, &reader_ref),
+        writer: ChannelWriter::new(&iii.inner.address, &writer_ref).with_headers(headers.clone()),
+        reader: ChannelReader::new(&iii.inner.address, &reader_ref).with_headers(headers),
         writer_ref,
         reader_ref,
     })
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -3309,6 +4577,167 @@ mod tests {
         let n = handshakes.load(Ordering::SeqCst);
         iii.shutdown_async().await;
         assert_eq!(n, 1, "healthy pinged connection must not be torn down");
+    }
+
+    type Handshake = (String, tokio_tungstenite::tungstenite::http::HeaderMap);
+
+    /// WS server that reports each handshake's request URI and headers.
+    // tungstenite's handshake callback is forced to return its large error type.
+    #[allow(clippy::result_large_err)]
+    async fn spawn_handshake_recorder() -> (std::net::SocketAddr, mpsc::UnboundedReceiver<Handshake>)
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let record =
+                        |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
+                            let _ = tx.send((req.uri().to_string(), req.headers().clone()));
+                            Ok(resp)
+                        };
+                    let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(sock, record).await else {
+                        return;
+                    };
+                    while let Some(Ok(_)) = ws.next().await {}
+                });
+            }
+        });
+        (addr, rx)
+    }
+
+    async fn next_handshake(rx: &mut mpsc::UnboundedReceiver<Handshake>) -> Handshake {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("no handshake within 5s")
+            .expect("recorder stopped")
+    }
+
+    fn connect_recording(
+        addr: std::net::SocketAddr,
+        headers: Option<HashMap<String, String>>,
+    ) -> IIIClient {
+        let iii = IIIClient::new(&format!("ws://{addr}"));
+        // Keep OTel's exporter from dialing the recorder too.
+        *iii.inner.otel_config.lock_or_recover() = Some(OtelConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        if let Some(headers) = headers {
+            iii.set_headers(headers);
+        }
+        iii.connect();
+        iii
+    }
+
+    fn channel_ref(direction: crate::channels::ChannelDirection) -> StreamChannelRef {
+        StreamChannelRef {
+            channel_id: "chan".into(),
+            access_key: "key".into(),
+            direction,
+        }
+    }
+
+    /// `III_TOKEN` alone authenticates the main connection and both channel
+    /// ends, and an explicit `Authorization` wins on each of them. Sync because
+    /// the env guard is a std mutex that must not be held across an await.
+    #[test]
+    fn iii_token_authenticates_the_handshake_of_the_connection_and_channels() {
+        use crate::channels::ChannelDirection::{Read, Write};
+
+        let env = ScopedEnvVar::new("III_TOKEN");
+        env.set("secret");
+        let explicit =
+            HashMap::from([("authorization".to_string(), "Bearer explicit".to_string())]);
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (addr, mut rx) = spawn_handshake_recorder().await;
+            let auth = |h: &Handshake| {
+                h.1.get("authorization")
+                    .map(|v| v.to_str().unwrap().to_string())
+            };
+
+            let iii = connect_recording(addr, None);
+            assert_eq!(
+                auth(&next_handshake(&mut rx).await).as_deref(),
+                Some("Bearer secret")
+            );
+            iii.shutdown_async().await;
+
+            let iii = connect_recording(addr, Some(explicit.clone()));
+            assert_eq!(
+                auth(&next_handshake(&mut rx).await).as_deref(),
+                Some("Bearer explicit")
+            );
+            iii.shutdown_async().await;
+
+            // The base query survives, and the channel's own params follow it.
+            let base = format!("ws://{addr}/?token=abc");
+            let writer = ChannelWriter::new(&base, &channel_ref(Write));
+            writer.send_message("hi").await.unwrap();
+            let handshake = next_handshake(&mut rx).await;
+            assert_eq!(handshake.0, "/ws/channels/chan?token=abc&key=key&dir=write");
+            assert_eq!(auth(&handshake).as_deref(), Some("Bearer secret"));
+
+            let reader = ChannelReader::new(&base, &channel_ref(Read));
+            let _ = tokio::time::timeout(Duration::from_millis(500), reader.next_binary()).await;
+            let handshake = next_handshake(&mut rx).await;
+            assert_eq!(handshake.0, "/ws/channels/chan?token=abc&key=key&dir=read");
+            assert_eq!(auth(&handshake).as_deref(), Some("Bearer secret"));
+
+            let writer =
+                ChannelWriter::new(&base, &channel_ref(Write)).with_headers(Some(explicit));
+            writer.send_message("hi").await.unwrap();
+            assert_eq!(
+                auth(&next_handshake(&mut rx).await).as_deref(),
+                Some("Bearer explicit")
+            );
+        });
+    }
+
+    /// Telemetry dials the engine too, so it gets the connection's handshake
+    /// headers unless the caller set its own.
+    #[test]
+    fn telemetry_config_gets_the_handshake_headers() {
+        let env = ScopedEnvVar::new("III_TOKEN");
+        env.set("secret");
+        let iii = IIIClient::new("ws://engine.test");
+        iii.set_headers(HashMap::from([("x-other".into(), "kept".into())]));
+
+        let headers = iii.take_otel_config().engine_ws_headers.unwrap();
+        assert_eq!(headers["x-other"], "kept");
+        assert_eq!(headers["Authorization"], "Bearer secret");
+
+        let own = HashMap::from([("x-own".to_string(), "1".to_string())]);
+        iii.set_otel_config(OtelConfig {
+            engine_ws_headers: Some(own.clone()),
+            ..Default::default()
+        });
+        assert_eq!(iii.take_otel_config().engine_ws_headers, Some(own));
+    }
+
+    #[test]
+    fn handshake_headers_add_a_bearer_only_for_a_non_blank_token() {
+        let env = ScopedEnvVar::new("III_TOKEN");
+        let kept = HashMap::from([("x-other".to_string(), "kept".to_string())]);
+
+        env.remove();
+        assert_eq!(handshake_headers(None), HashMap::new());
+        for blank in ["", "  \t "] {
+            env.set(blank);
+            assert_eq!(handshake_headers(Some(kept.clone())), kept);
+        }
+
+        env.set(" secret\n");
+        let mut with_bearer = kept.clone();
+        with_bearer.insert("Authorization".to_string(), "Bearer secret".to_string());
+        assert_eq!(handshake_headers(Some(kept)), with_bearer);
+
+        let explicit =
+            HashMap::from([("AUTHORIZATION".to_string(), "Bearer explicit".to_string())]);
+        assert_eq!(handshake_headers(Some(explicit.clone())), explicit);
     }
 
     struct NoopTriggerHandler;
@@ -3885,6 +5314,7 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            observe: None,
         }
     }
 
@@ -3920,6 +5350,9 @@ mod tests {
             action: None,
             metadata: None,
             namespace: None,
+            caller: None,
+            observe_depth: None,
+            activation: None,
         }
     }
 
@@ -3947,7 +5380,8 @@ mod tests {
         assert_eq!(
             IIIClient::registration_key(&Message::WorkerRegistered {
                 worker_id: "w".to_string(),
-                reattach_token: None
+                reattach_token: None,
+                features: Vec::new(),
             }),
             None
         );
@@ -4044,6 +5478,111 @@ mod tests {
 
         assert!(!shutdown);
         assert!(queue.is_empty());
+    }
+
+    fn hello(iii: &IIIClient, observe: bool) {
+        let features: Vec<&str> = if observe { vec!["observe.v1"] } else { vec![] };
+        let message = serde_json::json!({ "type": "workerregistered", "worker_id": "w",
+            "features": features });
+        iii.handle_message(&message.to_string()).unwrap();
+    }
+
+    /// What `run_connection` does on a reconnect.
+    fn reconnecting(iii: &IIIClient) {
+        iii.inner
+            .engine_features
+            .store(ENGINE_FEATURES_UNKNOWN, Ordering::SeqCst);
+    }
+
+    type Heard = Arc<Mutex<Vec<bool>>>;
+
+    fn listen(iii: &IIIClient) -> (Heard, ObserveSupportListener) {
+        let heard: Heard = Arc::default();
+        let sink = heard.clone();
+        let listener =
+            iii.on_engine_supports_observe(move |observe| sink.lock().unwrap().push(observe));
+        (heard, listener)
+    }
+
+    fn wait_for(heard: &Heard, expected: Vec<bool>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while heard.lock().unwrap().len() < expected.len() {
+            assert!(
+                Instant::now() < deadline,
+                "heard {:?}",
+                heard.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(*heard.lock().unwrap(), expected);
+    }
+
+    /// The engine's observe support: unknown until its `WorkerRegistered`,
+    /// and listeners hear each change, from the current value on.
+    #[test]
+    fn the_engines_observe_support_is_known_and_followed() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        assert_eq!(iii.engine_supports_observe(), None);
+        let _boom = iii.on_engine_supports_observe(|_| panic!("listener bug"));
+        let (early, early_listener) = listen(&iii);
+        hello(&iii, true);
+        assert_eq!(iii.engine_supports_observe(), Some(true));
+        wait_for(&early, vec![true]);
+
+        // added while reconnecting: told nothing until the engine says
+        reconnecting(&iii);
+        assert_eq!(iii.engine_supports_observe(), None);
+        let (during, _during) = listen(&iii);
+        hello(&iii, false);
+        assert_eq!(iii.engine_supports_observe(), Some(false));
+        wait_for(&during, vec![false]);
+        wait_for(&early, vec![true, false]);
+
+        // and told even when the engine says the same as before
+        reconnecting(&iii);
+        let (same, _same) = listen(&iii);
+        hello(&iii, false);
+        wait_for(&same, vec![false]);
+
+        // a listener added now hears the current value first
+        let (late, _late) = listen(&iii);
+        wait_for(&late, vec![false]);
+        early_listener.unsubscribe();
+        hello(&iii, true);
+        wait_for(&late, vec![false, true]);
+        wait_for(&during, vec![false, true]);
+        assert_eq!(*early.lock().unwrap(), vec![true, false]);
+        assert_eq!(*same.lock().unwrap(), vec![false, true]);
+    }
+
+    /// A change already queued when the listener unsubscribes does not call it.
+    #[test]
+    fn an_unsubscribed_listener_misses_a_queued_change() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, release_rx) = (Mutex::new(started_tx), Mutex::new(release_rx));
+        // holds the listener thread while the next listener's call waits
+        let _blocker = iii.on_engine_supports_observe(move |_| {
+            let _ = started_tx.lock().unwrap().send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        });
+        let (heard, listener) = listen(&iii);
+        hello(&iii, true);
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        listener.unsubscribe();
+        release_tx.send(()).unwrap();
+        // runs after the queued change
+        let (after, _after) = listen(&iii);
+        wait_for(&after, vec![true]);
+        assert!(
+            heard.lock().unwrap().is_empty(),
+            "heard {:?}",
+            heard.lock().unwrap()
+        );
     }
 
     #[tokio::test]
@@ -4322,5 +5861,230 @@ mod tests {
         }))
         .unwrap();
         assert!(without_ns.namespace.is_none());
+    }
+}
+
+#[cfg(test)]
+mod nodelay_tests {
+    use super::*;
+    use crate::transport::test_engine;
+
+    /// Connects through `connect_socket` to a stand-in engine and reports
+    /// whether the client socket ended up with `TCP_NODELAY`.
+    async fn client_nodelay(headers: Option<HashMap<String, String>>, advertise: bool) -> bool {
+        let (address, server) = test_engine::spawn(advertise).await;
+        let client = IIIClient::new(&format!("ws://{address}"));
+        if let Some(headers) = headers {
+            client.set_headers(headers);
+        }
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(5), client.connect_socket())
+            .await
+            .unwrap()
+            .unwrap();
+        let nodelay = test_engine::nodelay(&stream);
+        drop(server.await.unwrap());
+        nodelay
+    }
+
+    #[tokio::test]
+    async fn worker_socket_has_tcp_nodelay_when_engine_advertises_it() {
+        assert!(client_nodelay(None, true).await);
+    }
+
+    #[tokio::test]
+    async fn worker_socket_with_headers_has_tcp_nodelay_when_engine_advertises_it() {
+        let headers = HashMap::from([("x-test".into(), "nodelay".into())]);
+        assert!(client_nodelay(Some(headers), true).await);
+    }
+
+    #[tokio::test]
+    async fn worker_socket_keeps_nagle_when_engine_does_not_advertise_it() {
+        assert!(!client_nodelay(None, false).await);
+    }
+}
+
+#[cfg(test)]
+mod held_frames_tests {
+    use super::*;
+    use crate::reporter::{Gate, PendingItem, ReportFrame};
+
+    /// A flushed frame on its way to the socket, as `flush_reports` sends it.
+    fn envelope(frame: ReportFrame) -> PreparedEnvelope {
+        PreparedEnvelope::from_json(frame.json, None, None)
+            .observe_family()
+            .with_report_lease(frame.lease)
+    }
+
+    /// `items` items of `function_id` pushed and flushed into one frame.
+    fn report_frame(iii: &IIIClient, function_id: &str, items: usize) -> PreparedEnvelope {
+        for _ in 0..items {
+            assert!(iii.reporter().push(PendingItem::test(function_id)));
+        }
+        let mut frames = iii.reporter().take_report_frames(|_| Gate::Send);
+        assert_eq!(frames.len(), 1);
+        envelope(frames.pop().unwrap())
+    }
+
+    /// The steps of a reconnect in `run_connection` for what the dropped
+    /// connection left in its queue.
+    fn reconnect(iii: &IIIClient, mut queue: Vec<PreparedEnvelope>) {
+        let mut reports = Vec::new();
+        iii.hold_observe_frames(&mut queue, &mut reports);
+        iii.requeue_reports(&mut reports);
+    }
+
+    /// The function of each item flushed now, in order.
+    fn flushed_functions(iii: &IIIClient) -> Vec<String> {
+        iii.reporter()
+            .take_frames(|_| Gate::Send)
+            .iter()
+            .flat_map(|frame| {
+                serde_json::from_str::<Value>(frame).unwrap()["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["function_id"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn observe_messages_held_across_a_reconnect_are_capped() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let unobserve = |i: usize| {
+            IIIClient::prepare_envelope(&Message::Unobserve {
+                id: format!("o{i}"),
+            })
+            .unwrap()
+        };
+        let mut queue: Vec<PreparedEnvelope> = (0..=MAX_HELD_FRAMES).map(unobserve).collect();
+        queue.push(report_frame(&iii, "f", 3));
+        queue.push(IIIClient::prepare_envelope(&Message::Pong).unwrap());
+        let mut reports = Vec::new();
+        iii.hold_observe_frames(&mut queue, &mut reports);
+        iii.requeue_reports(&mut reports);
+        assert_eq!(queue.len(), 1, "other messages stay queued");
+        assert_eq!(
+            iii.inner.held_frames.lock_or_recover().len(),
+            MAX_HELD_FRAMES
+        );
+        assert_eq!(iii.reporter().len(), 3, "reports are buffered items again");
+        assert_eq!(iii.reporter().in_flight(), 0, "their frames released");
+    }
+
+    #[test]
+    fn observe_messages_held_across_a_reconnect_are_capped_by_bytes() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let big = |i: usize| {
+            IIIClient::prepare_envelope(&Message::ObserverAck {
+                function_id: "f".into(),
+                namespace: None,
+                id: format!("o{i}"),
+                revision: 1,
+                error: Some(ErrorBody::new("X", "y".repeat(1024 * 1024))),
+            })
+            .unwrap()
+        };
+        let mut queue: Vec<PreparedEnvelope> = (0..6).map(big).collect();
+        let mut reports = Vec::new();
+        iii.hold_observe_frames(&mut queue, &mut reports);
+        let held = iii.inner.held_frames.lock_or_recover();
+        assert!(held.len() < 6, "{} held", held.len());
+        let bytes: usize = held.iter().map(|e| e.payload.len()).sum();
+        assert!(bytes <= MAX_HELD_BYTES);
+    }
+
+    /// A worker that stops counts the report frames it can no longer send,
+    /// and the items still buffered or parked.
+    #[test]
+    fn report_frames_abandoned_at_shutdown_are_counted() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(Outbound::Message(report_frame(&iii, "in-channel", 2)))
+            .unwrap();
+        let mut queue = vec![report_frame(&iii, "queued", 1)];
+        let mut reports = vec![report_frame(&iii, "requeue", 1)];
+        let late = report_frame(&iii, "late", 1);
+        iii.reporter().push(PendingItem::test("parked"));
+        assert!(iii.reporter().take_frames(|_| Gate::Hold).is_empty());
+        iii.reporter().push(PendingItem::test("buffered"));
+        iii.abandon_reports(&mut queue, &mut reports, &mut rx);
+        // not running: a frame handed to the send path is counted too
+        iii.send_prepared(late).unwrap();
+        let mut drops = iii.reporter().take_drops();
+        drops.sort();
+        assert_eq!(
+            drops,
+            vec![
+                ("buffered".to_string(), "INACTIVE", 1),
+                ("in-channel".to_string(), "INACTIVE", 2),
+                ("late".to_string(), "INACTIVE", 1),
+                ("parked".to_string(), "INACTIVE", 1),
+                ("queued".to_string(), "INACTIVE", 1),
+                ("requeue".to_string(), "INACTIVE", 1),
+            ]
+        );
+        assert_eq!(iii.reporter().in_flight(), 0);
+        assert_eq!(iii.reporter().len(), 0);
+    }
+
+    /// A drop leaves one frame whose write failed in the queue and two
+    /// unsent ones in the channel: the unsent ones come back in order, the
+    /// failed one is not resent (it may have arrived) and is counted.
+    #[test]
+    fn frames_left_by_a_drop_come_back_oldest_first() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut failed = report_frame(&iii, "f0", 1);
+        failed.write_failed = true;
+        let mut queue = vec![failed, report_frame(&iii, "f1", 1)];
+        tx.send(Outbound::Message(report_frame(&iii, "f2", 1)))
+            .unwrap();
+        tx.send(Outbound::Message(report_frame(&iii, "f3", 1)))
+            .unwrap();
+        // pushed while the connection was down
+        iii.reporter().push(PendingItem::test("newest"));
+
+        // the same steps as a reconnect in `run_connection`
+        let mut reports = Vec::new();
+        iii.hold_observe_frames(&mut queue, &mut reports);
+        IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &HashSet::new());
+        iii.hold_observe_frames(&mut queue, &mut reports);
+        iii.requeue_reports(&mut reports);
+
+        assert_eq!(flushed_functions(&iii), vec!["f1", "f2", "f3", "newest"]);
+        assert_eq!(
+            iii.reporter().take_drops(),
+            vec![("f0".to_string(), "INACTIVE", 1)]
+        );
+    }
+
+    /// An item of `f` read back after a first drop waits for `f`'s
+    /// confirmation while a newer item of `g` goes out on the next
+    /// connection, which drops too: once `f` is confirmed, the two still go
+    /// out in push order.
+    #[test]
+    fn reports_keep_push_order_across_two_reconnects() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        // A (of f) flushed on the first connection, which drops
+        let a = report_frame(&iii, "f", 1);
+        reconnect(&iii, vec![a]);
+        // B (of g) flushed on the second, f not confirmed there yet
+        iii.reporter().push(PendingItem::test("g"));
+        let mut frames = iii.reporter().take_report_frames(|function_id| {
+            if function_id == "f" {
+                Gate::Hold
+            } else {
+                Gate::Send
+            }
+        });
+        assert_eq!(frames.len(), 1, "B goes out, A is parked");
+        reconnect(&iii, vec![envelope(frames.pop().unwrap())]);
+        // f confirmed on the third
+        iii.reporter().unpark("f");
+        assert_eq!(flushed_functions(&iii), vec!["f", "g"]);
+        assert_eq!(iii.reporter().len(), 0);
+        assert!(iii.reporter().take_drops().is_empty());
     }
 }

@@ -173,7 +173,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   let code = payload.code;
   if (code) {
     // A requested code must be free; creating never overwrites an existing link.
-    if (await taken(code)) throw new Error(`code "${code}" is taken`);
+    if (await taken(code)) throw new Error(`code \`${code}\` is already taken`);
   } else {
     // A generated code retries until it finds a free one.
     do {
@@ -219,14 +219,22 @@ with the engine. `--up` is a `iii compose` flag that starts the engine along wit
 iii compose --up
 ```
 
+<Note>
+  `iii compose --up` stays in the foreground. Press Ctrl+C in that terminal to stop the engine and
+  every worker. From another terminal, `iii kill --compose <project folder>` stops the same project:
+  its Compose daemon, its engine and its workers.
+</Note>
+
 ## Register the worker
 
 `worker-compose.yaml` declares `link` as a `path://` container, so Compose starts it with the rest
 of the project. On the Compose/engine output you will see the `link` worker register `link::create`
-and `link::resolve`. You can see engine logs by tailing the engine log file with:
+and `link::resolve`. You can see engine logs by tailing the engine log file. Compose keeps it inside
+the project, under `.iii/compose/<namespace>/engine.log`, and `iii compose --up` prints its exact
+path when it starts. From the project root:
 
 ```bash
-tail -30 $HOME/.iii/compose/default/engine.log
+tail -30 .iii/compose/default/engine.log
 ```
 
 The output will look something like this:
@@ -296,9 +304,20 @@ served by the `http` worker you added at the start of the chapter.
 
 ### Create a function to handle new links
 
-Add `http::create` to `link/src/index.ts`. It validates the request body, calls `link::create`
-through the engine with `worker.trigger`, and returns the new link, or `409` when the requested code
-is already taken:
+Add `http::create` to `link/src/index.ts`. It answers `400` when the request body has no `url`,
+calls `link::create` through the engine with `worker.trigger`, and returns the new link with `201`,
+or `409` when the requested code is already taken.
+
+An error thrown by `link::create` reaches `http::create` as an `InvocationError` from `iii-sdk`. Its
+`code` is `invocation_failed`, and its `message` is that code, a colon, and the message
+`link::create` threw. The handler cuts the prefix off, so the response carries `link::create`'s exact
+words. Add `InvocationError` to the `iii-sdk` import at the top of the file:
+
+```typescript {1} src/index.ts
+import { InvocationError, registerWorker } from "iii-sdk";
+```
+
+Then append `http::create`:
 
 ```typescript src/index.ts
 worker.registerFunction("http::create", async (req) => {
@@ -324,15 +343,32 @@ worker.registerFunction("http::create", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   } catch (err) {
-    // link::create throws when a requested code is already taken.
+    // The SDK hands link::create's error back as an InvocationError whose
+    // message is `<err.code>: <what link::create threw>`; drop that prefix.
+    const error =
+      err instanceof InvocationError ? err.message.slice(err.code.length + 2) : String(err);
+    // Only link::create's own "is already taken" message means the code is in
+    // use (409). Anything else failed on the server's side (500).
+    if (error.endsWith("is already taken")) {
+      return {
+        status_code: 409,
+        body: { error },
+        headers: { "Content-Type": "application/json" },
+      };
+    }
+    logger.error("link create failed", { error });
     return {
-      status_code: 409,
-      body: { error: err instanceof Error ? err.message : "conflict" },
+      status_code: 500,
+      body: { error: "could not create the link" },
       headers: { "Content-Type": "application/json" },
     };
   }
 });
 ```
+
+`link::create` always ends its message for a taken code with `is already taken`, so that message, and
+nothing else, decides `409`; any other failure, such as a worker that does not answer, is logged and
+answers `500`.
 
 ### Bind your create function to a Trigger
 
@@ -376,6 +412,19 @@ content-type: application/json
 
 {"code":"demo","url":"https://example.com"}
 ```
+
+Send the same request again. `demo` is taken now, so `link::create` refuses it and the route answers
+`409` with its message:
+
+```http
+HTTP/1.1 409 Conflict
+content-type: application/json
+
+{"error":"code `demo` is already taken"}
+```
+
+A body without `url` never reaches `link::create`: the route answers `400` with
+`{"error":"missing \"url\""}`.
 
 The link sits in `state` now, but `GET /s/demo` has nowhere to go yet. There's no handler; add one
 next.

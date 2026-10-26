@@ -50,6 +50,12 @@ engine:
 For each new connection, `iii-worker-manager` calls the function that `auth_function_id` names. The
 function accepts or rejects the connection. The next section shows how to write it.
 
+<Note>
+  `auth_function_id` authorizes connections and stays supported in 0.25. The deprecated
+  `auth_function` setting belongs to `iii-stream`. See [Migrate from iii-stream and
+  pubsub](../upgrading/migrate-from-streams).
+</Note>
+
 <Warning>
   `auth_function_id` resolves in the `default` namespace. Register the auth worker there. An auth
   worker in another namespace makes the listener reject every connection.
@@ -380,3 +386,15 @@ engine:
 To remap or deny a trigger type, trigger, or function that an untrusted session registers, use the
 registration hooks in the
 [iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
+
+`on_observer_registration_function_id` does the same for [observers](../using-iii/observers). It
+receives
+`{ observer_id, function_id, namespace, args, filters, target_function_id, target_namespace, metadata, context }`.
+An object answer may rewrite `function_id`, `target_function_id`, `args`, `filters`, and `metadata`;
+any other answer, or an error, denies the observer with `FORBIDDEN`. Independently of the hook, a
+session may observe a function only when it may invoke both the observed function and the target.
+
+Calls a worker makes to its own functions normally run in-process
+([local dispatch](../using-iii/observers#local-dispatch)). For a session with a
+`middleware_function_id`, the engine turns local dispatch off, so every call still passes through
+the middleware.

@@ -9,6 +9,9 @@
 //! `orders` registered a trigger that fired and resolved nothing, and its calls
 //! left its own namespace without saying so.
 
+// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
+#![allow(deprecated)]
+
 mod common;
 
 use std::time::Duration;

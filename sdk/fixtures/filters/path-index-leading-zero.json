@@ -1,0 +1,9 @@
+{
+  "description": "a non-canonical number (leading zero) is a key, never an index",
+  "filters": {"input.items.01": {"$exists": true}},
+  "cases": [
+    { "doc": {"input": {"items": ["a", "b"]}}, "expect": false },
+    { "doc": {"input": {"items": {"01": 1}}}, "expect": true },
+    { "doc": {"input": {"items": {"1": 1}}}, "expect": false }
+  ]
+}
