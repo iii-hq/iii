@@ -124,9 +124,7 @@ func (c *Connection) run() {
 		if err == nil {
 			attempt = 0
 			c.opened(ws)
-			// The engine sends nothing on /otel; CloseRead answers pings and reports the
-			// close.
-			<-ws.CloseRead(c.lifeCtx).Done()
+			c.readLoop(ws)
 			c.closed(ws)
 		} else if !c.IsShuttingDown() {
 			logf("[OTel] WebSocket error: %v", err)
@@ -159,6 +157,32 @@ func (c *Connection) run() {
 			timer.Stop()
 		}
 		attempt++
+	}
+}
+
+// maxLoggedMessage caps how much of an unexpected engine message is logged.
+const maxLoggedMessage = 512
+
+// readLoop reads the socket until it closes or lifeCtx ends, answering pings and the
+// close handshake (coder/websocket does that while a Read is pending). The engine sends
+// nothing on /otel except, when it refuses the connection, one error text frame before
+// closing it; text frames are logged and every message is discarded.
+//
+// It replaces coder/websocket's CloseRead, whose goroutine answers any data message with
+// Close(StatusPolicyViolation) and then waits up to 15s for itself to exit, so a single
+// frame from the peer stalled the loop, and a concurrent Shutdown, for 15s.
+func (c *Connection) readLoop(ws *websocket.Conn) {
+	for {
+		typ, data, err := ws.Read(c.lifeCtx)
+		if err != nil {
+			return
+		}
+		if typ == websocket.MessageText {
+			if len(data) > maxLoggedMessage {
+				data = append(data[:maxLoggedMessage:maxLoggedMessage], "..."...)
+			}
+			logf("[OTel] Unexpected message from the engine: %s", data)
+		}
 	}
 }
 
@@ -308,18 +332,21 @@ func (c *Connection) Shutdown(ctx context.Context) error {
 	c.cancelReconnect()
 
 	if ws != nil {
-		c.writeMu.Lock()
 		closed := make(chan struct{})
 		go func() {
+			defer close(closed)
+			c.writeMu.Lock()
+			defer c.writeMu.Unlock()
 			_ = ws.Close(websocket.StatusNormalClosure, "")
-			close(closed)
 		}()
 		select {
 		case <-closed:
 		case <-ctx.Done():
-			_ = ws.CloseNow()
+			// Out of time. Cancelling lifeCtx makes coder/websocket close the connection
+			// under the pending read and any blocked write, which ends the close handshake
+			// at once; CloseNow would only wait for that same handshake.
+			c.cancelLife()
 		}
-		c.writeMu.Unlock()
 	}
 	c.cancelLife()
 	select {
