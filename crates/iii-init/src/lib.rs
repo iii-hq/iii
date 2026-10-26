@@ -33,6 +33,8 @@ pub mod supervisor;
 // Keeping it behind cfg(linux) also keeps macOS unit test builds clean.
 #[cfg(target_os = "linux")]
 pub mod fs_handler;
+#[cfg(target_os = "linux")]
+pub mod worker_env;
 
 #[cfg(target_os = "linux")]
 pub use error::InitError;

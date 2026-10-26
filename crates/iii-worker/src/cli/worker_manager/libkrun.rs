@@ -99,6 +99,26 @@ pub struct VmCommand {
     /// Where the supervisor records the VM pid. `run_dev` writes it after the
     /// spawn; a caller holding its own child handle does not need it.
     pub pid_file: PathBuf,
+    /// The worker env, as the `__vm-boot --env-stdin` payload. The command
+    /// carries no env values in argv, where `ps` would show them to every
+    /// local user (MOT-5492): whoever spawns it must write this to the
+    /// child's stdin and close it (see [`feed_env_stdin`]).
+    pub env_stdin: Vec<u8>,
+}
+
+/// Writes [`VmCommand::env_stdin`] into a spawned `__vm-boot` and closes the
+/// pipe. `__vm-boot` reads its stdin to EOF before anything else, so this
+/// returns as soon as the payload is in the pipe.
+pub async fn feed_env_stdin(
+    stdin: Option<tokio::process::ChildStdin>,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stdin =
+        stdin.ok_or_else(|| std::io::Error::other("the VM boot process has no stdin pipe"))?;
+    stdin.write_all(payload).await?;
+    stdin.shutdown().await
 }
 
 /// The binary that answers `__vm-boot`.
@@ -166,6 +186,8 @@ pub fn build_vm_command(
 
     let env_pairs: Vec<(String, String)> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let env_stdin = iii_supervisor::env_channel::encode_payload(&env_pairs)
+        .map_err(|e| format!("cannot pass the worker environment to the VM: {e}"))?;
     let control_sock = rootfs.join("control.sock");
     let shell_sock = rootfs.join("shell.sock");
     let pid_file = rootfs.join("vm.pid");
@@ -189,12 +211,13 @@ pub fn build_vm_command(
         &control_sock,
         &shell_sock,
         source_sync,
-        &env_pairs,
+        &[],
         mounts,
         args,
     ) {
         cmd.arg(boot_arg);
     }
+    cmd.arg("--env-stdin");
 
     apply_vm_tuning_env(|flag, val| {
         cmd.arg(flag);
@@ -210,7 +233,7 @@ pub fn build_vm_command(
         );
     }
 
-    cmd.stdin(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::piped());
 
     // Deliberately no `setsid` here: how the child is detached belongs to
     // whoever spawns it. `run_dev` calls [`detach`] because its VMs outlive it;
@@ -220,6 +243,7 @@ pub fn build_vm_command(
     Ok(VmCommand {
         command: cmd,
         pid_file,
+        env_stdin,
     })
 }
 
@@ -257,6 +281,7 @@ pub async fn run_dev(
     let VmCommand {
         command: mut cmd,
         pid_file,
+        env_stdin,
     } = match build_vm_command(
         exec_path,
         args,
@@ -323,6 +348,16 @@ pub async fn run_dev(
 
     match cmd.spawn() {
         Ok(mut child) => {
+            if let Err(e) = feed_env_stdin(child.stdin.take(), &env_stdin).await {
+                eprintln!(
+                    "{} cannot send the worker environment to the VM: {}",
+                    "error:".red(),
+                    e
+                );
+                let _ = child.kill().await;
+                return 1;
+            }
+
             // Hardened writer: O_NOFOLLOW + 0o600 on Unix so a symlink
             // pre-planted at vm.pid can't redirect our write to a
             // sensitive file. Matches the watch.pid hardening.
@@ -905,6 +940,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             (None, String::new(), None)
         };
 
+        // Env goes on stdin, not argv (MOT-5492).
+        let env_stdin = iii_supervisor::env_channel::encode_payload(&env_pairs)
+            .context("cannot pass the worker environment to the VM")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
         // Detached by design — see the matching scrub in run_dev above.
@@ -923,11 +961,12 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             &console_output_path,
             &control_sock_path,
             &shell_sock_path,
-            &env_pairs,
+            &[],
             &exec_args,
         ) {
             cmd.arg(boot_arg);
         }
+        cmd.arg("--env-stdin");
 
         // Forward optional VM-tuning env vars (III_VM_*) to __vm-boot.
         // Same opt-in model as `run_dev` — unset vars keep defaults
@@ -948,9 +987,24 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
         cmd.stdout(stdout_file);
         cmd.stderr(stderr_file);
-        cmd.stdin(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::piped());
 
-        let child = cmd.spawn().context("failed to spawn VM boot process")?;
+        let mut child = cmd.spawn().context("failed to spawn VM boot process")?;
+        // `__vm-boot` drains stdin first thing and the payload is capped at
+        // `env_channel::MAX_ENV_BYTES`, so this blocking write does not wait
+        // on the boot.
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            if let Err(e) = stdin.write_all(&env_stdin) {
+                drop(stdin);
+                // No half-fed VM left running untracked, and no zombie.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(
+                    anyhow::Error::new(e).context("cannot send the worker environment to the VM")
+                );
+            }
+        }
 
         let pid = child.id();
         crate::cli::pidfile::write_pid_file_strict(&Self::pid_file(&spec.name), pid)?;
@@ -1065,6 +1119,25 @@ fn fs_dir_size(path: &std::path::Path) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn feed_env_stdin_writes_the_payload_and_closes_the_pipe() {
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let payload = br#"[["API_KEY","sk-secret"]]"#;
+        feed_env_stdin(child.stdin.take(), payload).await.unwrap();
+        // `cat` only exits once it sees EOF, so this also proves the close.
+        let out = child.wait_with_output().await.unwrap();
+        assert_eq!(out.stdout, payload);
+    }
+
+    #[tokio::test]
+    async fn feed_env_stdin_without_a_pipe_is_an_error() {
+        assert!(feed_env_stdin(None, b"[]").await.is_err());
+    }
 
     #[test]
     fn test_logs_dir_path() {

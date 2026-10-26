@@ -65,14 +65,19 @@ pub enum PrepareKind {
 pub struct Plan {
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Set on the boot process itself — not the guest env, which is already
-    /// inside `args`. This is how the VM finds its firmware.
+    /// Set on the boot process itself — not the guest env, which travels in
+    /// `stdin`. This is how the VM finds its firmware.
     pub env: BTreeMap<String, String>,
     /// Cleared on the boot process. A lifeline inherited from whoever spawned
     /// compose would tie the VM to the wrong process.
     pub env_remove: Vec<String>,
     /// Where the VM records its pid.
     pub pid_file: PathBuf,
+    /// The guest env, to write to the boot process's stdin and then close
+    /// (`__vm-boot --env-stdin`): argv would show it to every local user in
+    /// `ps` (MOT-5492). A caller that does not write it gets a boot error
+    /// telling it to install iii and iii-worker from the same release.
+    pub stdin: String,
 }
 
 /// Where a caller's config directory appears inside the guest.
@@ -134,7 +139,13 @@ pub async fn run(kind: PrepareKind) -> i32 {
         }
     };
 
-    let plan = describe(&built);
+    let plan = match describe(&built) {
+        Ok(plan) => plan,
+        Err(err) => {
+            eprintln!("VM prepare: {err}");
+            return 1;
+        }
+    };
     match serde_json::to_string(&plan) {
         Ok(json) => {
             println!("{json}");
@@ -148,14 +159,17 @@ pub async fn run(kind: PrepareKind) -> i32 {
 }
 
 /// Turns the built command into the recipe that crosses the boundary.
-fn describe(built: &super::worker_manager::libkrun::VmCommand) -> Plan {
+fn describe(built: &super::worker_manager::libkrun::VmCommand) -> Result<Plan, String> {
     let command = built.command.as_std();
-    Plan {
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let stdin = String::from_utf8(built.env_stdin.clone())
+        .map_err(|_| "the worker environment is not valid UTF-8".to_string())?;
+    Ok(Plan {
         program: PathBuf::from(command.get_program()),
-        args: command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect(),
+        args,
         env: command
             .get_envs()
             .filter_map(|(key, value)| {
@@ -173,12 +187,49 @@ fn describe(built: &super::worker_manager::libkrun::VmCommand) -> Plan {
             .map(|(key, _)| key.to_string_lossy().into_owned())
             .collect(),
         pid_file: built.pid_file.clone(),
-    }
+        stdin,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn built_with_env() -> super::super::worker_manager::libkrun::VmCommand {
+        let mut command = tokio::process::Command::new("/bin/iii-worker");
+        command.args([
+            "__vm-boot",
+            "--rootfs",
+            "/r",
+            "--arg",
+            "x",
+            "--env-stdin",
+            "--vcpus",
+            "2",
+        ]);
+        let env = vec![
+            ("API_KEY".to_string(), "sk-secret".to_string()),
+            ("GREETING".to_string(), "Ol\u{e1}".to_string()),
+        ];
+        super::super::worker_manager::libkrun::VmCommand {
+            command,
+            pid_file: PathBuf::from("/r/vm.pid"),
+            env_stdin: iii_supervisor::env_channel::encode_payload(&env).unwrap(),
+        }
+    }
+
+    #[test]
+    fn plan_carries_env_on_stdin_and_never_in_args() {
+        let plan = describe(&built_with_env()).unwrap();
+        assert!(plan.args.iter().any(|a| a == "--env-stdin"));
+        assert!(
+            !plan.args.iter().any(|a| a.contains("sk-secret")),
+            "{:?}",
+            plan.args
+        );
+        let pairs = iii_supervisor::env_channel::decode_payload(plan.stdin.as_bytes()).unwrap();
+        assert!(pairs.contains(&("API_KEY".to_string(), "sk-secret".to_string())));
+    }
 
     #[test]
     fn request_accepts_the_legacy_bundle_install_dir_field() {
