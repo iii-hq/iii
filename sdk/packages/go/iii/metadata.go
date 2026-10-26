@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 )
 
-// This file carries per-invocation metadata — the InvokeFunction.metadata sidecar
-// (protocol.go) — to a handler out-of-band on its context rather than as a positional
+// This file carries per-invocation metadata (the InvokeFunction.metadata sidecar,
+// protocol.go) to a handler out-of-band on its context rather than as a positional
 // argument, so adding metadata support does not break the [Handler] signature. The
 // attach happens in handleInvoke; handlers read it back with MetadataFromContext.
 

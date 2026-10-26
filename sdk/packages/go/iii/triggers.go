@@ -15,8 +15,8 @@ import (
 //   - Registering a trigger INSTANCE on the engine ("fire FunctionID when this http
 //     route is hit") is done with Client.RegisterTrigger and the RegisterTriggerMessage
 //     wire type in protocol.go.
-//   - Implementing a custom trigger TYPE — being the worker the engine calls to set up
-//     and tear down instances of that type — is what TriggerHandler below is for.
+//   - Implementing a custom trigger TYPE (being the worker the engine calls to set up
+//     and tear down instances of that type) is what TriggerHandler below is for.
 
 // TriggerConfig describes a single trigger instance handed to a TriggerHandler when
 // the engine asks the worker to start or stop it. Mirrors TriggerConfig<TConfig> in

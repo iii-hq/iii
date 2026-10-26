@@ -152,7 +152,7 @@ type RegisterTriggerTypeMessage struct {
 
 // RegisterTrigger registers a trigger *instance* that fires FunctionID when its
 // trigger type matches. Note the wire field "trigger_type" (engine/src/protocol.rs:53):
-// the engine names it that on the wire, so we do too — we do not inherit the Node SDK's
+// the engine names it that on the wire, so we do too: we do not inherit the Node SDK's
 // internal "type"/toWireFormat rename.
 type RegisterTriggerMessage struct {
 	ID          string          `json:"id"`
@@ -339,7 +339,7 @@ func jsonString(raw json.RawMessage) (string, bool) {
 
 // RegistrationRejectedMessage is the engine's refusal of a registration.
 // A FUNCTION_NAMESPACE_CONFLICT costs one function and leaves the connection
-// open; a WORKER_NAMESPACE_CONFLICT is terminal — another live worker owns this
+// open; a WORKER_NAMESPACE_CONFLICT is terminal: another live worker owns this
 // name in the namespace (engine/src/protocol.rs).
 type RegistrationRejectedMessage struct {
 	Code          string `json:"code"`
@@ -742,7 +742,7 @@ type DecodedMessage struct {
 }
 
 // UnmarshalMessage decodes a wire frame by peeking at "type" and then decoding into
-// the matching variant struct — the Go counterpart of serde's tag dispatch.
+// the matching variant struct. It is the Go counterpart of serde's tag dispatch.
 func UnmarshalMessage(data []byte) (*DecodedMessage, error) {
 	var envelope struct {
 		Type MessageType `json:"type"`

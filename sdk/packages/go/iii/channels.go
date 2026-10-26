@@ -21,7 +21,7 @@ import (
 // a reader ref (sharing a channel_id + access_key); either ref can be embedded as plain
 // JSON in a trigger payload so another worker opens the other end.
 //
-// Framing — the one load-bearing wire rule: discrete messages and streamed bytes share
+// Framing is the one load-bearing wire rule: discrete messages and streamed bytes share
 // the same socket and are told apart purely by WebSocket opcode. A TEXT frame is a
 // message (SendMessage / OnMessage); a BINARY frame is stream data (Write / ReadAll).
 // There is no envelope. End-of-stream is a Close frame propagated writer -> engine ->

@@ -81,7 +81,7 @@
 // # Schema inference
 //
 // [RegisterFunctionTyped] infers JSON Schemas for a function's request and response from
-// the Go types and advertises them to the engine — the Go counterpart of the Rust SDK's
+// the Go types and advertises them to the engine. It is the Go counterpart of the Rust SDK's
 // JsonSchema derive.
 //
 // # Channels

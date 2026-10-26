@@ -50,7 +50,7 @@ type Client struct {
 	namespace string
 	// namespaceSet records that WithNamespace was called, which "" alone cannot
 	// say. Without it, a namespace named and left blank is indistinguishable
-	// from one never given -- and they ask for opposite things.
+	// from one never given, and they ask for opposite things.
 	namespaceSet bool
 
 	// outbound carries connection-AGNOSTIC frames (registrations + offline-buffered
@@ -104,7 +104,7 @@ type Client struct {
 	pending map[uuid.UUID]chan invocationOutcome
 
 	// offline buffers invoke/result frames sent while disconnected; flushed after
-	// registrations on reconnect. Registration frames are NOT buffered here — they are
+	// registrations on reconnect. Registration frames are NOT buffered here: they are
 	// replayed from the registries above. Mirrors the Node SDK's messagesToSend.
 	offline [][]byte
 
@@ -326,7 +326,7 @@ func WithName(name string) Option {
 // A namespace named and left blank is refused, not read as "no namespace": the
 // client is put in a terminal failed state, so [Client.Connect] returns the
 // reason and [Client.FatalError] reports it. Absent and blank ask for opposite
-// things -- absent asks for the engine's `default`, blank names a namespace and
+// things: absent asks for the engine's `default`, blank names a namespace and
 // gives nothing to name it with. Read as absent, the worker registers in
 // `default`, and since a worker's calls and triggers follow its namespace, the
 // whole project quietly serves from a place its declaration never named.
@@ -393,8 +393,8 @@ func New(url string, opts ...Option) *Client {
 		}
 	} else {
 		// III_NAMESPACE is left alone when blank. `FOO=` is how a shell says
-		// "not set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly
-		// that -- so reading it as absent is what the caller meant. Only the
+		// "not set" (`III_NAMESPACE=${NS}` with NS unset produces exactly
+		// that), so reading it as absent is what the caller meant. Only the
 		// option is a mistake: nobody writes a namespace parameter and passes
 		// nothing on purpose. Mirrors the other SDKs.
 		if managed := os.Getenv("III_NAMESPACE"); strings.TrimSpace(managed) != "" {
@@ -412,7 +412,7 @@ func New(url string, opts ...Option) *Client {
 // Call [Client.Close] to stop.
 //
 // To wait for the first connection (or fail fast on a bad URL), call [Client.Connect]
-// instead of — or after — RegisterWorker; it blocks until connected, ctx is done, or the
+// instead of (or after) RegisterWorker; it blocks until connected, ctx is done, or the
 // reconnect budget is exhausted. Use [New] if you want to build a client without starting
 // the connection.
 func RegisterWorker(url string, opts ...Option) *Client {
@@ -539,7 +539,7 @@ func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler 
 		logHooksInactive(id)
 	}
 	// Best-effort live send; if disconnected, the registry replay on reconnect covers
-	// it (registration frames are deliberately not buffered — see offline).
+	// it (registration frames are deliberately not buffered; see offline).
 	c.sendRegistration(msg)
 	return nil
 }
@@ -965,8 +965,8 @@ func (c *Client) startSupervisor() {
 // backoff) until Close. Connect is safe to call multiple times and from multiple
 // goroutines; only one supervisor ever runs.
 func (c *Client) Connect(ctx context.Context) error {
-	// A client that is already terminally failed -- a namespace named and left
-	// blank, or a rejection from an earlier attempt -- has its reason on hand.
+	// A client that is already terminally failed (a namespace named and left
+	// blank, or a rejection from an earlier attempt) has its reason on hand.
 	// Reporting retry exhaustion instead would describe the symptom.
 	if err := c.FatalError(); err != nil {
 		return err
@@ -993,7 +993,7 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // supervise owns the connect/reconnect loop. Each iteration dials, runs the connection
-// until it drops, then backs off before retrying — until Close or MaxRetries.
+// until it drops, then backs off before retrying, until Close or MaxRetries.
 func (c *Client) supervise() {
 	attempt := 0
 	for {
@@ -1077,8 +1077,8 @@ func (c *Client) runConnection() error {
 	conn.SetReadLimit(maxJSONMessageBytes)
 
 	// Reconnect: present the previous engine-assigned identity as the very
-	// first frame — written directly here, before the writer goroutine,
-	// StateConnected, or onConnect expose this socket to any other traffic —
+	// first frame (written directly here, before the writer goroutine,
+	// StateConnected, or onConnect expose this socket to any other traffic),
 	// so the engine retires the old connection before anything can hit its
 	// stale registrations. The token proves we ARE that worker (ids alone
 	// are publicly listable).
@@ -1140,7 +1140,7 @@ func (c *Client) runConnection() error {
 	c.connOnce.Do(func() { close(c.connected) })
 
 	// On (re)connect, replay registrations, flush the offline buffer, then register
-	// worker metadata — in that exact order (matching Node and Rust).
+	// worker metadata, in that exact order (matching Node and Rust).
 	c.onConnect()
 
 	// Read loop runs until the socket errors or closes.
