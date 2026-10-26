@@ -56,8 +56,8 @@ func TestPackagesSkipInternalMainAndNestedModules(t *testing.T) {
 	for _, p := range m.Packages {
 		got = append(got, p.RelPath)
 	}
-	if len(got) != 2 || got[0] != "" || got[1] != "helpers/http" {
-		t.Fatalf("packages = %q, want [\"\" \"helpers/http\"]", got)
+	if len(got) != 3 || got[0] != "" || got[1] != "helpers/http" || got[2] != "helpers/kv" {
+		t.Fatalf("packages = %q, want [\"\" \"helpers/http\" \"helpers/kv\"]", got)
 	}
 	root := findPackage(t, m, "")
 	if root.ImportPath != "example.com/sample" || root.Synopsis != "Package sample is a fixture for the godoc-json tests." {
@@ -164,6 +164,19 @@ func TestTypesFieldsAndValues(t *testing.T) {
 	dep := limits.Specs[1].Doc.Deprecated
 	if dep == nil || dep.Spans[len(dep.Spans)-1].Kind != "text" || dep.Spans[len(dep.Spans)-2].Kind != "link" {
 		t.Fatalf("OldB deprecation = %+v", dep)
+	}
+}
+
+func TestImportName(t *testing.T) {
+	m := extractSample(t)
+	for rel, want := range map[string]string{
+		"":             "",           // examples import it as sample, its own name
+		"helpers/http": "samplehttp", // the package doc's import line wins over the examples' shttp
+		"helpers/kv":   "kvx",        // from the external test file that declares the examples
+	} {
+		if got := findPackage(t, m, rel).ImportName; got != want {
+			t.Errorf("ImportName(%q) = %q, want %q", rel, got, want)
+		}
 	}
 }
 

@@ -105,6 +105,8 @@ interface GoPackage {
   importPath: string
   relPath: string
   name: string
+  /** The name the package's doc or examples import it under, when not `name`. */
+  importName?: string
   synopsis: string
   doc: GoDoc
   consts: GoValue[]
@@ -260,19 +262,65 @@ function resultType(results: GoParam[]): string {
   return `(${results.map(r => (r.name ? `${r.name} ${r.type}` : r.type)).join(', ')})`
 }
 
+/** Inline text as plain words: doc links by name, links by their text. */
+function plainText(spans: GoSpan[] = []): string {
+  return spans.map(span => span.text).join('').replace(MARKERS_RE, '').trim()
+}
+
+/** Text as `//` comment lines of at most 80 columns, for the top of a code example. */
+function commentLines(text: string): string {
+  const lines: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > 77) {
+      lines.push(`// ${line}`)
+      line = word
+    } else {
+      line = line ? `${line} ${word}` : word
+    }
+  }
+  if (line) lines.push(`// ${line}`)
+  return lines.join('\n')
+}
+
 /**
- * A function or method. Code blocks in its doc comment and its testable
- * examples (`ExampleX` functions) become the Example tab; the prose stays the
- * description. A variadic parameter is optional.
+ * A function's doc comment split into prose and examples. Its code blocks move
+ * to the Example tab; a paragraph that ends with ':' right before one is that
+ * code's lead-in ("To turn telemetry off:"), so it moves along as a comment on
+ * the example's first lines instead of dangling at the end of the prose.
+ */
+function splitFuncDoc(blocks: GoBlock[]): { prose: GoBlock[]; examples: string[] } {
+  const prose: GoBlock[] = []
+  const examples: string[] = []
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i]
+    const next = blocks[i + 1]
+    if (block.kind === 'paragraph' && next?.kind === 'code' && next.code && plainText(block.spans).endsWith(':')) {
+      examples.push(`${commentLines(plainText(block.spans))}\n${next.code}`)
+      i++
+    } else if (block.kind === 'code') {
+      if (block.code) examples.push(block.code)
+    } else {
+      prose.push(block)
+    }
+  }
+  return { prose, examples }
+}
+
+/**
+ * A function or method. Code blocks in its doc comment (with their lead-in
+ * sentence, see `splitFuncDoc`) and its testable examples (`ExampleX`
+ * functions) become the Example tab; the prose stays the description. A
+ * variadic parameter is optional.
  */
 function buildFunc(fn: GoFunc, opts: { name?: string; extraExamples?: GoExample[] } = {}): FunctionDoc {
-  const docExamples = fn.doc.blocks.filter(b => b.kind === 'code' && b.code).map(b => b.code as string)
+  const { prose, examples: docExamples } = splitFuncDoc(fn.doc.blocks)
   const examples = [...docExamples, ...[...fn.examples, ...(opts.extraExamples ?? [])].map(e => e.code)].filter(Boolean)
   const note = deprecationNote(fn.doc)
   return {
     name: opts.name ?? fn.name,
     signature: fn.signature,
-    description: renderBlocks(fn.doc.blocks, 'drop'),
+    description: renderBlocks(prose, 'drop'),
     params: fn.params.map(p => ({
       name: p.name || '_',
       type: p.type,
@@ -554,7 +602,9 @@ export function parseHelpersGodoc(jsonPath: string): SdkDoc {
       const variables = valueGroups(pkg.vars)
       return {
         name: pkg.relPath,
-        importPath: `import "${pkg.importPath}"`,
+        // The name the package's doc or examples import it under (e.g.
+        // iiihttp for helpers/http), so the line compiles with the examples.
+        importPath: `import ${pkg.importName ? `${pkg.importName} ` : ''}"${pkg.importPath}"`,
         description: packageDescription(pkg, true),
         functions: packageFuncs(pkg).map(fn => buildFunc(fn)),
         types: pkg.types.filter(t => !t.doc.deprecated && !isInternalDoc(t.doc.raw)).map(buildType),

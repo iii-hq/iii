@@ -53,15 +53,19 @@ type Package struct {
 	ImportPath string `json:"importPath"`
 	// RelPath is the package directory relative to the module root, slash-separated;
 	// empty for the root package.
-	RelPath  string    `json:"relPath"`
-	Name     string    `json:"name"`
-	Synopsis string    `json:"synopsis"`
-	Doc      Doc       `json:"doc"`
-	Consts   []Value   `json:"consts"`
-	Vars     []Value   `json:"vars"`
-	Funcs    []Func    `json:"funcs"`
-	Types    []Type    `json:"types"`
-	Examples []Example `json:"examples"`
+	RelPath string `json:"relPath"`
+	Name    string `json:"name"`
+	// ImportName is the name callers import the package under when it is not Name:
+	// the one an import line in the package doc uses, else the one the external test
+	// files holding its examples use. Empty when the package is imported as Name.
+	ImportName string    `json:"importName,omitempty"`
+	Synopsis   string    `json:"synopsis"`
+	Doc        Doc       `json:"doc"`
+	Consts     []Value   `json:"consts"`
+	Vars       []Value   `json:"vars"`
+	Funcs      []Func    `json:"funcs"`
+	Types      []Type    `json:"types"`
+	Examples   []Example `json:"examples"`
 }
 
 // Doc is a doc comment, parsed with go/doc/comment.
@@ -323,15 +327,19 @@ func extractDir(ctx *build.Context, root, dir, modPath string) (*Package, error)
 	}
 
 	fset := token.NewFileSet()
-	var files []*ast.File
-	// Test files only contribute their Example functions.
-	for _, names := range [][]string{bp.GoFiles, bp.TestGoFiles, bp.XTestGoFiles} {
+	var files, xtests []*ast.File
+	// Test files only contribute their Example functions (and, for the external
+	// test package, the name the examples import the package under).
+	for i, names := range [][]string{bp.GoFiles, bp.TestGoFiles, bp.XTestGoFiles} {
 		for _, name := range names {
 			f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
 			if err != nil {
 				return nil, err
 			}
 			files = append(files, f)
+			if i == 2 {
+				xtests = append(xtests, f)
+			}
 		}
 	}
 	dp, err := doc.NewFromFiles(fset, files, importPath)
@@ -344,6 +352,7 @@ func extractDir(ctx *build.Context, root, dir, modPath string) (*Package, error)
 		ImportPath: importPath,
 		RelPath:    rel,
 		Name:       dp.Name,
+		ImportName: importName(dp.Doc, importPath, dp.Name, xtests),
 		Synopsis:   dp.Synopsis(dp.Doc),
 		Doc:        x.doc(dp.Doc),
 		Consts:     x.values(dp.Consts),
@@ -356,6 +365,51 @@ func extractDir(ctx *build.Context, root, dir, modPath string) (*Package, error)
 		pkg.Types = append(pkg.Types, x.typ(t))
 	}
 	return pkg, nil
+}
+
+// importName is the name a package's own doc or examples import it under, when that
+// is not its package name (helpers/http, say, is imported as iiihttp so net/http stays
+// available). An `import name "path"` line in the package doc wins; otherwise the
+// import of the package in the external test files that declare its examples.
+func importName(pkgDoc, importPath, pkgName string, xtests []*ast.File) string {
+	valid := func(name string) string {
+		if name == "_" || name == "." || name == pkgName || !token.IsIdentifier(name) {
+			return ""
+		}
+		return name
+	}
+	docImport := regexp.MustCompile(`(?m)^[ \t]*import[ \t]+([A-Za-z_]\w*)[ \t]+"` + regexp.QuoteMeta(importPath) + `"`)
+	if m := docImport.FindStringSubmatch(pkgDoc); m != nil {
+		if name := valid(m[1]); name != "" {
+			return name
+		}
+	}
+	for _, f := range xtests {
+		if !hasExample(f) {
+			continue
+		}
+		for _, spec := range f.Imports {
+			if spec.Name == nil {
+				continue
+			}
+			if path, err := strconv.Unquote(spec.Path.Value); err == nil && path == importPath {
+				if name := valid(spec.Name.Name); name != "" {
+					return name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// hasExample reports whether a test file declares an Example function.
+func hasExample(f *ast.File) bool {
+	for _, decl := range f.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Recv == nil && strings.HasPrefix(fd.Name.Name, "Example") {
+			return true
+		}
+	}
+	return false
 }
 
 // --- declarations ---------------------------------------------------------
