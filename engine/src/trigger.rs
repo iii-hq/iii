@@ -403,6 +403,10 @@ impl TriggerStore {
         self.by_id.get(id).map(TriggerRef)
     }
 
+    fn get_shared(&self, id: &str) -> Option<Arc<Trigger>> {
+        self.by_id.get(id).map(|entry| Arc::clone(entry.value()))
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = TriggerIterRef<'_>> {
         self.by_id.iter().map(TriggerIterRef)
     }
@@ -428,7 +432,8 @@ impl TriggerStore {
     }
 
     pub fn remove(&self, id: &str) -> Option<(String, Trigger)> {
-        self.remove_if(id, |_, _| true)
+        self.remove_shared(id)
+            .map(|(id, trigger)| (id, Arc::unwrap_or_clone(trigger)))
     }
 
     pub fn remove_if(
@@ -436,15 +441,27 @@ impl TriggerStore {
         id: &str,
         predicate: impl FnOnce(&String, &Trigger) -> bool,
     ) -> Option<(String, Trigger)> {
-        self.by_id
-            .remove_if(id, |key, trigger| {
-                if !predicate(key, trigger) {
-                    return false;
-                }
-                self.remove_target(key, &trigger.trigger_type);
-                true
-            })
+        self.remove_shared_if(id, predicate)
             .map(|(id, trigger)| (id, Arc::unwrap_or_clone(trigger)))
+    }
+
+    // Teardown can discard a binding without cloning it for other snapshots.
+    fn remove_shared(&self, id: &str) -> Option<(String, Arc<Trigger>)> {
+        self.remove_shared_if(id, |_, _| true)
+    }
+
+    fn remove_shared_if(
+        &self,
+        id: &str,
+        predicate: impl FnOnce(&String, &Trigger) -> bool,
+    ) -> Option<(String, Arc<Trigger>)> {
+        self.by_id.remove_if(id, |key, trigger| {
+            if !predicate(key, trigger) {
+                return false;
+            }
+            self.remove_target(key, &trigger.trigger_type);
+            true
+        })
     }
 
     pub(crate) fn targets_for_type(&self, trigger_type: &str) -> Vec<Arc<Trigger>> {
@@ -484,7 +501,7 @@ struct TriggerTransition {
 /// An aborted caller must not leave a token that blocks later provider work.
 struct TriggerTransitionGuard<'a> {
     registry: &'a TriggerRegistry,
-    target: Trigger,
+    target: &'a Trigger,
     token: u64,
     registrator: Option<Arc<dyn TriggerRegistrator>>,
     removing: bool,
@@ -505,7 +522,7 @@ impl Drop for TriggerTransitionGuard<'_> {
             );
         } else if let Some(registrator) = &self.registrator {
             self.registry.recover_abandoned_activation(
-                &self.target,
+                self.target,
                 self.token,
                 registrator,
                 self.source.as_ref(),
@@ -593,7 +610,7 @@ impl TriggerRegistry {
     }
 
     /// Call with `park_transition` held, together with the binding map changes.
-    fn begin_transition(&self, trigger: &Trigger, removing: bool) -> u64 {
+    fn begin_transition(&self, trigger: Arc<Trigger>, removing: bool) -> u64 {
         let token = self
             .failover_tokens
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -604,7 +621,7 @@ impl TriggerRegistry {
                 token,
                 worker_id: trigger.worker_id,
                 removing,
-                target: Arc::new(trigger.clone()),
+                target: trigger,
             },
         );
         token
@@ -654,7 +671,7 @@ impl TriggerRegistry {
                 None
             } else {
                 self.pending_triggers.remove(id);
-                Some(self.begin_transition(&trigger, false))
+                Some(self.begin_transition(Arc::new(trigger.clone()), false))
             };
             (trigger, token, runtime)
         };
@@ -803,7 +820,7 @@ impl TriggerRegistry {
         }
 
         for candidate in candidates {
-            let (mut trigger, token) = {
+            let (mut trigger, target, token) = {
                 let _park = self
                     .park_transition
                     .lock()
@@ -822,17 +839,14 @@ impl TriggerRegistry {
                 drop(current);
                 let mut target = trigger.clone();
                 target.provider_namespace = key.0.clone();
-                let token = self.begin_transition(&target, false);
-                (trigger, token)
+                let token = self.begin_transition(Arc::new(target.clone()), false);
+                (trigger, target, token)
             };
             let previous = trigger.provider_key();
             let old = self.provider_registrator(&previous);
             let mut operation = TriggerTransitionGuard {
                 registry: self,
-                target: Trigger {
-                    provider_namespace: key.0.clone(),
-                    ..trigger.clone()
-                },
+                target: &target,
                 token,
                 registrator: Some(Arc::clone(registrator)),
                 removing: false,
@@ -869,7 +883,7 @@ impl TriggerRegistry {
                     .get(&trigger.id)
                     .is_some_and(|operation| operation.token == token);
                 if !current {
-                    self.settle_superseded_provider(&operation.target, registrator)
+                    self.settle_superseded_provider(operation.target, registrator)
                         .await;
                     self.settle_superseded_provider(&trigger, old).await;
                     operation.armed = false;
@@ -1055,15 +1069,15 @@ impl TriggerRegistry {
             .map(|pair| pair.key().clone())
             .collect();
 
-        let worker_triggers: Vec<Trigger> = self
+        let worker_trigger_ids: Vec<String> = self
             .triggers
             .iter()
             .filter(|pair| pair.value().worker_id == Some(*worker_id))
-            .map(|pair| pair.value().clone())
+            .map(|pair| pair.key().clone())
             .collect();
 
-        for trigger in worker_triggers {
-            tracing::debug!(trigger_id = trigger.id, "Removing trigger");
+        for trigger_id in worker_trigger_ids {
+            tracing::debug!(trigger_id, "Removing trigger");
             // The entry may have been replaced between the snapshot above and
             // now (worker reconnect: the new connection replays the same
             // trigger id before the old connection's cleanup runs). Only
@@ -1077,15 +1091,15 @@ impl TriggerRegistry {
                     .expect("park_transition lock poisoned");
                 let removed = self
                     .triggers
-                    .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id));
+                    .remove_if(&trigger_id, |_, t| t.worker_id == Some(*worker_id));
                 if removed.is_some() {
-                    self.interrupt_failover(&trigger.id);
+                    self.interrupt_failover(&trigger_id);
                 }
                 removed
             };
             let Some((_, trigger)) = removed else {
                 tracing::debug!(
-                    trigger_id = trigger.id,
+                    trigger_id,
                     "Trigger already replaced by another worker; leaving it"
                 );
                 continue;
@@ -1180,7 +1194,7 @@ impl TriggerRegistry {
             .collect::<Vec<_>>()
             .into_iter()
             .map(|orphan| {
-                let token = self.begin_transition(&orphan, false);
+                let token = self.begin_transition(Arc::new(orphan.clone()), false);
                 (orphan, token)
             })
             .collect();
@@ -1240,7 +1254,7 @@ impl TriggerRegistry {
         let registrator = next.as_ref().and_then(|key| self.provider_registrator(key));
         let mut operation = TriggerTransitionGuard {
             registry: self,
-            target: moving.clone(),
+            target: &moving,
             token,
             registrator: registrator.clone(),
             removing: false,
@@ -1432,7 +1446,7 @@ impl TriggerRegistry {
         }
         let (_, mut trigger) = self.pending_triggers.remove(id)?;
         trigger.provider_namespace = key.0.clone();
-        let token = self.begin_transition(&trigger, false);
+        let token = self.begin_transition(Arc::new(trigger.clone()), false);
         Some((trigger, token))
     }
 
@@ -1455,7 +1469,7 @@ impl TriggerRegistry {
     ) -> bool {
         let mut operation = TriggerTransitionGuard {
             registry: self,
-            target: trigger.clone(),
+            target: &trigger,
             token,
             registrator: Some(Arc::clone(registrator)),
             removing: false,
@@ -1701,7 +1715,7 @@ impl TriggerRegistry {
                 .park_transition
                 .lock()
                 .expect("park_transition lock poisoned");
-            let Some(trigger_entry) = self.triggers.get(&id) else {
+            let Some(trigger) = self.triggers.get_shared(&id) else {
                 // A claimed pending intent is outside both maps. Cancelling
                 // its token makes its completion detach the provider instead
                 // of publishing a binding after this unregister.
@@ -1709,16 +1723,14 @@ impl TriggerRegistry {
                 let removed = self.pending_triggers.remove(&id).is_some();
                 return Ok(cancelled || removed);
             };
-            let trigger = trigger_entry.value().clone();
-            drop(trigger_entry);
-            let token = self.begin_transition(&trigger, true);
+            let token = self.begin_transition(Arc::clone(&trigger), true);
             (trigger, token)
         };
 
         let registrator = self.provider_registrator(&trigger.provider_key());
-        let _operation = TriggerTransitionGuard {
+        let mut operation = TriggerTransitionGuard {
             registry: self,
-            target: trigger.clone(),
+            target: &trigger,
             token,
             registrator: registrator.clone(),
             removing: true,
@@ -1727,7 +1739,9 @@ impl TriggerRegistry {
         };
 
         if let Some(registrator) = &registrator
-            && let Err(err) = registrator.unregister_trigger(trigger.clone()).await
+            && let Err(err) = registrator
+                .unregister_trigger(trigger.as_ref().clone())
+                .await
         {
             if let Some(recovery) = self.recover_abandoned_removal(&id, token, Some(registrator))
                 && let Err(join_error) = recovery.await
@@ -1748,7 +1762,7 @@ impl TriggerRegistry {
                 .lock()
                 .expect("park_transition lock poisoned");
             if self.finish_transition(&id, token) {
-                self.triggers.remove(&id);
+                self.triggers.remove_shared(&id);
                 self.pending_triggers.remove(&id);
                 true
             } else {
@@ -1758,6 +1772,7 @@ impl TriggerRegistry {
         if !removed && let Some(registrator) = &registrator {
             self.settle_superseded_provider(&trigger, registrator).await;
         }
+        operation.armed = false;
 
         Ok(true)
     }
