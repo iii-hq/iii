@@ -3676,7 +3676,9 @@ impl Engine {
         // Bindings its trigger types leave with no provider may be taken by a
         // function standing in for the type (protocol.md §6).
         self.observers.convert_pending_triggers(self);
-        self.channel_manager.remove_channels_by_worker(&worker.id);
+        self.channel_manager
+            .remove_channels_by_worker(&worker.id)
+            .await;
         // Release the worker-name lease before the registry entry (its source of
         // truth for the name) is gone. Read the name back through the registry:
         // the `worker` snapshot handed to `cleanup_worker` never carries it —
@@ -4765,7 +4767,7 @@ mod tests {
     }
 
     /// A channel made through `engine::channels::create` belongs to the calling
-    /// connection: its teardown releases the channel (ending a reader still
+    /// connection: its teardown releases the channel (aborting a reader still
     /// waiting on it) and leaves other connections' channels alone.
     #[tokio::test]
     async fn cleanup_worker_releases_channels_the_worker_created() {
@@ -4833,12 +4835,18 @@ mod tests {
                 .is_none(),
             "the creator's channel must go with its connection"
         );
+        let ended = tokio::time::timeout(Duration::from_secs(1), waiting_reader.recv())
+            .await
+            .expect("a reader must not keep waiting for a writer that can no longer attach");
+        // The owner may have been the writer: its reader must not see a clean end.
         assert!(
-            tokio::time::timeout(Duration::from_secs(1), waiting_reader.recv())
-                .await
-                .expect("a reader must not keep waiting for a writer that can no longer attach")
-                .is_none()
+            matches!(
+                ended,
+                Some(crate::workers::worker::channels::ChannelItem::Abort(_))
+            ),
+            "expected an abort, got {ended:?}"
         );
+        assert!(waiting_reader.recv().await.is_none());
         assert!(
             engine
                 .channel_manager

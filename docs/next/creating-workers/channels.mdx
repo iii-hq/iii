@@ -153,7 +153,11 @@ engine to whichever worker holds the matching `reader`.
 ### Read from a channel
 
 Read the local `reader` until the other end closes. The bytes arrive in the order they were written
-by whichever worker holds the matching `writer`.
+by whichever worker holds the matching `writer`. If the writer's connection ends without a close (it
+aborted, crashed or lost its connection), the read fails with an error instead of ending: treat it
+as an incomplete transfer. See
+[Backpressure and lifecycle](../understanding-iii/channels#backpressure-and-lifecycle) for how a
+writer aborts.
 
 <Tabs>
   <Tab title="Node / TypeScript">

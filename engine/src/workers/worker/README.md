@@ -220,6 +220,8 @@ A worker can register a trigger type only when `allow_trigger_type_registration`
 
 Every `iii-worker-manager` listener mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port. SDK workers can use `createChannel()` without any extra configuration — channel data flows through whichever listener the worker is connected to. `engine::channels::create` is part of the always-allowed infrastructure carve-out so RBAC listeners can create channels even with empty `expose_functions`. Channel WebSocket access is independently validated by the `access_key` capability token returned with each `StreamChannelRef`.
 
+A writer ends its stream with a close frame that has no code or code 1000. Any other end of the writer socket (another close code, a lost connection, or the channel owner disconnecting before the writer attached) reaches the reader as close code 1011 after the data sent before it; a clean end reaches it as a close frame with no code.
+
 ## Sample Code
 
 A TypeScript auth function that validates a bearer token, denies destructive ops to read-only roles, and gates trigger-type registration to admins:
