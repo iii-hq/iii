@@ -93,8 +93,9 @@ async fn a_missing_install_directory_is_refused() {
     );
 }
 
-/// The success path: a valid bundle produces a `__vm-boot` command carrying the
-/// caller's env and config mount, and nothing is spawned.
+/// The success path: a valid bundle produces a `__vm-boot` command with the
+/// caller's env on stdin (never in argv) and its config mount, and nothing is
+/// spawned.
 ///
 /// Ignored by default because preparing the rootfs pulls an OCI base image.
 #[tokio::test]
@@ -127,12 +128,17 @@ async fn a_valid_bundle_builds_a_boot_command() {
 
     let rendered = format!("{:?}", built.command.as_std());
     assert!(rendered.contains("__vm-boot"), "{rendered}");
-    // The caller's env reaches the guest as boot arguments.
-    assert!(rendered.contains("III_NAMESPACE=shop-dev"), "{rendered}");
-    assert!(
-        rendered.contains("APP_CONFIG_FILE=/run/iii/config/api.yaml"),
-        "{rendered}"
-    );
+    // The caller's env reaches the guest on stdin, never as boot arguments,
+    // where `ps` would show it (MOT-5492).
+    assert!(rendered.contains("--env-stdin"), "{rendered}");
+    assert!(!rendered.contains("shop-dev"), "{rendered}");
+    assert!(!rendered.contains("APP_CONFIG_FILE"), "{rendered}");
+    let env = iii_supervisor::env_channel::decode_payload(&built.env_stdin).unwrap();
+    assert!(env.contains(&("III_NAMESPACE".to_string(), "shop-dev".to_string())));
+    assert!(env.contains(&(
+        "APP_CONFIG_FILE".to_string(),
+        "/run/iii/config/api.yaml".to_string()
+    )));
     // And its config directory is published where that path resolves.
     assert!(
         rendered.contains(&format!("{}:/run/iii/config", config_dir.display())),
