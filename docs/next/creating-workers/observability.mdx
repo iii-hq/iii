@@ -72,6 +72,21 @@ than to raw stdout.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/observability"
+
+    var logger observability.Logger // the zero value is ready to use
+
+    // each level takes the call's ctx (for trace correlation), a message and
+    // optional structured data (nil for none)
+    logger.Debug(ctx, "cache lookup", map[string]any{"key": key})
+    logger.Info(ctx, "processing link", map[string]any{"slug": slug})
+    logger.Warn(ctx, "retrying upstream", map[string]any{"attempt": attempt})
+    logger.Error(ctx, "failed to persist", map[string]any{"slug": slug, "err": err.Error()})
+    ```
+
+  </Tab>
 </Tabs>
 
 You can also query recorded logs and emit one-off log lines through the observability worker's

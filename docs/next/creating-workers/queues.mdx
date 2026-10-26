@@ -104,6 +104,8 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
   </Tab>
   <Tab title="Go">
     ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
+
     res, err := client.Trigger(ctx, iii.TriggerRequest{
         FunctionID: "email::send",
         Data:       json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
@@ -113,9 +115,7 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
         log.Fatal(err)
     }
 
-    var receipt struct {
-        MessageReceiptID string `json:"messageReceiptId"`
-    }
+    var receipt queue.EnqueueResult
     if err := json.Unmarshal(res, &receipt); err != nil {
         log.Fatal(err)
     }

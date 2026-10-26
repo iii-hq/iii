@@ -323,7 +323,7 @@ Node and Python deserialize incoming channel refs into live `ChannelReader` / `C
 objects before the handler runs, so the ref arrives ready to iterate or write to. Rust and Go
 receive the ref in JSON and reconstruct the reader or writer explicitly: Rust with
 `ChannelReader::new(...)` or `ChannelWriter::new(...)`, Go with `iii.ExtractChannelRefs(...)` and
-`iii.OpenReader(...)` or `iii.OpenWriter(...)`.
+`client.OpenReader(...)` or `client.OpenWriter(...)`.
 
 <Tip>
   The channel belongs to the worker that created it. Keep that worker connected until the receiving
@@ -393,7 +393,7 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
             return nil, errors.New("missing reader channel ref")
         }
 
-        reader := iii.OpenReader(client.Address(), readerRef)
+        reader := client.OpenReader(readerRef)
         defer reader.Close()
 
         bytes := 0
@@ -473,7 +473,7 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
             return nil, errors.New("missing writer channel ref")
         }
 
-        writer := iii.OpenWriter(client.Address(), writerRef)
+        writer := client.OpenWriter(writerRef)
         if err := writer.Write(ctx, []byte("hello ")); err != nil {
             return nil, err
         }
