@@ -7,9 +7,9 @@ owner: "devrel"
 type: "how-to"
 ---
 
-Every function you register is already observable. Each time it runs, iii runs the target of every
-[observer](../using-iii/observers) watching it, and you add no code for that. To publish an event,
-register a function for it and call that function whenever the event happens:
+Every function you register can be observed. Each time it runs, iii runs the target of every
+[observer](../using-iii/observers) watching it. To publish an event, register a function for it and
+call that function whenever the event happens:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -71,11 +71,10 @@ register a function for it and call that function whenever the event happens:
   </Tab>
 </Tabs>
 
-No hooks, no `observe` option, no list of observers: whoever observes `files::on-change` gets every
-call that passes their filters.
+Each call to `files::on-change` reaches every observer whose filters match it.
 
-This default is **auto delivery**, and most sources need nothing more. The rest of this page is for
-the worker that hosts a function (its owner) when it wants to **override the default**:
+This is **auto delivery**, the default. The rest of this page is for the worker that hosts a
+function (its owner) when it takes control of how the function is observed:
 
 - run code when an observer is added or removed, for example to start expensive work only while
   someone is watching ([Know when you are observed](#know-when-you-are-observed));
@@ -85,20 +84,20 @@ the worker that hosts a function (its owner) when it wants to **override the def
   ([Accept old triggers](#accept-old-triggers)).
 
 <Warning>
-  With owner delivery, calling your function no longer reaches any observer. From then on your code
-  decides when each observer's target runs, and nothing is delivered until you call `obs.emit` or
-  `obs.call`. If every observer should see every call, stay on auto delivery.
+  With owner delivery, your code delivers each event: an observer's target runs when your code calls
+  `obs.emit` or `obs.call` for that observer. For every call to reach every observer, use auto
+  delivery.
 </Warning>
 
 In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function with an `observe`
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
 
-## Do you need owner delivery?
+## When to use owner delivery
 
 | You want                                                                                     | Use                                                                                      |
 | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Observers to react to every call of your function (filters narrow it)                        | Auto delivery. Write nothing; call your function.                                        |
+| Observers to react to every call of your function (filters narrow it)                        | Auto delivery: call your function.                                                       |
 | To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when you are observed](#know-when-you-are-observed). |
 | Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                          |
 | An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                          |
@@ -267,8 +266,7 @@ observer's filters match.
 
 ## Owner delivery
 
-With `delivery: 'owner'` you take over from the engine. Invocations of your function are no longer
-offered to every observer; your code decides which observers each event is for, from their `args`,
+With `delivery: 'owner'`, your code decides which observers each event is for, from their `args`,
 and hands it over.
 
 |                      | Auto (the default)                                         | Owner                                                                       |
@@ -280,13 +278,11 @@ and hands it over.
 | The target's result  | discarded                                                  | discarded for `obs.emit`; returned to you for `obs.call`                    |
 | Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch |
 
-Owner delivery always takes three pieces, and leaving one out means observers stay `active` but
-never fire:
+Owner delivery has three pieces:
 
 1. **`onObserverAdded` keeps the `Observer`** in your own index, keyed by its `args`, and starts
-   whatever produces events (a timer, a watcher). It must not wait for events itself: it has 30
-   seconds before the observer fails with `OWNER_TIMEOUT`, and an `emit` from inside it returns
-   `false` because the observer is not `active` yet.
+   whatever produces events (a timer, a watcher). It returns promptly: the observer turns `active`
+   once it returns, and the engine waits at most 30 seconds (`OWNER_TIMEOUT`).
 2. **Your producer calls your function** when something happens, as with auto delivery.
 3. **Your function's handler emits**: it looks up the observers the event belongs to and calls
    `obs.emit(event)` (or `obs.call(payload)`) on each. This is the step that runs their targets.

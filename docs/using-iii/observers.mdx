@@ -12,13 +12,12 @@ iii.observe(source, target)
 ```
 
 When the left side (`source`, a function) runs, the right side (`target`, another function) runs
-with what happened. That is the whole model. Every function in iii is a source, nobody has to change
-it for you to observe it, and any worker can observe any function it is allowed to invoke.
+with what happened. Every function in iii can be a source, and any worker can observe any function
+it is allowed to invoke.
 
 - **`source`** is the function to watch, plus optional [filters](#filters) to narrow which of its
   runs you care about.
-- **`target`** is the id of a function you registered. There is no inline handler: register the
-  target first, like any other function.
+- **`target`** is the id of a function you registered. Register it first, like any other function.
 
 `iii.observe` replaces `registerTrigger` for sources that are functions. See
 [Upgrading from 0.24.x](../upgrading/from-0-24-x) to move existing triggers.
@@ -34,13 +33,12 @@ it for you to observe it, and any worker can observe any function it is allowed 
 ## Observe a function
 
 The examples on this page build on each other. They all react to `orders::create`, a regular
-function registered by another worker. It needs no changes to be observed.
+function registered by another worker.
 
 ### React to every call
 
 When `orders::create` runs, run `emails::send-receipt` with the order. `deliver: "input"` hands the
-target the order itself, so the target is a plain function of the order and knows nothing about
-observers.
+target the order itself, so the target takes an `Order` like any function that processes orders.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -159,8 +157,8 @@ observers.
   </Tab>
 </Tabs>
 
-That is all a consumer writes. From now on, whoever calls `orders::create`, from whichever worker,
-`emails::send-receipt` runs after each call.
+From now on, whoever calls `orders::create`, from whichever worker, `emails::send-receipt` runs
+after each call.
 
 `observe` returns a handle at once, also before the connection is up. The SDK sends the observer
 when it connects and replays it with the same id after every reconnect, so you call it once at
@@ -266,14 +264,14 @@ the call, and how long it took.
   </Tab>
 </Tabs>
 
-Both observers watch the same function and neither knows about the other. The next examples add
+Both observers watch the same function, independently. The next examples add
 [failures and policy](#policy-and-metadata), [chains](#chain-reactions), and
 [engine events](#engine-hosted-event-sources).
 
 ### Making a function you can observe
 
-You do not need anything special. Register a function and call it whenever the thing happens; each
-call is what its observers react to:
+To make something observable, register a function for it and call that function whenever the thing
+happens. Each call is an event for its observers:
 
 ```typescript
 // Producer: call this whenever a file changes.
@@ -288,8 +286,8 @@ worker.observe({ function_id: "files::on-change" }, "csv::process");
 
 Some sources go further and take control of who gets which event, for example a file watcher that
 polls only the paths its observers ask for. Those are written with
-[Observable functions](../creating-workers/observable-functions); you only need that page if you are
-writing such a source, never to observe one.
+[Observable functions](../creating-workers/observable-functions). You observe them the same way,
+sometimes with [args](#sources-that-take-args).
 
 ## What the target receives
 
@@ -312,7 +310,7 @@ target written as a regular function of the observed payload.
 
 The observer's `metadata` option arrives as the activation's metadata sidecar, the same second
 argument (`metadata` in Python, `MetadataFromContext(ctx)` in Go) that trigger metadata used. The
-target's return value is discarded: the right side reacts, it does not answer the left side.
+target's return value is discarded.
 
 ## Shape the source
 
@@ -498,9 +496,8 @@ event waiting in several observers' queues is held once, however many observers 
 ## Chain reactions
 
 A target is a function like any other, so it can be a source too. Chaining observers builds a
-pipeline in which each step knows only the step before it. Here an order reserves stock, and
-reserved stock schedules a shipment. The orders worker is unchanged, and the inventory and shipping
-workers never call each other.
+pipeline in which each step observes the one before it. Here an order reserves stock, and reserved
+stock schedules a shipment, with each worker registering its own step.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -565,10 +562,9 @@ workers never call each other.
 </Tabs>
 
 `inventory::reserve` returns the reservation, and `deliver: "output"` hands that result to
-`shipping::schedule`. The first observer discards the return value (a target reacts; it does not
-answer), but the second observer sees it as the output of `inventory::reserve`. To add a step,
-observe the last function in the chain; to branch, observe the same function twice. Each activation
-in a chain counts toward the [loop guard](#loop-guard), so chains are limited to
+`shipping::schedule`: the second observer reads it as the output of `inventory::reserve`. To add a
+step, observe the last function in the chain; to branch, observe the same function twice. Each
+activation in a chain counts toward the [loop guard](#loop-guard), so chains are limited to
 `observers.max_observe_depth` steps (8 by default).
 
 ## Engine-hosted event sources
