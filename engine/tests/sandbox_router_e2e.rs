@@ -233,7 +233,7 @@ async fn unbound_router_answers_s303_but_info_never_errors() {
     assert_eq!(p["retryable"], false);
     assert_eq!(
         p["message"],
-        "no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-builtin)"
+        "no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-libkrun)"
     );
 
     let info = call(&engine, ROUTER_INFO_ID, json!({}), None).await;

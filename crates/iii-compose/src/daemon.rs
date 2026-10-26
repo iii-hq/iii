@@ -3724,7 +3724,7 @@ containers:
         (dir, path)
     }
 
-    /// A `sandbox-builtin` release whose binary exits at once.
+    /// A `sandbox-libkrun` release whose binary exits at once.
     fn adapter_archive() -> Vec<u8> {
         let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
             Vec::new(),
@@ -3738,7 +3738,7 @@ containers:
         archive
             .append_data(
                 &mut header,
-                format!("sandbox-builtin{}", std::env::consts::EXE_SUFFIX),
+                format!("sandbox-libkrun{}", std::env::consts::EXE_SUFFIX),
                 &script[..],
             )
             .unwrap();
@@ -3768,29 +3768,29 @@ containers:
         let text = std::fs::read_to_string(&path).unwrap();
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
-            compose.containers["sandbox-builtin"].version.as_deref(),
+            compose.containers["sandbox-libkrun"].version.as_deref(),
             Some("1.2.3"),
             "{text}"
         );
-        assert!(crate::edit::is_generated_container(&text, "sandbox-builtin").unwrap());
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
         let lock: serde_yaml::Value = serde_yaml::from_str(
             &std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
         )
         .unwrap();
         assert_eq!(
-            lock["containers"]["sandbox-builtin"]["resolved"]["version"].as_str(),
+            lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
             Some("1.2.3"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
-        assert!(held.containers.contains_key("sandbox-builtin"));
-        assert_eq!(held.containers["vm"].start_after, ["sandbox-builtin"]);
+        assert!(held.containers.contains_key("sandbox-libkrun"));
+        assert_eq!(held.containers["vm"].start_after, ["sandbox-libkrun"]);
         daemon.shutdown().await;
     }
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-builtin@1.2.3").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -3801,10 +3801,10 @@ containers:
         let (_dir, path) = vm_project(&text);
         let compose = ComposeFile::parse(&text, &path).unwrap();
         let generated = generated_dependencies(&text, &compose, &BTreeMap::new()).unwrap();
-        assert!(generated.contains("sandbox-builtin"));
+        assert!(generated.contains("sandbox-libkrun"));
         let asked = workers_to_update(&compose, &[], &generated, &BTreeMap::new()).unwrap();
         assert!(
-            asked.iter().all(|worker| worker.key != "sandbox-builtin"),
+            asked.iter().all(|worker| worker.key != "sandbox-libkrun"),
             "{asked:?}"
         );
     }
@@ -3814,7 +3814,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-builtin, version: '^1'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^1'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -3838,7 +3838,7 @@ containers:
     async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
 
-        let adapter = crate::edit::parse_worker("sandbox-builtin@1.0.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.0.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -3865,11 +3865,11 @@ containers:
         let text = std::fs::read_to_string(&path).unwrap();
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
-            compose.containers["sandbox-builtin"].version.as_deref(),
+            compose.containers["sandbox-libkrun"].version.as_deref(),
             Some("1.2.3"),
             "{text}"
         );
-        assert!(crate::edit::is_generated_container(&text, "sandbox-builtin").unwrap());
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
         daemon.shutdown().await;
     }
 
@@ -3882,7 +3882,7 @@ containers:
             .respond_with(
                 ResponseTemplate::new(422).set_body_json(serde_json::json!({ "error": {
                     "code": "unsupported_platform",
-                    "message": "Worker 'sandbox-builtin' does not support this platform.",
+                    "message": "Worker 'sandbox-libkrun' does not support this platform.",
                     "available": ["riscv64gc-unknown-linux-gnu"],
                 }})),
             )
@@ -3904,7 +3904,7 @@ containers:
             .await
             .unwrap_err();
         assert_eq!(error.code(), "UNSUPPORTED_PLATFORM");
-        assert!(error.to_string().contains("sandbox-builtin"), "{error}");
+        assert!(error.to_string().contains("sandbox-libkrun"), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         daemon.shutdown().await;
     }
@@ -3940,11 +3940,11 @@ containers:
         let text = std::fs::read_to_string(&path).unwrap();
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
-            compose.containers["sandbox-builtin"].version.as_deref(),
+            compose.containers["sandbox-libkrun"].version.as_deref(),
             Some("1.2.3"),
             "{text}"
         );
-        assert!(crate::edit::is_generated_container(&text, "sandbox-builtin").unwrap());
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
         daemon.shutdown().await;
     }
 

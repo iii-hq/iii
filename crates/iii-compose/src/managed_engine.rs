@@ -993,7 +993,7 @@ containers: {}
     }
 
     #[test]
-    fn materialized_config_binds_sandbox_builtin_in_the_owner_namespace() {
+    fn materialized_config_binds_sandbox_libkrun_in_the_owner_namespace() {
         let dir = tempfile::tempdir().unwrap();
         let path = materialize_engine_config(&engine_spec(), dir.path(), "orders").unwrap();
         let document: serde_yaml::Value =
@@ -1002,7 +1002,7 @@ containers: {}
         assert_eq!(
             document["sandbox"],
             serde_yaml::from_str::<serde_yaml::Value>(
-                "{adapter: sandbox-builtin, namespace: orders}"
+                "{adapter: sandbox-libkrun, namespace: orders}"
             )
             .unwrap()
         );

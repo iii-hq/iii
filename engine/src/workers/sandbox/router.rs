@@ -83,7 +83,7 @@ impl SandboxRouter {
         let Some(b) = &self.binding else {
             return FunctionResult::Failure(sandbox_error(
                 SandboxErrorCode::S303,
-                "no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-builtin)",
+                "no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-libkrun)",
             ));
         };
 

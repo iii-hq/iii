@@ -534,12 +534,12 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
 }
 
 /// The `containers:` entry that carries a pre-0.26 `engine.workers.iii-sandbox`
-/// block to `sandbox-builtin`. It has no `# added by compose::add` marker: the
+/// block to `sandbox-libkrun`. It has no `# added by compose::add` marker: the
 /// operator declares it, so Compose never removes it with its `config_override`.
 /// The version is a range because the migration check is offline.
 pub fn sandbox_replacement(old: &serde_yaml::Value) -> String {
     let mut text = format!(
-        "containers:\n  sandbox-builtin:\n    worker: package://sandbox-builtin\n    version: '^{}'\n    config_override:\n",
+        "containers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^{}'\n    config_override:\n",
         iii_sandbox_contract::CONTRACT_MAJOR
     );
     for line in serde_yaml::to_string(old).unwrap_or_default().lines() {

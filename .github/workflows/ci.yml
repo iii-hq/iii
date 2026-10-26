@@ -299,7 +299,7 @@ jobs:
         run: cargo test --locked -p iii-compose
 
   # ──────────────────────────────────────────────────────────────
-  # Compose on sandbox-builtin — the spec's acceptance run: a registry bundle
+  # Compose on sandbox-libkrun — the spec's acceptance run: a registry bundle
   # and a base-image worker boot in real microVMs owned by the adapter, and one
   # sandbox::exec goes through the engine router. The adapter and the bundle
   # are pinned in the test, so a registry release cannot turn this job red.
@@ -336,7 +336,7 @@ jobs:
             echo "::warning::/dev/kvm missing on this runner image; libkrun guest boot will be unavailable"
           fi
 
-      # The adapter needs libcap-ng at run time (a host prerequisite of sandbox-builtin).
+      # The adapter needs libcap-ng at run time (a host prerequisite of sandbox-libkrun).
       - name: Install system dependencies
         run: |
           sudo apt-get install -y libcap-ng0 \

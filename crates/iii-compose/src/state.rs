@@ -459,7 +459,7 @@ mod reconcile_tests {
         // Stopped is also what keeps a failed VM's record from its adapter.
         let vm = ChildRecord {
             vm: Some(super::VmRecord {
-                adapter: "sandbox-builtin".into(),
+                adapter: "sandbox-libkrun".into(),
                 namespace: "app".into(),
                 vm_id: "ab".into(),
                 instance: 2,
@@ -488,7 +488,7 @@ mod reconcile_tests {
             pid: None,
             birth: None,
             vm: Some(super::VmRecord {
-                adapter: "sandbox-builtin".into(),
+                adapter: "sandbox-libkrun".into(),
                 namespace: "app".into(),
                 vm_id: "ab".into(),
                 instance: 2,

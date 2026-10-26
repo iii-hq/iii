@@ -1125,7 +1125,7 @@ containers:
 }
 
 #[test]
-fn engine_sandbox_section_defaults_to_sandbox_builtin() {
+fn engine_sandbox_section_defaults_to_sandbox_libkrun() {
     let engine = parse("engine:\n  sandbox: {}\ncontainers: {}\n")
         .unwrap()
         .engine
@@ -1133,7 +1133,7 @@ fn engine_sandbox_section_defaults_to_sandbox_builtin() {
     assert_eq!(
         engine.sandbox,
         Some(SandboxSpec {
-            adapter: "sandbox-builtin".into(),
+            adapter: "sandbox-libkrun".into(),
             namespace: None
         })
     );
@@ -1161,7 +1161,7 @@ fn engine_sandbox_rejects_unknown_keys() {
     );
 }
 
-const MOVED: &str = "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the sandbox-builtin worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-builtin` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-builtin.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker";
+const MOVED: &str = "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the sandbox-libkrun worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-libkrun` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-libkrun.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker";
 
 #[test]
 fn the_pre_0_26_sandbox_block_fails_with_its_replacement() {
@@ -1173,7 +1173,7 @@ fn the_pre_0_26_sandbox_block_fails_with_its_replacement() {
     assert_eq!(
         error.to_string(),
         format!(
-            "{MOVED}\n\ncontainers:\n  sandbox-builtin:\n    worker: package://sandbox-builtin\n    version: '^1'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
+            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^1'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
         )
     );
 }
@@ -1190,7 +1190,7 @@ fn replacement_yaml_parses_and_keeps_the_old_block() {
             panic!("{block}")
         };
         let file = ComposeFile::parse(&replacement, "/tmp/worker-compose.yaml").unwrap();
-        let adapter = &file.containers["sandbox-builtin"];
+        let adapter = &file.containers["sandbox-libkrun"];
         assert_eq!(adapter.version.as_deref(), Some("^1"));
         let old: serde_yaml::Mapping = serde_yaml::from_str(block).unwrap();
         assert_eq!(adapter.config_override.as_ref(), old.values().next());

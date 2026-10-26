@@ -1767,7 +1767,7 @@ containers:
             Child::Vm(crate::sandbox::RemoteVm::spawn(
                 engine.client().clone(),
                 crate::state::VmRecord {
-                    adapter: "sandbox-builtin".into(),
+                    adapter: "sandbox-libkrun".into(),
                     namespace: "t".into(),
                     vm_id: "v".into(),
                     instance: 1,
