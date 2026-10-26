@@ -1810,10 +1810,10 @@ ChannelReader is the read end of a channel: a WebSocket opened lazily on first u
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `OpenReader` | func(engineWSBase string, ref [`StreamChannelRef`](#streamchannelref)) *[`ChannelReader`](#channelreader) | Yes | OpenReader returns a reader for the read end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first read and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenReader`, which uses the client's address and headers. |
-| `Close` | `func() error` | Yes | Close closes the reader socket. It is idempotent and safe to call after ReadAll. |
-| `NextBinary` | `func(ctx context.Context) (data []byte, ok bool, err error)` | Yes | NextBinary returns the next binary stream chunk. ok is false at end of stream (the writer closed). Text frames encountered while waiting are dispatched to OnMessage callbacks and skipped, so a reader can interleave messages and stream data. |
+| `Close` | `func() error` | Yes | Close closes the reader socket. A read it cuts short, and any read after it, ends as end of stream, not an error. It is idempotent and safe to call after ReadAll. |
+| `NextBinary` | `func(ctx context.Context) (data []byte, ok bool, err error)` | Yes | NextBinary returns the next binary stream chunk. ok is false at end of stream (the writer closed cleanly, or this reader was closed). If the writer aborted or the connection dropped, err is non-nil; a close carries its code and reason (websocket.CloseStatus, errors.As with websocket.CloseError). Text frames encountered while waiting are dispatched to OnMessage callbacks and skipped, so a reader can interleave messages and stream data. |
 | `OnMessage` | `func(cb func(string))` | Yes | OnMessage registers a callback for inbound text messages. Callbacks fire from the goroutine driving NextBinary/ReadAll, in registration order. |
-| `ReadAll` | `func(ctx context.Context) ([]byte, error)` | Yes | ReadAll consumes the channel until the writer closes, concatenating all binary chunks. Text messages seen along the way are dispatched to OnMessage callbacks. |
+| `ReadAll` | `func(ctx context.Context) ([]byte, error)` | Yes | ReadAll consumes the channel until the writer closes, concatenating all binary chunks. Text messages seen along the way are dispatched to OnMessage callbacks. On an error (an aborted writer included) it returns the bytes read so far with the error. |
 
 ---
 
@@ -1824,7 +1824,7 @@ ChannelWriter is the write end of a channel: a WebSocket opened lazily on first 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `OpenWriter` | func(engineWSBase string, ref [`StreamChannelRef`](#streamchannelref)) *[`ChannelWriter`](#channelwriter) | Yes | OpenWriter returns a writer for the write end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first send and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenWriter`, which uses the client's address and headers. |
-| `Close` | `func() error` | Yes | Close finishes the stream: it pauses briefly so buffered frames flush, then closes the socket. The engine treats the close as end-of-stream and propagates it to the reader. Close is idempotent. |
+| `Close` | `func() error` | Yes | Close finishes the stream: it pauses briefly so buffered frames flush, then closes the socket with code 1000, which the engine treats as a completed stream (the reader sees EOF). After a failed Write or SendMessage the stream is incomplete, so Close ends the socket without a close frame instead: the engine reads that as an abort and the reader gets an error, as it does when the process exits before Close. Close is idempotent. |
 | `SendMessage` | `func(ctx context.Context, msg string) error` | Yes | SendMessage sends a discrete text message (a TEXT frame) on the channel. |
 | `Write` | `func(ctx context.Context, data []byte) error` | Yes | Write streams bytes as BINARY frames, chunked at channelFrameSize. It implements the stream-data half of the channel; the reader receives the bytes via NextBinary/ReadAll. |
 
