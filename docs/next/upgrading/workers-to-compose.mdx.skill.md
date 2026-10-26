@@ -191,10 +191,13 @@ injects them. An entry under `engine.workers` fails with `ENGINE_WORKER_IS_INJEC
   for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>
 
-Copy the current settings of each project worker to its `config_override`. On first boot, 0.22 moved
-each `config:` block from `config.yaml` into the configuration worker and left a comment in its
-place. Read the current value as [Preserve stored configuration](#preserve-stored-configuration)
-shows. Also copy any `config:` block that is still in `config.yaml`. Keep every storage path. A
+On first boot, 0.22 moved each `config:` block from `config.yaml` into the configuration worker and
+left a comment in its place. When the new configuration id of a worker is different from its 0.22
+name, copy its current settings to its `config_override`. Read the current value as
+[Preserve stored configuration](#preserve-stored-configuration) shows. When `config_name` equals the
+0.22 name, keep the stored entry and do not copy it. Compose applies `config_override` before each
+start, so a field in it replaces a later `configuration::set` change to that field at the next
+start. Also copy any `config:` block that is still in `config.yaml`. Keep every storage path. A
 package worker runs in the directory that holds `worker-compose.yaml`, so its relative paths resolve
 there. Run `iii compose` from that directory, so the `configuration` worker finds `./config` in the
 same place. Pin each package version.
@@ -236,9 +239,10 @@ for a longer build. Compose has no `watch` setting. After you change the code, r
 `iii trigger compose::restart container=app`. Compose waits until each container registers a worker
 with the same name as its container key. With iii-sdk 0.23 or later, the worker uses
 `III_WORKER_NAME`, which Compose sets to the container key. A worker on an older SDK that sets its
-own name fails with `WORKER_NAME_MISMATCH`. Upgrade its SDK. A command that does not connect to iii
-fails with `STARTUP_TIMEOUT`. Custom local workers use `path://`. Registry workers use `package://`
-and a version.
+own name fails with `WORKER_NAME_MISMATCH`. Upgrade its SDK. A command that keeps running but does
+not connect to iii fails with `STARTUP_TIMEOUT`. A command that exits before its worker registers
+fails with `CHILD_EXITED_BEFORE_REGISTRATION`. Custom local workers use `path://`. Registry workers
+use `package://` and a version.
 
 To add another registry worker while Compose runs, use `compose::add`. It writes the worker under
 `containers:` with the resolved version. It starts the new worker and restarts only the containers

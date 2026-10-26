@@ -41,10 +41,12 @@ stick.
 iii compose --engine ws://127.0.0.1:49134 --up --file /path/to/worker-compose.yaml
 ```
 
-The `--engine` flag stops Compose from starting a second engine. For more about Compose, see
-[Run a Compose project](#run-a-compose-project). The `Dockerfile` copies `config.yaml` from the
-project root. If your project has no `config.yaml`, create one with the line `workers: []` before
-you build.
+The `--engine` flag stops Compose from starting a second engine. With `--engine`, Compose ignores
+the `engine:` section of the file. It does not start that engine or apply its `engine.workers`
+entries. Remove the `engine:` section, or move its `workers` entries into the `config.yaml` of the
+external engine. For more about Compose, see [Run a Compose project](#run-a-compose-project). The
+`Dockerfile` copies `config.yaml` from the project root. If your project has no `config.yaml`,
+create one with the line `workers: []` before you build.
 
 </Warning>
 

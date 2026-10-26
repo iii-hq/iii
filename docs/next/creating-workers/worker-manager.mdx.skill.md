@@ -80,8 +80,9 @@ expose_functions:
   Gate access on facts that only trusted workers control. A function's metadata comes from the
   worker that registers it. A session that can register functions can set `metadata.public = true`
   on its own functions. Use `metadata` rules only for functions that your trusted workers register.
-  For untrusted sessions, set `allow_function_registration` to `false` (it defaults to `true`), or
-  set `on_function_registration_function_id` to a hook that rewrites the metadata.
+  For untrusted sessions, return `allow_function_registration: false` from the auth function (it
+  defaults to `true`), or set `on_function_registration_function_id` in the RBAC configuration of
+  the listener to a hook that rewrites the metadata.
 </Warning>
 
 ### Namespace-scoped function rules
