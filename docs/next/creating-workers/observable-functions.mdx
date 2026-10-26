@@ -7,19 +7,44 @@ owner: "devrel"
 type: "how-to"
 ---
 
-Every function is observable without any code on your side: other workers call
-[`iii.observe`](../using-iii/observers) on it, and each of its invocations is offered to every
-observer. This page is for the worker that **hosts** the function (its owner) and wants a say in how
-it is observed:
+By default you write nothing to be observed. Register a function, call it whenever the thing
+happens, and every call runs the targets of everyone who [observes](../using-iii/observers) it:
 
-- run code when an observer is added or removed (start a schedule, open a route, watch a table);
-- read each observer's `args` and hand each event only to the observers it belongs to (**owner
-  delivery**);
-- accept the old `registerTrigger` calls of a trigger type the function replaces.
+```typescript
+worker.registerFunction("files::on-change", async (change: FileChanged) => change);
+
+// whenever a file changes:
+await worker.trigger({ function_id: "files::on-change", payload: change });
+```
+
+That default is called **auto delivery**, and it covers most sources. This page is for the worker
+that hosts a function (its owner) and wants to **override that default**:
+
+- run code when an observer is added or removed, for example to start expensive work only while
+  someone is watching ([Know when you are observed](#know-when-you-are-observed));
+- take control of which observer gets which event, from what each observer asked for in its `args`
+  ([Owner delivery](#owner-delivery));
+- accept the old `registerTrigger` calls of a trigger type the function replaces
+  ([Accept old triggers](#accept-old-triggers)).
+
+<Warning>
+  With owner delivery, calling your function no longer reaches any observer. From then on your code
+  decides when each observer's target runs, and nothing is delivered until you call `obs.emit` or
+  `obs.call`. If every observer should see every call, stay on auto delivery.
+</Warning>
 
 In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function with an `observe`
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
+
+## Do you need owner delivery?
+
+| You want                                                                                     | Use                                                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Observers to react to every call of your function (filters narrow it)                        | Auto delivery. Write nothing; call your function.                                        |
+| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when you are observed](#know-when-you-are-observed). |
+| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                          |
+| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                          |
 
 ## The `observe` descriptor
 
@@ -67,8 +92,8 @@ by.
 ### The `Observer` object
 
 Hooks receive an `Observer`: the observer as its owner sees it. It never exposes the observer's
-metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime, so keep
-it in your own index.
+metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime,
+so keep it in your own index.
 
 | Member                  | Meaning                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -116,8 +141,34 @@ observer's filters match.
 
 ## Owner delivery
 
-With `delivery: 'owner'`, invocations of your function are no longer offered to every observer. Your
-code decides which observers each event is for, from their `args`, and hands it over:
+With `delivery: 'owner'` you take over from the engine. Invocations of your function are no longer
+offered to every observer; your code decides which observers each event is for, from their `args`,
+and hands it over.
+
+|                      | Auto (the default)                                         | Owner                                                                       |
+| -------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+| An event is          | every invocation of the function                           | what your code hands to an observer with `obs.emit` or `obs.call`           |
+| Observer `args`      | not accepted (`INVALID_ARGS`)                              | validated against your `args_format`, then read by your hooks               |
+| Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | your SDK, each time you hand an event to the observer                       |
+| When the target runs | after the observed invocation completes, per `on`          | when your code decides, usually inside the function's own handler           |
+| The target's result  | discarded                                                  | discarded for `obs.emit`; returned to you for `obs.call`                    |
+| Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch |
+
+Owner delivery always takes three pieces, and leaving one out means observers stay `active` but
+never fire:
+
+1. **`onObserverAdded` keeps the `Observer`** in your own index, keyed by its `args`, and starts
+   whatever produces events (a timer, a watcher). It must not wait for events itself: it has 30
+   seconds before the observer fails with `OWNER_TIMEOUT`, and an `emit` from inside it returns
+   `false` because the observer is not `active` yet.
+2. **Your producer calls your function** when something happens, as with auto delivery.
+3. **Your function's handler emits**: it looks up the observers the event belongs to and calls
+   `obs.emit(event)` (or `obs.call(payload)`) on each. This is the step that runs their targets.
+
+`onObserverRemoved` takes the observer out of the index and stops what step 1 started once nobody
+needs it.
+
+The two ways to hand over an event:
 
 |                 | `obs.emit(event)`                                                                                                                    | `obs.call(payload)`                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -140,8 +191,13 @@ engine stops reading your worker's connection until they have room again, for at
 Meanwhile the SDK keeps what it can in its bounded report buffer and drops the rest, counted as
 `BUFFER_FULL`, and everything else your worker sends (its calls, its answers to calls) waits behind
 its reports. After each hold the engine reads your worker's connection for at least a quarter as
-long before it holds it again, and drops what overflows meanwhile as `OVERFLOW`: your worker is
-held at most four fifths of the time.
+long before it holds it again, and drops what overflows meanwhile as `OVERFLOW`: your worker is held
+at most four fifths of the time.
+
+An emitted event travels in the SDK's report, like a
+[local call](../using-iii/observers#local-dispatch): values JSON cannot hold arrive as `null` (or
+U+FFFD for a lone surrogate), an event larger than the 8 MiB report buffer is dropped as
+`TOO_LARGE`, and a report lost with a dropped connection is not sent again.
 
 The event's `caller` follows where you call `emit`: inside your function's own handler, the event is
 that invocation (its id and its caller); inside another handler, that handler is the caller; outside
@@ -744,6 +800,7 @@ await worker.trigger({
 | `OVERFLOW`                                                    | The observer has `max_in_flight` calls running. An owner call fails instead of queueing, because you are waiting for its result. |
 | `TIMEOUT`                                                     | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                            |
 | `function_not_found`                                          | The target is not registered.                                                                                                    |
+| `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).     |
 
 ## Reject an observer later
 
