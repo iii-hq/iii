@@ -462,8 +462,9 @@ func (c *Client) setState(s ConnectionState) {
 
 // RegisterFunction registers a function this worker can handle and returns its handle;
 // [FunctionRef.Unregister] removes it. It may be called before or after Connect; the
-// registration is sent on the next (re)connect. Calling it again with the same id
-// replaces the registration, and the earlier handle no longer controls it. Pass a
+// registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an
+// empty id is refused ("id is required") and so is an id this client already registered
+// ("function id already registered"): to replace a function, unregister it first. Pass a
 // single [RegisterFunctionOptions] value for a description, request and response
 // formats, metadata, observe hooks or the local dispatch setting.
 //
@@ -485,7 +486,7 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 	if err != nil {
 		return nil, err
 	}
-	return c.storeFunction(id, msg, handler, cfg)
+	return c.storeFunction(name, id, msg, handler, cfg)
 }
 
 // registerFunctionMessage builds the registerfunction frame for id from cfg: the
@@ -517,11 +518,14 @@ func registerFunctionMessage(name, id string, cfg RegisterFunctionOptions) (*Reg
 	return msg, nil
 }
 
-// storeFunction validates the observe descriptor, records the function with its
-// observe state and sends the registration. A function registered again under the
-// same id replaces the previous one: its observers go through the previous hooks'
-// OnObserverRemoved, and the engine's fresh functionregistered reaches the new ones.
-func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler Handler, cfg RegisterFunctionOptions) (*FunctionRef, error) {
+// storeFunction validates the id and the observe descriptor, records the function with
+// its observe state and sends the registration. name is the public method, for errors.
+// Like the Node, Python and Rust SDKs it refuses an empty id and an id already
+// registered on this client (the check and the insert happen under one lock).
+func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, handler Handler, cfg RegisterFunctionOptions) (*FunctionRef, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("iii: %s: id is required", name)
+	}
 	descriptor, err := observeDescriptor(id, cfg.Observe)
 	if err != nil {
 		return nil, err
@@ -540,16 +544,16 @@ func (c *Client) storeFunction(id string, msg *RegisterFunctionMessage, handler 
 	}
 	observe := newFunctionObservers(c, id, hooks, localDispatch)
 	c.mu.Lock()
-	previous, replaced := c.functions[id]
+	if _, exists := c.functions[id]; exists {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("iii: %s(%q): function id already registered", name, id)
+	}
 	c.functions[id] = registeredFunction{message: msg, handler: handler, observe: observe}
 	warnInactive := observe.needsObserve() && c.registeredOnConnection && !c.engineFeatures[FeatureObserveV1] && !c.hooksInactiveWarned[id]
 	if warnInactive {
 		c.hooksInactiveWarned[id] = true
 	}
 	c.mu.Unlock()
-	if replaced && previous.observe != nil {
-		previous.observe.dispose()
-	}
 	if warnInactive {
 		logHooksInactive(id)
 	}

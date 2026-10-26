@@ -14,12 +14,14 @@ import (
 )
 
 // registerLocal registers fn and waits until the engine confirmed it for local dispatch.
-func registerLocal(t *testing.T, c *Client, id string, h Handler, opts ...RegisterFunctionOptions) {
+func registerLocal(t *testing.T, c *Client, id string, h Handler, opts ...RegisterFunctionOptions) *FunctionRef {
 	t.Helper()
-	if _, err := c.RegisterFunction(id, h, opts...); err != nil {
+	ref, err := c.RegisterFunction(id, h, opts...)
+	if err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, "local dispatch for "+id, func() bool { return c.LocalDispatchActive(id) })
+	return ref
 }
 
 func trigger(t *testing.T, c *Client, req TriggerRequest) json.RawMessage {
@@ -77,8 +79,15 @@ func TestLocalDispatchRunsInProcess(t *testing.T) {
 	short(TriggerRequest{FunctionID: "math::inc", Action: EnqueueAction("q")})
 	short(TriggerRequest{FunctionID: "math::inc", Namespace: "elsewhere"})
 	off := false
-	registerLocal(t, c, "math::remote-only", echoHandler)
-	_, _ = c.RegisterFunction("math::remote-only", echoHandler, RegisterFunctionOptions{LocalDispatch: &off})
+	// Registered with local dispatch, then registered again without it (an id is
+	// registered once: unregister first).
+	local := registerLocal(t, c, "math::remote-only", echoHandler)
+	if err := local.Unregister(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RegisterFunction("math::remote-only", echoHandler, RegisterFunctionOptions{LocalDispatch: &off}); err != nil {
+		t.Fatal(err)
+	}
 	waitUntil(t, "confirmed", func() bool { return c.functionObservers("math::remote-only").syncedOn(c.currentEpoch()) })
 	short(TriggerRequest{FunctionID: "math::remote-only"})
 	waitUntil(t, "remote frames", func() bool { return invokeFrames(fe, "math::inc") == 3 && invokeFrames(fe, "math::remote-only") == 1 })
@@ -681,7 +690,7 @@ func TestReportOfACallRunningAcrossAReRegistration(t *testing.T) {
 	fe.setObservers("rr::fn", 1, observerInfo("o1", "x::y", "", "", CaptureInput))
 	c := fe.client()
 	started, release := make(chan struct{}), make(chan struct{})
-	registerLocal(t, c, "rr::fn", func(context.Context, json.RawMessage) (any, error) {
+	old := registerLocal(t, c, "rr::fn", func(context.Context, json.RawMessage) (any, error) {
 		close(started)
 		<-release
 		return 1, nil
@@ -693,6 +702,9 @@ func TestReportOfACallRunningAcrossAReRegistration(t *testing.T) {
 		trigger(t, c, TriggerRequest{FunctionID: "rr::fn", Payload: json.RawMessage(`"across"`)})
 	}()
 	<-started
+	if err := old.Unregister(); err != nil {
+		t.Fatal(err)
+	}
 	registerLocal(t, c, "rr::fn", echoHandler)
 	waitUntil(t, "the new registration confirmed", func() bool {
 		return c.functionObservers("rr::fn").syncedOn(c.currentEpoch())

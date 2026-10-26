@@ -82,7 +82,7 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
 		return handler(ctx, req)
 	}
 
-	return c.storeFunction(id, msg, raw, cfg)
+	return c.storeFunction("RegisterFunctionTyped", id, msg, raw, cfg)
 }
 
 // InferSchema reflects a JSON Schema for T, exposed for callers that want to build a
