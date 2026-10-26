@@ -33,34 +33,38 @@ it for you to observe it, and any worker can observe any function it is allowed 
 
 ## Observe a function
 
-When `orders::create` runs with a total of 500 or more, run `alerts::big-order`. `orders::create` is
-a regular function registered by another worker, and it needs no changes to be observed. The target
-runs once per matching call and receives an [`Observed` envelope](#what-the-target-receives)
-describing it.
+The examples on this page build on each other. They all react to `orders::create`, a regular
+function registered by another worker. It needs no changes to be observed.
+
+### React to every call
+
+When `orders::create` runs, run `emails::send-receipt` with the order. `deliver: "input"` hands the
+target the order itself, so the target is a plain function of the order and knows nothing about
+observers.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { registerWorker, type Observed } from "iii-sdk";
+    import { registerWorker } from "iii-sdk";
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
     const worker = registerWorker(url);
 
-    type Order = { id: string; total: number };
+    type Order = { id: string; email: string; total: number };
 
     // The right side: a registered function, like any other.
-    worker.registerFunction("alerts::big-order", async (event: Observed<Order>) => {
-      console.log(`order ${event.input?.id} totals ${event.input?.total}`);
+    worker.registerFunction("emails::send-receipt", async (order: Order) => {
+      await sendReceipt(order.email, order);
       return null;
     });
 
-    // When orders::create runs with total >= 500, run alerts::big-order.
-    const bigOrders = worker.observe(
-      { function_id: "orders::create", filters: { "input.total": { $gte: 500 } } },
-      "alerts::big-order",
+    // When orders::create runs, run emails::send-receipt with the order.
+    const receipts = worker.observe(
+      { function_id: "orders::create", deliver: "input" },
+      "emails::send-receipt",
     );
-    await bigOrders.ready(); // resolves once the observer is active
+    await receipts.ready(); // resolves once the observer is active
     ```
 
   </Tab>
@@ -69,34 +73,33 @@ describing it.
     import os
     from iii import InitOptions, register_worker
 
-    worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="alerts"))
+    worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="emails"))
 
     # The right side: a registered function, like any other.
-    def big_order(event: dict) -> None:
-        order = event.get("input", {})
-        print(f"order {order.get('id')} totals {order.get('total')}")
+    def send_receipt(order: dict) -> None:
+        mailer.send_receipt(order["email"], order)
 
-    worker.register_function("alerts::big-order", big_order)
+    worker.register_function("emails::send-receipt", send_receipt)
 
-    # When orders::create runs with total >= 500, run alerts::big-order.
-    big_orders = worker.observe(
-        {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
-        "alerts::big-order",
+    # When orders::create runs, run emails::send-receipt with the order.
+    receipts = worker.observe(
+        {"function_id": "orders::create", "deliver": "input"},
+        "emails::send-receipt",
     )
-    big_orders.ready()  # blocks until active; use `await big_orders.ready_async()` in asyncio code
+    receipts.ready()  # blocks until active; use `await receipts.ready_async()` in asyncio code
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Error, InitOptions, Observed, RegisterFunction, Source, register_worker};
+    use iii_sdk::{Deliver, Error, InitOptions, RegisterFunction, Source, register_worker};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-    use serde_json::json;
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     struct Order {
         id: String,
+        email: String,
         total: f64,
     }
 
@@ -104,6 +107,117 @@ describing it.
     let worker = register_worker(&url, InitOptions::default());
 
     // The right side: a registered function, like any other.
+    worker.register_function(
+        "emails::send-receipt",
+        RegisterFunction::new(|order: Order| {
+            send_receipt(&order.email, &order);
+            Ok::<_, Error>(())
+        }),
+    );
+
+    // When orders::create runs, run emails::send-receipt with the order.
+    let receipts = worker.observe(
+        Source::function("orders::create").deliver(Deliver::Input),
+        "emails::send-receipt",
+    );
+    receipts.ready().await?; // resolves once the observer is active
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type Order struct {
+        ID    string  `json:"id"`
+        Email string  `json:"email"`
+        Total float64 `json:"total"`
+    }
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"))
+
+    // The right side: a registered function, like any other.
+    client.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var order Order
+        if err := json.Unmarshal(data, &order); err != nil {
+            return nil, err
+        }
+        return nil, sendReceipt(ctx, order.Email, order)
+    })
+
+    // When orders::create runs, run emails::send-receipt with the order.
+    receipts, err := client.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Deliver:    iii.DeliverInput,
+    }, "emails::send-receipt")
+    if err != nil {
+        log.Fatal(err) // the request could not be built (missing ids, args that are not JSON)
+    }
+    if err := receipts.Ready(ctx); err != nil {
+        log.Fatal(err) // an *iii.ObserveRejectionError carries the engine's code
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+That is all a consumer writes. From now on, whoever calls `orders::create`, from whichever worker,
+`emails::send-receipt` runs after each call.
+
+`observe` returns a handle at once, also before the connection is up. The SDK sends the observer
+when it connects and replays it with the same id after every reconnect, so you call it once at
+startup, like `registerFunction`. The browser SDK (`iii-browser-sdk`) has the same `observe` API as
+Node.
+
+### Narrow it with a filter
+
+Only orders of 500 or more should page someone. A [filter](#filters) on the source narrows which
+calls reach the target. This target also leaves out `deliver`, so it receives the full
+[`Observed` envelope](#what-the-target-receives): the order as `input`, plus the result, who placed
+the call, and how long it took.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { Observed } from "iii-sdk";
+
+    worker.registerFunction("alerts::big-order", async (event: Observed<Order>) => {
+      console.log(
+        `order ${event.input?.id} totals ${event.input?.total}, placed by ${event.caller?.worker_name}`,
+      );
+      return null;
+    });
+
+    // When orders::create runs with total >= 500, run alerts::big-order.
+    await worker
+      .observe(
+        { function_id: "orders::create", filters: { "input.total": { $gte: 500 } } },
+        "alerts::big-order",
+      )
+      .ready();
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def big_order(event: dict) -> None:
+        order = event.get("input", {})
+        caller = event.get("caller", {})
+        print(f"order {order.get('id')} totals {order.get('total')}, placed by {caller.get('worker_name')}")
+
+    worker.register_function("alerts::big-order", big_order)
+
+    # When orders::create runs with total >= 500, run alerts::big-order.
+    worker.observe(
+        {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
+        "alerts::big-order",
+    ).ready()
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Observed;
+    use serde_json::json;
+
     worker.register_function(
         "alerts::big-order",
         RegisterFunction::new(|event: Observed<Order>| {
@@ -115,19 +229,18 @@ describing it.
     );
 
     // When orders::create runs with total >= 500, run alerts::big-order.
-    let big_orders = worker.observe(
-        Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
-        "alerts::big-order",
-    );
-    big_orders.ready().await?; // resolves once the observer is active
+    worker
+        .observe(
+            Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
+            "alerts::big-order",
+        )
+        .ready()
+        .await?;
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    client := iii.RegisterWorker(os.Getenv("III_URL"))
-
-    // The right side: a registered function, like any other.
     client.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
         var event iii.Observed
         if err := json.Unmarshal(data, &event); err != nil {
@@ -143,23 +256,19 @@ describing it.
         Filters:    iii.Filters{"input.total": iii.Op{"$gte": 500}},
     }, "alerts::big-order")
     if err != nil {
-        log.Fatal(err) // the request could not be built (missing ids, args that are not JSON)
+        log.Fatal(err)
     }
     if err := bigOrders.Ready(ctx); err != nil {
-        log.Fatal(err) // an *iii.ObserveRejectionError carries the engine's code
+        log.Fatal(err)
     }
     ```
 
   </Tab>
 </Tabs>
 
-That is all a consumer writes. From now on, whoever calls `orders::create`, from whichever worker,
-`alerts::big-order` runs after each call that matches.
-
-`observe` returns a handle at once, also before the connection is up. The SDK sends the observer
-when it connects and replays it with the same id after every reconnect, so you call it once at
-startup, like `registerFunction`. The browser SDK (`iii-browser-sdk`) has the same `observe` API as
-Node.
+Both observers watch the same function and neither knows about the other. The next examples add
+[failures and policy](#policy-and-metadata), [chains](#chain-reactions), and
+[engine events](#engine-hosted-event-sources).
 
 ### Making a function you can observe
 
@@ -230,12 +339,47 @@ example, `timer::on-tick`, the example source built in
 [Observable functions](../creating-workers/observable-functions#example-a-timer-that-emits) (it is
 not built in), takes `{ every_ms }`:
 
-```typescript
-worker.observe({ function_id: "timer::on-tick", args: { every_ms: 60_000 } }, "reports::refresh");
-```
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // Every minute, run reports::refresh.
+    worker.observe({ function_id: "timer::on-tick", args: { every_ms: 60_000 } }, "reports::refresh");
+    ```
 
-The engine validates `args` against the source's schema (`INVALID_ARGS` when they do not fit). A
-function that does not document `args` takes none, and passing them fails with `INVALID_ARGS`.
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Every minute, run reports::refresh.
+    worker.observe({"function_id": "timer::on-tick", "args": {"every_ms": 60_000}}, "reports::refresh")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Every minute, run reports::refresh.
+    worker.observe(
+        Source::function("timer::on-tick").args(json!({ "every_ms": 60_000 })),
+        "reports::refresh",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Every minute, run reports::refresh.
+    client.Observe(iii.Source{
+        FunctionID: "timer::on-tick",
+        Args:       iii.Args{"every_ms": 60000},
+    }, "reports::refresh")
+    ```
+
+  </Tab>
+</Tabs>
+
+Args and filters do different jobs: `args` tell the source what to produce (ticks every minute), and
+filters choose among what it produced. The engine validates `args` against the source's schema
+(`INVALID_ARGS` when they do not fit). A function that does not document `args` takes none, and
+passing them fails with `INVALID_ARGS`.
 
 ## Filters
 
@@ -259,7 +403,10 @@ values, and the limits.
 
 ## Policy and metadata
 
-The third argument configures the observer itself:
+The examples so far react to calls that succeed. The next one reacts when `payments::charge`
+**fails** on a large amount (`on: "error"`), keeps only what the alert needs (`capture`), and runs
+at most four alerts at once. That last part is policy: a third argument that configures the observer
+itself.
 
 | Option          | Default                                | Meaning                                                                                                                                                                                                                                                          |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -337,6 +484,82 @@ The third argument configures the observer itself:
 Delivery is at most once. An observer failure never affects the observed invocation, and every
 dropped event is counted per function and reason in the `iii.observer.dropped.total` metric. An
 event waiting in several observers' queues is held once, however many observers it matched.
+
+## Chain reactions
+
+A target is a function like any other, so it can be a source too. Chaining observers builds a
+pipeline in which each step knows only the step before it. Here an order reserves stock, and
+reserved stock schedules a shipment. The orders worker is unchanged, and the inventory and shipping
+workers never call each other.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.registerFunction("inventory::reserve", async (order: Order) => reserveItems(order));
+    inventory.observe({ function_id: "orders::create", deliver: "input" }, "inventory::reserve");
+
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.registerFunction("shipping::schedule", async (reservation: Reservation) =>
+      scheduleShipment(reservation),
+    );
+    shipping.observe(
+      { function_id: "inventory::reserve", deliver: "output" },
+      "shipping::schedule",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Inventory worker: when an order is created, reserve its items.
+    inventory.register_function("inventory::reserve", reserve_items)
+    inventory.observe({"function_id": "orders::create", "deliver": "input"}, "inventory::reserve")
+
+    # Shipping worker: when items are reserved, schedule the shipment.
+    shipping.register_function("shipping::schedule", schedule_shipment)
+    shipping.observe({"function_id": "inventory::reserve", "deliver": "output"}, "shipping::schedule")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.register_function("inventory::reserve", RegisterFunction::new(reserve_items));
+    inventory.observe(
+        Source::function("orders::create").deliver(Deliver::Input),
+        "inventory::reserve",
+    );
+
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.register_function("shipping::schedule", RegisterFunction::new(schedule_shipment));
+    shipping.observe(
+        Source::function("inventory::reserve").deliver(Deliver::Output),
+        "shipping::schedule",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.RegisterFunction("inventory::reserve", reserveItems)
+    inventory.Observe(iii.Source{FunctionID: "orders::create", Deliver: iii.DeliverInput}, "inventory::reserve")
+
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.RegisterFunction("shipping::schedule", scheduleShipment)
+    shipping.Observe(iii.Source{FunctionID: "inventory::reserve", Deliver: iii.DeliverOutput}, "shipping::schedule")
+    ```
+
+  </Tab>
+</Tabs>
+
+`inventory::reserve` returns the reservation, and `deliver: "output"` hands that result to
+`shipping::schedule`. The first observer discards the return value (a target reacts; it does not
+answer), but the second observer sees it as the output of `inventory::reserve`. To add a step,
+observe the last function in the chain; to branch, observe the same function twice. Each activation
+in a chain counts toward the [loop guard](#loop-guard), so chains are limited to
+`observers.max_observe_depth` steps (8 by default).
 
 ## Engine-hosted event sources
 
