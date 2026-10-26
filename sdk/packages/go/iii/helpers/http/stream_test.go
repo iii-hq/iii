@@ -59,7 +59,22 @@ type handshake struct {
 	header nethttp.Header
 }
 
+// fakeOptions changes how the fake engine ends or drains its channels.
+type fakeOptions struct {
+	// requestEnd ends the request body channel after its chunks: "" closes it cleanly,
+	// "abort" closes it the way the engine reports an aborted writer (1011 and a
+	// reason), and "drop" cuts the connection with no close frame.
+	requestEnd string
+	// stallWrites delays reading a write channel, so a large write blocks meanwhile.
+	stallWrites time.Duration
+}
+
 func newFakeEngine(t *testing.T, requestChunks ...[]byte) *fakeEngine {
+	t.Helper()
+	return newFakeEngineWith(t, fakeOptions{}, requestChunks...)
+}
+
+func newFakeEngineWith(t *testing.T, opts fakeOptions, requestChunks ...[]byte) *fakeEngine {
 	t.Helper()
 	f := &fakeEngine{reads: make(chan string, 4), writes: make(chan writeSession, 4), handshakes: make(chan handshake, 16)}
 	f.srv = httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -85,9 +100,17 @@ func newFakeEngine(t *testing.T, requestChunks ...[]byte) *fakeEngine {
 					return
 				}
 			}
-			_ = conn.Close(websocket.StatusNormalClosure, "stream_complete")
+			switch opts.requestEnd {
+			case "abort":
+				_ = conn.Close(websocket.StatusInternalError, "channel writer aborted: connection lost before close")
+			case "drop":
+				_ = conn.CloseNow()
+			default:
+				_ = conn.Close(websocket.StatusNormalClosure, "stream_complete")
+			}
 		case "write":
 			s := writeSession{uri: r.URL.RequestURI()}
+			time.Sleep(opts.stallWrites)
 			for {
 				typ, data, err := conn.Read(ctx)
 				if err != nil {
@@ -411,9 +434,10 @@ func TestWrapErrorBeforeBody(t *testing.T) {
 	f.expectNoWrite(t)
 }
 
-// TestWrapErrorAfterBody: once a body is streamed the response is committed, so an
-// error still ends the stream rather than leaving the HTTP client hanging.
-func TestWrapErrorAfterBody(t *testing.T) {
+// TestWrapErrorAfterBodyAborts: a handler error after body bytes were streamed must not
+// end the stream cleanly, or the truncated body would look complete: Wrap aborts the
+// response, so the engine sees the socket end with no close frame.
+func TestWrapErrorAfterBodyAborts(t *testing.T) {
 	f := newFakeEngine(t)
 	boom := errors.New("boom")
 	handler := Wrap(f.client(t), func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error) {
@@ -426,8 +450,110 @@ func TestWrapErrorAfterBody(t *testing.T) {
 		t.Fatalf("err = %v, want boom", err)
 	}
 	s := f.nextWrite(t)
-	if string(s.body()) != "partial" || s.closeStatus != websocket.StatusNormalClosure {
-		t.Errorf("session = %+v", s)
+	if string(s.body()) != "partial" {
+		t.Errorf("body = %q, want partial", s.body())
+	}
+	if s.closeStatus != -1 {
+		t.Errorf("close status = %v, want none (an abort, not a clean end)", s.closeStatus)
+	}
+	for _, fr := range s.frames {
+		if fr.typ == websocket.MessageText && string(fr.data) != abortMessage {
+			t.Errorf("unexpected text frame %q", fr.data)
+		}
+	}
+}
+
+// TestWrapFailedWriteAborts: a response write that fails (the invocation is cancelled
+// while the engine is not reading) aborts the channel, so the engine sees the socket end
+// with no clean close, even when the handler swallows the error; every later call
+// returns the first error and Close returns nil.
+func TestWrapFailedWriteAborts(t *testing.T) {
+	for _, swallow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("swallow=%v", swallow), func(t *testing.T) {
+			f := newFakeEngineWith(t, fakeOptions{stallWrites: 300 * time.Millisecond})
+			ctx, cancel := context.WithCancel(testContext(t))
+			defer cancel()
+			var writeErr, again, statusAgain, closeErr error
+			handler := Wrap(f.client(t), func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error) {
+				if err := res.Status(201); err != nil {
+					return nil, err
+				}
+				cancel() // the invocation ends while the body is being written
+				_, writeErr = res.Write(pattern(8<<20, 5))
+				_, again = res.Write([]byte("more"))
+				statusAgain = res.Status(500)
+				if swallow {
+					closeErr = res.Close()
+					return nil, nil
+				}
+				return nil, writeErr
+			})
+			_, err := handler(ctx, workerPayload(t, true))
+			if writeErr == nil {
+				t.Fatal("Write succeeded on a cancelled invocation")
+			}
+			if again != writeErr || statusAgain != writeErr {
+				t.Errorf("later calls = (%v, %v), want the first error %v", again, statusAgain, writeErr)
+			}
+			if closeErr != nil {
+				t.Errorf("Close after a failed write = %v, want nil", closeErr)
+			}
+			if !swallow && !errors.Is(err, writeErr) {
+				t.Errorf("handler error = %v, want %v", err, writeErr)
+			}
+			s := f.nextWrite(t)
+			if s.closeStatus != -1 {
+				t.Errorf("close status = %v, want none (an abort, not a clean end)", s.closeStatus)
+			}
+			if len(s.frames) == 0 || string(s.frames[0].data) != `{"type":"set_status","status_code":201}` {
+				t.Errorf("first frame missing or wrong: %d frames", len(s.frames))
+			}
+			if n := len(s.body()); n >= 8<<20 {
+				t.Errorf("the whole %d-byte body arrived", n)
+			}
+		})
+	}
+}
+
+// TestStreamRequestReadSurfacesAbort: a request body channel that ends without a clean
+// close (the engine's 1011 for an aborted writer, or a dropped connection) makes Read
+// fail with that error instead of io.EOF; io.ReadAll returns the bytes received before
+// it, later reads return the same error, and the response channel is left untouched.
+func TestStreamRequestReadSurfacesAbort(t *testing.T) {
+	for _, tc := range []struct {
+		end    string
+		status websocket.StatusCode
+	}{
+		{"abort", websocket.StatusInternalError},
+		{"drop", -1},
+	} {
+		t.Run(tc.end, func(t *testing.T) {
+			f := newFakeEngineWith(t, fakeOptions{requestEnd: tc.end}, []byte("part-1 "), []byte("part-2"))
+			var got []byte
+			var readErr, again error
+			handler := Wrap(f.client(t), func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error) {
+				got, readErr = io.ReadAll(req)
+				_, again = req.Read(make([]byte, 8))
+				return nil, readErr
+			})
+			_, err := handler(testContext(t), workerPayload(t, true))
+			if readErr == nil {
+				t.Fatalf("io.ReadAll = (%q, nil), want the abort error", got)
+			}
+			if string(got) != "part-1 part-2" {
+				t.Errorf("bytes before the abort = %q, want part-1 part-2", got)
+			}
+			if st := websocket.CloseStatus(readErr); st != tc.status {
+				t.Errorf("close status = %v, want %v (err %v)", st, tc.status, readErr)
+			}
+			if again != readErr {
+				t.Errorf("Read after the abort = %v, want the same error", again)
+			}
+			if !errors.Is(err, readErr) {
+				t.Errorf("handler error = %v, want %v", err, readErr)
+			}
+			f.expectNoWrite(t)
+		})
 	}
 }
 
