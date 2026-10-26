@@ -400,7 +400,18 @@ func TestConnectionUnexpectedTextFrame(t *testing.T) {
 	defer srv.Close()
 
 	c := NewConnection("ws"+strings.TrimPrefix(srv.URL, "http")+"/otel", nil, fastReconnect(-1))
-	<-sent
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = c.Shutdown(ctx) // idempotent; stops the reconnect loop if the test fails early
+	})
+	// fastReconnect(-1) retries forever: a connection that never lands must fail the
+	// test, not block it until the suite timeout.
+	select {
+	case <-sent:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the fake /otel endpoint never got the connection (state %v)", c.State())
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for !strings.Contains(strings.Join(logs(), "\n"), "telemetry refused for this worker") {
 		if time.Now().After(deadline) {

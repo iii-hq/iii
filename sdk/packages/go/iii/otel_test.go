@@ -361,7 +361,12 @@ func TestOtelHandlerReceivesCallerTraceContext(t *testing.T) {
 		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "downstream::fn", Action: VoidAction()})
 		return "ok", err
 	})
-	s := <-got
+	var s seen
+	select {
+	case s = <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler was never invoked")
+	}
 	if s.sc.TraceID().String() != testTraceID || s.sc.SpanID().String() != testSpanID || !s.sc.IsRemote() || s.tenant != "acme" {
 		t.Errorf("handler ctx span %v remote %v tenant %q", s.sc, s.sc.IsRemote(), s.tenant)
 	}

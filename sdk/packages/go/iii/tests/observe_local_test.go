@@ -129,6 +129,10 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 // sdk.md §7 Zero-wire: 1M local calls of an unobserved function send zero frames
 // (localinvocationstats, the periodic counter, aside).
 func TestObserveZeroWire(t *testing.T) {
+	// It measures what reaches the wire, not telemetry: with telemetry on, its million
+	// local calls each run in a traced span, about 7s more for the whole loop. The
+	// telemetry socket is separate and its frames are not counted either way.
+	t.Setenv("OTEL_ENABLED", "false")
 	proxy := newFrameProxy(t)
 	owner := observeWorker(t, "zero-wire", proxy)
 	inc := fnID(t, "go-zw::inc")
