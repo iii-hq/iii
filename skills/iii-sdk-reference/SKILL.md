@@ -50,7 +50,7 @@ the helpers package, installed alongside the SDK: `@iii-dev/helpers` (Node, with
 | --- | --- | --- | --- | --- |
 | Connect worker | `registerWorker(url, options?)` | `register_worker(address, options?)` | `register_worker(url, InitOptions)` | `iii.RegisterWorker(url, opts...)` |
 | Register local function | `registerFunction(id, handler, options?)` | `register_function(id, handler, **options)` | `register_function("id", RegisterFunction::new(...))` | `client.RegisterFunction(id, handler, opts...)` |
-| Register trigger (deprecated in 0.25) | `registerTrigger({ type, function_id, config })` | `register_trigger({...})` | `register_trigger(RegisterTriggerInput::new(type, function_id, config))` | `client.RegisterTrigger(id, type, functionID, config)` |
+| Register trigger (deprecated in 0.25) | `registerTrigger({ type, function_id, config })` | `register_trigger({...})` | `register_trigger(RegisterTriggerInput::new(type, function_id, config))` | `client.RegisterTrigger(iii.RegisterTriggerInput{Type, FunctionID, Config})` |
 | Observe a function | `observe(source, target, options?)` | `observe(source, target, options)` | `observe(Source::function(id)..., target)` / `observe_with(.., ObserverOptions)` | `client.Observe(iii.Source{...}, target, opts...)` |
 | Owner hooks | `registerFunction(id, h, { observe: {...} })` | `register_function(id, h, observe=ObserveHooks(...))` | `RegisterFunction::new(h).observe(Observe::owner()...)` | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}` |
 | Current invocation | `currentInvocation()` | `current_invocation()` | `iii_sdk::current_invocation()` | `iii.InvocationFromContext(ctx)` |
@@ -156,7 +156,9 @@ a sync handler (`RegisterFunction::new`) runs inline: make a blocking handler as
 client := iii.RegisterWorker(iii.DefaultEngineURL, iii.WithNamespace("orders"))
 
 client.RegisterFunction("users::lookup", func(ctx context.Context, data json.RawMessage) (any, error) {
-	var in struct{ UserID string `json:"userId"` }
+	var in struct {
+		UserID string `json:"userId"`
+	}
 	if err := json.Unmarshal(data, &in); err != nil {
 		return nil, err
 	}
@@ -179,7 +181,7 @@ Per-invocation metadata rides on `ctx` (`iii.MetadataFromContext(ctx)`). Inside 
   `Dispatch: iii.DispatchRemote`; or per function with `localDispatch: false`
   (`local_dispatch=False`, `.local_dispatch(false)`, `LocalDispatch: &off`).
 - `registerFunction` returns a `FunctionRef` with `isObserved()` / `observers()` (Python
-  `is_observed()`, Rust `is_observed()`, Go `client.IsObserved(id)`).
+  `is_observed()`, Rust `is_observed()`, Go `ref.IsObserved()`).
 
 ## Channels
 
