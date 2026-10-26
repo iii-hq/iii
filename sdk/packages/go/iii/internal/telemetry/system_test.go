@@ -80,6 +80,7 @@ func TestSystemShutdownFlushes(t *testing.T) {
 	if Active() != nil {
 		t.Error("still active after Shutdown")
 	}
+	requireDefaultGlobals(t, "after Shutdown")
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Errorf("second Shutdown: %v", err)
 	}

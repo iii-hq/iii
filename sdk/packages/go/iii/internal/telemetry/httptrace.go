@@ -3,6 +3,7 @@ package telemetry
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,49 @@ var (
 	safeRequestHeaders  = []string{"content-type", "accept"}
 	safeResponseHeaders = []string{"content-type"}
 )
+
+// redacted replaces credentials and sensitive query values in url.full and url.query.
+const redacted = "REDACTED"
+
+// sensitiveQueryKeys are the query parameters whose values the OpenTelemetry HTTP semantic
+// conventions say to redact by default (url.query): signed-URL credentials.
+var sensitiveQueryKeys = map[string]bool{
+	"AWSAccessKeyId":   true,
+	"Signature":        true,
+	"sig":              true,
+	"X-Goog-Signature": true,
+}
+
+// redactQuery replaces the value of every sensitiveQueryKeys parameter in a raw query with
+// REDACTED, keeping the rest of the query byte for byte.
+func redactQuery(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	parts := strings.Split(raw, "&")
+	for i, part := range parts {
+		key, _, hasValue := strings.Cut(part, "=")
+		if !hasValue {
+			continue
+		}
+		if k, err := url.QueryUnescape(key); err == nil && sensitiveQueryKeys[k] {
+			parts[i] = key + "=" + redacted
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+// redactURL returns url.full and url.query for u as the OpenTelemetry HTTP semantic
+// conventions require: userinfo replaced by REDACTED:REDACTED and the sensitive query
+// values by REDACTED. u is not modified; the request still carries its credentials.
+func redactURL(u *url.URL) (full, query string) {
+	c := *u
+	if c.User != nil {
+		c.User = url.UserPassword(redacted, redacted)
+	}
+	c.RawQuery = redactQuery(u.RawQuery)
+	return c.String(), c.RawQuery
+}
 
 // Transport is an http.RoundTripper that runs each request inside an OpenTelemetry
 // CLIENT span, the Go counterpart of the Node SDK's patchGlobalFetch and
@@ -53,18 +97,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	rawURL := req.URL.String()
-	if !fetchInstrumentationEnabled() || fetchIgnored(rawURL) {
+	if !fetchInstrumentationEnabled() || fetchIgnored(req.URL.String()) {
 		return base.RoundTrip(req)
 	}
 
+	fullURL, query := redactURL(req.URL)
 	method := strings.ToUpper(req.Method)
 	if method == "" {
 		method = http.MethodGet
 	}
 	attrs := []attribute.KeyValue{
 		attribute.String("http.request.method", method),
-		attribute.String("url.full", rawURL),
+		attribute.String("url.full", fullURL),
 	}
 	if host := req.URL.Hostname(); host != "" {
 		attrs = append(attrs, attribute.String("server.address", host))
@@ -79,8 +123,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if port, err := strconv.Atoi(req.URL.Port()); err == nil && port > 0 {
 		attrs = append(attrs, attribute.Int("server.port", port))
 	}
-	if req.URL.RawQuery != "" {
-		attrs = append(attrs, attribute.String("url.query", req.URL.RawQuery))
+	if query != "" {
+		attrs = append(attrs, attribute.String("url.query", query))
 	}
 	name := method
 	if path != "" {

@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -51,23 +52,23 @@ func EmitLog(ctx context.Context, severity otellog.Severity, message string, tra
 	if spanID == "" {
 		spanID = CurrentSpanID(ctx)
 	}
-	var attrs []otellog.KeyValue
+	var attrs []attribute.KeyValue
 	if traceID != "" {
-		attrs = append(attrs, otellog.String("trace_id", traceID))
+		attrs = append(attrs, attribute.String("trace_id", traceID))
 	}
 	if spanID != "" {
-		attrs = append(attrs, otellog.String("span_id", spanID))
+		attrs = append(attrs, attribute.String("span_id", spanID))
 	}
 	if serviceName != "" {
-		attrs = append(attrs, otellog.String("service.name", serviceName))
+		attrs = append(attrs, attribute.String("service.name", serviceName))
 	}
 	if data != nil {
-		attrs = append(attrs, otellog.KeyValue{Key: "log.data", Value: ToLogValue(data)})
+		attrs = append(attrs, attribute.KeyValue{Key: "log.data", Value: ToLogValue(data)})
 	}
 	var rec otellog.Record
 	rec.SetTimestamp(time.Now())
 	rec.SetSeverity(severity)
-	rec.SetBody(otellog.StringValue(message))
+	rec.SetBody(attribute.StringValue(message))
 	rec.AddAttributes(attrs...)
 	logger.Emit(ctx, rec)
 }
@@ -76,97 +77,97 @@ func EmitLog(ctx context.Context, severity otellog.Severity, message string, tra
 // hands its data to the OTel API: strings, booleans and numbers stay scalars, []byte
 // becomes bytes, and anything else goes through its JSON form (objects become key/value
 // lists in field order, arrays become arrays, integral numbers integers).
-func ToLogValue(v any) otellog.Value {
+func ToLogValue(v any) attribute.Value {
 	switch x := v.(type) {
 	case nil:
-		return otellog.Value{}
-	case otellog.Value:
+		return attribute.Value{}
+	case attribute.Value:
 		return x
 	case string:
-		return otellog.StringValue(x)
+		return attribute.StringValue(x)
 	case bool:
-		return otellog.BoolValue(x)
+		return attribute.BoolValue(x)
 	case int:
-		return otellog.IntValue(x)
+		return attribute.IntValue(x)
 	case int8:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case int16:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case int32:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case int64:
-		return otellog.Int64Value(x)
+		return attribute.Int64Value(x)
 	case uint8:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case uint16:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case uint32:
-		return otellog.Int64Value(int64(x))
+		return attribute.Int64Value(int64(x))
 	case float32:
-		return otellog.Float64Value(float64(x))
+		return attribute.Float64Value(float64(x))
 	case float64:
-		return otellog.Float64Value(x)
+		return attribute.Float64Value(x)
 	case []byte:
-		return otellog.BytesValue(x)
+		return attribute.ByteSliceValue(x)
 	}
 	raw, err := marshalJSON(v)
 	if err != nil {
-		return otellog.StringValue(fmt.Sprint(v))
+		return attribute.StringValue(fmt.Sprint(v))
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	val, err := decodeLogValue(dec)
 	if err != nil {
-		return otellog.StringValue(string(raw))
+		return attribute.StringValue(string(raw))
 	}
 	return val
 }
 
-func decodeLogValue(dec *json.Decoder) (otellog.Value, error) {
+func decodeLogValue(dec *json.Decoder) (attribute.Value, error) {
 	tok, err := dec.Token()
 	if err != nil {
-		return otellog.Value{}, err
+		return attribute.Value{}, err
 	}
 	switch t := tok.(type) {
 	case json.Delim:
 		if t == '{' {
-			var kvs []otellog.KeyValue
+			var kvs []attribute.KeyValue
 			for dec.More() {
 				keyTok, err := dec.Token()
 				if err != nil {
-					return otellog.Value{}, err
+					return attribute.Value{}, err
 				}
 				key, _ := keyTok.(string)
 				val, err := decodeLogValue(dec)
 				if err != nil {
-					return otellog.Value{}, err
+					return attribute.Value{}, err
 				}
-				kvs = append(kvs, otellog.KeyValue{Key: key, Value: val})
+				kvs = append(kvs, attribute.KeyValue{Key: attribute.Key(key), Value: val})
 			}
 			_, err := dec.Token()
-			return otellog.MapValue(kvs...), err
+			return attribute.MapValue(kvs...), err
 		}
-		var vals []otellog.Value
+		var vals []attribute.Value
 		for dec.More() {
 			val, err := decodeLogValue(dec)
 			if err != nil {
-				return otellog.Value{}, err
+				return attribute.Value{}, err
 			}
 			vals = append(vals, val)
 		}
 		_, err := dec.Token()
-		return otellog.SliceValue(vals...), err
+		return attribute.SliceValue(vals...), err
 	case string:
-		return otellog.StringValue(t), nil
+		return attribute.StringValue(t), nil
 	case json.Number:
 		if i, err := t.Int64(); err == nil {
-			return otellog.Int64Value(i), nil
+			return attribute.Int64Value(i), nil
 		}
 		f, err := t.Float64()
-		return otellog.Float64Value(f), err
+		return attribute.Float64Value(f), err
 	case bool:
-		return otellog.BoolValue(t), nil
+		return attribute.BoolValue(t), nil
 	default:
-		return otellog.Value{}, nil
+		return attribute.Value{}, nil
 	}
 }

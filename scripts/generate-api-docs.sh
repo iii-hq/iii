@@ -38,7 +38,7 @@ echo "[4/5] Extracting Go docs (go/doc)..."
 if command -v go &>/dev/null; then
   (cd docs/next/scripts/godoc-json && go run . -root "$REPO_ROOT/sdk/packages/go/iii" -out "$REPO_ROOT/sdk/packages/go/iii/api-docs.json")
 else
-  echo "  [SKIP] go not found. Install Go 1.24 or later: https://go.dev/dl/"
+  echo "  [SKIP] go not found. Install Go 1.25 or later: https://go.dev/dl/"
 fi
 
 # Step 5: Generate MDX under docs/next/reference/

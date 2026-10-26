@@ -15,10 +15,19 @@ import "time"
 // means "not set": the environment variable named on the field, then the default,
 // fills it in.
 //
-// While a client's telemetry runs, its tracer provider, meter provider and the W3C
-// Trace Context + Baggage propagator are the OpenTelemetry globals (otel.Tracer,
-// otel.Meter), so spans and metrics a handler creates through the otel package are
-// exported to the engine and parented to the invocation span.
+// OpenTelemetry globals: when telemetry starts, the client installs its tracer
+// provider, its meter provider and the W3C Trace Context + Baggage propagator as the
+// OpenTelemetry globals (otel.Tracer, otel.Meter, otel.GetTextMapPropagator), each only
+// while that global is still the otel default. A provider or propagator the
+// application installed earlier, or another client installed first, is never replaced:
+// first registration wins, as in the Node SDK. [Client.Close] puts the default back
+// into every global that still holds this client's. The client's invocation spans and
+// worker gauges, and the observability helpers (which use the client started last),
+// always use the client's own providers, so they reach the engine either way. Spans the
+// application creates with its own provider are parented to the invocation span
+// through ctx and exported wherever that provider exports. Trigger and inbound
+// invocations always propagate W3C Trace Context and Baggage, whatever the global
+// propagator.
 type OtelConfig struct {
 	// Enabled turns telemetry export on or off. Nil reads OTEL_ENABLED
 	// ("false", "0", "no" or "off" disable it); the default is true.

@@ -26,9 +26,12 @@ type otelState struct {
 	mu                       sync.Mutex
 	config                   OtelConfig
 	metricsReportingDisabled bool
-	started                  bool
-	system                   *telemetry.System
-	gaugesWarned             bool
+	// started is set by the first startTelemetry, and by stopTelemetry: once Close has
+	// stopped telemetry, a startTelemetry racing it (a first Connect in the window
+	// before Close closes shutdown) must not start a pipeline that nothing would stop.
+	started      bool
+	system       *telemetry.System
+	gaugesWarned bool
 }
 
 // telemetryOptions maps the public OtelConfig onto the internal options, adding the
@@ -99,6 +102,7 @@ func (c *Client) startTelemetry() {
 func (c *Client) stopTelemetry() {
 	s := &c.otel
 	s.mu.Lock()
+	s.started = true
 	sys := s.system
 	s.system = nil
 	s.mu.Unlock()

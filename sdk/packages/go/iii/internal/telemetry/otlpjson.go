@@ -10,7 +10,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -165,6 +164,24 @@ func toJSONAttrValue(v attribute.Value) jsonAnyValue {
 			out[i] = jsonAnyValue{StringValue: &vals[i]}
 		}
 		return jsonAnyValue{ArrayValue: &jsonArrayValue{Values: out}}
+	case attribute.BYTESLICE:
+		// JSON_ENCODER encodeUint8Array: base64.
+		s := base64.StdEncoding.EncodeToString(v.AsByteSlice())
+		return jsonAnyValue{BytesValue: &s}
+	case attribute.SLICE:
+		vals := v.AsSlice()
+		out := make([]jsonAnyValue, len(vals))
+		for i, e := range vals {
+			out[i] = toJSONAttrValue(e)
+		}
+		return jsonAnyValue{ArrayValue: &jsonArrayValue{Values: out}}
+	case attribute.MAP:
+		kvs := v.AsMap()
+		out := make([]jsonKeyValue, len(kvs))
+		for i, kv := range kvs {
+			out[i] = jsonKeyValue{Key: string(kv.Key), Value: toJSONAttrValue(kv.Value)}
+		}
+		return jsonAnyValue{KvlistValue: &jsonKvlistValue{Values: out}}
 	default:
 		return jsonAnyValue{}
 	}
@@ -418,13 +435,13 @@ func toJSONLogRecord(r *sdklog.Record) jsonLogRecord {
 		ObservedTimeUnixNano:   nanos(r.ObservedTimestamp()),
 		SeverityNumber:         int(r.Severity()),
 		SeverityText:           r.SeverityText(),
-		Body:                   toJSONLogValue(r.Body()),
+		Body:                   toJSONAttrValue(r.Body()),
 		EventName:              r.EventName(),
 		Attributes:             make([]jsonKeyValue, 0, r.AttributesLen()),
 		DroppedAttributesCount: r.DroppedAttributes(),
 	}
-	r.WalkAttributes(func(kv otellog.KeyValue) bool {
-		out.Attributes = append(out.Attributes, jsonKeyValue{Key: kv.Key, Value: toJSONLogValue(kv.Value)})
+	r.WalkAttributes(func(kv attribute.KeyValue) bool {
+		out.Attributes = append(out.Attributes, jsonKeyValue{Key: string(kv.Key), Value: toJSONAttrValue(kv.Value)})
 		return true
 	})
 	if r.TraceID().IsValid() {
@@ -434,41 +451,6 @@ func toJSONLogRecord(r *sdklog.Record) jsonLogRecord {
 		out.SpanID = r.SpanID().String()
 	}
 	return out
-}
-
-func toJSONLogValue(v otellog.Value) jsonAnyValue {
-	switch v.Kind() {
-	case otellog.KindBool:
-		b := v.AsBool()
-		return jsonAnyValue{BoolValue: &b}
-	case otellog.KindInt64:
-		i := v.AsInt64()
-		return jsonAnyValue{IntValue: &i}
-	case otellog.KindFloat64:
-		return jsonAnyValue{DoubleValue: floatPtr(v.AsFloat64())}
-	case otellog.KindString:
-		s := v.AsString()
-		return jsonAnyValue{StringValue: &s}
-	case otellog.KindBytes:
-		s := base64.StdEncoding.EncodeToString(v.AsBytes())
-		return jsonAnyValue{BytesValue: &s}
-	case otellog.KindSlice:
-		vals := v.AsSlice()
-		out := make([]jsonAnyValue, len(vals))
-		for i, e := range vals {
-			out[i] = toJSONLogValue(e)
-		}
-		return jsonAnyValue{ArrayValue: &jsonArrayValue{Values: out}}
-	case otellog.KindMap:
-		kvs := v.AsMap()
-		out := make([]jsonKeyValue, len(kvs))
-		for i, kv := range kvs {
-			out[i] = jsonKeyValue{Key: kv.Key, Value: toJSONLogValue(kv.Value)}
-		}
-		return jsonAnyValue{KvlistValue: &jsonKvlistValue{Values: out}}
-	default:
-		return jsonAnyValue{}
-	}
 }
 
 // --- metrics --------------------------------------------------------------------

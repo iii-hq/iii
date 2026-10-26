@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
@@ -25,13 +23,6 @@ const (
 	attrServiceInstanceID = "service.instance.id"
 )
 
-// active is the most recently started System: what the package-level helpers (Logger,
-// WithSpan, the HTTP transport, Flush) use, as the Node helpers use their module state.
-var active atomic.Pointer[System]
-
-// Active returns the running System started last, or nil.
-func Active() *System { return active.Load() }
-
 // System is one running telemetry pipeline (Node initOtel's module state): a shared
 // connection, a tracer provider with the baggage and batch span processors, an optional
 // meter provider with a periodic reader, and a logger provider with a batch processor.
@@ -45,6 +36,10 @@ type System struct {
 	meter  metric.Meter
 	logger otellog.Logger
 
+	// globals are the OpenTelemetry globals this System installed (globals.go), guarded
+	// by globalsMu.
+	globals installedGlobals
+
 	gaugesMu sync.Mutex
 	gauges   *WorkerGauges
 
@@ -52,9 +47,11 @@ type System struct {
 }
 
 // Start builds and registers a System for cfg, which must be enabled and resolved. Like
-// Node initOtel it registers the W3C propagator, the tracer provider and (when metrics
+// Node initOtel it installs the W3C propagator, the tracer provider and (when metrics
 // are enabled) the meter provider as the OpenTelemetry globals, so spans and metrics a
-// handler creates through the otel package reach the engine too.
+// handler creates through the otel package reach the engine too, but only the globals
+// that are still the otel defaults (installGlobals): it never replaces a provider or
+// propagator the application installed.
 func Start(cfg Config) (*System, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("telemetry: disabled")
@@ -88,14 +85,11 @@ func Start(cfg Config) (*System, error) {
 		sdktrace.WithBatcher(NewSpanExporter(s.conn), sdktrace.WithBatchTimeout(cfg.SpansFlushInterval)),
 	)
 	s.tracer = s.tp.Tracer(cfg.ServiceName)
-	otel.SetTextMapPropagator(Propagator)
-	otel.SetTracerProvider(s.tp)
 
 	if cfg.MetricsEnabled {
 		reader := sdkmetric.NewPeriodicReader(NewMetricExporter(s.conn), sdkmetric.WithInterval(cfg.MetricsExportInterval))
 		s.mp = sdkmetric.NewMeterProvider(sdkmetric.WithResource(res), sdkmetric.WithReader(reader))
 		s.meter = s.mp.Meter(cfg.ServiceName)
-		otel.SetMeterProvider(s.mp)
 	}
 
 	// Logs are always on when telemetry is on, as in the Node SDK.
@@ -109,7 +103,8 @@ func Start(cfg Config) (*System, error) {
 	)
 	s.logger = s.lp.Logger(cfg.ServiceName)
 
-	active.Store(s)
+	s.installGlobals()
+	register(s)
 	return s, nil
 }
 
@@ -178,6 +173,9 @@ func (s *System) Shutdown(ctx context.Context) error {
 	s.shutdownOnce.Do(func() {
 		s.StopWorkerGauges()
 		s.conn.BeginShutdown()
+		// Hand the globals back before the providers stop.
+		s.releaseGlobals()
+		unregister(s)
 		_ = s.tp.ForceFlush(ctx)
 		_ = s.tp.Shutdown(ctx)
 		if s.mp != nil {
@@ -187,7 +185,6 @@ func (s *System) Shutdown(ctx context.Context) error {
 		_ = s.lp.ForceFlush(ctx)
 		_ = s.lp.Shutdown(ctx)
 		err = s.conn.Shutdown(ctx)
-		active.CompareAndSwap(s, nil)
 	})
 	return err
 }
