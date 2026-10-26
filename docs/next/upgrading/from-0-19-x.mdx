@@ -13,6 +13,10 @@ surface was grouped into submodules.
 0.20.0 is a **clean break**: the old root import paths are removed, not kept as
 deprecated aliases. Your app will not compile until every step below is applied.
 
+The Go SDK is not part of this reorganization: its API did not change in 0.20.0,
+so a Go worker has nothing to migrate and the tabs below cover Node, Python, and
+Rust only.
+
 Two backward-compatible exceptions need no migration:
 
 - `EnqueueResult` (all languages) and `TriggerActionVoid` (Python) stay exported

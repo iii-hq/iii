@@ -23,7 +23,9 @@ Use a non-empty string for a namespace. Leave the option out and the SDK reads `
 itself, then falls back to `default`; an absent option gives the same result as passing
 `process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
 `std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value is invalid
-and fails in both the SDK and at the engine.
+and fails in both the SDK and at the engine. In Go, leave out `iii.WithNamespace` instead: it
+refuses a blank name, so `iii.WithNamespace(os.Getenv("III_NAMESPACE"))` fails when the variable is
+unset.
 
 {/* TODO: Add this back when compose is released */}
 
@@ -97,6 +99,15 @@ over `III_NAMESPACE`.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("state"),
+        iii.WithNamespace("orders"),
+    )
+    ```
+
+  </Tab>
   <Tab title="Browser">
     ```typescript
     import { registerWorker } from "iii-browser-sdk";
@@ -163,6 +174,20 @@ no namespace of its own resolves in `default`, as before.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    result, err := client.Trigger(ctx, iii.TriggerRequest{
+        FunctionID: "state::get",
+        Data:       json.RawMessage(`{"key":"cart"}`),
+        Namespace:  "orders",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Printf("cart: %s", result)
+    ```
+
+  </Tab>
 </Tabs>
 
 A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
@@ -175,8 +200,9 @@ A miss returns `function_not_found`. The error lists other namespaces where the 
 ## Point a trigger at a namespaced function
 
 Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
-the target to the worker's namespace. Set `namespace` to bind it elsewhere, which is what a trigger
-pointing at an engine builtin needs, since those exist only in `default`.
+the target to the worker's namespace. Set `namespace` (Go: `RegisterTriggerNamespaced`) to bind it
+elsewhere, which is what a trigger pointing at an engine builtin needs, since those exist only in
+`default`.
 
 ```typescript
 // Bound to this worker's namespace.
