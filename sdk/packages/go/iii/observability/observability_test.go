@@ -299,3 +299,48 @@ func TestBaggageSpanProcessor(t *testing.T) {
 		t.Errorf("baggage attribute %v", got)
 	}
 }
+
+// Review round 1, finding 3: url.full and url.query carry neither the URL's credentials
+// nor the values of the semconv sensitive query keys, while the request itself is sent
+// unchanged.
+func TestNewTransportRedactsCredentials(t *testing.T) {
+	rec := recordSpans(t)
+	var gotQuery, gotUser, gotPass string
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		gotUser, gotPass, _ = r.BasicAuth()
+	}))
+	defer srv.Close()
+
+	const query = "AWSAccessKeyId=AKIAVALUE1&Signature=sigvalue1&sig=sigvalue2&X-Goog-Signature=googvalue1&keep=1"
+	host := strings.TrimPrefix(srv.URL, "http://")
+	req, _ := http.NewRequest(http.MethodGet, "http://alice:s3cr3t-pw@"+host+"/files/report?"+query, nil)
+	resp, err := NewHTTPClient(nil).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if gotQuery != query || gotUser != "alice" || gotPass != "s3cr3t-pw" {
+		t.Errorf("the request was modified: query %q user %q password %q", gotQuery, gotUser, gotPass)
+	}
+	span := rec.Ended()[0]
+	got := attrs(span)
+	wantQuery := "AWSAccessKeyId=REDACTED&Signature=REDACTED&sig=REDACTED&X-Goog-Signature=REDACTED&keep=1"
+	if full := got["url.full"].AsString(); full != "http://REDACTED:REDACTED@"+host+"/files/report?"+wantQuery {
+		t.Errorf("url.full = %q", full)
+	}
+	if q := got["url.query"].AsString(); q != wantQuery {
+		t.Errorf("url.query = %q", q)
+	}
+	for _, secret := range []string{"alice", "s3cr3t-pw", "AKIAVALUE1", "sigvalue1", "sigvalue2", "googvalue1"} {
+		if strings.Contains(span.Name(), secret) {
+			t.Errorf("span name %q leaks %q", span.Name(), secret)
+		}
+		for k, v := range got {
+			if strings.Contains(v.Emit(), secret) {
+				t.Errorf("attribute %s = %q leaks %q", k, v.Emit(), secret)
+			}
+		}
+	}
+}
