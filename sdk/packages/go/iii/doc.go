@@ -39,7 +39,14 @@
 //	if err := client.Connect(context.Background()); err != nil {
 //		log.Fatal(err)
 //	}
-//	defer client.Shutdown(context.Background())
+//	defer func() {
+//		// Graceful stop: buffered reports and telemetry get up to five seconds.
+//		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//		defer cancel()
+//		if err := client.Shutdown(ctx); err != nil {
+//			log.Printf("shutdown cut short: %v", err)
+//		}
+//	}()
 //
 // An empty address means [EngineURLFromEnv]: the III_URL environment variable when it is
 // set, else [DefaultEngineURL]. Options such as [WithName], [WithNamespace],
@@ -47,7 +54,8 @@
 //
 // # Registering functions
 //
-// [Client.RegisterFunction] registers a handler and returns its [FunctionRef];
+// [Client.RegisterFunction] registers a handler and returns its [FunctionRef] (an id is
+// registered once per client, as in the other SDKs);
 // [RegisterFunctionOptions] adds a description, request and response JSON Schemas,
 // metadata and observe hooks. [Client.RegisterHTTPFunction] registers a function hosted
 // elsewhere that the engine invokes over HTTP ([HTTPInvocationRef], with [HMACAuth],
