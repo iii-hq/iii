@@ -1,5 +1,5 @@
 iii: v1
 name: iii-sandbox
 type: engine
-description: Routes sandbox::* in the default namespace to the configured sandbox adapter worker (sandbox-builtin by default).
+description: Routes sandbox::* in the default namespace to the configured sandbox adapter worker (sandbox-libkrun by default).
 repo: https://github.com/iii-hq/iii

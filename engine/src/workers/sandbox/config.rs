@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn namespace_defaults_to_default() {
-        let c: SandboxRouterConfig = serde_yaml::from_str("adapter: sandbox-builtin").unwrap();
+        let c: SandboxRouterConfig = serde_yaml::from_str("adapter: sandbox-libkrun").unwrap();
         assert_eq!(c.namespace, "default");
         c.validate().unwrap();
     }
@@ -68,9 +68,9 @@ mod tests {
     fn validate_rejects_bad_adapter_names() {
         for bad in [
             "",
-            "Sandbox-Builtin",
+            "Sandbox-Libkrun",
             "sandbox",
-            "sandbox_builtin",
+            "sandbox_libkrun",
             "fake::x",
         ] {
             let err = SandboxRouterConfig {
