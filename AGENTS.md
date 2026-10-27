@@ -100,7 +100,7 @@ scripts/                         Build and CI scripts
 - Commit secrets, API keys, or credentials
 - Use `npm` instead of `pnpm`
 - Push directly to `main`
-- Change engine licensing (ELv2) or SDK licensing (Apache-2.0)
+- Change engine and CLI licensing (ELv2) or SDK licensing (Apache-2.0)
 - Remove "When to Use" / "Boundaries" from SKILL.md files (SkillKit validates these)
 - Use `cron` as a config key — the engine uses `expression`
 - Omit leading slashes on `api_path` — the engine standard is `/path`
@@ -212,5 +212,5 @@ Source lives in `website/src/content/blog/`. Also indexed in https://iii.dev/llm
 
 ## Licensing
 
-- `engine/` — Elastic License v2 (ELv2)
-- Everything else — Apache-2.0
+- `engine/` (engine and CLI): Elastic License v2 (ELv2)
+- Everything else: Apache-2.0

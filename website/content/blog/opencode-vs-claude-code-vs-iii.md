@@ -11,7 +11,7 @@ faq:
   - q: 'What does each option cost before inference?'
     a: 'OpenCode and iii are free to run; you pay only for inference. Claude Code requires a paid Claude plan (Pro $20/month, Max from $100/month, Team Standard $25/seat/month as of 2026-10-07) or API billing at usage-based token pricing. OpenCode Go is $10/month with metered usage caps.'
   - q: 'Is iii open source?'
-    a: 'The iii engine uses the Elastic License 2.0, which is not OSI-approved. You can use and self-host the engine; the only limitation is that you cannot offer it to others as a hosted or managed service. The SDKs, CLI, console, and published workers use Apache 2.0.'
+    a: 'The iii engine and CLI use the Elastic License 2.0, which is not OSI-approved. You can use and self-host the engine; the only limitation is that you cannot offer it to others as a hosted or managed service. The SDKs, console, and published workers use Apache 2.0.'
   - q: 'Do these tools send my code to their servers?'
     a: 'All three send prompts and code context to whichever provider runs the model. With OpenCode or iii that can be a local model, so no context leaves your machine at inference time. Claude Code sends to Anthropic. iii is self-hosted and sends only anonymous AI Agent Harness usage events with no message content unless III_TELEMETRY_ENABLED is set to false.'
   - q: 'Which tool survives a restart with a pending approval?'
@@ -180,7 +180,7 @@ Compared to the two terminal agents here, iii can handle approval gates for any 
 <div class="facts" data-highlight>
 
 - **Version tested:** engine 0.24.4, AI Agent Harness 1.8.44, approval-gate 1.0.22
-- **License:** engine under Elastic License 2.0 (not OSI-approved); SDKs, CLI, console, and published workers under Apache 2.0
+- **License:** engine and CLI under Elastic License 2.0 (not OSI-approved); SDKs, console, and published workers under Apache 2.0
 - **Model access:** any provider via provider workers (not an inference provider itself)
 - **Where custom tools come from:** Functions a worker registers with the Node, Browser, Python, Rust, or Go SDK
 - **Where the approval decision is recorded:** a record in shared engine state, visible via the console, `approval::list-pending`, or any other connected client
@@ -344,7 +344,7 @@ OpenCode Go is $10/month, single tier (higher tiers were removed in August 2026)
 
 ### Is iii open source?
 
-The engine uses the Elastic License 2.0, which is not on the OSI list of approved licenses. ELv2 lets you use and self-host the engine, the only limitation is that you can't offer it to others as a hosted or managed service. The SDKs, CLI, console, and published workers use Apache 2.0.
+The engine and CLI use the Elastic License 2.0, which is not on the OSI list of approved licenses. ELv2 lets you use and self-host the engine, the only limitation is that you can't offer it to others as a hosted or managed service. The SDKs, console, and published workers use Apache 2.0.
 
 ### Do these tools send my code to their servers?
 
