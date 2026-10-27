@@ -59,6 +59,18 @@ const shareImage = {
  * Full metadata for one page. Next.js replaces (does not merge) a parent's `openGraph` and `twitter` objects, so a
  * page that sets its own title must restate the type, site name, card and image too; this keeps every page whole.
  */
+/**
+ * The favicon follows the browser theme: the black mark for light, the white mark for dark. Each file has a solid
+ * fill and the page's media query picks one. A single SVG with its own prefers-color-scheme rule is unreliable here,
+ * because Chrome lets the page's `color-scheme: dark` leak into it and shows the white mark on a light tab strip.
+ */
+export const icons: Metadata['icons'] = {
+  icon: [
+    { url: '/favicon-black.svg', type: 'image/svg+xml', media: '(prefers-color-scheme: light)' },
+    { url: '/favicon-white.svg', type: 'image/svg+xml', media: '(prefers-color-scheme: dark)' },
+  ],
+}
+
 export function pageMetadata({
   title,
   description,

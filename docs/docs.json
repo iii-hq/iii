@@ -48,7 +48,10 @@
     "light": "/assets/iii-black.svg",
     "dark": "/assets/iii-white.svg"
   },
-  "favicon": "/assets/favicon.svg",
+  "favicon": {
+    "light": "/assets/favicon-black.svg",
+    "dark": "/assets/favicon-white.svg"
+  },
   "navbar": {
     "links": [
       {

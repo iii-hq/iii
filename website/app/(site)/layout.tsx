@@ -7,7 +7,7 @@ import { AnalyticsHead, AnalyticsNoScript } from '@/components/site/analytics'
 import { CookieBanner } from '@/components/site/cookie-banner'
 import { MotionProvider } from '@/components/site/motion-provider'
 import { ThemeProvider } from '@/components/theme-provider'
-import { site } from '@/lib/seo'
+import { icons, site } from '@/lib/seo'
 import { cn } from '@/lib/utils'
 
 const fontSans = Inter({ subsets: ['latin'], variable: '--font-sans' })
@@ -24,6 +24,7 @@ export const metadata: Metadata = {
   title: { default: site.title, template: `%s | ${site.name}` },
   description: site.description,
   applicationName: site.name,
+  icons,
   keywords: [...site.keywords],
   authors: [{ name: 'III, Inc.', url: site.url }],
   creator: 'III, Inc.',
