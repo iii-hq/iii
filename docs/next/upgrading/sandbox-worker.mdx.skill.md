@@ -130,6 +130,12 @@ binaries. It deletes nothing, so remove them yourself:
 rm ~/.local/bin/iii-worker ~/.local/bin/iii-init
 ```
 
+To roll back, `VERSION=0.25.0` with the install script installs only `iii`: the script no longer
+fetches `iii-worker` or `iii-init` for any release. Download `iii-worker-<target>.tar.gz` and
+`iii-init-<target>.tar.gz` for your host from the
+[iii/v0.25.0 release](https://github.com/iii-hq/iii/releases/tag/iii/v0.25.0) and put both
+binaries next to `iii` in `~/.local/bin`. Without them, 0.25 runs no VM workers and no sandbox.
+
 Errors from a 0.25.x engine carry a `docs_url` that points to
 `crates/iii-worker/src/sandbox_daemon/README.md` on GitHub. That file is gone. The S-codes now live
 on [Sandboxes](../creating-workers/sandboxes).
