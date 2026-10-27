@@ -20,6 +20,11 @@
               "type": "string"
             }
           },
+          "required": [
+            "kind",
+            "name",
+            "oci_ref"
+          ],
           "type": "object"
         },
         "CatalogEntryKind": {
@@ -47,6 +52,9 @@
           "type": "array"
         }
       },
+      "required": [
+        "images"
+      ],
       "title": "CatalogListResponse",
       "type": "object"
     }
@@ -146,6 +154,10 @@
           "type": "string"
         }
       },
+      "required": [
+        "image",
+        "sandbox_id"
+      ],
       "title": "CreateResponse",
       "type": "object"
     }
@@ -272,6 +284,13 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "duration_ms",
+        "stderr",
+        "stdout",
+        "success",
+        "timed_out"
+      ],
       "title": "ExecResponse",
       "type": "object"
     }
@@ -334,6 +353,9 @@
           "type": "integer"
         }
       },
+      "required": [
+        "updated"
+      ],
       "title": "ChmodResponse",
       "type": "object"
     }
@@ -421,6 +443,11 @@
               "type": "string"
             }
           },
+          "required": [
+            "content",
+            "line",
+            "path"
+          ],
           "type": "object"
         }
       },
@@ -435,6 +462,10 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "matches",
+        "truncated"
+      ],
       "title": "GrepResponse",
       "type": "object"
     }
@@ -490,6 +521,14 @@
               "type": "integer"
             }
           },
+          "required": [
+            "is_dir",
+            "is_symlink",
+            "mode",
+            "mtime",
+            "name",
+            "size"
+          ],
           "type": "object"
         }
       },
@@ -501,6 +540,9 @@
           "type": "array"
         }
       },
+      "required": [
+        "entries"
+      ],
       "title": "LsResponse",
       "type": "object"
     }
@@ -546,6 +588,9 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "created"
+      ],
       "title": "MkdirResponse",
       "type": "object"
     }
@@ -591,6 +636,9 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "moved"
+      ],
       "title": "MvResponse",
       "type": "object"
     }
@@ -641,6 +689,11 @@
               "$ref": "#/definitions/ChannelDirection"
             }
           },
+          "required": [
+            "access_key",
+            "channel_id",
+            "direction"
+          ],
           "type": "object"
         }
       },
@@ -671,6 +724,12 @@
           "type": "integer"
         }
       },
+      "required": [
+        "content",
+        "mode",
+        "mtime",
+        "size"
+      ],
       "title": "ReadResponse",
       "type": "object"
     }
@@ -711,6 +770,9 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "removed"
+      ],
       "title": "RmResponse",
       "type": "object"
     }
@@ -809,6 +871,11 @@
               "type": "boolean"
             }
           },
+          "required": [
+            "path",
+            "replacements",
+            "success"
+          ],
           "type": "object"
         }
       },
@@ -825,6 +892,10 @@
           "type": "integer"
         }
       },
+      "required": [
+        "results",
+        "total_replacements"
+      ],
       "title": "SedResponse",
       "type": "object"
     }
@@ -878,6 +949,14 @@
           "type": "integer"
         }
       },
+      "required": [
+        "is_dir",
+        "is_symlink",
+        "mode",
+        "mtime",
+        "name",
+        "size"
+      ],
       "title": "StatResponse",
       "type": "object"
     }
@@ -987,6 +1066,10 @@
           "type": "string"
         }
       },
+      "required": [
+        "bytes_written",
+        "path"
+      ],
       "title": "WriteResponse",
       "type": "object"
     }
@@ -1036,6 +1119,15 @@
               "type": "boolean"
             }
           },
+          "required": [
+            "age_secs",
+            "exec_in_flight",
+            "exec_in_progress",
+            "exec_slots_free",
+            "image",
+            "sandbox_id",
+            "stopped"
+          ],
           "type": "object"
         }
       },
@@ -1047,6 +1139,9 @@
           "type": "array"
         }
       },
+      "required": [
+        "sandboxes"
+      ],
       "title": "ListResponse",
       "type": "object"
     }
@@ -1185,6 +1280,13 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "duration_ms",
+        "stderr",
+        "stdout",
+        "success",
+        "timed_out"
+      ],
       "title": "RunResponse",
       "type": "object"
     }
@@ -1217,6 +1319,10 @@
           "type": "boolean"
         }
       },
+      "required": [
+        "sandbox_id",
+        "stopped"
+      ],
       "title": "StopResponse",
       "type": "object"
     }

@@ -492,9 +492,10 @@ fn wire_examples_round_trip() {
 
 /// Drops what may differ between the contract's types and an adapter's copies without changing
 /// how either side reads a payload: prose, the `[]`/`null` defaults schemars only emits for
-/// `Serialize` field types, and a response's `required`/`default` (only the adapter writes
-/// responses; the contract reads 1.0 replies leniently). The adapter's
-/// `tests/wire_examples.rs` applies the same function to its own types.
+/// `Serialize` field types, and a response's `default` (only the adapter writes responses). A
+/// response keeps `required`: it lists the fields this crate cannot read a reply without, and the
+/// adapter's `tests/wire_examples.rs` checks its serialized replies against it instead of against
+/// its own schemas, which `skip_serializing_if` does not change.
 fn wire_shape(v: &mut Value, response: bool) {
     match v {
         Value::Array(a) => a.iter_mut().for_each(|v| wire_shape(v, response)),
@@ -505,9 +506,6 @@ fn wire_shape(v: &mut Value, response: bool) {
                     .is_some_and(|d| d.is_null() || d == &json!([]))
             {
                 m.remove("default");
-            }
-            if response {
-                m.remove("required");
             }
             for (k, v) in m.iter_mut() {
                 // These two maps are keyed by field and type names, not schema keywords.
