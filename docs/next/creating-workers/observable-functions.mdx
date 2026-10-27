@@ -672,10 +672,14 @@ list), the observer fails with `INVALID_ARGS`. `onObserverAdded` does not run.
 
 ### Example: a command router that calls
 
-The file watcher does not wait for a result. This example needs a result, so it uses `obs.call`. It
-also rejects an observer when another observer already has the same command. `chat::on-command`
-answers chat commands. Each observer gives 1 command in its args (`{ command }`). The router calls
-the target of that observer and returns the target's result as its own result.
+The file watcher does not wait for a result. This example needs a result, so it uses `obs.call`.
+`chat::on-command` answers chat commands. Each observer gives 1 command in its args (`{ command }`).
+The router calls the target of that observer and returns the target's result as its own result.
+
+In this example, the function's `onObserverAdded` hook keeps a map from each `command` string to its
+observer. If the map already has the observer's `command` string (an exact, case-sensitive match),
+the hook rejects the observer with `COMMAND_TAKEN`. This rule and the `COMMAND_TAKEN` code are part
+of the example code. The SDK does not compare the args of different observers.
 
 <Tabs>
   <Tab title="Node / TypeScript">
