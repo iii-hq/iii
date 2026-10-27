@@ -214,6 +214,116 @@ EOF
   [[ "$output" == *"install"* ]]
 }
 
+# MOT-4783: the worker must match the host libc, not the engine target.
+@test "worker selects musl on Alpine x86_64" {
+  run worker_target_for_host Linux x86_64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-musl" ]
+}
+
+@test "worker selects musl on Alpine aarch64" {
+  run worker_target_for_host Linux aarch64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-unknown-linux-musl" ]
+}
+
+@test "worker keeps GNU on glibc despite static musl engine target" {
+  export TARGET=x86_64-unknown-linux-musl
+  run worker_target_for_host Linux x86_64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-gnu" ]
+}
+
+@test "worker keeps GNU on glibc aarch64" {
+  run worker_target_for_host Linux aarch64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-unknown-linux-gnu" ]
+}
+
+@test "worker libc selection ignores engine glibc override" {
+  export III_USE_GLIBC=1
+  run worker_target_for_host Linux x86_64 musl
+  [ "$status" -eq 0 ]
+  [ "$output" = "x86_64-unknown-linux-musl" ]
+}
+
+@test "worker preserves macOS Apple Silicon support" {
+  run worker_target_for_host Darwin aarch64 gnu
+  [ "$status" -eq 0 ]
+  [ "$output" = "aarch64-apple-darwin" ]
+}
+
+@test "worker does not invent assets on unsupported platforms" {
+  run worker_target_for_host Darwin x86_64 gnu
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run worker_target_for_host Linux armv7 gnu
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# Runs install.sh end to end for VERSION=0.25.0 against a fake release that
+# lists the given binaries for every target. curl is a stub that serves the
+# release JSON and builds each tarball on demand: no network, and nothing is
+# installed outside $BATS_TEST_TMPDIR.
+run_fake_release_install() {
+  _stub="$BATS_TEST_TMPDIR/stub"
+  mkdir -p "$_stub"
+  for _b in "$@"; do
+    for _t in x86_64-unknown-linux-musl x86_64-unknown-linux-gnu aarch64-unknown-linux-musl \
+      aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
+      printf '%s-%s.tar.gz\n' "$_b" "$_t"
+    done
+  done | jq -R '{name: ., browser_download_url: ("https://example.invalid/" + .)}' \
+    | jq -s '{tag_name: "iii/v0.25.0", prerelease: false, assets: .}' >"$BATS_TEST_TMPDIR/release.json"
+  cat >"$_stub/curl" <<'EOF'
+#!/bin/sh
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -H|--retry|--retry-delay|--retry-max-time|--connect-timeout) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  https://api.github.com/*) cat "$FAKE_RELEASE_JSON" ;;
+  *)
+    bin=$(basename "$url" | sed -E 's/-(x86_64|aarch64)-.*//')
+    mkdir -p "$out.d"
+    printf '#!/bin/sh\n[ "$1" = --version ] && echo "%s 0.25.0"\n' "$bin" >"$out.d/$bin"
+    chmod +x "$out.d/$bin"
+    tar -czf "$out" -C "$out.d" "$bin"
+    ;;
+esac
+EOF
+  chmod +x "$_stub/curl"
+  run env PATH="$_stub:$PATH" FAKE_RELEASE_JSON="$BATS_TEST_TMPDIR/release.json" \
+    VERSION=0.25.0 BIN_DIR="$BATS_TEST_TMPDIR/bin" sh "$INSTALL_SH" --non-interactive
+}
+
+@test "install.sh installs the VM companions a pinned release lists" {
+  run_fake_release_install iii iii-init iii-worker
+  [ "$status" -eq 0 ]
+  [ -x "$BATS_TEST_TMPDIR/bin/iii" ]
+  [ -x "$BATS_TEST_TMPDIR/bin/iii-init" ]
+  # macOS Intel has no iii-worker build.
+  if [ "$(uname -s):$(uname -m)" != "Darwin:x86_64" ]; then
+    [ -x "$BATS_TEST_TMPDIR/bin/iii-worker" ]
+  fi
+}
+
+@test "install.sh skips VM companions a release does not list, silently" {
+  run_fake_release_install iii
+  [ "$status" -eq 0 ]
+  [ -x "$BATS_TEST_TMPDIR/bin/iii" ]
+  [ ! -e "$BATS_TEST_TMPDIR/bin/iii-init" ]
+  [ ! -e "$BATS_TEST_TMPDIR/bin/iii-worker" ]
+  [[ "$output" != *iii-init* ]]
+  [[ "$output" != *iii-worker* ]]
+}
+
 # ─────────────────────────────────────────────────────────────
 # iii_already_installed: an upgrade gets no setup offer
 # ─────────────────────────────────────────────────────────────
