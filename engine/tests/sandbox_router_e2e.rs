@@ -77,10 +77,11 @@ struct FakeAdapter {
     task: JoinHandle<()>,
 }
 
-const FAKE_IDS: [&str; 4] = [
+const FAKE_IDS: [&str; 5] = [
     "fake::adapter::info",
     "fake::exec",
     "fake::fs::ls",
+    "fake::fs::stat",
     "fake::create",
 ];
 
@@ -155,6 +156,12 @@ async fn fake_adapter(port: u16, major: u32, engine: &Engine) -> FakeAdapter {
                     reply["error"] = json!({
                         "code": "invocation_failed",
                         "message": error_payload(SandboxErrorCode::S211, "file not found: /nope", None, None).to_string(),
+                    });
+                }
+                "fake::fs::stat" => {
+                    reply["error"] = json!({
+                        "code": "function_not_found",
+                        "message": "nested trigger missed",
                     });
                 }
                 "fake::create" => {
@@ -464,4 +471,47 @@ async fn adapter_swapped_while_idle_answers_s302() {
         .await
         .unwrap_err();
     assert_eq!(code_of(&err.message), Some(SandboxErrorCode::S302));
+}
+
+#[tokio::test]
+async fn adapter_returned_function_not_found_passes_through() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let _fake = fake_adapter(port, 1, &engine).await;
+
+    let err = call(&engine, "sandbox::fs::stat", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "function_not_found");
+    assert_eq!(err.message, "nested trigger missed");
+}
+
+#[tokio::test]
+async fn op_registered_just_after_adapter_info_is_forwarded() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let _fake = fake_adapter(port, 1, &engine).await;
+    call(&engine, "sandbox::exec", json!({}), None)
+        .await
+        .expect("exec succeeds and caches the handshake");
+
+    // A reconnecting adapter can replay `adapter::info` before its ops.
+    let exec = engine
+        .functions
+        .get("fake-ns", "fake::exec")
+        .expect("fake::exec is registered");
+    engine.functions.remove("fake-ns", "fake::exec");
+    let caller = engine.clone();
+    let pending =
+        tokio::spawn(
+            async move { call(&caller, "sandbox::exec", json!({"cmd": "x"}), None).await },
+        );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    engine
+        .functions
+        .register_function_ns("fake-ns", "fake::exec".into(), exec);
+
+    let out = pending.await.expect("call task should not panic");
+    assert_eq!(
+        out.expect("exec is forwarded once the op registers"),
+        Some(json!({"input": {"cmd": "x"}, "metadata": null}))
+    );
 }

@@ -11,6 +11,7 @@
 use std::{
     pin::Pin,
     sync::{Arc, Mutex, PoisonError, Weak},
+    time::Duration,
 };
 
 use futures::Future;
@@ -28,6 +29,8 @@ use crate::{
     protocol::ErrorBody,
     workers::traits::Worker,
 };
+
+const MISSING_OP_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct SandboxRouter {
@@ -89,25 +92,36 @@ impl SandboxRouter {
         }
 
         let target = adapter_function_id(&b.adapter, &function_id);
+        let registered = |id: &str| {
+            self.engine
+                .functions
+                .with_function(&b.namespace, id, |f| f.is_some())
+        };
+        if !registered(&target) {
+            // A (re)connecting adapter adds and drops its ids one at a time in no
+            // fixed order, so a missing op gets one grace period before S304.
+            tokio::time::sleep(MISSING_OP_GRACE).await;
+            if !registered(&target) {
+                // A connected adapter still has `adapter::info`; then only the op is missing.
+                if registered(&adapter_function_id(&b.adapter, ADAPTER_INFO_SUFFIX)) {
+                    return FunctionResult::Failure(sandbox_error(
+                        SandboxErrorCode::S304,
+                        &format!("adapter {} does not implement {function_id}", b.adapter),
+                    ));
+                }
+                return FunctionResult::Failure(not_connected(b));
+            }
+        }
+
+        // The op was registered, so `function_not_found` is the adapter's own
+        // error unless the op dropped since (a disconnect racing this call).
         match self
             .engine
             .call_value_with_metadata_ns(&b.namespace, &target, input, metadata)
             .await
         {
             Ok(v) => FunctionResult::Success(v),
-            Err(e) if e.code == "function_not_found" => {
-                // A connected adapter still has `adapter::info`; then only the op is missing.
-                let info_id = adapter_function_id(&b.adapter, ADAPTER_INFO_SUFFIX);
-                if self
-                    .engine
-                    .functions
-                    .with_function(&b.namespace, &info_id, |f| f.is_some())
-                {
-                    return FunctionResult::Failure(sandbox_error(
-                        SandboxErrorCode::S304,
-                        &format!("adapter {} does not implement {function_id}", b.adapter),
-                    ));
-                }
+            Err(e) if e.code == "function_not_found" && !registered(&target) => {
                 FunctionResult::Failure(not_connected(b))
             }
             Err(e) => FunctionResult::Failure(e),
