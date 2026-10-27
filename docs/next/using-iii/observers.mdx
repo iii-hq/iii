@@ -359,16 +359,16 @@ With the default `deliver: "envelope"`, the target's first argument is the `Obse
 envelope always has the ids, `status`, and the timings. It has `input`, `output`, `error`, `caller`,
 and `metadata` only when `capture` includes them. `output` is present only after a successful call.
 
-| Field                          | Meaning                                                             |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `observer_id`, `activation_id` | The observer, and this activation of it.                            |
-| `function_id`, `namespace`     | The observed function.                                              |
-| `invocation_id`                | The observed call. For an event that a source makes, see below.     |
-| `status`                       | `success` or `error`.                                               |
-| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error. |
-| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).    |
-| `metadata`                     | The metadata of the observed call.                                  |
-| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.          |
+| Field                          | Meaning                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| `observer_id`, `activation_id` | The observer, and this activation of it.                                         |
+| `function_id`, `namespace`     | The observed function.                                                           |
+| `invocation_id`                | The observed call. For an event that a source makes, see below.                  |
+| `status`                       | `success` or `error`.                                                            |
+| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message, stacktrace? }` error. |
+| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).                 |
+| `metadata`                     | The metadata of the observed call.                                               |
+| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
 
 When a source makes its own events, the `invocation_id` depends on where the source sends the event:
 
@@ -616,7 +616,7 @@ them fails with `FORBIDDEN`.
       {
         function_id: "observability::on-log",
         deliver: "input",
-        filters: { "input.severity_text": { $eq: "ERROR" } },
+        filters: { "input.severity_number": { $gte: 17 } }, // OpenTelemetry ERROR and above
       },
       "alerts::log",
     );

@@ -772,7 +772,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return args.EveryMs, err
     }
 
-    func registerTimer(worker *iii.Client) error {
+    func registerTimer(worker *iii.Client) (*iii.FunctionRef, error) {
         return worker.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
             return data, nil
         }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{

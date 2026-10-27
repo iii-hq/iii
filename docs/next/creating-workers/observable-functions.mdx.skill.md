@@ -597,7 +597,7 @@ worker still polls that path only 1 time each second.
         return args.Path
     }
 
-    func registerWatch(worker *iii.Client) error {
+    func registerWatch(worker *iii.Client) (*iii.FunctionRef, error) {
         return worker.RegisterFunction("files::watch", func(ctx context.Context, data json.RawMessage) (any, error) {
             var change fileChanged
             if err := json.Unmarshal(data, &change); err != nil {
@@ -849,7 +849,7 @@ of the example code. The SDK does not compare the args of different observers.
         return command
     }
 
-    func registerCommands(worker *iii.Client) error {
+    func registerCommands(worker *iii.Client) (*iii.FunctionRef, error) {
         return worker.RegisterFunction("chat::on-command", func(ctx context.Context, data json.RawMessage) (any, error) {
             var req struct {
                 Command string `json:"command"`
@@ -892,8 +892,7 @@ of the example code. The SDK does not compare the args of different observers.
   </Tab>
 </Tabs>
 
-A worker that handles `/weather` registers its handler and observes the router with its command. Its
-return value becomes the router's result:
+A worker that handles `/weather` registers its handler and observes the router with its command:
 
 ```typescript
 worker.registerFunction("weather::reply", async (req: { text: string }) => ({
@@ -905,7 +904,12 @@ const weather = worker.observe(
   "weather::reply",
 );
 await weather.ready(); // a second observer of /weather fails with COMMAND_TAKEN
+```
 
+Only the router's worker can call `chat::on-command`. When it calls the router, the return value of
+`weather::reply` becomes the router's result:
+
+```typescript
 await worker.trigger({
   function_id: "chat::on-command",
   payload: { command: "weather", text: "Lisbon", user: "ana" },
