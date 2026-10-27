@@ -430,6 +430,14 @@ pub fn state_key(state_dir: &Path, key: &str) -> String {
     hex::encode(digest.finalize())
 }
 
+/// The `vm_id` the adapter gives `state_key`: the first 32 hex chars of its
+/// SHA-256. shortcut: the contract calls `vm_id` opaque and this is
+/// sandbox-libkrun's derivation, so another adapter answers S504 to it; add a
+/// call by `state_key` to the contract if one ships.
+fn vm_id(state_key: &str) -> String {
+    hex::encode(Sha256::digest(state_key))[..32].to_string()
+}
+
 /// How long [`RemoteVm::stop`] keeps asking an adapter that does not answer;
 /// short under test, so a test can wait the bound out.
 const STOP_RETRY: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 60 });
@@ -792,7 +800,7 @@ pub(crate) async fn start_vm(
     .await
     .map_err(failed)?;
 
-    let started = worker_start(
+    let started = match worker_start(
         engine,
         adapter,
         namespace,
@@ -801,7 +809,17 @@ pub(crate) async fn start_vm(
         ctx.file.stop_timeout,
     )
     .await
-    .map_err(failed)?;
+    {
+        Ok(started) => started,
+        Err(error) => {
+            // No answer from the adapter (out of time, or lost with the bus):
+            // it may still be booting the VM.
+            if sandbox_code(&error).is_none() {
+                stop_unanswered_start(ctx, key).await;
+            }
+            return Err(failed(error));
+        }
+    };
 
     Ok(RemoteVm::spawn(
         engine.client().clone(),
@@ -814,6 +832,47 @@ pub(crate) async fn start_vm(
         ctx.sandbox_token.to_string(),
         Some(ctx.logs.sink(key)),
     ))
+}
+
+/// [`start_vm`] until `shutdown` fires, then `None`. Dropping the start does
+/// not reach the adapter, which goes on to boot the VM, so that boot is
+/// stopped first.
+pub(crate) async fn start_vm_until(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    start: &StartSpec,
+    env: BTreeMap<String, String>,
+    shutdown: Option<&crate::shutdown::ShutdownSignal>,
+) -> Option<Result<RemoteVm>> {
+    let Some(signal) = shutdown else {
+        return Some(start_vm(ctx, key, start, env).await);
+    };
+    let started = signal.run(start_vm(ctx, key, start, env)).await;
+    if started.is_none() {
+        stop_unanswered_start(ctx, key).await;
+    }
+    started
+}
+
+/// Stops the boot of VM container `key` that a `worker::start` left without an
+/// answer: a VM nobody holds would register as `key`. Asked for instance 0,
+/// which no boot is, the adapter names the live one (S503), and stopping that
+/// cancels a boot still preparing. Best effort, over a connection that is up.
+async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
+    if ctx.engine.has_exited() || !ctx.engine.is_connected() {
+        return;
+    }
+    let probe = VmRecord {
+        adapter: adapter_name(ctx.file).to_string(),
+        namespace: ctx.project_namespace.to_string(),
+        vm_id: vm_id(&state_key(ctx.state_dir, key)),
+        instance: 0,
+    };
+    let (client, grace) = (ctx.engine.client(), ctx.file.stop_timeout);
+    let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
+    if let Some(live) = superseded_by(&reply, &probe) {
+        let _ = worker_stop(client, &live, ctx.sandbox_token, grace).await;
+    }
 }
 
 /// [`call`] for a step of `container`'s start, which an engine restart must not
@@ -1832,10 +1891,11 @@ pub(crate) mod tests {
 
     /// An engine stand-in on a local port. It answers `engine::channels::create`
     /// itself, and every other call with `answer`'s reply fields (`result` or
-    /// `error`); a `null` reply drops the connection instead, and `false` also
-    /// refuses every later connection, as an engine that stays dead. Each answered
-    /// call but the SDK's own registration goes to the receiver as (function
-    /// id, payload). A channel socket sends one line, then closes.
+    /// `error`); `true` never answers, a `null` reply drops the connection
+    /// instead, and `false` also refuses every later connection, as an engine
+    /// that stays dead. Each answered or unanswered call but the SDK's own
+    /// registration goes to the receiver as (function id, payload). A channel
+    /// socket sends one line, then closes.
     async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
@@ -1916,6 +1976,10 @@ pub(crate) mod tests {
                         }
                         if reply.is_null() {
                             return;
+                        }
+                        if reply == json!(true) {
+                            let _ = calls.send((function.to_string(), message["data"].clone()));
+                            continue;
                         }
                         reply["type"] = json!("invocationresult");
                         reply["invocation_id"] = message["invocation_id"].clone();
@@ -2264,6 +2328,90 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(started.instance, 2);
         assert_eq!(*vms.lock().unwrap(), (2, Some(2)));
+    }
+
+    /// A `worker::start` that outlives its budget, or that a cancel drops, goes
+    /// on at the adapter: the boot it left, named by the S503 for instance 0, is
+    /// stopped, so no VM Compose does not hold registers as the container.
+    #[tokio::test]
+    async fn an_unanswered_start_stops_the_boot_it_left() {
+        let (url, mut called) = fake_engine_url(|function, payload| match function {
+            "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
+                adapter: "sandbox-libkrun".into(),
+                adapter_version: "1.0.0".into(),
+                contract: ContractVersion {
+                    major: CONTRACT_MAJOR,
+                    minor: 0,
+                },
+            }),
+            "sandbox-libkrun::worker::prepare" => answered(serde_json::json!({})),
+            // Still building the VM.
+            "sandbox-libkrun::worker::start" => serde_json::Value::Bool(true),
+            "sandbox-libkrun::worker::stop" => match payload["instance"].as_u64() {
+                Some(0) => refused(SandboxErrorCode::S503, 1),
+                _ => answered(status(State::Stopped, None, None)),
+            },
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, startup_timeout: 1s}\n",
+        );
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        let start = StartSpec::Vm(VmSpec::Local {
+            worker_dir: dir.path().join("vm"),
+            run_override: None,
+        });
+        let probe = vm_id(&state_key(dir.path(), "vm"));
+        let mut stops = || {
+            let mut stops = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                if function.ends_with("::worker::stop") {
+                    stops.push((payload["vm_id"].clone(), payload["instance"].as_u64()));
+                }
+            }
+            stops
+        };
+        let expected = [
+            (serde_json::json!(probe), Some(0)),
+            (serde_json::json!("v"), Some(1)),
+        ];
+
+        let Err(error) = start_vm(&ctx, "vm", &start, BTreeMap::new()).await else {
+            panic!("nobody answered the start");
+        };
+        assert_eq!(error.code(), "SPAWN_FAILED");
+        assert_eq!(stops(), expected);
+
+        let signal = shutdown.signal();
+        let cancel = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            shutdown.cancel();
+        };
+        let (started, ()) = tokio::join!(
+            start_vm_until(&ctx, "vm", &start, BTreeMap::new(), Some(&signal)),
+            cancel
+        );
+        assert!(started.is_none());
+        assert_eq!(stops(), expected);
     }
 
     /// An engine that dies or restarts with a call in flight never answers it:

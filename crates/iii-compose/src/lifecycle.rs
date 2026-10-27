@@ -1237,9 +1237,12 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            Child::Vm(wait_or_interrupt!(crate::sandbox::start_vm(
-                ctx, key, &start, plan.env
-            ))?)
+            let Some(started) =
+                crate::sandbox::start_vm_until(ctx, key, &start, plan.env, shutdown.as_ref()).await
+            else {
+                return Err(StartFailure::Interrupted);
+            };
+            Child::Vm(started?)
         }
     };
     report::starting(key, "waiting for engine registration");
