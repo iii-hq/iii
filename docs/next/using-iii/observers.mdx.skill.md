@@ -763,10 +763,13 @@ metric, by function and reason.
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
   become `suspended` for `observers.observer_grace_ms` (30 s by default). If the worker reconnects
   in this time, it keeps its observers and their counters. If not, the observers become `disposed`.
-- The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
-  default). If the worker reconnects in this time, the SDK replays the observer and gets `disposed`
-  back, so `max_fires` and `expires_in_ms` stay in effect. After this time, the replay creates the
-  observer again, as after an engine restart.
+- When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
+  id. The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
+  default). In this time, the engine does not create the observer again, and the handle becomes
+  `disposed`. So `max_fires` and `expires_in_ms` stay in effect after a reconnect. After this time,
+  the engine creates the observer again with new counters, as after an engine restart.
+- To know when an observer becomes `disposed`, and why, use `onStateChange` on its handle.
+  `engine::observers::list` and `get` do not show disposed observers.
 - When the observed function's worker disconnects, its observers go back to `pending` and become
   `active` again when the function is registered again.
 
