@@ -659,18 +659,20 @@ them fails with `FORBIDDEN`.
 
 ## Policy and metadata
 
-The examples so far react to calls that succeed. The next one reacts when `payments::charge`
-**fails** on a large amount (`on: "error"`), keeps only what the alert needs (`capture`), and runs
-at most four alerts at once. That last part is policy: a third argument that configures the observer
-itself.
+`observe` takes an optional third argument, the policy. The policy sets limits for the observer
+itself. An activation is one run of the target.
 
-| Option          | Default                                | Meaning                                                                                                                                                                                                                                                          |
-| --------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | a random UUID                          | The observer id. Replays with the same id are idempotent; a different spec is `OBSERVER_ID_CONFLICT`.                                                                                                                                                            |
-| `max_fires`     | unlimited                              | The observer is disposed after this many activations (`MAX_FIRES`).                                                                                                                                                                                              |
-| `expires_in_ms` | never                                  | The observer is disposed after this long (`EXPIRED`).                                                                                                                                                                                                            |
-| `max_in_flight` | `observers.default_max_in_flight` (64) | Activations running at once. Further ones wait in a queue of `observers.max_queue_per_observer` (1024); beyond it, or once the queues of all observers hold 64 MiB of events, they are dropped (`OVERFLOW`). With `1`, activations run in the order they arrive. |
-| `metadata`      | none                                   | JSON delivered as the metadata sidecar of every activation.                                                                                                                                                                                                      |
+| Option          | Default                                | Meaning                                                                                                                                                                                                                                                                                                                           |
+| --------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | a random UUID                          | The observer id. The same id with the same options again changes nothing. The same id with different options fails with `OBSERVER_ID_CONFLICT`.                                                                                                                                                                                   |
+| `max_fires`     | unlimited                              | The observer becomes `disposed` after this number of activations (reason `MAX_FIRES`).                                                                                                                                                                                                                                            |
+| `expires_in_ms` | never                                  | The observer becomes `disposed` after this time (reason `EXPIRED`).                                                                                                                                                                                                                                                               |
+| `max_in_flight` | `observers.default_max_in_flight` (64) | The maximum number of activations that run at the same time. More activations wait in a queue of `observers.max_queue_per_observer` (1024). When the queue is full, or when the queues of all observers hold 64 MiB of events, the engine drops new activations (`OVERFLOW`). With `1`, activations run in the order they arrive. |
+| `metadata`      | none                                   | JSON that each activation gives to the target as its second argument. See [Target arguments](#target-arguments).                                                                                                                                                                                                                  |
+
+This observer runs `alerts::payment-failed` after each failed call of `payments::charge` with an
+amount of 500 or more. It runs at most 4 activations at the same time, and it gives each activation
+`{ "team": "billing" }` as metadata:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -737,9 +739,9 @@ itself.
   </Tab>
 </Tabs>
 
-Delivery is at most once. An observer failure never affects the observed invocation, and every
-dropped event is counted per function and reason in the `iii.observer.dropped.total` metric. An
-event waiting in several observers' queues is held once, however many observers it matched.
+Each event runs the target at most once. The engine does not retry. A failure of the target does not
+change the observed call. The engine counts each dropped event in the `iii.observer.dropped.total`
+metric, by function and reason.
 
 ## Observer states
 
