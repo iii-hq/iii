@@ -764,7 +764,10 @@ metric, by function and reason.
 - `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
   each state change with its reason. Listeners run outside the connection's read path, so a listener
   can call the worker.
-- `dispose()` removes the observer. A disposed observer is not replayed.
+- `dispose()` (`Dispose(ctx)` in Go) removes the observer. A disposed observer is not replayed. A
+  target that runs in the observing worker can stop its own observer: it calls `dispose()` on the
+  handle, or it calls `engine::observers::dispose` with the `observer_id` from the envelope. To stop
+  after a number of events or after a time, set `max_fires` or `expires_in_ms` in the policy.
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
   become `suspended` for `observers.observer_grace_ms` (30 s by default). If the worker reconnects
   in this time, it keeps its observers and their counters. If not, the observers become `disposed`.
