@@ -338,26 +338,29 @@ To run the target after each call, use `on: "complete"`. The envelope's `status`
 
 ## Target arguments
 
-With the default `deliver: 'envelope'`, the target's first argument is the `Observed` envelope: what
-happened on the left side. Fields left out of `capture` are absent.
+With the default `deliver: "envelope"`, the target's first argument is the `Observed` envelope. The
+envelope always has the ids, `status`, and the timings. It has `input`, `output`, `error`, `caller`,
+and `metadata` only when `capture` includes them. `output` is present only after a successful call.
 
-| Field                          | Meaning                                                             |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `observer_id`, `activation_id` | The observer, and this activation of it.                            |
-| `function_id`, `namespace`     | The observed function.                                              |
-| `invocation_id`                | The observed invocation (or the event the source handed out).       |
-| `status`                       | `success` or `error`.                                               |
-| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error. |
-| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).    |
-| `metadata`                     | The observed invocation's metadata sidecar.                         |
-| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.          |
+| Field                          | Meaning                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| `observer_id`, `activation_id` | The observer, and this activation of it.                                         |
+| `function_id`, `namespace`     | The observed function.                                                           |
+| `invocation_id`                | The observed invocation. For an event that a source makes, the id of that event. |
+| `status`                       | `success` or `error`.                                                            |
+| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error.              |
+| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).                 |
+| `metadata`                     | The metadata of the observed call.                                               |
+| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
 
-With `deliver: 'input'` or `deliver: 'output'`, the target receives that value alone, which suits a
-target written as a regular function of the observed payload.
+With `deliver: "input"` or `deliver: "output"`, the target's first argument is that value alone. If
+the value is absent (for example, `output` after a failed call), the argument is `null`.
 
-The observer's `metadata` option arrives as the activation's metadata sidecar, the same second
-argument (`metadata` in Python, `MetadataFromContext(ctx)` in Go) that trigger metadata used. The
-target's return value is discarded.
+The observer's `metadata` option is the target's second argument (the `metadata` parameter in
+Python, `MetadataFromContext(ctx)` in Go). It is different from the `metadata` field of the
+envelope, which is the metadata of the observed call.
+
+iii discards the target's return value, unless the source documents otherwise.
 
 ## Source options
 
