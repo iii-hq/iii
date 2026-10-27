@@ -267,38 +267,42 @@ The two ways to hand over an event:
 |                 | `obs.emit(event)`                                                                                                            | `obs.call(payload)`                                                     |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | Use for         | events whose result you do not need: a tick, a row change                                                                    | requests that need an answer: an HTTP response, a queue acknowledgement |
-| The target gets | the [`Observed` envelope](../using-iii/observers#target-arguments) with `input` (or the event alone with `deliver: 'input'`) | your `payload`                                                          |
-| Returns         | `true` when the event was handed over, `false` when the filters rejected it                                                  | the target's result                                                     |
+| The target gets | the [`Observed` envelope](../using-iii/observers#target-arguments) with `input` (or the event alone with `deliver: 'input'`) | the `payload`                                                           |
+| Returns         | `true` when the event was handed over, `false` when the observer is not active or the filters rejected it                    | the target's result                                                     |
 | Wire cost       | one batched report item, then one activation from the engine                                                                 | one invocation through the engine                                       |
 
-Only your worker may invoke an owner-delivered function: the engine refuses a call to it from any
-other worker (or from the engine itself) with `FORBIDDEN`, so nobody can pass off an event as yours.
+Only the hosting worker can call an owner-delivered function. The engine refuses calls from other
+workers, and from the engine, with `FORBIDDEN`.
 
-The SDK applies the observer's filters in both: `emit` returns `false`, and `call` fails with
-`FILTERS_NOT_MATCHED`, without sending anything. Use `obs.matches({ input })` when you want to know
-first. Both go through the engine, which applies the observer's policy (`max_fires`, expiry,
-`max_in_flight`), adds its metadata, and enforces the loop guard. Both throw `NOT_OWNER_DELIVERED`
-on an auto function.
+The SDK applies the observer's filters to `emit` and `call`. If the filters reject the event, `emit`
+returns `false`, `call` fails with `FILTERS_NOT_MATCHED`, and the SDK sends nothing. To check before
+you send, use `obs.matches({ input })`. Both go through the engine, which applies the observer's
+policy (`max_fires`, expiry, `max_in_flight`), adds its metadata, and enforces the loop guard. Both
+throw `NOT_OWNER_DELIVERED` on an auto function.
 
-`emit` never waits. When you emit faster than the targets take, the observers' queues fill and the
-engine stops reading your worker's connection until they have room again, for at most 250 ms.
-Meanwhile the SDK keeps what it can in its bounded report buffer and drops the rest, counted as
-`BUFFER_FULL`, and everything else your worker sends (its calls, its answers to calls) waits behind
-its reports. After each hold the engine reads your worker's connection for at least a quarter as
-long before it holds it again, and drops what overflows meanwhile as `OVERFLOW`: your worker is held
-at most four fifths of the time.
+`emit` does not wait. If the function emits faster than the targets can run, the observers' queues
+become full. The engine then stops reading the worker's connection until the queues have space, for
+a maximum of 250 ms. During this hold:
+
+- The SDK keeps events in its report buffer. When the buffer is full, it drops events as
+  `BUFFER_FULL`.
+- All other messages from the worker (its calls and its answers) wait behind the reports.
+
+After each hold, the engine reads the connection for at least 1/4 of the hold time before the next
+hold. Events that overflow during this time are dropped as `OVERFLOW`. Thus the engine holds the
+worker for a maximum of 4/5 of the time.
 
 An emitted event travels in the SDK's report, like a
 [local call](../using-iii/observers#local-dispatch): values JSON cannot hold arrive as `null` (or
 U+FFFD for a lone surrogate), an event larger than the 8 MiB report buffer is dropped as
 `TOO_LARGE`, and a report lost with a dropped connection is not sent again.
 
-The event's `caller` follows where you call `emit`: inside your function's own handler, the event is
-that invocation (its id and its caller); inside another handler, that handler is the caller; outside
-any handler, only your worker. That is why the examples below trigger their own function and emit
-from its handler.
+The event's `caller` depends on where the function's code calls `emit`. Inside the function's own
+handler, the event is that invocation, with its id and its caller. Inside a different handler, that
+handler is the caller. Outside all handlers, the caller is only the worker. That is why the examples
+below trigger their own function and emit from its handler.
 
-The event's `invocation_id` follows the same rule. Inside your function's own handler, the event has
+The event's `invocation_id` follows the same rule. Inside the function's own handler, the event has
 the id of that invocation, and all events emitted during the same invocation have the same id.
 Anywhere else, each event gets a new id. `emit` cannot set the id. To pass an id on, put it in the
 event.
@@ -313,8 +317,11 @@ many observers share it.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
     import { type Stats, unwatchFile, watchFile } from "node:fs";
     import type { Observer } from "iii-sdk";
+
+    const logger = new Logger();
 
     type FileChanged = { path: string; size_bytes: number };
 
@@ -350,7 +357,7 @@ many observers share it.
                 // 2. The poller calls the function.
                 worker
                   .trigger({ function_id: "files::watch", payload: { path, size_bytes: curr.size } })
-                  .catch((err) => console.error("file change failed", err));
+                  .catch((err) => logger.error("file change failed", err));
               });
             }
             observers.set(obs.id, obs);
