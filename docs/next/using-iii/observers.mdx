@@ -858,11 +858,11 @@ inside a handler, the function and invocation it was made from.
 }
 ```
 
-`worker_id` and `worker_name` are stamped by the engine from the calling connection and cannot be
-forged. `function_id`, `invocation_id`, and `parent` (the caller of that handler, one level only)
-come from the calling SDK, so use them for routing and filtering, not for authorization. A filter
-such as `{ "caller.parent.worker_name": { "$ne": "search-indexer" } }` stops an indexer from
-reacting to its own writes.
+The engine sets `worker_id` and `worker_name` from the calling connection. It replaces any values
+that the SDK sends. The calling SDK sends `function_id`, `invocation_id`, and `parent` (the caller
+of that handler, one level only). Use these 3 fields for routing and filters only. A filter such as
+`{ "caller.parent.worker_name": { "$ne": "search-indexer" } }` stops an indexer from reacting to its
+own writes.
 
 When the engine activates a target, the target's caller is the engine (`worker_name: "iii-engine"`,
 no `worker_id`), with the observed function and invocation as `function_id` and `invocation_id`. The
@@ -879,22 +879,24 @@ current invocation (`function_id`, `invocation_id`, `caller`, `activation`, `obs
 | Rust    | `iii_sdk::current_invocation()`  | A task-local. Work moved to `tokio::spawn` loses it; wrap the future in `iii_sdk::scope(ctx, fut)`.              |
 | Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `worker.Trigger` so outgoing calls carry the caller.                                 |
 
-In the browser, calls made after an `await` outside `withInvocation` carry the depth of the deepest
-invocation running on the page, so with several invocations running the depth is over-counted: an
-observer chain may stop early at the loop guard, and some concurrent local calls go through the
-engine (with the same results). While the page is offline, functions it hosts still run locally, up
-to 256 nested local calls; past that a call fails at once with `LOCAL_DEPTH_EXCEEDED`.
+In the browser, a call made after an `await` and outside `withInvocation` gets the depth of the
+deepest invocation that runs on the page. When several invocations run at the same time, this depth
+can be too high, and the loop guard can stop an observer chain early. While the page is offline, the
+functions that it hosts run locally, to a maximum of 256 nested calls. A call past that limit fails
+immediately with `LOCAL_DEPTH_EXCEEDED`.
 
 ## Loop guard
 
-An observer whose target calls the observed function again (directly or through other observers)
-would loop forever. Every invocation carries an `observe_depth`, which grows by one on each
-activation. Activations deeper than `observers.max_observe_depth` (8 by default) are dropped and
-counted as `LOOP_GUARD`, and an observer whose target is the observed function itself is rejected at
-creation with `SELF_TARGET`.
+An observer's target can call the observed function again, directly or through other observers. This
+makes a loop. To stop loops, every invocation carries an `observe_depth`, which increases by 1 on
+each activation. Activations deeper than `observers.max_observe_depth` (8 by default) are dropped
+and counted as `LOOP_GUARD`, and an observer whose target is the observed function itself is
+rejected at creation with `SELF_TARGET`.
 
-Workers on SDKs older than 0.25 do not propagate the depth; through them the engine estimates it
-from their activations still in flight.
+<Warning>
+  Workers on SDKs older than 0.25 do not send the depth. For their calls, the engine uses the
+  largest depth of the invocations still in flight on that worker.
+</Warning>
 
 ## Local dispatch
 
