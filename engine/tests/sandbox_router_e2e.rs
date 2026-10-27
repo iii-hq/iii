@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use iii::engine::{Engine, EngineTrait};
+use iii::function::{Function, FunctionResult};
 use iii::protocol::ErrorBody;
 use iii::workers::engine_fn::EngineFunctionsWorker;
 use iii::workers::sandbox::SandboxRouter;
@@ -485,15 +486,14 @@ async fn adapter_returned_function_not_found_passes_through() {
     assert_eq!(err.message, "nested trigger missed");
 }
 
-#[tokio::test]
-async fn op_registered_just_after_adapter_info_is_forwarded() {
-    let (port, engine) = spawn_engine(bound()).await;
-    let _fake = fake_adapter(port, 1, &engine).await;
-    call(&engine, "sandbox::exec", json!({}), None)
+/// Caches the handshake, drops `fake::exec` and returns it with a pending
+/// `sandbox::exec` that is still inside the router's missing-op grace.
+async fn exec_in_grace(
+    engine: &Arc<Engine>,
+) -> (Function, JoinHandle<Result<Option<Value>, ErrorBody>>) {
+    call(engine, "sandbox::exec", json!({}), None)
         .await
         .expect("exec succeeds and caches the handshake");
-
-    // A reconnecting adapter can replay `adapter::info` before its ops.
     let exec = engine
         .functions
         .get("fake-ns", "fake::exec")
@@ -505,6 +505,16 @@ async fn op_registered_just_after_adapter_info_is_forwarded() {
             async move { call(&caller, "sandbox::exec", json!({"cmd": "x"}), None).await },
         );
     tokio::time::sleep(Duration::from_millis(50)).await;
+    (exec, pending)
+}
+
+#[tokio::test]
+async fn op_registered_just_after_adapter_info_is_forwarded() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let _fake = fake_adapter(port, 1, &engine).await;
+
+    // A reconnecting adapter can replay `adapter::info` before its ops.
+    let (exec, pending) = exec_in_grace(&engine).await;
     engine
         .functions
         .register_function_ns("fake-ns", "fake::exec".into(), exec);
@@ -514,4 +524,58 @@ async fn op_registered_just_after_adapter_info_is_forwarded() {
         out.expect("exec is forwarded once the op registers"),
         Some(json!({"input": {"cmd": "x"}, "metadata": null}))
     );
+}
+
+#[tokio::test]
+async fn adapter_gone_during_missing_op_grace_answers_s301() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let _fake = fake_adapter(port, 1, &engine).await;
+
+    // A disconnecting adapter can drop an op before `adapter::info`.
+    let (_exec, pending) = exec_in_grace(&engine).await;
+    engine.functions.remove("fake-ns", "fake::adapter::info");
+
+    let err = pending
+        .await
+        .expect("call task should not panic")
+        .unwrap_err();
+    assert_eq!(code_of(&err.message), Some(SandboxErrorCode::S301));
+    assert_eq!(payload(&err)["retryable"], true);
+}
+
+#[tokio::test]
+async fn adapter_swapped_during_missing_op_grace_answers_s302() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let _fake = fake_adapter(port, 1, &engine).await;
+
+    // A major-2 adapter replaces the old one before the grace ends.
+    let (exec, pending) = exec_in_grace(&engine).await;
+    let info = Function {
+        handler: Arc::new(|_invocation_id, _input, _session, _metadata| {
+            Box::pin(async {
+                FunctionResult::Success(Some(json!({
+                    "adapter": "fake",
+                    "adapter_version": "0.0.0",
+                    "contract": { "major": 2, "minor": 0 },
+                })))
+            })
+        }),
+        _function_id: "fake::adapter::info".into(),
+        _description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function_ns("fake-ns", "fake::adapter::info".into(), info);
+    engine
+        .functions
+        .register_function_ns("fake-ns", "fake::exec".into(), exec);
+
+    let err = pending
+        .await
+        .expect("call task should not panic")
+        .unwrap_err();
+    assert_eq!(code_of(&err.message), Some(SandboxErrorCode::S302));
 }

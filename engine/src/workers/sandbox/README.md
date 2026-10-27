@@ -391,8 +391,12 @@ await iii.trigger({
 
 Adapter errors reach the caller untouched, as the typed `SandboxError` wire payload
 (`{type, code, message, docs_url, fix, fix_note, retryable}`). Every code, its meaning and its fix
-is documented at https://iii.dev/docs/creating-workers/sandboxes. The router adds three:
+is documented at https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
 
 - `S301`: the bound adapter is not connected (retryable); the message names `compose::add iii-sandbox` as the fix.
 - `S302`: the adapter speaks another contract major than the router.
 - `S303`: no adapter is configured; the engine is not managed by a Compose file and has no `sandbox:` binding.
+- `S304`: the connected adapter does not register the called op. The router answers it only after
+  a 250 ms grace, so an adapter that is still (re)registering its ids is not reported as missing
+  them; a replay slower than that still gets `S304`. A `function_not_found` that a registered op
+  returns is the adapter's own error and passes through unchanged.

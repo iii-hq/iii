@@ -30,6 +30,10 @@ use crate::{
     workers::traits::Worker,
 };
 
+/// How long a missing op may take to (re)register before the router answers.
+/// shortcut: an adapter whose replay takes longer (a slow RBAC
+/// `on_function_registration` hook, say) still gets S304, and every call to an
+/// op the adapter truly lacks waits this long; watch registrations if that bites.
 const MISSING_OP_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
@@ -92,24 +96,24 @@ impl SandboxRouter {
         }
 
         let target = adapter_function_id(&b.adapter, &function_id);
-        let registered = |id: &str| {
+        let registered = || {
             self.engine
                 .functions
-                .with_function(&b.namespace, id, |f| f.is_some())
+                .with_function(&b.namespace, &target, |f| f.is_some())
         };
-        if !registered(&target) {
+        if !registered() {
             // A (re)connecting adapter adds and drops its ids one at a time in no
-            // fixed order, so a missing op gets one grace period before S304.
+            // fixed order, so a missing op gets one grace period, then the adapter
+            // is checked again: gone is S301, swapped for another major is S302.
             tokio::time::sleep(MISSING_OP_GRACE).await;
-            if !registered(&target) {
-                // A connected adapter still has `adapter::info`; then only the op is missing.
-                if registered(&adapter_function_id(&b.adapter, ADAPTER_INFO_SUFFIX)) {
-                    return FunctionResult::Failure(sandbox_error(
-                        SandboxErrorCode::S304,
-                        &format!("adapter {} does not implement {function_id}", b.adapter),
-                    ));
-                }
-                return FunctionResult::Failure(not_connected(b));
+            if let Err(e) = self.check_contract(b).await {
+                return FunctionResult::Failure(e);
+            }
+            if !registered() {
+                return FunctionResult::Failure(sandbox_error(
+                    SandboxErrorCode::S304,
+                    &format!("adapter {} does not implement {function_id}", b.adapter),
+                ));
             }
         }
 
@@ -121,7 +125,7 @@ impl SandboxRouter {
             .await
         {
             Ok(v) => FunctionResult::Success(v),
-            Err(e) if e.code == "function_not_found" && !registered(&target) => {
+            Err(e) if e.code == "function_not_found" && !registered() => {
                 FunctionResult::Failure(not_connected(b))
             }
             Err(e) => FunctionResult::Failure(e),
