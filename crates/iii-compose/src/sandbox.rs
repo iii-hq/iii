@@ -515,6 +515,16 @@ impl RemoteVm {
                     () = sender.closed() => return,
                     outcome = tick => {
                         let exited = matches!(outcome, Outcome::Exited(_));
+                        // A stream down at the exit (a dropped bus) would miss
+                        // the VM's last lines, which its next boot truncates:
+                        // they are read once more before the exit is published.
+                        if exited && let Some(sink) = &sink {
+                            follow_logs(&poller, &vm, &auth, sink, &mut capture, &mut cursor)
+                                .await;
+                            if let Some(draining) = capture.take() {
+                                let _ = tokio::time::timeout(CALL_SLACK, draining).await;
+                            }
+                        }
                         sender.send_replace(outcome);
                         if exited {
                             return;
@@ -1952,7 +1962,8 @@ pub(crate) mod tests {
     /// instead, and `false` also refuses every later connection, as an engine
     /// that stays dead. Each answered or unanswered call but the SDK's own
     /// registration goes to the receiver as (function id, payload). A channel
-    /// socket sends one line, then closes.
+    /// socket sends one line at cursor 12, none when the `worker::logs` before
+    /// it asked from there, then closes.
     async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
@@ -1983,13 +1994,19 @@ pub(crate) mod tests {
         let answer = std::sync::Arc::new(answer);
         let (calls, called) = tokio::sync::mpsc::unbounded_channel();
         let dead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked_from = std::sync::Arc::new(std::sync::Mutex::new(None));
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 // Kept listening, so no other test's engine can take the port.
                 if dead.load(std::sync::atomic::Ordering::SeqCst) {
                     continue;
                 }
-                let (calls, answer, dead) = (calls.clone(), answer.clone(), dead.clone());
+                let (calls, answer, dead, asked_from) = (
+                    calls.clone(),
+                    answer.clone(),
+                    dead.clone(),
+                    asked_from.clone(),
+                );
                 tokio::spawn(async move {
                     let mut path = String::new();
                     // tungstenite fixes the callback's error type.
@@ -2004,7 +2021,10 @@ pub(crate) mod tests {
                     if path.starts_with("/ws/channels/") {
                         let line =
                             r#"{"stream":"stderr","line":"no /dev/kvm","ts_ms":1,"cursor":12}"#;
-                        socket.send(Message::Text(line.into())).await.unwrap();
+                        let cursor = *asked_from.lock().unwrap();
+                        if cursor.is_none_or(|cursor: u64| cursor < 12) {
+                            socket.send(Message::Text(line.into())).await.unwrap();
+                        }
                         socket.close(None).await.unwrap();
                         return;
                     }
@@ -2019,6 +2039,9 @@ pub(crate) mod tests {
                             || function.starts_with("engine::workers::")
                         {
                             continue;
+                        }
+                        if function.ends_with("::worker::logs") {
+                            *asked_from.lock().unwrap() = message["data"]["cursor"].as_u64();
                         }
                         let end = |direction| json!({"channel_id": "c", "access_key": "k", "direction": direction});
                         let mut reply = match function {
@@ -2099,11 +2122,46 @@ pub(crate) mod tests {
         let vm = RemoteVm::spawn(client, vm_record(), "t".into(), Some(store.sink("web")));
         assert_eq!(vm.wait().await.code(), Some(1));
 
+        // Read once more from its cursor before the exit is published.
         let order: Vec<String> = drain(&mut called).into_iter().map(|(f, _)| f).collect();
         assert_eq!(
             order,
-            ["engine::channels::create", "worker::logs", "worker::status"]
+            [
+                "engine::channels::create",
+                "worker::logs",
+                "worker::status",
+                "engine::channels::create",
+                "worker::logs"
+            ]
         );
+        assert_eq!(
+            crate::logs::tests::entries(&store, "web", 1).await,
+            vec![crate::logs::LogEntry {
+                stream: crate::logs::LogStream::Stderr,
+                message: "no /dev/kvm".into()
+            }]
+        );
+    }
+
+    /// A VM that exits while its log stream is down (a dropped bus) keeps its
+    /// last lines: they are read before the exit is published.
+    #[tokio::test]
+    async fn a_vm_that_exits_while_its_stream_is_down_keeps_its_last_output() {
+        let streams = std::sync::atomic::AtomicUsize::new(0);
+        let (client, _called) = fake_engine(move |function, _| match function {
+            "sandbox-libkrun::worker::logs"
+                if streams.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+            {
+                not_found()
+            }
+            "sandbox-libkrun::worker::logs" => answered(serde_json::json!({})),
+            _ => answered(status(State::Exited, Some(1), None)),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::logs::LogStore::open(dir.path().to_path_buf()).unwrap();
+        let vm = RemoteVm::spawn(client, vm_record(), "t".into(), Some(store.sink("web")));
+        assert_eq!(vm.wait().await.code(), Some(1));
         assert_eq!(
             crate::logs::tests::entries(&store, "web", 1).await,
             vec![crate::logs::LogEntry {
