@@ -562,8 +562,7 @@ the depth is more than `observers.max_observe_depth` (8 by default), the engine 
 ## Engine-hosted event sources
 
 The engine hosts event sources as functions in the `default` namespace. Observe them like any
-function, with filters on the event. They replace the engine's own trigger types, which keep firing
-in 0.25.
+function, with filters on the event. They replace the trigger types of the engine.
 
 | Function                       | Replaces the trigger type     | Event (`input`)                                                                                                                                                                                           |
 | ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -573,10 +572,16 @@ in 0.25.
 | `observability::on-log`        | `log`                         | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                      |
 | `observability::on-span`       | `trace`                       | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                     |
 
-These events have no output, so use `deliver: 'input'` to hand the event itself to the target. Their
-`request_format` is closed at the top level, so a misspelled `input.*` filter path fails with
-`INVALID_FILTER_PATH`. Calling one of them directly fails with `FORBIDDEN`: their events are the
-engine's to emit.
+No function runs for these events. The engine creates each event, puts it in `input`, and handles it
+as a successful call with no `output`. This has two results:
+
+- The calls never fail. An observer with `on: "error"` is accepted, but its target never runs.
+- There is no `output`. With `deliver: "output"`, the target gets `null`. To give the target the
+  event, use `deliver: "input"`.
+
+Their `request_format` is closed at the top level, so an `input.*` filter path that is not in the
+event fails with `INVALID_FILTER_PATH`. Only the engine makes their events. A direct call to one of
+them fails with `FORBIDDEN`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
