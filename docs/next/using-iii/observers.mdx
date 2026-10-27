@@ -375,7 +375,8 @@ The observer's `metadata` option is the target's second argument (the `metadata`
 Python, `MetadataFromContext(ctx)` in Go). It is different from the `metadata` field of the
 envelope, which is the metadata of the observed call.
 
-iii discards the target's return value, unless the source documents otherwise.
+iii discards the target's return value, unless the source documents otherwise. Observers of the
+target can see it as the `output` of the target's call. See [Chain reactions](#chain-reactions).
 
 ## Source options
 
@@ -485,22 +486,23 @@ values, and the limits.
 
 ## Chain reactions
 
-A target is a function like any other, so it can be a source too. Chaining observers builds a
-pipeline in which each step observes the one before it. Here an order reserves stock, and reserved
-stock schedules a shipment, with each worker registering its own step.
+A call of a target is a normal call, so another observer can observe the target. In a chain, each
+observer observes the target of the observer before it. In this example, the inventory worker
+reserves the items of each new order, and the shipping worker schedules a shipment for each
+reservation. Each worker registers its own function and observer.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // Inventory worker: when an order is created, reserve its items.
-    inventory.registerFunction("inventory::reserve", async (order: Order) => reserveItems(order));
-    inventory.observe({ function_id: "orders::create", deliver: "input" }, "inventory::reserve");
+    // Inventory worker: after each successful call of orders::create, reserve the items.
+    inventoryWorker.registerFunction("inventory::reserve", async (order: Order) => reserveItems(order));
+    inventoryWorker.observe({ function_id: "orders::create", deliver: "input" }, "inventory::reserve");
 
-    // Shipping worker: when items are reserved, schedule the shipment.
-    shipping.registerFunction("shipping::schedule", async (reservation: Reservation) =>
+    // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
+    shippingWorker.registerFunction("shipping::schedule", async (reservation: Reservation) =>
       scheduleShipment(reservation),
     );
-    shipping.observe(
+    shippingWorker.observe(
       { function_id: "inventory::reserve", deliver: "output" },
       "shipping::schedule",
     );
@@ -509,28 +511,28 @@ stock schedules a shipment, with each worker registering its own step.
   </Tab>
   <Tab title="Python">
     ```python
-    # Inventory worker: when an order is created, reserve its items.
-    inventory.register_function("inventory::reserve", reserve_items)
-    inventory.observe({"function_id": "orders::create", "deliver": "input"}, "inventory::reserve")
+    # Inventory worker: after each successful call of orders::create, reserve the items.
+    inventory_worker.register_function("inventory::reserve", reserve_items)
+    inventory_worker.observe({"function_id": "orders::create", "deliver": "input"}, "inventory::reserve")
 
-    # Shipping worker: when items are reserved, schedule the shipment.
-    shipping.register_function("shipping::schedule", schedule_shipment)
-    shipping.observe({"function_id": "inventory::reserve", "deliver": "output"}, "shipping::schedule")
+    # Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
+    shipping_worker.register_function("shipping::schedule", schedule_shipment)
+    shipping_worker.observe({"function_id": "inventory::reserve", "deliver": "output"}, "shipping::schedule")
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    // Inventory worker: when an order is created, reserve its items.
-    inventory.register_function("inventory::reserve", RegisterFunction::new(reserve_items));
-    inventory.observe(
+    // Inventory worker: after each successful call of orders::create, reserve the items.
+    inventory_worker.register_function("inventory::reserve", RegisterFunction::new(reserve_items));
+    inventory_worker.observe(
         Source::function("orders::create").deliver(Deliver::Input),
         "inventory::reserve",
     );
 
-    // Shipping worker: when items are reserved, schedule the shipment.
-    shipping.register_function("shipping::schedule", RegisterFunction::new(schedule_shipment));
-    shipping.observe(
+    // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
+    shipping_worker.register_function("shipping::schedule", RegisterFunction::new(schedule_shipment));
+    shipping_worker.observe(
         Source::function("inventory::reserve").deliver(Deliver::Output),
         "shipping::schedule",
     );
@@ -539,23 +541,23 @@ stock schedules a shipment, with each worker registering its own step.
   </Tab>
   <Tab title="Go">
     ```go
-    // Inventory worker: when an order is created, reserve its items.
-    inventory.RegisterFunction("inventory::reserve", reserveItems)
-    inventory.Observe(iii.Source{FunctionID: "orders::create", Deliver: iii.DeliverInput}, "inventory::reserve")
+    // Inventory worker: after each successful call of orders::create, reserve the items.
+    inventoryWorker.RegisterFunction("inventory::reserve", reserveItems)
+    inventoryWorker.Observe(iii.Source{FunctionID: "orders::create", Deliver: iii.DeliverInput}, "inventory::reserve")
 
-    // Shipping worker: when items are reserved, schedule the shipment.
-    shipping.RegisterFunction("shipping::schedule", scheduleShipment)
-    shipping.Observe(iii.Source{FunctionID: "inventory::reserve", Deliver: iii.DeliverOutput}, "shipping::schedule")
+    // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
+    shippingWorker.RegisterFunction("shipping::schedule", scheduleShipment)
+    shippingWorker.Observe(iii.Source{FunctionID: "inventory::reserve", Deliver: iii.DeliverOutput}, "shipping::schedule")
     ```
 
   </Tab>
 </Tabs>
 
-`inventory::reserve` returns the reservation, and `deliver: "output"` hands that result to
-`shipping::schedule`: the second observer reads it as the output of `inventory::reserve`. To add a
-step, observe the last function in the chain; to branch, observe the same function twice. Each
-activation in a chain counts toward the [loop guard](#loop-guard), so chains are limited to
-`observers.max_observe_depth` steps (8 by default).
+`inventory::reserve` returns the reservation. With `deliver: "output"`, `shipping::schedule`
+receives that return value as its argument. To add a step, observe the last function in the chain.
+To branch, add two observers to the same function. Each step adds 1 to the depth of the event. When
+the depth is more than `observers.max_observe_depth` (8 by default), the engine drops the event with
+`LOOP_GUARD`. See [Loop guard](#loop-guard).
 
 ## Engine-hosted event sources
 
