@@ -453,6 +453,8 @@ fn vm_id(state_key: &str) -> String {
 /// How long [`RemoteVm::stop`] keeps asking an adapter that does not answer;
 /// short under test, so a test can wait the bound out.
 const STOP_RETRY: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 60 });
+/// How long after its first probe [`stop_unanswered_start`] asks again.
+const PROBE_AGAIN: Duration = Duration::from_millis(500);
 /// `worker::prepare`'s budget: room for an image pull (spec 5.4).
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How long a registered adapter may take to register `adapter::info` (spec 7.4);
@@ -891,10 +893,19 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
         instance: 0,
     };
     let (client, grace) = (ctx.engine.client(), ctx.file.stop_timeout);
-    let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
-    if let Some(live) = superseded_by(&reply, &probe) {
-        let _ = worker_stop(client, &live, ctx.sandbox_token, grace).await;
-    }
+    let stop_live = || async {
+        let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
+        if let Some(live) = superseded_by(&reply, &probe) {
+            let _ = worker_stop(client, &live, ctx.sandbox_token, grace).await;
+        }
+    };
+    stop_live().await;
+    // The adapter reserves the boot only after admitting its source, so a
+    // cancel right after the send can probe first (S504, or an older instance).
+    // shortcut: one more probe a moment later; a contract stop by state_key
+    // would close the window outright.
+    tokio::time::sleep(PROBE_AGAIN).await;
+    stop_live().await;
 }
 
 /// [`call`] for a step of `container`'s start (or its destroy), which an engine
@@ -2447,10 +2458,12 @@ pub(crate) mod tests {
 
     /// A `worker::start` that outlives its budget, or that a cancel drops, goes
     /// on at the adapter: the boot it left, named by the S503 for instance 0, is
-    /// stopped, so no VM Compose does not hold registers as the container.
+    /// stopped, so no VM Compose does not hold registers as the container. The
+    /// first probe lands before the adapter reserved that boot (S504).
     #[tokio::test]
     async fn an_unanswered_start_stops_the_boot_it_left() {
-        let (url, mut called) = fake_engine_url(|function, payload| match function {
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let (url, mut called) = fake_engine_url(move |function, payload| match function {
             "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
                 adapter: "sandbox-libkrun".into(),
                 adapter_version: "1.0.0".into(),
@@ -2463,6 +2476,13 @@ pub(crate) mod tests {
             // Still building the VM.
             "sandbox-libkrun::worker::start" => serde_json::Value::Bool(true),
             "sandbox-libkrun::worker::stop" => match payload["instance"].as_u64() {
+                Some(0)
+                    if probes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        .is_multiple_of(2) =>
+                {
+                    refused(SandboxErrorCode::S504, 0)
+                }
                 Some(0) => refused(SandboxErrorCode::S503, 1),
                 _ => answered(status(State::Stopped, None, None)),
             },
@@ -2506,6 +2526,7 @@ pub(crate) mod tests {
             stops
         };
         let expected = [
+            (serde_json::json!(probe), Some(0)),
             (serde_json::json!(probe), Some(0)),
             (serde_json::json!("v"), Some(1)),
         ];
