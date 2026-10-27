@@ -309,10 +309,10 @@ event.
 
 ### Example: a file watcher that emits
 
-`files::watch` is the smallest complete owner-delivered source. Each observer names the file to
-watch in its args (`{ path }`), and gets the changes to that file only. The numbered comments mark
-the steps above. The worker polls each file once a second, with one poller per watched path however
-many observers share it.
+`files::watch` is a complete owner-delivered source. Each observer gives a file path in its args
+(`{ path }`) and gets the changes to that file only. The numbered comments show the steps above. The
+worker polls each watched file 1 time each second. When many observers watch the same path, the
+worker still polls that path only 1 time each second.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -663,19 +663,19 @@ worker.observe(
 );
 ```
 
-Compare it with `files::on-change` at the top of this page. There, every observer gets every change
-and narrows them with filters. Here, each observer asks for one path, and the source does work only
-for paths someone asked for.
+Compare it with `files::on-change` at the top of this page. With `files::on-change`, each observer
+gets all changes and uses filters to select changes. With `files::watch`, each observer asks for 1
+path, and the source watches only the paths that observers ask for.
 
-An observer with args the schema refuses (no `path`, or a field the schema does not list) fails with
-`INVALID_ARGS` before `onObserverAdded` runs.
+If an observer's args do not agree with the schema (no `path`, or a field that the schema does not
+list), the observer fails with `INVALID_ARGS`. `onObserverAdded` does not run.
 
 ### Example: a command router that calls
 
-The examples so far fire and forget. This one needs an answer back, so it uses `obs.call` instead of
-`obs.emit`, and it rejects observers whose args clash. `chat::on-command` answers chat commands.
-Each observer registers one command with args `{ command }`; the router calls that observer's target
-and returns its result as its own.
+The file watcher does not wait for a result. This example needs a result, so it uses `obs.call`. It
+also rejects an observer when another observer already has the same command. `chat::on-command`
+answers chat commands. Each observer gives 1 command in its args (`{ command }`). The router calls
+the target of that observer and returns the target's result as its own result.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -914,17 +914,17 @@ await worker.trigger({
 
 `obs.call` fails with the target's own error, or with one of these codes:
 
-| Code                                                          | When                                                                                                                             |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `FILTERS_NOT_MATCHED`                                         | The observer's filters reject the payload. Nothing was sent.                                                                     |
-| `NOT_OWNER_DELIVERED`                                         | The function is auto-delivered.                                                                                                  |
-| `OBSERVER_NOT_ACTIVE`                                         | The observer was removed or rejected meanwhile.                                                                                  |
-| `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`, `TARGET_MISMATCH` | The engine does not know the observer, or this worker does not host the observed function.                                       |
-| `LOOP_GUARD`                                                  | The call is deeper than `observers.max_observe_depth`.                                                                           |
-| `OVERFLOW`                                                    | The observer has `max_in_flight` calls running. An owner call fails instead of queueing, because you are waiting for its result. |
-| `TIMEOUT`                                                     | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                            |
-| `function_not_found`                                          | The target is not registered.                                                                                                    |
-| `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).     |
+| Code                                                          | When                                                                                                                               |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `FILTERS_NOT_MATCHED`                                         | The observer's filters reject the payload. Nothing was sent.                                                                       |
+| `NOT_OWNER_DELIVERED`                                         | The function is auto-delivered.                                                                                                    |
+| `OBSERVER_NOT_ACTIVE`                                         | The observer was removed or rejected before the call.                                                                              |
+| `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`, `TARGET_MISMATCH` | The engine does not know the observer, or this worker does not host the observed function.                                         |
+| `LOOP_GUARD`                                                  | The call is deeper than `observers.max_observe_depth`.                                                                             |
+| `OVERFLOW`                                                    | The observer has `max_in_flight` calls running. An owner call does not go into a queue, because the function waits for its result. |
+| `TIMEOUT`                                                     | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                              |
+| `function_not_found`                                          | The target is not registered.                                                                                                      |
+| `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).       |
 
 ## When to use owner delivery
 
