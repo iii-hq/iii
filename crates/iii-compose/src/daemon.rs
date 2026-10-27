@@ -1646,12 +1646,7 @@ impl Daemon {
         // The generated adapter goes once this edit leaves no VM needing it.
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
-        let mut removal_order = before
-            .start_order()?
-            .into_iter()
-            .rev()
-            .filter(|worker| requested.contains(worker.as_str()))
-            .collect::<Vec<_>>();
+        let mut removal_order = removal_order(&mut before, &requested)?;
         let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
@@ -2219,6 +2214,19 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
             source,
         }
     })
+}
+
+/// The `requested` workers of `file`, dependents first. `file` is wired to its
+/// adapter, so a VM goes before the adapter it boots through: removing the VM
+/// still finds the adapter running, never restarting one this removal took.
+fn removal_order(file: &mut crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
+    crate::sandbox::wire_adapter(file)?;
+    Ok(file
+        .start_order()?
+        .into_iter()
+        .rev()
+        .filter(|worker| requested.contains(worker.as_str()))
+        .collect())
 }
 
 /// Persists one compose mutation while keeping its YAML and lock consistent.
@@ -3833,6 +3841,28 @@ containers:
             .unwrap_err();
         assert_eq!(error.code(), "BUILD_PLAN_STALE");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// The generated adapter is appended after the VMs, with no edge in the
+    /// file: removed together, the VM still goes first, so its destroy never
+    /// restarts the adapter this same removal stopped.
+    #[test]
+    fn a_vm_is_removed_before_the_adapter_it_boots_through() {
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  vm:\n    worker: path://./vm\n",
+            &adapter,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let (_dir, path) = vm_project(&text);
+        let mut compose = ComposeFile::parse(&text, &path).unwrap();
+        let requested = BTreeSet::from(["vm", "sandbox-libkrun"]);
+        assert_eq!(
+            removal_order(&mut compose, &requested).unwrap(),
+            ["vm", "sandbox-libkrun"]
+        );
     }
 
     #[test]
