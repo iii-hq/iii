@@ -895,10 +895,10 @@ rejected at creation with `SELF_TARGET`.
 
 ## Local dispatch
 
-A worker that calls a function it registered itself runs the handler in-process, without a round
-trip through the engine. When nobody observes the function, such a call puts nothing on the wire.
-When observers match, the SDK evaluates their filters itself and reports the matching invocations to
-the engine in batches, so observers see local and routed calls alike.
+When a worker calls a function that it registered, the SDK runs the handler in the same process. The
+call does not go through the engine. If the function has no observers, the SDK sends nothing to the
+engine. If the function has observers, the SDK applies their filters and sends the matching
+invocations to the engine in batches. Observers get local calls and engine calls in the same way.
 
 <Note>
   The hosting SDK reports the observed values of local calls to the engine. Values JSON cannot hold,
@@ -909,14 +909,15 @@ the engine in batches, so observers see local and routed calls alike.
 
 A call runs locally when all of these hold:
 
-1. The function was registered by this worker with a handler (not an HTTP-invoked function), and
-   local dispatch was not turned off for it.
-2. The engine confirmed the registration for local dispatch (a 0.25 engine,
-   `observers.local_dispatch` on, and a session without RBAC `middleware_function_id` that may
-   invoke the function).
+1. This worker registered the function with a handler. HTTP-invoked functions always go through the
+   engine. Local dispatch is on for the function.
+2. The engine confirmed local dispatch for the registration. This requires a 0.25 engine with
+   `observers.local_dispatch` on. If the worker connects through RBAC, its session must have no
+   `middleware_function_id`, and the session must be allowed to call the function.
 3. The call resolves to the namespace the function is registered in.
-4. The action is not `Enqueue` (a `Void` call runs locally, fire-and-forget).
+4. The action is `Void` or a normal call. An `Enqueue` call always goes through the engine.
 5. The call does not ask for the remote path.
+6. The call is fewer than 64 local calls deep. Deeper calls go through the engine.
 
 A local call returns the same result, error shape, and timeout as a remote one. The differences are
 in [Upgrading from 0.24.x](../upgrading/from-0-24-x#local-dispatch). To keep a function on the
