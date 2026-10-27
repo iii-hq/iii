@@ -362,21 +362,23 @@ pub(crate) async fn apply_adapter_change(
 }
 
 /// What only the adapter container gets, over its own environment: the worker
-/// token, the two host directories a guest may mount from (the compose file's
-/// and the package cache), and `III_DISABLE_TRACE_PAYLOADS` so iii-sdk records
+/// token, the host directories a guest may mount from (the compose file's, the
+/// package cache, and each `vm_dirs`), and `III_DISABLE_TRACE_PAYLOADS` so iii-sdk records
 /// no handler input (`auth`, the guest `env`, `channel.access_key`) as the
 /// `iii.invocation.input` span event.
 pub(crate) fn adapter_env(
     token: &str,
     compose_file: &Path,
     package_cache: &Path,
+    vm_dirs: &[&Path],
 ) -> BTreeMap<String, String> {
     let compose_dir = compose_file.parent().unwrap_or(Path::new(""));
     // A root that cannot be joined (a path separator in it) is dropped alone and
-    // loudly, so the other root survives; the adapter then refuses host_path
+    // loudly, so the others survive; the adapter then refuses host_path
     // mounts under the dropped one (S501).
     let roots: Vec<&Path> = [compose_dir, package_cache]
         .into_iter()
+        .chain(vm_dirs.iter().copied())
         .filter(|root| {
             let joinable = std::env::join_paths([root]).is_ok();
             if !joinable {
@@ -415,7 +417,17 @@ pub(crate) fn layer_adapter_env(
     user_env: &mut BTreeMap<String, String>,
 ) -> Result<()> {
     if adapter_key(file, adapter_name(file))?.as_deref() == Some(key) {
-        user_env.extend(adapter_env(token, &file.path, package_cache));
+        // `path://../w` puts a VM's own directory outside the compose file's.
+        // shortcut: read when the adapter starts, so such a VM added while it
+        // runs is refused (S501) until the adapter restarts.
+        let vm_dirs: Vec<&Path> = vm_needs(file)
+            .into_iter()
+            .filter_map(|need| match need {
+                Need::VmLocal(vm) => file.containers[&vm].worker_dir(),
+                Need::VmBundle(_) | Need::Explicit => None,
+            })
+            .collect();
+        user_env.extend(adapter_env(token, &file.path, package_cache, &vm_dirs));
     }
     Ok(())
 }
@@ -1552,6 +1564,7 @@ pub(crate) mod tests {
             "t0k",
             Path::new("/srv/app/worker-compose.yaml"),
             Path::new("/home/u/.iii/compose/packages"),
+            &[],
         );
         assert_eq!(env["III_SANDBOX_WORKER_TOKEN"], "t0k");
         // Keeps auth, env and channel.access_key out of the trace store.
@@ -1573,6 +1586,7 @@ pub(crate) mod tests {
             "t0k",
             Path::new("/srv/a:b/worker-compose.yaml"),
             Path::new("/home/u/.iii/compose/packages"),
+            &[],
         );
         assert_eq!(
             std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect::<Vec<_>>(),
@@ -1605,6 +1619,33 @@ pub(crate) mod tests {
         assert!(!other.contains_key("III_SANDBOX_WORKER_TOKEN"));
         assert!(!other.contains_key("III_SANDBOX_HOST_ROOTS"));
         assert_eq!(other["III_DISABLE_TRACE_PAYLOADS"], "0");
+    }
+
+    /// `path://../shared/vm` is a supported spelling: the adapter must admit
+    /// that VM's directory, not only the compose file's.
+    #[test]
+    fn a_local_vm_outside_the_compose_directory_is_a_host_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(
+            &dir.path().join("shared"),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = parse(
+            &project,
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  vm: {worker: path://../shared/vm}\n",
+        );
+        let mut env = BTreeMap::new();
+        layer_adapter_env(&file, "sb", "t0k", Path::new("/pkg"), &mut env).unwrap();
+        let roots: Vec<PathBuf> = std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect();
+        assert_eq!(roots[..2], [project, PathBuf::from("/pkg")]);
+        assert_eq!(roots.len(), 3, "{roots:?}");
+        assert_eq!(
+            roots[2].canonicalize().unwrap(),
+            dir.path().join("shared/vm").canonicalize().unwrap()
+        );
     }
 
     fn remote(code: &str, message: &str) -> iii_sdk::Error {
