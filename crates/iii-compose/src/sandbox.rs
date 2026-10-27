@@ -617,9 +617,9 @@ impl RemoteVm {
 }
 
 /// Keeps one `worker::logs` stream open into `sink`. A stream that closed
-/// while the VM runs (an engine restart, a dropped bus) is asked for again
-/// from the cursor it reached, kept in memory only; a failed call is retried
-/// on the next poll.
+/// while the VM runs (an engine restart, a dropped bus, a full log queue) is
+/// asked for again from the cursor it reached, kept in memory only; a failed
+/// call is retried on the next poll.
 async fn follow_logs(
     client: &IIIClient,
     vm: &VmRecord,
