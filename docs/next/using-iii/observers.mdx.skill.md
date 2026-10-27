@@ -130,10 +130,10 @@ argument.
         Total float64 `json:"total"`
     }
 
-    client := iii.RegisterWorker(os.Getenv("III_URL"))
+    worker := iii.RegisterWorker(os.Getenv("III_URL"))
 
     // The target: a regular function.
-    client.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
+    worker.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
         var order Order
         if err := json.Unmarshal(data, &order); err != nil {
             return nil, err
@@ -142,7 +142,7 @@ argument.
     })
 
     // After each successful call of orders::create, run emails::send-receipt with the order.
-    receipts, err := client.Observe(iii.Source{
+    receipts, err := worker.Observe(iii.Source{
         FunctionID: "orders::create",
         Deliver:    iii.DeliverInput,
     }, "emails::send-receipt")
@@ -239,7 +239,7 @@ the duration of the call (`duration_ms`).
   </Tab>
   <Tab title="Go">
     ```go
-    client.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
+    worker.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
         var event iii.Observed
         if err := json.Unmarshal(data, &event); err != nil {
             return nil, err
@@ -249,7 +249,7 @@ the duration of the call (`duration_ms`).
     })
 
     // After each successful call of orders::create with total >= 500, run alerts::big-order.
-    bigOrders, err := client.Observe(iii.Source{
+    bigOrders, err := worker.Observe(iii.Source{
         FunctionID: "orders::create",
         Filters:    iii.Filters{"input.total": iii.Op{"$gte": 500}},
     }, "alerts::big-order")
@@ -323,7 +323,7 @@ with the order (`input`) and the error (`error`):
   </Tab>
   <Tab title="Go">
     ```go
-    client.Observe(iii.Source{
+    worker.Observe(iii.Source{
         FunctionID: "orders::create",
         On:         iii.OnError,
         Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError},
@@ -432,7 +432,7 @@ takes `{ path }`. It is not part of iii:
   <Tab title="Go">
     ```go
     // When /data/orders.csv changes, run csv::process.
-    client.Observe(iii.Source{
+    worker.Observe(iii.Source{
         FunctionID: "files::watch",
         Args:       iii.Args{"path": "/data/orders.csv"},
         Deliver:    iii.DeliverInput,
@@ -629,7 +629,7 @@ engine's to emit.
   </Tab>
   <Tab title="Go">
     ```go
-    client.Observe(iii.Source{
+    worker.Observe(iii.Source{
         FunctionID: "configuration::on-updated",
         Deliver:    iii.DeliverInput,
         Filters: iii.Filters{
@@ -708,7 +708,7 @@ itself.
   </Tab>
   <Tab title="Go">
     ```go
-    client.Observe(iii.Source{
+    worker.Observe(iii.Source{
         FunctionID: "payments::charge",
         On:         iii.OnError,
         Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
@@ -741,7 +741,7 @@ event waiting in several observers' queues is held once, however many observers 
   `*iii.ObserveRejectionError` in Go).
 - `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
   every transition with its reason. Listeners never run on the connection's read path, so they may
-  call the client.
+  call the worker.
 - `dispose()` removes the observer. A disposed observer is not replayed.
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
   are `suspended` for `observers.observer_grace_ms` (30 s by default); a worker that reconnects in
@@ -847,7 +847,7 @@ current invocation (`function_id`, `invocation_id`, `caller`, `activation`, `obs
 | Browser | `worker.currentInvocation()`     | Known until the handler's first `await`. Read it first and wrap later calls in `worker.withInvocation(inv, fn)`. |
 | Python  | `worker.current_invocation()`    | A `contextvars` context, carried into sync handlers' threads.                                                    |
 | Rust    | `iii_sdk::current_invocation()`  | A task-local. Work moved to `tokio::spawn` loses it; wrap the future in `iii_sdk::scope(ctx, fut)`.              |
-| Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `client.Trigger` so outgoing calls carry the caller.                                 |
+| Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `worker.Trigger` so outgoing calls carry the caller.                                 |
 
 In the browser, calls made after an `await` outside `withInvocation` carry the depth of the deepest
 invocation running on the page, so with several invocations running the depth is over-counted: an
@@ -938,10 +938,10 @@ engine path:
     ```go
     // per function
     off := false
-    client.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
+    worker.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
 
     // per call
-    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
+    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
     ```
 
   </Tab>

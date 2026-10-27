@@ -246,13 +246,13 @@ The engine's own trigger types have source functions in 0.25:
     **Before (0.24)**
 
     ```go
-    client.RegisterTrigger("catalog-refresh", "engine::functions-available", "catalog::refresh", nil)
+    worker.RegisterTrigger("catalog-refresh", "engine::functions-available", "catalog::refresh", nil)
     ```
 
     **After (0.25)**
 
     ```go
-    refresh, err := client.Observe(iii.Source{
+    refresh, err := worker.Observe(iii.Source{
         FunctionID: "engine::on-functions-changed",
         Deliver:    iii.DeliverInput,
     }, "catalog::refresh")
@@ -362,14 +362,14 @@ provider from the next section.
     **Before (0.24)**
 
     ```go
-    client.RegisterTrigger("reports-refresh", "timer", "reports::refresh",
+    worker.RegisterTrigger("reports-refresh", "timer", "reports::refresh",
         json.RawMessage(`{"every_ms":60000}`), json.RawMessage(`{"team":"reports"}`))
     ```
 
     **After (0.25)**
 
     ```go
-    observer, err := client.Observe(iii.Source{
+    observer, err := worker.Observe(iii.Source{
         FunctionID: "timer::on-tick",
         Args:       iii.Args{"every_ms": 60000},
         Deliver:    iii.DeliverInput,
@@ -698,7 +698,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
 
     ```go
     type timerHandler struct {
-        client *iii.Client
+        worker *iii.Client
         mu     sync.Mutex
         stops  map[string]chan struct{} // trigger id → stop
     }
@@ -723,7 +723,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
                     return
                 case now := <-ticker.C:
                     data, _ := json.Marshal(map[string]int64{"every_ms": config.EveryMs, "fired_at_ms": now.UnixMilli()})
-                    h.client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: cfg.FunctionID, Data: data, Namespace: cfg.Namespace})
+                    h.worker.Trigger(context.Background(), iii.TriggerRequest{FunctionID: cfg.FunctionID, Data: data, Namespace: cfg.Namespace})
                 }
             }
         }()
@@ -740,8 +740,8 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return nil
     }
 
-    client.RegisterTriggerType("timer", "Fires every every_ms milliseconds",
-        &timerHandler{client: client, stops: map[string]chan struct{}{}})
+    worker.RegisterTriggerType("timer", "Fires every every_ms milliseconds",
+        &timerHandler{worker: worker, stops: map[string]chan struct{}{}})
     ```
 
     **After (0.25)**
@@ -769,8 +769,8 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return args.EveryMs, err
     }
 
-    func registerTimer(client *iii.Client) error {
-        return client.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
+    func registerTimer(worker *iii.Client) error {
+        return worker.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
             return data, nil
         }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
             Delivery:          iii.DeliveryOwner,

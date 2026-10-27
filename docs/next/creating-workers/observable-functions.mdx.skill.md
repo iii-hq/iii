@@ -53,13 +53,13 @@ call that function whenever the event happens:
   </Tab>
   <Tab title="Go">
     ```go
-    client.RegisterFunction("files::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
+    worker.RegisterFunction("files::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
         return data, nil
     })
 
     // whenever a file changes:
     change, _ := json.Marshal(map[string]string{"path": path, "event": "modified"})
-    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "files::on-change", Data: change})
+    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "files::on-change", Data: change})
     ```
 
   </Tab>
@@ -91,7 +91,7 @@ descriptor, and a trigger becomes an observer. To move an existing trigger type,
 
 The next step up keeps auto delivery (every call still reaches every observer) and adds hooks, for
 example to log who subscribes or to start expensive work only while someone observes.
-`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `client.IsObserved(id)` in Go)
+`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `worker.IsObserved(id)` in Go)
 answers in one load, so a hot path can skip building events nobody receives.
 
 <Tabs>
@@ -159,7 +159,7 @@ answers in one load, so a hot path can skip building events nobody receives.
   </Tab>
   <Tab title="Go">
     ```go
-    client.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
+    worker.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
         return data, nil
     }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
         OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
@@ -169,8 +169,8 @@ answers in one load, so a hot path can skip building events nobody receives.
     }})
 
     // in the price feed loop
-    if client.IsObserved("prices::on-change") {
-        client.Trigger(ctx, iii.TriggerRequest{FunctionID: "prices::on-change", Data: change})
+    if worker.IsObserved("prices::on-change") {
+        worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "prices::on-change", Data: change})
     }
     ```
 
@@ -515,7 +515,7 @@ many observers share it.
         watched = map[string]*watch{} // path → its observers and their poller
     )
 
-    func poll(client *iii.Client, path string, stop chan struct{}) {
+    func poll(worker *iii.Client, path string, stop chan struct{}) {
         ticker := time.NewTicker(time.Second)
         defer ticker.Stop()
         var last time.Time
@@ -531,7 +531,7 @@ many observers share it.
                 if !last.IsZero() && !info.ModTime().Equal(last) {
                     // 2. The poller calls the function.
                     data, _ := json.Marshal(fileChanged{Path: path, SizeBytes: info.Size()})
-                    client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "files::watch", Data: data})
+                    worker.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "files::watch", Data: data})
                 }
                 last = info.ModTime()
             }
@@ -546,8 +546,8 @@ many observers share it.
         return args.Path
     }
 
-    func registerWatch(client *iii.Client) error {
-        return client.RegisterFunction("files::watch", func(ctx context.Context, data json.RawMessage) (any, error) {
+    func registerWatch(worker *iii.Client) error {
+        return worker.RegisterFunction("files::watch", func(ctx context.Context, data json.RawMessage) (any, error) {
             var change fileChanged
             if err := json.Unmarshal(data, &change); err != nil {
                 return nil, err
@@ -577,7 +577,7 @@ many observers share it.
                 if w == nil {
                     w = &watch{observers: map[string]*iii.Observer{}, stop: make(chan struct{})}
                     watched[path] = w
-                    go poll(client, path, w.stop)
+                    go poll(worker, path, w.stop)
                 }
                 w.observers[obs.ID] = obs
                 return nil
@@ -794,8 +794,8 @@ and returns its result as its own.
         return command
     }
 
-    func registerCommands(client *iii.Client) error {
-        return client.RegisterFunction("chat::on-command", func(ctx context.Context, data json.RawMessage) (any, error) {
+    func registerCommands(worker *iii.Client) error {
+        return worker.RegisterFunction("chat::on-command", func(ctx context.Context, data json.RawMessage) (any, error) {
             var req struct {
                 Command string `json:"command"`
             }
@@ -896,7 +896,7 @@ for (const obs of feeds.observers()) {
 }
 ```
 
-`FunctionRef.observers()` (`observers()` in Python and Rust, `client.Observers(id)` in Go) lists the
+`FunctionRef.observers()` (`observers()` in Python and Rust, `worker.Observers(id)` in Go) lists the
 active observers as your hooks saw them.
 
 ## Refuse observers
