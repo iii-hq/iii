@@ -25,9 +25,9 @@ export const metadata: Metadata = {
   description: site.description,
   applicationName: site.name,
   keywords: [...site.keywords],
-  authors: [{ name: 'III, Inc.', url: site.url }],
-  creator: 'III, Inc.',
-  publisher: 'III, Inc.',
+  authors: [{ name: 'Motia LLC', url: site.url }],
+  creator: 'Motia LLC',
+  publisher: 'Motia LLC',
   category: 'technology',
   alternates: { canonical: '/' },
   robots: {

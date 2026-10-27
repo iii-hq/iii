@@ -100,7 +100,7 @@ const organization = {
   '@type': 'Organization',
   '@id': `${site.url}/#organization`,
   name: 'iii',
-  legalName: 'III, Inc.',
+  legalName: 'Motia LLC',
   url: `${site.url}/`,
   logo: `${site.url}/icon.svg`,
   sameAs: [links.github, links.x, links.linkedin, links.discord],
